@@ -5,19 +5,51 @@ source of truth for the product/UX design and the high-level architecture.
 
 Status: design locked 2026-06-20. Implementation in progress, **EPUB-first**.
 
-## 1. Scope
+## 0. Locked decisions
 
-**v1 (EPUB-first):**
-- Polished reflowable EPUB reader, end to end.
-- Library/shelf when run bare (`delryn`), with list and grid (cover) views.
-- Resume reading position per book, TOC navigation, in-book full-text search,
-  favorites/recents, mode-scoped settings.
-- Vim-like keys + mouse.
+These are settled; don't re-litigate without a reason.
 
-**Later (same interfaces):**
-- PDF behind the same `Document` trait. Hybrid rendering: text-extraction
-  reflowable view by default, key-toggle to render the page as an image
-  (Kitty / Sixel / iTerm2) via a native engine (`mupdf` or `pdfium-render`).
+- **Terminal-native, not app-GPU.** A TUI emits cells over a PTY; the *terminal
+  emulator* owns the GPU, glyph atlas, and rasterization. We do **not** build a
+  font atlas or GPU text renderer. We get speed by (a) minimal diffed cell
+  updates, (b) **synchronized output** (DEC 2026) for atomic, tear-free frames,
+  and (c) **graphics protocols** (Kitty / Sixel / iTerm2) for pixels — covers,
+  diagrams, math, rasterized PDF pages — with a fallback ladder. "GPU where it
+  helps" means *compute* (image/PDF rasterization), never text.
+- **Performance is a feature.** Smooth scroll comes from the render pipeline
+  (§2.1), not hardware: synchronized output + frame pacing + input coalescing +
+  cached layout + background pre-wrap.
+- **EPUB-first, exhaustively.** Nail every reading/library/search/annotation
+  feature and the whole layout for EPUB *before* adding any other format. PDF,
+  MOBI, AZW3, CBZ/CBR, Markdown, HTML, txt all come later behind the plugin
+  trait — designed for, not built yet.
+- **Stack:** Rust · `ratatui` + `crossterm` · `html2text` (EPUB text) ·
+  `syntect` (code highlighting) · `rusqlite` + FTS5 (library/state/annotations)
+  · graphics-protocol crate for images (later) · std threads + channels for
+  background work (no async runtime unless a subsystem demands it).
+
+## 1. Scope & roadmap (EPUB-first)
+
+Sequenced so the app is fast and the reading experience wins before breadth.
+
+- **Phase 0 — Perf foundation:** synchronized output + frame-paced/coalesced
+  render loop (kills scroll jitter); section layout LRU + background neighbor
+  pre-wrap (no chapter-boundary hitch).
+- **Phase 1 — Reading that wins:** persistence/resume (SQLite); rich typography
+  (heading hierarchy, emphasis, quotes, lists, tables, notes/tips/warnings);
+  **code-block engine** (syntect highlight, preserved indentation, h-scroll ⇄
+  soft-wrap, line numbers, copy/export) — the programming-book wedge; theme
+  system; reading modes + layout controls; settings popup + status-bar config.
+- **Phase 2 — Navigation & library:** collapsible TOC tree + nav history;
+  library manager (table/grid/compact/cover, collections/tags/series/authors,
+  filtering, metadata edit, duplicates, smart collections); cover thumbnails.
+- **Phase 3 — Power features:** in-book search (regex/fuzzy); library + full-text
+  search; annotations (bookmarks/highlights/notes) with reflow-stable anchors;
+  reading stats.
+
+**Deferred (same `Document` interface, designed-for not built):** PDF (hybrid —
+text reflow default, key-toggle page image via `pdfium`/`mupdf` + graphics
+protocol), then MOBI/AZW3/CBZ/CBR/Markdown/HTML/txt.
 
 ## 2. Architecture
 
@@ -30,6 +62,40 @@ Source file
   → Layout / reflow     (content → wrapped lines, measure cap; or bitmap for PDF image mode)
   → View (ratatui)      (reader, library, settings, status bar — all shared)
   → State / store       (per-book session + library index + config, persisted)
+```
+
+### 2.1 Rendering & performance pipeline
+
+The render loop is single-threaded and **frame-paced**; heavy work is offloaded
+to background workers and delivered over channels.
+
+```
+┌── events ──────────┐   coalesce    ┌──── render loop (main, ~120fps cap) ────┐
+│ key / mouse / resize│ ────────────▶ │ drain queued events → apply net delta   │
+└─────────────────────┘   dirty flag  │ if dirty & budget elapsed:              │
+                                       │   BSU → diff-draw viewport → ESU        │
+   idle: block on poll (0% CPU) ──────▶│ (synchronized output = atomic present)  │
+                                       └──────────────────────────────────────────┘
+   workers: parse · pre-wrap next/prev section · index · thumbnails · search
+```
+
+Rules that keep it fast:
+- **Never re-wrap on scroll.** Wrapped lines are cached per `(section, width)`;
+  scrolling only slices the cached buffer.
+- **LRU of wrapped sections** + **background pre-wrap** of neighbors so chapter
+  transitions don't block on `html2text`.
+- **Synchronized output** brackets every frame → no tearing/jitter.
+- **Coalesce input**: holding a key applies the net scroll delta once per frame.
+- **Idle = 0% CPU**: the loop blocks on `poll` until an event or a long timeout.
+
+### Cache hierarchy
+
+```
+L1  in-memory LRU of wrapped sections (current ± neighbors)
+L2  parsed document structure (spine, outline, headings) for the open book
+L3  SQLite — library index, reading state, annotations  (~/.config/delryn)
+    disk — cover thumbnails keyed by content hash
+    disk — search index (FTS5; tantivy if escalated)
 ```
 
 ### Module layout
