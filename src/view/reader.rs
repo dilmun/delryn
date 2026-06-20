@@ -40,7 +40,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         f.render_widget(Block::default().style(base(theme)), area);
     }
 
-    let status_h = u16::from(show_status);
+    let status_h = u16::from(show_status || reader.searching);
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(area);
     let body = rows[0];
     let status = rows[1];
@@ -60,7 +60,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_sidebar(f, sb, reader, theme);
     }
     render_content(f, content_area, reader, config, theme);
-    if show_status {
+    if reader.searching {
+        let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
+        let prompt = format!("/{}", reader.search_input);
+        f.render_widget(Paragraph::new(Line::raw(prompt)).style(style), status);
+    } else if show_status {
         render_status(f, status, reader, config, theme);
     }
 }
@@ -210,18 +214,69 @@ fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, measure_cfg: 
 fn visible_lines(reader: &Reader, start: usize, count: usize, theme: Theme) -> Vec<Line<'static>> {
     let start = start.min(reader.lines.len());
     let end = (start + count).min(reader.lines.len());
+    let query = reader.search.as_deref().filter(|q| !q.is_empty());
     reader.lines[start..end]
         .iter()
-        .map(|l| to_ratatui(l, theme))
+        .map(|l| to_ratatui(l, theme, query))
         .collect()
 }
 
-fn to_ratatui(line: &DisplayLine, theme: Theme) -> Line<'static> {
-    let spans: Vec<Span> = line
-        .runs
-        .iter()
-        .map(|r| Span::styled(r.text.clone(), run_style(r, line.kind, theme)))
-        .collect();
+fn to_ratatui(line: &DisplayLine, theme: Theme, query: Option<&str>) -> Line<'static> {
+    let Some(q) = query else {
+        let spans: Vec<Span> = line
+            .runs
+            .iter()
+            .map(|r| Span::styled(r.text.clone(), run_style(r, line.kind, theme)))
+            .collect();
+        return Line::from(spans);
+    };
+
+    // Expand to per-char styles, mark search matches, then regroup into spans.
+    let mut chars: Vec<(char, Style)> = Vec::new();
+    for run in &line.runs {
+        let style = run_style(run, line.kind, theme);
+        for c in run.text.chars() {
+            chars.push((c, style));
+        }
+    }
+    let hay: Vec<char> = chars.iter().map(|(c, _)| c.to_ascii_lowercase()).collect();
+    let needle: Vec<char> = q.chars().collect();
+    let mut matched = vec![false; chars.len()];
+    if !needle.is_empty() {
+        let mut i = 0;
+        while i + needle.len() <= hay.len() {
+            if hay[i..i + needle.len()] == needle[..] {
+                matched[i..i + needle.len()].fill(true);
+                i += needle.len();
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    let hilite = Style::default()
+        .bg(theme.accent)
+        .fg(theme.bg.unwrap_or(Color::Black))
+        .add_modifier(Modifier::BOLD);
+
+    let mut spans: Vec<Span> = Vec::new();
+    let mut buf = String::new();
+    let mut buf_style: Option<Style> = None;
+    for (idx, (c, st)) in chars.iter().enumerate() {
+        let style = if matched[idx] { hilite } else { *st };
+        if buf_style == Some(style) {
+            buf.push(*c);
+        } else {
+            if let Some(s) = buf_style {
+                spans.push(Span::styled(std::mem::take(&mut buf), s));
+            }
+            buf.push(*c);
+            buf_style = Some(style);
+        }
+    }
+    if let Some(s) = buf_style {
+        spans.push(Span::styled(buf, s));
+    }
     Line::from(spans)
 }
 
@@ -269,6 +324,11 @@ fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config, th
     let pct = (reader.progress() * 100.0).round() as u32;
     let sf = config.status;
     let mut parts: Vec<String> = Vec::new();
+    if reader.search.is_some() {
+        let n = reader.search_count();
+        let cur = if n == 0 { 0 } else { reader.search_idx + 1 };
+        parts.push(format!("⌕ {cur}/{n}"));
+    }
     if sf.theme {
         parts.push(theme.name.to_string());
     }

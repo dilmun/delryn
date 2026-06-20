@@ -138,6 +138,12 @@ pub struct Reader {
     /// Navigation history (jump list).
     back_stack: Vec<Pos>,
     fwd_stack: Vec<Pos>,
+    /// In-book search state.
+    pub searching: bool,
+    pub search_input: String,
+    pub search: Option<String>,
+    search_matches: Vec<(usize, usize)>,
+    pub search_idx: usize,
     /// Decoded section blocks, keyed by section index (bounded LRU).
     cache: HashMap<usize, Vec<Block>>,
     /// Sections requested from the loader but not yet returned.
@@ -192,6 +198,11 @@ impl Reader {
             collapsed: HashSet::new(),
             back_stack: Vec::new(),
             fwd_stack: Vec::new(),
+            searching: false,
+            search_input: String::new(),
+            search: None,
+            search_matches: Vec::new(),
+            search_idx: 0,
             cache,
             requested: HashSet::new(),
             req_tx,
@@ -465,6 +476,77 @@ impl Reader {
         self.focus = Focus::Content;
     }
 
+    pub fn start_search(&mut self) {
+        self.searching = true;
+        self.search_input.clear();
+    }
+
+    pub fn search_count(&self) -> usize {
+        self.search_matches.len()
+    }
+
+    /// Run the typed query across the whole book (case-insensitive substring),
+    /// recording matching (section, line) positions and jumping to the first.
+    pub fn run_search(&mut self) {
+        self.searching = false;
+        let query = self.search_input.trim().to_lowercase();
+        self.search_matches.clear();
+        self.search_idx = 0;
+        if query.is_empty() {
+            self.search = None;
+            return;
+        }
+        let width = self.last_measure.max(1);
+        for s in 0..self.doc.section_count() {
+            let blocks = self.fetch_blocks(s);
+            let lines = wrap_blocks(
+                &blocks,
+                width,
+                &self.code_theme,
+                self.line_spacing,
+                self.paragraph_spacing,
+            );
+            for (li, line) in lines.iter().enumerate() {
+                if line.text().to_lowercase().contains(&query) {
+                    self.search_matches.push((s, li));
+                }
+            }
+        }
+        self.search = Some(query);
+        if !self.search_matches.is_empty() {
+            self.goto_match(0);
+        }
+    }
+
+    pub fn search_next(&mut self) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        let i = (self.search_idx + 1) % self.search_matches.len();
+        self.goto_match(i);
+    }
+
+    pub fn search_prev(&mut self) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        let n = self.search_matches.len();
+        let i = (self.search_idx + n - 1) % n;
+        self.goto_match(i);
+    }
+
+    fn goto_match(&mut self, i: usize) {
+        let Some(&(section, line)) = self.search_matches.get(i) else {
+            return;
+        };
+        self.search_idx = i;
+        if section != self.section {
+            self.load(section);
+        }
+        self.scroll = line;
+        self.focus = Focus::Content;
+    }
+
     /// Scroll position within the current section as a fraction `[0, 1]`.
     pub fn within_frac(&self) -> f32 {
         if self.lines.is_empty() {
@@ -700,6 +782,10 @@ impl App {
             self.settings_key(key);
             return;
         }
+        if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.searching) {
+            self.search_key(key);
+            return;
+        }
         if key.code == KeyCode::Char(';') {
             let tab = match self.mode {
                 Mode::Reader => SettingsTab::Reading,
@@ -714,6 +800,24 @@ impl App {
                 self.apply(action);
             }
             Mode::Library => self.library_key(key),
+        }
+    }
+
+    fn search_key(&mut self, key: KeyEvent) {
+        let Some(reader) = self.reader.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                reader.searching = false;
+                reader.search_input.clear();
+            }
+            KeyCode::Enter => reader.run_search(),
+            KeyCode::Backspace => {
+                reader.search_input.pop();
+            }
+            KeyCode::Char(c) => reader.search_input.push(c),
+            _ => {}
         }
     }
 
@@ -932,6 +1036,9 @@ impl App {
             }
             Action::HistBack => reader.history_back(),
             Action::HistForward => reader.history_forward(),
+            Action::Search => reader.start_search(),
+            Action::SearchNext => reader.search_next(),
+            Action::SearchPrev => reader.search_prev(),
             Action::None => {}
         }
 

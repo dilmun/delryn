@@ -39,6 +39,9 @@ pub enum Action {
     Collapse,
     HistBack,
     HistForward,
+    Search,
+    SearchNext,
+    SearchPrev,
 }
 
 pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
@@ -95,6 +98,9 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Enter => Action::Activate,
         KeyCode::Char('l') | KeyCode::Right => Action::Expand,
         KeyCode::Char('h') | KeyCode::Left => Action::Collapse,
+        KeyCode::Char('/') => Action::Search,
+        KeyCode::Char('n') => Action::SearchNext,
+        KeyCode::Char('N') => Action::SearchPrev,
         _ => Action::None,
     }
 }
