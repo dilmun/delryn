@@ -121,6 +121,7 @@ fn render_column(f: &mut Frame, body: Rect, reader: &mut Reader, centered: bool,
     reader.page_lines = reader.viewport_lines;
     reader.last_measure = measure as usize;
     reader.ensure_wrapped(measure as usize);
+    reader.resolve_pending();
     reader.clamp_scroll();
 
     let lines = visible_lines(reader, reader.scroll, reader.viewport_lines);
@@ -149,6 +150,7 @@ fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, measure_cfg: 
     reader.page_lines = h * 2;
     reader.last_measure = col_w as usize;
     reader.ensure_wrapped(col_w as usize);
+    reader.resolve_pending();
     reader.clamp_scroll();
 
     let left = visible_lines(reader, reader.scroll, h);

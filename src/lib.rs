@@ -9,4 +9,5 @@ pub mod config;
 pub mod document;
 pub mod input;
 pub mod layout;
+pub mod store;
 pub mod view;

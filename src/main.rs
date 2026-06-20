@@ -74,6 +74,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
             dirty = false;
         }
     }
+    app.save_progress();
     Ok(())
 }
 

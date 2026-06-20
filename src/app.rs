@@ -17,6 +17,7 @@ use crate::document::epub::EpubDocument;
 use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
 use crate::layout::wrap_blocks;
+use crate::store::Store;
 
 /// Number of decoded sections kept in memory (current ± neighbours).
 const CACHE_CAP: usize = 9;
@@ -58,6 +59,8 @@ pub struct Reader {
     pub page_lines: usize,
     /// Wrap width used by the last render; used to locate jump targets.
     pub last_measure: usize,
+    /// A saved within-section fraction to restore on the next draw (resume).
+    pub pending_frac: Option<f32>,
     /// Decoded section blocks, keyed by section index (bounded LRU).
     cache: HashMap<usize, Vec<Block>>,
     /// Sections requested from the loader but not yet returned.
@@ -102,6 +105,7 @@ impl Reader {
             viewport_lines: 1,
             page_lines: 1,
             last_measure: 72,
+            pending_frac: None,
             cache,
             requested: HashSet::new(),
             req_tx,
@@ -248,6 +252,23 @@ impl Reader {
         self.sidebar_sel = s as usize;
     }
 
+    /// Scroll position within the current section as a fraction `[0, 1]`.
+    pub fn within_frac(&self) -> f32 {
+        if self.lines.is_empty() {
+            0.0
+        } else {
+            self.scroll as f32 / self.lines.len() as f32
+        }
+    }
+
+    /// Apply a pending resume fraction once the section is wrapped.
+    pub fn resolve_pending(&mut self) {
+        if let Some(frac) = self.pending_frac.take() {
+            let n = self.lines.len();
+            self.scroll = ((frac * n as f32).round() as usize).min(n.saturating_sub(1));
+        }
+    }
+
     /// Overall reading progress in `[0, 1]`.
     pub fn progress(&self) -> f32 {
         let n = self.doc.section_count().max(1) as f32;
@@ -292,19 +313,38 @@ pub struct App {
     pub last_layout: LayoutRects,
     pub pending: Pending,
     pub should_quit: bool,
+    store: Option<Store>,
+    /// Canonical path of the open book; key for persistence.
+    book_path: String,
 }
 
 impl App {
     pub fn open_book(path: &str) -> Result<Self> {
         let doc = EpubDocument::open(path)?;
-        let reader = Reader::new(Box::new(doc))?;
+        let mut reader = Reader::new(Box::new(doc))?;
+        let mut config = Config::default();
+
+        let book_path = std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_string());
+        let store = Store::open_default().ok();
+        if let Some(store) = &store {
+            if let Some(p) = store.load_progress(&book_path) {
+                config.view_mode = p.view_mode;
+                reader.load(p.section);
+                reader.pending_frac = Some(p.frac);
+            }
+        }
+
         Ok(Self {
             mode: Mode::Reader,
-            config: Config::default(),
+            config,
             reader: Some(reader),
             last_layout: LayoutRects::default(),
             pending: Pending::default(),
             should_quit: false,
+            store,
+            book_path,
         })
     }
 
@@ -316,6 +356,22 @@ impl App {
             last_layout: LayoutRects::default(),
             pending: Pending::default(),
             should_quit: false,
+            store: Store::open_default().ok(),
+            book_path: String::new(),
+        }
+    }
+
+    /// Persist the current reading position (best-effort).
+    pub fn save_progress(&self) {
+        if let (Some(store), Some(reader)) = (&self.store, &self.reader) {
+            if !self.book_path.is_empty() {
+                let _ = store.save_progress(
+                    &self.book_path,
+                    reader.section,
+                    reader.within_frac(),
+                    self.config.view_mode,
+                );
+            }
         }
     }
 
@@ -347,9 +403,23 @@ impl App {
         let Some(reader) = self.reader.as_mut() else {
             return;
         };
+        let before = reader.section;
         match action {
             Action::Quit => self.should_quit = true,
-            Action::Back => self.mode = Mode::Library, // book stays loaded
+            Action::Back => {
+                // Save before leaving the book (it stays loaded).
+                if let Some(store) = &self.store {
+                    if !self.book_path.is_empty() {
+                        let _ = store.save_progress(
+                            &self.book_path,
+                            reader.section,
+                            reader.within_frac(),
+                            self.config.view_mode,
+                        );
+                    }
+                }
+                self.mode = Mode::Library;
+            }
             Action::Down(n) => match reader.focus {
                 Focus::Content => reader.scroll_down(n),
                 Focus::Sidebar => reader.sidebar_move(n as isize),
@@ -404,6 +474,20 @@ impl App {
                 }
             }
             Action::None => {}
+        }
+
+        // Persist on chapter change (cheap; avoids a write per scrolled line).
+        if reader.section != before {
+            if let Some(store) = &self.store {
+                if !self.book_path.is_empty() {
+                    let _ = store.save_progress(
+                        &self.book_path,
+                        reader.section,
+                        reader.within_frac(),
+                        self.config.view_mode,
+                    );
+                }
+            }
         }
     }
 

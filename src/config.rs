@@ -39,6 +39,14 @@ impl ViewMode {
             ViewMode::TwoPage => "two-page",
         }
     }
+
+    pub fn from_label(s: &str) -> ViewMode {
+        match s {
+            "fill" => ViewMode::Fill,
+            "two-page" => ViewMode::TwoPage,
+            _ => ViewMode::Center,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
