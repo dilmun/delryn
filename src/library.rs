@@ -18,6 +18,21 @@ pub fn scan(paths: &[String], store: &Store) -> usize {
     indexed
 }
 
+/// Build the full-text index for every known book. Returns how many were
+/// indexed. Heavier than metadata scanning (parses every section), so it's a
+/// separate, explicit step (`delryn --index`).
+pub fn index_fulltext(store: &Store) -> usize {
+    let mut n = 0;
+    for path in store.all_book_paths() {
+        if let Ok(text) = epub::read_fulltext(&path) {
+            if store.index_text(&path, &text).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 fn scan_dir(dir: &Path, store: &Store) -> usize {
     let mut indexed = 0;
     let Ok(entries) = std::fs::read_dir(dir) else {

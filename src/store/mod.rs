@@ -91,6 +91,10 @@ impl Store {
             "ALTER TABLE progress ADD COLUMN theme TEXT NOT NULL DEFAULT ''",
             [],
         );
+        // Full-text index (graceful: skipped if FTS5 isn't compiled in).
+        let _ = conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(path UNINDEXED, body);",
+        );
         Ok(Store { conn })
     }
 
@@ -226,6 +230,56 @@ impl Store {
             LibrarySection::All | LibrarySection::Favorites => "b.title COLLATE NOCASE",
             _ => "b.last_opened DESC",
         };
+        self.query_books(where_clause, order)
+    }
+
+    /// All books, ordered by title (used for library-wide search).
+    pub fn all_books(&self) -> Vec<BookRow> {
+        self.query_books("1 = 1", "b.title COLLATE NOCASE")
+    }
+
+    pub fn all_book_paths(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT path FROM books") {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// Replace a book's full-text entry.
+    pub fn index_text(&self, path: &str, body: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM fts WHERE path = ?1", params![path])?;
+        self.conn.execute(
+            "INSERT INTO fts (path, body) VALUES (?1, ?2)",
+            params![path, body],
+        )?;
+        Ok(())
+    }
+
+    /// Book paths whose full text matches `query` (phrase match). Empty if FTS
+    /// is unavailable or nothing matches.
+    pub fn fts_paths(&self, query: &str) -> Vec<String> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let expr = format!("\"{}\"", q.replace('"', "\"\""));
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT path FROM fts WHERE body MATCH ?1 LIMIT 500")
+        {
+            if let Ok(rows) = stmt.query_map(params![expr], |r| r.get::<_, String>(0)) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    fn query_books(&self, where_clause: &str, order: &str) -> Vec<BookRow> {
         let sql = format!(
             "SELECT b.path, b.title, b.author, b.year, b.size, b.favorite, b.sections, \
              p.section, p.frac FROM books b LEFT JOIN progress p ON p.path = b.path \

@@ -132,6 +132,24 @@ pub fn read_metadata(path: impl AsRef<Path>) -> Result<(Metadata, usize)> {
     Ok((meta, sections))
 }
 
+/// Extract the whole book's plain text (for full-text indexing).
+pub fn read_fulltext(path: impl AsRef<Path>) -> Result<String> {
+    let mut doc = EpubDoc::new(path.as_ref())
+        .with_context(|| format!("opening EPUB {}", path.as_ref().display()))?;
+    let mut out = String::new();
+    for i in 0..doc.get_num_chapters() {
+        if doc.set_current_chapter(i) {
+            if let Some((xhtml, _)) = doc.get_current_str() {
+                if let Ok(text) = html2text::from_read(xhtml.as_bytes(), EXTRACT_WIDTH) {
+                    out.push_str(&text);
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn extract_metadata(doc: &mut EpubDoc<BufReader<File>>, size: u64) -> Metadata {
     let title = doc.get_title().unwrap_or_else(|| "Untitled".to_string());
     let authors = doc

@@ -699,14 +699,19 @@ impl App {
             self.lib_books.clear();
             return;
         };
-        let all = store.list_books(self.lib_section);
         let f = self.lib_filter.to_lowercase();
         self.lib_books = if f.is_empty() {
-            all
+            store.list_books(self.lib_section)
         } else {
-            all.into_iter()
+            // Library-wide search: title/author substring OR full-text match.
+            let fts: HashSet<String> = store.fts_paths(&self.lib_filter).into_iter().collect();
+            store
+                .all_books()
+                .into_iter()
                 .filter(|b| {
-                    b.title.to_lowercase().contains(&f) || b.author.to_lowercase().contains(&f)
+                    b.title.to_lowercase().contains(&f)
+                        || b.author.to_lowercase().contains(&f)
+                        || fts.contains(&b.path)
                 })
                 .collect()
         };

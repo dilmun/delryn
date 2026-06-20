@@ -29,6 +29,15 @@ fn main() -> Result<()> {
         return add_library(args.get(1).map(String::as_str));
     }
 
+    // `delryn --index`: build the full-text search index, then exit.
+    if matches!(args.first().map(String::as_str), Some("--index")) {
+        match Store::open_default() {
+            Ok(store) => println!("Full-text indexed {} book(s).", library::index_fulltext(&store)),
+            Err(e) => eprintln!("could not open library database: {e}"),
+        }
+        return Ok(());
+    }
+
     let mut app = match args.first() {
         Some(path) => App::open_book(path)?,
         None => App::library(),
