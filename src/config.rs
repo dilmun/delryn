@@ -97,6 +97,8 @@ pub struct Config {
     pub focus_mode: bool,
     pub mouse_enabled: bool,
     pub status: StatusFields,
+    /// Directories scanned for the library.
+    pub library_paths: Vec<String>,
 }
 
 impl Default for Config {
@@ -112,6 +114,7 @@ impl Default for Config {
             focus_mode: false,
             mouse_enabled: true,
             status: StatusFields::default(),
+            library_paths: Vec::new(),
         }
     }
 }
@@ -129,6 +132,7 @@ struct ConfigFile {
     show_status: bool,
     mouse_enabled: bool,
     status: StatusFields,
+    library_paths: Vec<String>,
 }
 
 impl Default for ConfigFile {
@@ -144,6 +148,7 @@ impl Default for ConfigFile {
             show_status: c.show_status,
             mouse_enabled: c.mouse_enabled,
             status: c.status,
+            library_paths: c.library_paths,
         }
     }
 }
@@ -173,6 +178,7 @@ impl Config {
         c.show_status = cf.show_status;
         c.mouse_enabled = cf.mouse_enabled;
         c.status = cf.status;
+        c.library_paths = cf.library_paths;
         c
     }
 
@@ -188,6 +194,7 @@ impl Config {
             show_status: self.show_status,
             mouse_enabled: self.mouse_enabled,
             status: self.status,
+            library_paths: self.library_paths.clone(),
         };
         let path = config_path();
         if let Some(dir) = path.parent() {

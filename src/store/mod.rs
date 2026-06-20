@@ -19,7 +19,51 @@ CREATE TABLE IF NOT EXISTS progress (
     theme      TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS books (
+    path        TEXT PRIMARY KEY,
+    title       TEXT NOT NULL DEFAULT '',
+    author      TEXT NOT NULL DEFAULT '',
+    year        INTEGER,
+    size        INTEGER NOT NULL DEFAULT 0,
+    sections    INTEGER NOT NULL DEFAULT 0,
+    favorite    INTEGER NOT NULL DEFAULT 0,
+    added_at    INTEGER NOT NULL DEFAULT 0,
+    last_opened INTEGER NOT NULL DEFAULT 0,
+    mtime       INTEGER NOT NULL DEFAULT 0
+);
 ";
+
+/// Which slice of the library to show.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LibrarySection {
+    Recent,
+    All,
+    Favorites,
+    Reading,
+}
+
+impl LibrarySection {
+    pub fn label(self) -> &'static str {
+        match self {
+            LibrarySection::Recent => "Recent",
+            LibrarySection::All => "All Books",
+            LibrarySection::Favorites => "Favorites",
+            LibrarySection::Reading => "Currently Reading",
+        }
+    }
+}
+
+/// A library list row.
+pub struct BookRow {
+    pub path: String,
+    pub title: String,
+    pub author: String,
+    pub year: Option<i32>,
+    pub size: u64,
+    pub favorite: bool,
+    /// Reading progress percent (0 if unstarted).
+    pub pct: u8,
+}
 
 /// Saved reading position for a book.
 pub struct Progress {
@@ -100,6 +144,125 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Has this file changed (or never been scanned)?
+    pub fn needs_scan(&self, path: &str, mtime: i64, size: u64) -> bool {
+        let row: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT mtime, size FROM books WHERE path = ?1",
+                params![path],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        match row {
+            Some((m, s)) => m != mtime || s != size as i64,
+            None => true,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_book(
+        &self,
+        path: &str,
+        title: &str,
+        author: &str,
+        year: Option<i32>,
+        size: u64,
+        sections: usize,
+        mtime: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO books (path, title, author, year, size, sections, mtime, added_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(path) DO UPDATE SET
+                title = excluded.title, author = excluded.author, year = excluded.year,
+                size = excluded.size, sections = excluded.sections, mtime = excluded.mtime",
+            params![
+                path,
+                title,
+                author,
+                year,
+                size as i64,
+                sections as i64,
+                mtime,
+                now_secs()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_favorite(&self, path: &str, favorite: bool) {
+        let _ = self.conn.execute(
+            "UPDATE books SET favorite = ?2 WHERE path = ?1",
+            params![path, favorite as i64],
+        );
+    }
+
+    pub fn mark_opened(&self, path: &str) {
+        let _ = self.conn.execute(
+            "INSERT INTO books (path, last_opened, added_at) VALUES (?1, ?2, ?2)
+             ON CONFLICT(path) DO UPDATE SET last_opened = ?2",
+            params![path, now_secs()],
+        );
+    }
+
+    /// List books for a section (filtering by `query` substring is done by the
+    /// caller).
+    pub fn list_books(&self, section: LibrarySection) -> Vec<BookRow> {
+        let where_clause = match section {
+            LibrarySection::Recent => "b.last_opened > 0",
+            LibrarySection::All => "1 = 1",
+            LibrarySection::Favorites => "b.favorite = 1",
+            LibrarySection::Reading => {
+                "b.last_opened > 0 AND p.path IS NOT NULL \
+                 AND (p.section + p.frac) < (b.sections * 0.98)"
+            }
+        };
+        let order = match section {
+            LibrarySection::All | LibrarySection::Favorites => "b.title COLLATE NOCASE",
+            _ => "b.last_opened DESC",
+        };
+        let sql = format!(
+            "SELECT b.path, b.title, b.author, b.year, b.size, b.favorite, b.sections, \
+             p.section, p.frac FROM books b LEFT JOIN progress p ON p.path = b.path \
+             WHERE {where_clause} ORDER BY {order}"
+        );
+
+        let mut out = Vec::new();
+        let Ok(mut stmt) = self.conn.prepare(&sql) else {
+            return out;
+        };
+        let rows = stmt.query_map([], |r| {
+            let sections: i64 = r.get(6)?;
+            let section: Option<i64> = r.get(7)?;
+            let frac: Option<f64> = r.get(8)?;
+            let pct = match (section, sections) {
+                (Some(s), n) if n > 0 => {
+                    let pos = s as f64 + frac.unwrap_or(0.0);
+                    ((pos / n as f64) * 100.0).clamp(0.0, 100.0) as u8
+                }
+                _ => 0,
+            };
+            Ok(BookRow {
+                path: r.get(0)?,
+                title: r.get(1)?,
+                author: r.get(2)?,
+                year: r.get::<_, Option<i64>>(3)?.map(|y| y as i32),
+                size: r.get::<_, i64>(4)?.max(0) as u64,
+                favorite: r.get::<_, i64>(5)? != 0,
+                pct,
+            })
+        });
+        if let Ok(rows) = rows {
+            for row in rows.flatten() {
+                out.push(row);
+            }
+        }
+        out
     }
 }
 

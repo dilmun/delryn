@@ -120,6 +120,18 @@ impl Document for EpubDocument {
     }
 }
 
+/// Read just the metadata (+ spine length) without parsing TOC/headings.
+/// Cheap enough for scanning a large library.
+pub fn read_metadata(path: impl AsRef<Path>) -> Result<(Metadata, usize)> {
+    let path = path.as_ref();
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let mut doc =
+        EpubDoc::new(path).with_context(|| format!("opening EPUB {}", path.display()))?;
+    let meta = extract_metadata(&mut doc, size);
+    let sections = doc.get_num_chapters();
+    Ok((meta, sections))
+}
+
 fn extract_metadata(doc: &mut EpubDoc<BufReader<File>>, size: u64) -> Metadata {
     let title = doc.get_title().unwrap_or_else(|| "Untitled".to_string());
     let authors = doc

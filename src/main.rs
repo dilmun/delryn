@@ -11,6 +11,9 @@ use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::DefaultTerminal;
 
 use delryn::app::App;
+use delryn::config::Config;
+use delryn::library;
+use delryn::store::Store;
 use delryn::view;
 
 /// Minimum time between rendered frames (~120 fps cap).
@@ -19,8 +22,15 @@ const FRAME: Duration = Duration::from_millis(8);
 const IDLE: Duration = Duration::from_millis(250);
 
 fn main() -> Result<()> {
-    let mut app = match std::env::args().nth(1) {
-        Some(path) => App::open_book(&path)?,
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // `delryn --add <dir>`: register a library folder, scan it, and exit.
+    if matches!(args.first().map(String::as_str), Some("--add" | "-a")) {
+        return add_library(args.get(1).map(String::as_str));
+    }
+
+    let mut app = match args.first() {
+        Some(path) => App::open_book(path)?,
         None => App::library(),
     };
 
@@ -75,6 +85,31 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
         }
     }
     app.save_progress();
+    Ok(())
+}
+
+/// Register a directory as a library folder, scan it, and report — no TUI.
+fn add_library(dir: Option<&str>) -> Result<()> {
+    let Some(dir) = dir else {
+        eprintln!("usage: delryn --add <dir>");
+        return Ok(());
+    };
+    let path = std::fs::canonicalize(dir)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| dir.to_string());
+
+    let mut config = Config::load();
+    if !config.library_paths.contains(&path) {
+        config.library_paths.push(path.clone());
+        config.save();
+    }
+    match Store::open_default() {
+        Ok(store) => {
+            let n = library::scan(&config.library_paths, &store);
+            println!("Indexed {n} book(s). Library: {path}");
+        }
+        Err(e) => eprintln!("could not open library database: {e}"),
+    }
     Ok(())
 }
 

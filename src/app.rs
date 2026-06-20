@@ -17,7 +17,8 @@ use crate::document::epub::EpubDocument;
 use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, wrap_blocks};
-use crate::store::Store;
+use crate::library;
+use crate::store::{BookRow, LibrarySection, Store};
 use crate::theme;
 
 /// Number of decoded sections kept in memory (current ± neighbours).
@@ -530,29 +531,43 @@ pub struct App {
     store: Option<Store>,
     /// Canonical path of the open book; key for persistence.
     book_path: String,
+    // Library view state.
+    pub lib_section: LibrarySection,
+    pub lib_books: Vec<BookRow>,
+    pub lib_sel: usize,
+    pub lib_filter: String,
+    pub lib_filtering: bool,
+}
+
+/// Build a reader for `path`, applying global config and any saved per-book
+/// overrides (theme, view mode, resume position).
+fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, String)> {
+    let doc = EpubDocument::open(path)?;
+    let mut reader = Reader::new(Box::new(doc))?;
+    let mut config = Config::load();
+    let book_path = std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string());
+    if let Some(store) = store {
+        if let Some(p) = store.load_progress(&book_path) {
+            config.view_mode = p.view_mode;
+            if let Some(t) = theme::by_name(&p.theme) {
+                config.theme = t;
+            }
+            reader.load(p.section);
+            reader.pending_frac = Some(p.frac);
+        }
+    }
+    Ok((reader, config, book_path))
 }
 
 impl App {
     pub fn open_book(path: &str) -> Result<Self> {
-        let doc = EpubDocument::open(path)?;
-        let mut reader = Reader::new(Box::new(doc))?;
-        let mut config = Config::load();
-
-        let book_path = std::fs::canonicalize(path)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| path.to_string());
         let store = Store::open_default().ok();
-        if let Some(store) = &store {
-            if let Some(p) = store.load_progress(&book_path) {
-                config.view_mode = p.view_mode;
-                if let Some(t) = theme::by_name(&p.theme) {
-                    config.theme = t;
-                }
-                reader.load(p.section);
-                reader.pending_frac = Some(p.frac);
-            }
+        let (reader, config, book_path) = build_reader(path, &store)?;
+        if let Some(s) = &store {
+            s.mark_opened(&book_path);
         }
-
         Ok(Self {
             mode: Mode::Reader,
             config,
@@ -563,20 +578,102 @@ impl App {
             settings: None,
             store,
             book_path,
+            lib_section: LibrarySection::All,
+            lib_books: Vec::new(),
+            lib_sel: 0,
+            lib_filter: String::new(),
+            lib_filtering: false,
         })
     }
 
     pub fn library() -> Self {
-        Self {
+        let config = Config::load();
+        let store = Store::open_default().ok();
+        if let Some(s) = &store {
+            library::scan(&config.library_paths, s);
+        }
+        let mut app = Self {
             mode: Mode::Library,
-            config: Config::load(),
+            config,
             reader: None,
             last_layout: LayoutRects::default(),
             pending: Pending::default(),
             should_quit: false,
             settings: None,
-            store: Store::open_default().ok(),
+            store,
             book_path: String::new(),
+            lib_section: LibrarySection::All,
+            lib_books: Vec::new(),
+            lib_sel: 0,
+            lib_filter: String::new(),
+            lib_filtering: false,
+        };
+        app.refresh_library();
+        app
+    }
+
+    fn refresh_library(&mut self) {
+        let Some(store) = &self.store else {
+            self.lib_books.clear();
+            return;
+        };
+        let all = store.list_books(self.lib_section);
+        let f = self.lib_filter.to_lowercase();
+        self.lib_books = if f.is_empty() {
+            all
+        } else {
+            all.into_iter()
+                .filter(|b| {
+                    b.title.to_lowercase().contains(&f) || b.author.to_lowercase().contains(&f)
+                })
+                .collect()
+        };
+        if self.lib_sel >= self.lib_books.len() {
+            self.lib_sel = self.lib_books.len().saturating_sub(1);
+        }
+    }
+
+    fn lib_move(&mut self, delta: isize) {
+        if self.lib_books.is_empty() {
+            return;
+        }
+        let last = self.lib_books.len() as isize - 1;
+        self.lib_sel = (self.lib_sel as isize + delta).clamp(0, last) as usize;
+    }
+
+    fn lib_favorite(&mut self) {
+        if let (Some(store), Some(book)) = (&self.store, self.lib_books.get(self.lib_sel)) {
+            store.set_favorite(&book.path, !book.favorite);
+        }
+        self.refresh_library();
+    }
+
+    fn cycle_section(&mut self) {
+        self.lib_section = match self.lib_section {
+            LibrarySection::Recent => LibrarySection::All,
+            LibrarySection::All => LibrarySection::Favorites,
+            LibrarySection::Favorites => LibrarySection::Reading,
+            LibrarySection::Reading => LibrarySection::Recent,
+        };
+        self.lib_sel = 0;
+        self.refresh_library();
+    }
+
+    fn open_selected(&mut self) {
+        let Some(path) = self.lib_books.get(self.lib_sel).map(|b| b.path.clone()) else {
+            return;
+        };
+        match build_reader(&path, &self.store) {
+            Ok((reader, config, book_path)) => {
+                self.reader = Some(reader);
+                self.config = config;
+                self.book_path = book_path;
+                self.mode = Mode::Reader;
+                if let Some(s) = &self.store {
+                    s.mark_opened(&self.book_path);
+                }
+            }
+            Err(_) => {}
         }
     }
 
@@ -695,12 +792,44 @@ impl App {
     }
 
     fn library_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => self.should_quit = true,
-            // With a book loaded, jump back into it.
-            KeyCode::Enter | KeyCode::Char('l') if self.reader.is_some() => {
-                self.mode = Mode::Reader;
+        if self.lib_filtering {
+            match key.code {
+                KeyCode::Esc => {
+                    self.lib_filter.clear();
+                    self.lib_filtering = false;
+                    self.refresh_library();
+                }
+                KeyCode::Enter => self.lib_filtering = false,
+                KeyCode::Backspace => {
+                    self.lib_filter.pop();
+                    self.refresh_library();
+                }
+                KeyCode::Char(c) => {
+                    self.lib_filter.push(c);
+                    self.refresh_library();
+                }
+                _ => {}
             }
+            return;
+        }
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+            KeyCode::Esc => {
+                if self.lib_filter.is_empty() {
+                    self.should_quit = true;
+                } else {
+                    self.lib_filter.clear();
+                    self.refresh_library();
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.lib_move(1),
+            KeyCode::Char('k') | KeyCode::Up => self.lib_move(-1),
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Char('o') => self.open_selected(),
+            KeyCode::Char('f') => self.lib_favorite(),
+            KeyCode::Char('/') => self.lib_filtering = true,
+            KeyCode::Tab => self.cycle_section(),
+            KeyCode::Char('g') => self.lib_sel = 0,
+            KeyCode::Char('G') => self.lib_sel = self.lib_books.len().saturating_sub(1),
             _ => {}
         }
     }
