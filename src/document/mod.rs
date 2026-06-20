@@ -53,10 +53,30 @@ pub enum Block {
     Blank,
 }
 
+/// A single navigable row for the sidebar outline. Flattened (with `depth`)
+/// rather than a tree: top-level rows are sections, deeper rows are the
+/// headings within them.
+#[derive(Debug, Clone)]
+pub struct OutlineItem {
+    pub label: String,
+    pub depth: usize,
+    pub section: usize,
+    /// Text to locate within the section when jumping; `None` = section top.
+    pub locator: Option<String>,
+}
+
+/// Normalize a label for tolerant matching (lowercase, collapsed whitespace).
+/// Shared by outline building and jump-target location.
+pub fn normalize_label(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
 /// The interface the layout + view layers render against.
 pub trait Document {
     fn metadata(&self) -> &Metadata;
     fn toc(&self) -> &[TocEntry];
+    /// Flattened, navigable outline (sections + their headings).
+    fn outline(&self) -> &[OutlineItem];
     /// Number of ordered sections (spine length).
     fn section_count(&self) -> usize;
     /// Load and reflow-prepare one section's content.

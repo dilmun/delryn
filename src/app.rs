@@ -10,7 +10,7 @@ use ratatui::layout::Rect;
 
 use crate::config::Config;
 use crate::document::epub::EpubDocument;
-use crate::document::{Block, Document, TocEntry};
+use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
 use crate::layout::wrap_blocks;
 
@@ -33,16 +33,9 @@ pub struct LayoutRects {
     pub content: Option<Rect>,
 }
 
-/// A flattened TOC row for the sidebar list.
-pub struct FlatToc {
-    pub label: String,
-    pub depth: usize,
-    pub section: Option<usize>,
-}
-
 pub struct Reader {
     pub doc: Box<dyn Document>,
-    pub flat_toc: Vec<FlatToc>,
+    pub outline: Vec<OutlineItem>,
     pub section: usize,
     pub blocks: Vec<Block>,
     /// Wrapped display lines of the current section, valid for `wrap_width`.
@@ -56,16 +49,17 @@ pub struct Reader {
     pub viewport_lines: usize,
     /// Total lines visible at once (2 columns in two-page mode), for scroll math.
     pub page_lines: usize,
+    /// Wrap width used by the last render; used to locate jump targets.
+    pub last_measure: usize,
 }
 
 impl Reader {
     pub fn new(mut doc: Box<dyn Document>) -> Result<Self> {
-        let mut flat_toc = Vec::new();
-        flatten_toc(doc.toc(), 0, &mut flat_toc);
+        let outline = doc.outline().to_vec();
         let first = doc.load_section(0).unwrap_or_default();
         Ok(Self {
             doc,
-            flat_toc,
+            outline,
             section: 0,
             blocks: first.blocks,
             lines: Vec::new(),
@@ -75,6 +69,7 @@ impl Reader {
             sidebar_sel: 0,
             viewport_lines: 1,
             page_lines: 1,
+            last_measure: 72,
         })
     }
 
@@ -130,11 +125,28 @@ impl Reader {
         }
     }
 
+    /// Navigate to a section and, if given, scroll to the line whose text
+    /// matches `locator` (a heading). Misses fall back to the section top.
+    pub fn jump_to(&mut self, section: usize, locator: Option<&str>) {
+        if section != self.section {
+            self.load(section);
+        } else {
+            self.scroll = 0;
+        }
+        if let Some(text) = locator {
+            self.ensure_wrapped(self.last_measure.max(1));
+            if let Some(line) = find_line(&self.lines, text) {
+                self.scroll = line;
+            }
+        }
+        self.focus = Focus::Content;
+    }
+
     pub fn sidebar_move(&mut self, delta: isize) {
-        if self.flat_toc.is_empty() {
+        if self.outline.is_empty() {
             return;
         }
-        let last = self.flat_toc.len() as isize - 1;
+        let last = self.outline.len() as isize - 1;
         let s = (self.sidebar_sel as isize + delta).clamp(0, last);
         self.sidebar_sel = s as usize;
     }
@@ -151,23 +163,29 @@ impl Reader {
     }
 
     pub fn chapter_title(&self) -> String {
-        self.flat_toc
+        self.outline
             .iter()
-            .find(|e| e.section == Some(self.section))
+            .find(|e| e.section == self.section && e.depth == 0)
             .map(|e| e.label.clone())
             .unwrap_or_else(|| format!("Section {}", self.section + 1))
     }
 }
 
-fn flatten_toc(entries: &[TocEntry], depth: usize, out: &mut Vec<FlatToc>) {
-    for e in entries {
-        out.push(FlatToc {
-            label: e.label.clone(),
-            depth,
-            section: e.section,
-        });
-        flatten_toc(&e.children, depth + 1, out);
+/// First wrapped line whose normalized text matches `needle`. Prefers a line
+/// that *is* the heading before falling back to a substring match, so a short
+/// heading like "Linux" lands on the header rather than an earlier mention.
+fn find_line(lines: &[String], needle: &str) -> Option<usize> {
+    let n = normalize_label(needle);
+    if n.is_empty() {
+        return None;
     }
+    if let Some(i) = lines.iter().position(|l| normalize_label(l) == n) {
+        return Some(i);
+    }
+    lines.iter().position(|l| {
+        let line = normalize_label(l);
+        !line.is_empty() && (line.contains(&n) || (n.len() >= 8 && n.contains(&line)))
+    })
 }
 
 pub struct App {
@@ -256,7 +274,7 @@ impl App {
             }
             Action::Bottom => {
                 if reader.focus == Focus::Sidebar {
-                    reader.sidebar_sel = reader.flat_toc.len().saturating_sub(1);
+                    reader.sidebar_sel = reader.outline.len().saturating_sub(1);
                 } else {
                     reader.scroll = reader.max_scroll();
                 }
@@ -283,10 +301,8 @@ impl App {
             }
             Action::Activate => {
                 if reader.focus == Focus::Sidebar {
-                    if let Some(sec) = reader.flat_toc.get(reader.sidebar_sel).and_then(|e| e.section)
-                    {
-                        reader.load(sec);
-                        reader.focus = Focus::Content;
+                    if let Some(item) = reader.outline.get(reader.sidebar_sel).cloned() {
+                        reader.jump_to(item.section, item.locator.as_deref());
                     }
                 }
             }
@@ -328,10 +344,9 @@ impl App {
         }
         let idx = (row - first) as usize;
         if let Some(r) = self.reader.as_mut() {
-            if let Some(sec) = r.flat_toc.get(idx).and_then(|e| e.section) {
+            if let Some(item) = r.outline.get(idx).cloned() {
                 r.sidebar_sel = idx;
-                r.load(sec);
-                r.focus = Focus::Content;
+                r.jump_to(item.section, item.locator.as_deref());
             }
         }
     }

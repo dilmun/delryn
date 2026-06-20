@@ -97,8 +97,15 @@ Three regions; the **sidebar and status bar are independently toggleable**
   flows left→right). The active mode shows in the status bar.
 - **Sidebar hide**: `s` toggles the sidebar; `Tab` moves focus into it (showing
   it first if hidden) and back. When hidden, content reclaims width and re-centers.
-- **Left sidebar = switchable nav panel**: Contents (default), Search results,
-  Bookmarks. Tree TOC: `Enter`/`l` jump, `h` collapse, `j/k` move.
+- **Left sidebar = navigable outline**: a flat list of sections (labeled from
+  the book's TOC, else first heading, else "Section N") with their **headings**
+  (`h1`–`h6`, scanned from the XHTML) nested beneath — so every header is
+  selectable, consistently, even when the book's own TOC is chapter-level only.
+  `j/k` move, `Enter`/`l` jump. Jumps to a heading **locate its text in the
+  reflowed page** (preferring an exact-line match), which sidesteps fragile
+  HTML-anchor→line mapping and degrades gracefully (a miss lands at section top).
+  This flattens cross-chapter TOC grouping for now; grouping can be layered back
+  later. (Future: switchable Search results / Bookmarks panels.)
 - **Status bar**: book — author on the left; position `i/N`, percent, and a thin
   progress gauge on the right. `;` settings hint shown here.
 

@@ -2,8 +2,8 @@
 //! and the first wrapped lines. Usage: `cargo run --example dump -- <file.epub>`
 
 use anyhow::Result;
+use delryn::document::Document;
 use delryn::document::epub::EpubDocument;
-use delryn::document::{Document, TocEntry};
 use delryn::layout::wrap_blocks;
 
 fn main() -> Result<()> {
@@ -19,8 +19,12 @@ fn main() -> Result<()> {
     println!("cover:    {}", meta.cover.is_some());
     println!("sections: {}", doc.section_count());
 
-    println!("\n--- TOC ---");
-    print_toc(doc.toc(), 0);
+    println!("\n--- outline ---");
+    for item in doc.outline().iter().take(60) {
+        let indent = "  ".repeat(item.depth);
+        let loc = item.locator.as_deref().unwrap_or("(top)");
+        println!("{indent}{} [s{} -> {loc}]", item.label, item.section);
+    }
 
     let idx: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(0);
     println!("\n--- section {idx}, wrapped to 72 ---");
@@ -31,11 +35,4 @@ fn main() -> Result<()> {
     }
     println!("... ({} total wrapped lines)", lines.len());
     Ok(())
-}
-
-fn print_toc(entries: &[TocEntry], depth: usize) {
-    for e in entries.iter().take(40) {
-        println!("{}{} -> {:?}", "  ".repeat(depth), e.label, e.section);
-        print_toc(&e.children, depth + 1);
-    }
 }

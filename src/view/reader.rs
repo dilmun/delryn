@@ -51,11 +51,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
 fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader) {
     let items: Vec<ListItem> = reader
-        .flat_toc
+        .outline
         .iter()
         .map(|e| {
             let indent = "  ".repeat(e.depth);
-            let here = e.section == Some(reader.section);
+            let here = e.section == reader.section && e.depth == 0;
             let marker = if here { "▸ " } else { "  " };
             let style = if here {
                 Style::default().add_modifier(Modifier::BOLD)
@@ -119,6 +119,7 @@ fn render_column(f: &mut Frame, body: Rect, reader: &mut Reader, centered: bool,
 
     reader.viewport_lines = text_area.height as usize;
     reader.page_lines = reader.viewport_lines;
+    reader.last_measure = measure as usize;
     reader.ensure_wrapped(measure as usize);
     reader.clamp_scroll();
 
@@ -146,6 +147,7 @@ fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, measure_cfg: 
     let h = left_area.height as usize;
     reader.viewport_lines = h;
     reader.page_lines = h * 2;
+    reader.last_measure = col_w as usize;
     reader.ensure_wrapped(col_w as usize);
     reader.clamp_scroll();
 
