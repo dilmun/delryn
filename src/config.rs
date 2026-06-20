@@ -4,13 +4,7 @@
 //! `~/.config/delryn/config.toml` and the mode-scoped `;` settings popup land
 //! with the store/settings modules — see `DESIGN.md` §7–8.
 
-/// A colour theme. Placeholder; expanded when theming lands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Theme {
-    Default,
-    Sepia,
-    Dark,
-}
+use crate::theme::{self, Theme};
 
 /// How body text is laid out in the content pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +59,7 @@ impl Default for Config {
         Self {
             measure_width: 72,
             view_mode: ViewMode::Center,
-            theme: Theme::Default,
+            theme: theme::default_theme(),
             show_sidebar: true,
             show_status: true,
             mouse_enabled: true,

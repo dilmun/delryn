@@ -27,6 +27,7 @@ pub enum Action {
     ToggleStatus,
     ToggleSidebar,
     CycleView,
+    CycleTheme,
     FocusToggle,
     Activate,
 }
@@ -73,6 +74,7 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Tab => Action::FocusToggle,
         KeyCode::Char('s') => Action::ToggleSidebar,
         KeyCode::Char('v') => Action::CycleView,
+        KeyCode::Char('t') => Action::CycleTheme,
         KeyCode::Char('z') => Action::ToggleStatus,
         KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right => Action::Activate,
         _ => Action::None,

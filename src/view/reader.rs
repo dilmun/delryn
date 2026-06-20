@@ -1,5 +1,6 @@
 //! Reader view: TOC sidebar · centered measure content · status bar. Sidebar
-//! and status bar are independently toggleable. See `DESIGN.md` §4.
+//! and status bar are independently toggleable, and everything is theme-aware.
+//! See `DESIGN.md` §4, §7.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -10,6 +11,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use crate::app::{App, Focus, Reader};
 use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
+use crate::theme::Theme;
 
 const GAUGE_WIDTH: usize = 16;
 
@@ -23,7 +25,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let Some(reader) = reader.as_mut() else {
         return;
     };
+    let theme = config.theme;
+    reader.code_theme = theme.syntect.to_string();
     let area = f.area();
+
+    // Paint the themed background across the whole screen first.
+    if theme.bg.is_some() {
+        f.render_widget(Block::default().style(base(theme)), area);
+    }
 
     let status_h = u16::from(config.show_status);
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(area);
@@ -42,15 +51,24 @@ pub fn render(f: &mut Frame, app: &mut App) {
     last_layout.content = Some(content_area);
 
     if let Some(sb) = sidebar_area {
-        render_sidebar(f, sb, reader);
+        render_sidebar(f, sb, reader, theme);
     }
-    render_content(f, content_area, reader, config);
+    render_content(f, content_area, reader, config, theme);
     if config.show_status {
-        render_status(f, status, reader, config);
+        render_status(f, status, reader, config, theme);
     }
 }
 
-fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader) {
+/// Base style: theme foreground, plus background if the theme paints one.
+fn base(theme: Theme) -> Style {
+    let style = Style::default().fg(theme.fg);
+    match theme.bg {
+        Some(bg) => style.bg(bg),
+        None => style,
+    }
+}
+
+fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
     let items: Vec<ListItem> = reader
         .outline
         .iter()
@@ -58,22 +76,30 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader) {
             let indent = "  ".repeat(e.depth);
             let here = e.section == reader.section && e.depth == 0;
             let marker = if here { "▸ " } else { "  " };
-            let style = if here {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(Span::styled(
-                format!("{indent}{marker}{}", e.label),
-                style,
-            )))
+            let mut style = Style::default().fg(if here { theme.accent } else { theme.fg });
+            if let Some(bg) = theme.bg {
+                style = style.bg(bg);
+            }
+            if here {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            ListItem::new(Line::from(Span::styled(format!("{indent}{marker}{}", e.label), style)))
         })
         .collect();
 
-    let block = Block::default().borders(Borders::ALL).title("Contents");
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.muted))
+        .title(Span::styled(
+            "Contents",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ))
+        .style(base(theme));
+
+    let highlight = Style::default()
+        .fg(theme.bg.unwrap_or(Color::Black))
+        .bg(theme.accent);
+    let list = List::new(items).block(block).highlight_style(highlight);
 
     let mut state = ListState::default();
     if reader.focus == Focus::Sidebar {
@@ -82,28 +108,38 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_content(f: &mut Frame, area: Rect, reader: &mut Reader, config: &Config) {
+fn render_content(f: &mut Frame, area: Rect, reader: &mut Reader, config: &Config, theme: Theme) {
     let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
     let header_area = rows[0];
     let body = rows[1];
 
     let header = Paragraph::new(Line::from(Span::styled(
         reader.chapter_title(),
-        Style::default().add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.heading)
+            .add_modifier(Modifier::BOLD),
     )))
-    .alignment(Alignment::Center);
+    .alignment(Alignment::Center)
+    .style(base(theme));
     f.render_widget(header, header_area);
 
     match config.view_mode {
-        ViewMode::Center => render_column(f, body, reader, true, config.measure_width),
-        ViewMode::Fill => render_column(f, body, reader, false, config.measure_width),
-        ViewMode::TwoPage => render_two_page(f, body, reader, config.measure_width),
+        ViewMode::Center => render_column(f, body, reader, true, config.measure_width, theme),
+        ViewMode::Fill => render_column(f, body, reader, false, config.measure_width, theme),
+        ViewMode::TwoPage => render_two_page(f, body, reader, config.measure_width, theme),
     }
 }
 
 /// One text column. `centered` caps to the measure and centers it; otherwise
 /// the text fills the pane (minus a thin gutter).
-fn render_column(f: &mut Frame, body: Rect, reader: &mut Reader, centered: bool, measure_cfg: u16) {
+fn render_column(
+    f: &mut Frame,
+    body: Rect,
+    reader: &mut Reader,
+    centered: bool,
+    measure_cfg: u16,
+    theme: Theme,
+) {
     let measure = if centered {
         measure_cfg.min(body.width.saturating_sub(2)).max(1)
     } else {
@@ -125,13 +161,13 @@ fn render_column(f: &mut Frame, body: Rect, reader: &mut Reader, centered: bool,
     reader.resolve_pending();
     reader.clamp_scroll();
 
-    let lines = visible_lines(reader, reader.scroll, reader.viewport_lines);
-    f.render_widget(Paragraph::new(Text::from(lines)), text_area);
+    let lines = visible_lines(reader, reader.scroll, reader.viewport_lines, theme);
+    f.render_widget(Paragraph::new(Text::from(lines)).style(base(theme)), text_area);
 }
 
 /// Two side-by-side columns forming a spread; the right column continues from
 /// the left, so scrolling flows left-to-right.
-fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, measure_cfg: u16) {
+fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, measure_cfg: u16, theme: Theme) {
     const GAP: u16 = 3;
     let col_w = (body.width.saturating_sub(GAP) / 2).min(measure_cfg).max(1);
     let side_pad = body.width.saturating_sub(col_w * 2 + GAP) / 2;
@@ -154,53 +190,64 @@ fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, measure_cfg: 
     reader.resolve_pending();
     reader.clamp_scroll();
 
-    let left = visible_lines(reader, reader.scroll, h);
-    let right = visible_lines(reader, reader.scroll + h, h);
-    f.render_widget(Paragraph::new(Text::from(left)), left_area);
-    f.render_widget(Paragraph::new(Text::from(right)), right_area);
+    let left = visible_lines(reader, reader.scroll, h, theme);
+    let right = visible_lines(reader, reader.scroll + h, h, theme);
+    f.render_widget(Paragraph::new(Text::from(left)).style(base(theme)), left_area);
+    f.render_widget(Paragraph::new(Text::from(right)).style(base(theme)), right_area);
 }
 
-fn visible_lines(reader: &Reader, start: usize, count: usize) -> Vec<Line<'static>> {
+fn visible_lines(reader: &Reader, start: usize, count: usize, theme: Theme) -> Vec<Line<'static>> {
     let start = start.min(reader.lines.len());
     let end = (start + count).min(reader.lines.len());
-    reader.lines[start..end].iter().map(to_ratatui).collect()
+    reader.lines[start..end]
+        .iter()
+        .map(|l| to_ratatui(l, theme))
+        .collect()
 }
 
-fn to_ratatui(line: &DisplayLine) -> Line<'static> {
+fn to_ratatui(line: &DisplayLine, theme: Theme) -> Line<'static> {
     let spans: Vec<Span> = line
         .runs
         .iter()
-        .map(|r| Span::styled(r.text.clone(), run_style(r, line.kind)))
+        .map(|r| Span::styled(r.text.clone(), run_style(r, line.kind, theme)))
         .collect();
     Line::from(spans)
 }
 
-/// Map a run + line-kind to a ratatui style. Syntax-highlighted runs carry an
-/// explicit colour; everything else is modifier-only until colour themes land.
-fn run_style(run: &Run, kind: LineKind) -> Style {
+/// Map a run + line-kind to a themed ratatui style. Syntax-highlighted runs
+/// keep their explicit colour; semantic roles use the theme palette.
+fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
     let mut style = Style::default();
+    if let Some(bg) = theme.bg {
+        style = style.bg(bg);
+    }
     if run.style.bold || matches!(kind, LineKind::Heading(_)) {
         style = style.add_modifier(Modifier::BOLD);
     }
     if run.style.italic || matches!(kind, LineKind::Quote) {
         style = style.add_modifier(Modifier::ITALIC);
     }
-    if run.style.link {
-        // Links: distinct colour + underline (clickable activation is a future task).
-        style = style
-            .fg(Color::Rgb(88, 160, 255))
-            .add_modifier(Modifier::UNDERLINED);
-    } else if let Some((r, g, b)) = run.fg {
-        // Syntax colour: show at full strength.
-        style = style.fg(Color::Rgb(r, g, b));
-    } else if matches!(kind, LineKind::Quote | LineKind::Rule | LineKind::Code) {
-        // Quotes, rules, and the code gutter/plain code: dim.
-        style = style.add_modifier(Modifier::DIM);
+
+    let mut fg = match kind {
+        LineKind::Heading(_) => theme.heading,
+        LineKind::Quote => theme.quote,
+        LineKind::Rule => theme.muted,
+        LineKind::Code => theme.muted, // gutter / unhighlighted
+        LineKind::Body => theme.fg,
+    };
+    if let Some((r, g, b)) = run.fg {
+        fg = Color::Rgb(r, g, b); // syntax highlight
+    } else if run.style.code && matches!(kind, LineKind::Body) {
+        fg = theme.code_fg; // inline code
     }
-    style
+    if run.style.link {
+        fg = theme.link;
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    style.fg(fg)
 }
 
-fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config) {
+fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config, theme: Theme) {
     let meta = reader.doc.metadata();
     let left = if meta.authors.is_empty() {
         meta.title.clone()
@@ -210,7 +257,8 @@ fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config) {
 
     let pct = (reader.progress() * 100.0).round() as u32;
     let right = format!(
-        "{} · {}/{} · {}%  {}",
+        "{} · {} · {}/{} · {}%  {}",
+        theme.name,
         config.view_mode.label(),
         reader.section + 1,
         reader.doc.section_count(),
@@ -223,7 +271,7 @@ fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config) {
     let pad = width.saturating_sub(used);
     let line = format!(" {left}{}{right} ", " ".repeat(pad));
 
-    let style = Style::default().add_modifier(Modifier::REVERSED);
+    let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
     f.render_widget(Paragraph::new(Line::raw(line)).style(style), area);
 }
 

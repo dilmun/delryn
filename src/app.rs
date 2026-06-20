@@ -18,6 +18,7 @@ use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, wrap_blocks};
 use crate::store::Store;
+use crate::theme;
 
 /// Number of decoded sections kept in memory (current ± neighbours).
 const CACHE_CAP: usize = 9;
@@ -49,6 +50,10 @@ pub struct Reader {
     /// Wrapped display lines of the current section, valid for `wrap_width`.
     pub lines: Vec<DisplayLine>,
     pub wrap_width: usize,
+    /// syntect theme desired for code (set each render from the active theme).
+    pub code_theme: String,
+    /// syntect theme the current `lines` were wrapped with.
+    wrap_theme: String,
     /// Index of the top visible line within `lines`.
     pub scroll: usize,
     pub focus: Focus,
@@ -99,6 +104,8 @@ impl Reader {
             blocks: first,
             lines: Vec::new(),
             wrap_width: 0,
+            code_theme: theme::default_theme().syntect.to_string(),
+            wrap_theme: String::new(),
             scroll: 0,
             focus: Focus::Content,
             sidebar_sel: 0,
@@ -178,9 +185,10 @@ impl Reader {
 
     /// Re-wrap the current section if the measure changed.
     pub fn ensure_wrapped(&mut self, width: usize) {
-        if width != self.wrap_width {
-            self.lines = wrap_blocks(&self.blocks, width);
+        if width != self.wrap_width || self.code_theme != self.wrap_theme {
+            self.lines = wrap_blocks(&self.blocks, width, &self.code_theme);
             self.wrap_width = width;
+            self.wrap_theme = self.code_theme.clone();
         }
     }
 
@@ -331,6 +339,9 @@ impl App {
         if let Some(store) = &store {
             if let Some(p) = store.load_progress(&book_path) {
                 config.view_mode = p.view_mode;
+                if let Some(t) = theme::by_name(&p.theme) {
+                    config.theme = t;
+                }
                 reader.load(p.section);
                 reader.pending_frac = Some(p.frac);
             }
@@ -370,6 +381,7 @@ impl App {
                     reader.section,
                     reader.within_frac(),
                     self.config.view_mode,
+                    self.config.theme.name,
                 );
             }
         }
@@ -404,21 +416,12 @@ impl App {
             return;
         };
         let before = reader.section;
+        let mut save = false;
         match action {
             Action::Quit => self.should_quit = true,
             Action::Back => {
-                // Save before leaving the book (it stays loaded).
-                if let Some(store) = &self.store {
-                    if !self.book_path.is_empty() {
-                        let _ = store.save_progress(
-                            &self.book_path,
-                            reader.section,
-                            reader.within_frac(),
-                            self.config.view_mode,
-                        );
-                    }
-                }
-                self.mode = Mode::Library;
+                self.mode = Mode::Library; // book stays loaded
+                save = true;
             }
             Action::Down(n) => match reader.focus {
                 Focus::Content => reader.scroll_down(n),
@@ -447,7 +450,14 @@ impl App {
                 }
             }
             Action::ToggleStatus => self.config.show_status = !self.config.show_status,
-            Action::CycleView => self.config.view_mode = self.config.view_mode.next(),
+            Action::CycleView => {
+                self.config.view_mode = self.config.view_mode.next();
+                save = true;
+            }
+            Action::CycleTheme => {
+                self.config.theme = self.config.theme.next();
+                save = true;
+            }
             Action::ToggleSidebar => {
                 self.config.show_sidebar = !self.config.show_sidebar;
                 if !self.config.show_sidebar {
@@ -476,8 +486,8 @@ impl App {
             Action::None => {}
         }
 
-        // Persist on chapter change (cheap; avoids a write per scrolled line).
-        if reader.section != before {
+        // Persist on chapter change or a settings change (cheap).
+        if save || reader.section != before {
             if let Some(store) = &self.store {
                 if !self.book_path.is_empty() {
                     let _ = store.save_progress(
@@ -485,6 +495,7 @@ impl App {
                         reader.section,
                         reader.within_frac(),
                         self.config.view_mode,
+                        self.config.theme.name,
                     );
                 }
             }

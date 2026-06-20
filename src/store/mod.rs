@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS progress (
     section    INTEGER NOT NULL,
     frac       REAL NOT NULL,
     view_mode  TEXT NOT NULL,
+    theme      TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
 );
 ";
@@ -26,6 +27,8 @@ pub struct Progress {
     /// Scroll position within the section, as a fraction `[0, 1]` (width-robust).
     pub frac: f32,
     pub view_mode: ViewMode,
+    /// Theme name, empty if none saved.
+    pub theme: String,
 }
 
 pub struct Store {
@@ -39,22 +42,29 @@ impl Store {
         std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join("delryn.db"))?;
         conn.execute_batch(SCHEMA)?;
+        // Migrate older databases that predate the theme column.
+        let _ = conn.execute(
+            "ALTER TABLE progress ADD COLUMN theme TEXT NOT NULL DEFAULT ''",
+            [],
+        );
         Ok(Store { conn })
     }
 
     pub fn load_progress(&self, path: &str) -> Option<Progress> {
         self.conn
             .query_row(
-                "SELECT section, frac, view_mode FROM progress WHERE path = ?1",
+                "SELECT section, frac, view_mode, theme FROM progress WHERE path = ?1",
                 params![path],
                 |row| {
                     let section: i64 = row.get(0)?;
                     let frac: f64 = row.get(1)?;
                     let view: String = row.get(2)?;
+                    let theme: String = row.get(3)?;
                     Ok(Progress {
                         section: section.max(0) as usize,
                         frac: frac as f32,
                         view_mode: ViewMode::from_label(&view),
+                        theme,
                     })
                 },
             )
@@ -69,20 +79,23 @@ impl Store {
         section: usize,
         frac: f32,
         view_mode: ViewMode,
+        theme: &str,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO progress (path, section, frac, view_mode, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO progress (path, section, frac, view_mode, theme, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(path) DO UPDATE SET
                 section = excluded.section,
                 frac = excluded.frac,
                 view_mode = excluded.view_mode,
+                theme = excluded.theme,
                 updated_at = excluded.updated_at",
             params![
                 path,
                 section as i64,
                 frac as f64,
                 view_mode.label(),
+                theme,
                 now_secs()
             ],
         )?;
@@ -126,17 +139,18 @@ mod tests {
 
         let store = Store::open_default().unwrap();
         store
-            .save_progress("/books/a.epub", 5, 0.42, ViewMode::TwoPage)
+            .save_progress("/books/a.epub", 5, 0.42, ViewMode::TwoPage, "dracula")
             .unwrap();
 
         let p = store.load_progress("/books/a.epub").unwrap();
         assert_eq!(p.section, 5);
         assert!((p.frac - 0.42).abs() < 1e-4);
         assert_eq!(p.view_mode, ViewMode::TwoPage);
+        assert_eq!(p.theme, "dracula");
 
         // Upsert overwrites.
         store
-            .save_progress("/books/a.epub", 9, 0.1, ViewMode::Fill)
+            .save_progress("/books/a.epub", 9, 0.1, ViewMode::Fill, "gruvbox")
             .unwrap();
         assert_eq!(store.load_progress("/books/a.epub").unwrap().section, 9);
 

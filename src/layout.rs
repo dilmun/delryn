@@ -51,7 +51,8 @@ impl DisplayLine {
 }
 
 /// Wrap a section's blocks to `width` columns, returning styled display lines.
-pub fn wrap_blocks(blocks: &[Block], width: usize) -> Vec<DisplayLine> {
+/// `code_theme` is the syntect theme used for code highlighting.
+pub fn wrap_blocks(blocks: &[Block], width: usize, code_theme: &str) -> Vec<DisplayLine> {
     let width = width.max(1);
     let mut out = Vec::new();
     let mut prev_item = false;
@@ -98,7 +99,8 @@ pub fn wrap_blocks(blocks: &[Block], width: usize) -> Vec<DisplayLine> {
             }
             Block::Code { lang, lines } => {
                 let gutter_w = lines.len().max(1).to_string().len();
-                for (i, runs) in highlight_code(lines, lang.as_deref()).into_iter().enumerate() {
+                let highlighted = highlight_code(lines, lang.as_deref(), code_theme);
+                for (i, runs) in highlighted.into_iter().enumerate() {
                     let num = format!("{:>gutter_w$} │ ", i + 1);
                     let avail = width.saturating_sub(num.chars().count()).max(1);
                     for (j, mut line_runs) in pack_runs(runs, avail).into_iter().enumerate() {

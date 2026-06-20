@@ -12,4 +12,5 @@ pub mod input;
 pub mod layout;
 pub mod math;
 pub mod store;
+pub mod theme;
 pub mod view;
