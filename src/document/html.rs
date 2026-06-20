@@ -135,8 +135,19 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             }
         }
         "hr" => out.push(Block::Rule),
-        // Tables: degrade to one paragraph per cell for now (real column layout
-        // is a later refinement).
+        // Aside/callout tables (icon cell + content cell): render the content
+        // inline, prefixed with a symbol standing in for the icon.
+        "table" if aside_icon(node).is_some() => {
+            let symbol = aside_icon(node).unwrap_or_default();
+            let mut content = Vec::new();
+            for cell in content_cells(node) {
+                walk_children(cell, ctx, &mut content);
+            }
+            prefix_symbol(&mut content, &symbol);
+            out.append(&mut content);
+        }
+        // Other tables: degrade to one paragraph per cell for now (real column
+        // layout is a later refinement).
         "td" | "th" => {
             let mut spans = Vec::new();
             for c in node.children() {
@@ -262,28 +273,71 @@ fn strip_line_numbers(lines: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// A stand-in for an image: its alt text, or a symbol guessed from the source
-/// filename (warning/tip/note icons are common in technical books).
+/// A stand-in for an inline image: its alt text, else a plain "[image]" label.
+/// (Real image rendering is the graphics-protocol task.)
 fn img_label(e: &scraper::node::Element) -> String {
-    if let Some(alt) = e.attr("alt") {
-        let alt = alt.trim();
-        if !alt.is_empty() {
-            return format!("🖼 {alt}");
-        }
+    match e.attr("alt").map(str::trim).filter(|a| !a.is_empty()) {
+        Some(alt) => format!("[{alt}]"),
+        None => "[image]".to_string(),
     }
+}
+
+/// If a table is an aside/callout, the BMP symbol for its icon. We deliberately
+/// use Dingbat/Geometric/Enclosed glyphs (same blocks as `▸ • ─ │`), not emoji,
+/// which many terminal fonts render as a tofu box.
+fn aside_icon(node: NodeRef<Node>) -> Option<String> {
+    let is_aside =
+        matches!(node.value(), Node::Element(e) if e.attr("class").is_some_and(|c| c.contains("aside")));
+    if !is_aside {
+        return None;
+    }
+    node.descendants().find_map(|n| match n.value() {
+        Node::Element(e) if e.name() == "img" => Some(icon_symbol(e)),
+        _ => None,
+    })
+}
+
+fn icon_symbol(e: &scraper::node::Element) -> String {
     let src = e.attr("src").unwrap_or("").to_lowercase();
-    let symbol = if src.contains("warning") || src.contains("caution") {
-        "⚠"
+    if src.contains("pencil") {
+        "✎" // exercise
+    } else if src.contains("warning") || src.contains("caution") {
+        "▲"
+    } else if src.contains("info") {
+        "ⓘ"
+    } else if src.contains("key") {
+        "✦" // important
+    } else if src.contains("question") {
+        "ⓠ"
     } else if src.contains("tip") {
-        "💡"
-    } else if src.contains("note") || src.contains("info") {
-        "ℹ"
-    } else if src.contains("error") || src.contains("danger") {
-        "✖"
+        "✦"
     } else {
-        "🖼"
-    };
-    symbol.to_string()
+        "■"
+    }
+    .to_string()
+}
+
+/// Table cells that carry text (i.e. the content cell, not the icon-only cell).
+fn content_cells(node: NodeRef<Node>) -> Vec<NodeRef<Node>> {
+    node.descendants()
+        .filter(|n| matches!(n.value(), Node::Element(e) if matches!(e.name(), "td" | "th")))
+        .filter(|cell| {
+            cell.descendants()
+                .any(|d| matches!(d.value(), Node::Text(t) if !t.text.trim().is_empty()))
+        })
+        .collect()
+}
+
+/// Prepend the icon symbol to the first heading/paragraph of a callout.
+fn prefix_symbol(blocks: &mut [Block], symbol: &str) {
+    for b in blocks.iter_mut() {
+        let spans = match b {
+            Block::Heading { spans, .. } | Block::Para { spans, .. } => spans,
+            _ => continue,
+        };
+        spans.insert(0, Span::plain(format!("{symbol}  ")));
+        return;
+    }
 }
 
 fn trim_blank_edges(lines: impl Iterator<Item = String>) -> Vec<String> {
