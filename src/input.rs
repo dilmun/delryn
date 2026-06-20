@@ -35,6 +35,10 @@ pub enum Action {
     LineSpacingUp,
     FocusToggle,
     Activate,
+    Expand,
+    Collapse,
+    HistBack,
+    HistForward,
 }
 
 pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
@@ -67,6 +71,8 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('u') if ctrl => Action::HalfUp,
         KeyCode::Char('f') if ctrl => Action::PageDown,
         KeyCode::Char('b') if ctrl => Action::PageUp,
+        KeyCode::Char('o') if ctrl => Action::HistBack,
+        KeyCode::Char('p') if ctrl => Action::HistForward,
         KeyCode::Char(' ') | KeyCode::PageDown => Action::PageDown,
         KeyCode::PageUp => Action::PageUp,
         KeyCode::Char('g') => {
@@ -86,7 +92,9 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char(']') => Action::WidthUp,
         KeyCode::Char('{') => Action::LineSpacingDown,
         KeyCode::Char('}') => Action::LineSpacingUp,
-        KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right => Action::Activate,
+        KeyCode::Enter => Action::Activate,
+        KeyCode::Char('l') | KeyCode::Right => Action::Expand,
+        KeyCode::Char('h') | KeyCode::Left => Action::Collapse,
         _ => Action::None,
     }
 }

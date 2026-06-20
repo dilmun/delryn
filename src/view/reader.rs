@@ -76,12 +76,17 @@ fn base(theme: Theme) -> Style {
 
 fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
     let items: Vec<ListItem> = reader
-        .outline
+        .outline_visible()
         .iter()
-        .map(|e| {
+        .map(|&oi| {
+            let e = &reader.outline[oi];
             let indent = "  ".repeat(e.depth);
+            let marker = if reader.outline_is_parent(oi) {
+                if reader.outline_collapsed(oi) { "▸ " } else { "▾ " }
+            } else {
+                "  "
+            };
             let here = e.section == reader.section && e.depth == 0;
-            let marker = if here { "▸ " } else { "  " };
             let mut style = Style::default().fg(if here { theme.accent } else { theme.fg });
             if let Some(bg) = theme.bg {
                 style = style.bg(bg);

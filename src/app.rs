@@ -96,6 +96,13 @@ pub struct LayoutRects {
     pub content: Option<Rect>,
 }
 
+/// A reading position, for the navigation (back/forward) history.
+#[derive(Clone, Copy)]
+struct Pos {
+    section: usize,
+    scroll: usize,
+}
+
 pub struct Reader {
     pub doc: Box<dyn Document>,
     pub outline: Vec<OutlineItem>,
@@ -125,6 +132,11 @@ pub struct Reader {
     pub last_measure: usize,
     /// A saved within-section fraction to restore on the next draw (resume).
     pub pending_frac: Option<f32>,
+    /// Collapsed parent rows (outline indices) in the sidebar tree.
+    collapsed: HashSet<usize>,
+    /// Navigation history (jump list).
+    back_stack: Vec<Pos>,
+    fwd_stack: Vec<Pos>,
     /// Decoded section blocks, keyed by section index (bounded LRU).
     cache: HashMap<usize, Vec<Block>>,
     /// Sections requested from the loader but not yet returned.
@@ -176,6 +188,9 @@ impl Reader {
             page_lines: 1,
             last_measure: 72,
             pending_frac: None,
+            collapsed: HashSet::new(),
+            back_stack: Vec::new(),
+            fwd_stack: Vec::new(),
             cache,
             requested: HashSet::new(),
             req_tx,
@@ -312,6 +327,7 @@ impl Reader {
     /// Navigate to a section and, if given, scroll to the line whose text
     /// matches `locator` (a heading). Misses fall back to the section top.
     pub fn jump_to(&mut self, section: usize, locator: Option<&str>) {
+        self.push_history();
         if section != self.section {
             self.load(section);
         } else {
@@ -327,12 +343,125 @@ impl Reader {
     }
 
     pub fn sidebar_move(&mut self, delta: isize) {
-        if self.outline.is_empty() {
+        let n = self.outline_visible().len();
+        if n == 0 {
             return;
         }
-        let last = self.outline.len() as isize - 1;
-        let s = (self.sidebar_sel as isize + delta).clamp(0, last);
-        self.sidebar_sel = s as usize;
+        let last = n as isize - 1;
+        self.sidebar_sel = (self.sidebar_sel as isize + delta).clamp(0, last) as usize;
+    }
+
+    /// Outline indices currently visible (respecting collapsed parents).
+    pub fn outline_visible(&self) -> Vec<usize> {
+        let mut vis = Vec::new();
+        let mut hide_depth: Option<usize> = None;
+        for (i, item) in self.outline.iter().enumerate() {
+            if let Some(d) = hide_depth {
+                if item.depth > d {
+                    continue;
+                }
+                hide_depth = None;
+            }
+            vis.push(i);
+            if self.outline_is_parent(i) && self.collapsed.contains(&i) {
+                hide_depth = Some(item.depth);
+            }
+        }
+        vis
+    }
+
+    /// Does the row at `i` have nested children?
+    pub fn outline_is_parent(&self, i: usize) -> bool {
+        self.outline
+            .get(i + 1)
+            .is_some_and(|n| n.depth > self.outline[i].depth)
+    }
+
+    pub fn outline_collapsed(&self, i: usize) -> bool {
+        self.collapsed.contains(&i)
+    }
+
+    fn selected_outline(&self) -> Option<usize> {
+        self.outline_visible().get(self.sidebar_sel).copied()
+    }
+
+    /// Jump to the selected sidebar row.
+    pub fn sidebar_activate(&mut self) {
+        if let Some(oi) = self.selected_outline() {
+            if let Some(item) = self.outline.get(oi).cloned() {
+                self.jump_to(item.section, item.locator.as_deref());
+            }
+        }
+    }
+
+    /// `l`/→: expand a collapsed parent, otherwise jump.
+    pub fn sidebar_expand(&mut self) {
+        let Some(oi) = self.selected_outline() else {
+            return;
+        };
+        if self.outline_is_parent(oi) && self.collapsed.contains(&oi) {
+            self.collapsed.remove(&oi);
+        } else {
+            self.sidebar_activate();
+        }
+    }
+
+    /// `h`/←: collapse an expanded parent, otherwise move to the parent row.
+    pub fn sidebar_collapse(&mut self) {
+        let Some(oi) = self.selected_outline() else {
+            return;
+        };
+        if self.outline_is_parent(oi) && !self.collapsed.contains(&oi) {
+            self.collapsed.insert(oi);
+        } else {
+            let depth = self.outline[oi].depth;
+            if depth > 0 {
+                if let Some(pi) = (0..oi).rev().find(|&j| self.outline[j].depth < depth) {
+                    if let Some(pos) = self.outline_visible().iter().position(|&x| x == pi) {
+                        self.sidebar_sel = pos;
+                    }
+                }
+            }
+        }
+    }
+
+    fn push_history(&mut self) {
+        self.back_stack.push(Pos {
+            section: self.section,
+            scroll: self.scroll,
+        });
+        if self.back_stack.len() > 200 {
+            self.back_stack.remove(0);
+        }
+        self.fwd_stack.clear();
+    }
+
+    pub fn history_back(&mut self) {
+        if let Some(pos) = self.back_stack.pop() {
+            self.fwd_stack.push(Pos {
+                section: self.section,
+                scroll: self.scroll,
+            });
+            self.goto(pos);
+        }
+    }
+
+    pub fn history_forward(&mut self) {
+        if let Some(pos) = self.fwd_stack.pop() {
+            self.back_stack.push(Pos {
+                section: self.section,
+                scroll: self.scroll,
+            });
+            self.goto(pos);
+        }
+    }
+
+    fn goto(&mut self, pos: Pos) {
+        if pos.section != self.section {
+            self.load(pos.section);
+        }
+        self.scroll = pos.scroll;
+        self.focus = Focus::Content;
     }
 
     /// Scroll position within the current section as a fraction `[0, 1]`.
@@ -659,11 +788,21 @@ impl App {
             }
             Action::Activate => {
                 if reader.focus == Focus::Sidebar {
-                    if let Some(item) = reader.outline.get(reader.sidebar_sel).cloned() {
-                        reader.jump_to(item.section, item.locator.as_deref());
-                    }
+                    reader.sidebar_activate();
                 }
             }
+            Action::Expand => {
+                if reader.focus == Focus::Sidebar {
+                    reader.sidebar_expand();
+                }
+            }
+            Action::Collapse => {
+                if reader.focus == Focus::Sidebar {
+                    reader.sidebar_collapse();
+                }
+            }
+            Action::HistBack => reader.history_back(),
+            Action::HistForward => reader.history_forward(),
             Action::None => {}
         }
 
@@ -717,9 +856,13 @@ impl App {
         }
         let idx = (row - first) as usize;
         if let Some(r) = self.reader.as_mut() {
-            if let Some(item) = r.outline.get(idx).cloned() {
+            let vis = r.outline_visible();
+            if let Some(&oi) = vis.get(idx) {
                 r.sidebar_sel = idx;
-                r.jump_to(item.section, item.locator.as_deref());
+                r.focus = Focus::Sidebar;
+                if let Some(item) = r.outline.get(oi).cloned() {
+                    r.jump_to(item.section, item.locator.as_deref());
+                }
             }
         }
     }
