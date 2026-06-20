@@ -1,0 +1,80 @@
+//! Context-aware keymap. Pure mapping from crossterm events to [`Action`]s;
+//! the app interprets actions against the current focus/mode. Vim defaults for
+//! now; rebinding lands with General settings. See `DESIGN.md` §9.
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+/// Transient vim input state (count prefix, pending `g`).
+#[derive(Default)]
+pub struct Pending {
+    pub count: Option<usize>,
+    pub g: bool,
+}
+
+/// A semantic intent. `Down`/`Up` are routed by focus (scroll vs. select).
+pub enum Action {
+    None,
+    Quit,
+    Back,
+    Down(usize),
+    Up(usize),
+    HalfDown,
+    HalfUp,
+    PageDown,
+    PageUp,
+    Top,
+    Bottom,
+    ToggleStatus,
+    ToggleSidebar,
+    CycleView,
+    FocusToggle,
+    Activate,
+}
+
+pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // Accumulate a vim count prefix (a leading 0 is "go to col 0", not a count).
+    if let KeyCode::Char(c) = key.code {
+        if c.is_ascii_digit() && !(c == '0' && pending.count.is_none()) {
+            let d = c as usize - '0' as usize;
+            pending.count = Some(pending.count.unwrap_or(0) * 10 + d);
+            return Action::None;
+        }
+    }
+    let count = pending.count.take().unwrap_or(1);
+
+    // `gg` → top.
+    if pending.g {
+        pending.g = false;
+        if let KeyCode::Char('g') = key.code {
+            return Action::Top;
+        }
+    }
+
+    match key.code {
+        KeyCode::Char('q') => Action::Back,
+        KeyCode::Char('Q') => Action::Quit,
+        KeyCode::Char('j') | KeyCode::Down => Action::Down(count),
+        KeyCode::Char('k') | KeyCode::Up => Action::Up(count),
+        KeyCode::Char('d') if ctrl => Action::HalfDown,
+        KeyCode::Char('u') if ctrl => Action::HalfUp,
+        KeyCode::Char('f') if ctrl => Action::PageDown,
+        KeyCode::Char('b') if ctrl => Action::PageUp,
+        KeyCode::Char(' ') | KeyCode::PageDown => Action::PageDown,
+        KeyCode::PageUp => Action::PageUp,
+        KeyCode::Char('g') => {
+            pending.g = true;
+            Action::None
+        }
+        KeyCode::Char('G') => Action::Bottom,
+        KeyCode::Home => Action::Top,
+        KeyCode::End => Action::Bottom,
+        KeyCode::Tab => Action::FocusToggle,
+        KeyCode::Char('s') => Action::ToggleSidebar,
+        KeyCode::Char('v') => Action::CycleView,
+        KeyCode::Char('z') => Action::ToggleStatus,
+        KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right => Action::Activate,
+        _ => Action::None,
+    }
+}
