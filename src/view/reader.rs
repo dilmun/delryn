@@ -9,6 +9,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, Focus, Reader};
 use crate::config::{Config, ViewMode};
+use crate::document::Inline;
+use crate::layout::{DisplayLine, LineKind};
 
 const GAUGE_WIDTH: usize = 16;
 
@@ -162,10 +164,35 @@ fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, measure_cfg: 
 fn visible_lines(reader: &Reader, start: usize, count: usize) -> Vec<Line<'static>> {
     let start = start.min(reader.lines.len());
     let end = (start + count).min(reader.lines.len());
-    reader.lines[start..end]
+    reader.lines[start..end].iter().map(to_ratatui).collect()
+}
+
+fn to_ratatui(line: &DisplayLine) -> Line<'static> {
+    let spans: Vec<Span> = line
+        .runs
         .iter()
-        .map(|l| Line::raw(l.clone()))
-        .collect()
+        .map(|r| Span::styled(r.text.clone(), run_style(&r.style, line.kind)))
+        .collect();
+    Line::from(spans)
+}
+
+/// Map inline + line-kind to a ratatui style. Colour themes arrive with the
+/// theme system; for now this is modifier-only.
+fn run_style(inline: &Inline, kind: LineKind) -> Style {
+    let mut style = Style::default();
+    if inline.bold || matches!(kind, LineKind::Heading(_)) {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if inline.italic || matches!(kind, LineKind::Quote) {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if matches!(kind, LineKind::Quote | LineKind::Rule) {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if inline.code || matches!(kind, LineKind::Code) {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    style
 }
 
 fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config) {

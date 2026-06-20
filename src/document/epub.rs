@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use epub::doc::{EpubDoc, NavPoint};
-use html2text::render::TrivialDecorator;
 
 use super::{
     Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry, normalize_label,
@@ -77,7 +76,7 @@ impl SectionLoader for EpubLoader {
     }
 }
 
-/// Load and reflow-prepare one section's blocks from an open `EpubDoc`.
+/// Load and parse one section's blocks from an open `EpubDoc`.
 /// Shared by the foreground document and the background loader.
 fn load_blocks(doc: &mut EpubDoc<BufReader<File>>, index: usize) -> Result<Vec<Block>> {
     if !doc.set_current_chapter(index) {
@@ -86,13 +85,7 @@ fn load_blocks(doc: &mut EpubDoc<BufReader<File>>, index: usize) -> Result<Vec<B
     let (xhtml, _mime) = doc
         .get_current_str()
         .context("reading current section content")?;
-    let text = html2text::from_read_with_decorator(
-        xhtml.as_bytes(),
-        EXTRACT_WIDTH,
-        TrivialDecorator::new(),
-    )
-    .context("converting XHTML to text")?;
-    Ok(blocks_from_text(&text))
+    Ok(super::html::parse_blocks(&xhtml))
 }
 
 impl Document for EpubDocument {
@@ -303,21 +296,4 @@ fn build_outline(
         }
     }
     out
-}
-
-fn blocks_from_text(text: &str) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    let mut last_blank = true;
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            if !last_blank {
-                blocks.push(Block::Blank);
-                last_blank = true;
-            }
-        } else {
-            blocks.push(Block::Paragraph(line.trim_end().to_string()));
-            last_blank = false;
-        }
-    }
-    blocks
 }

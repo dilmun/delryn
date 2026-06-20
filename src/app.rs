@@ -16,7 +16,7 @@ use crate::config::Config;
 use crate::document::epub::EpubDocument;
 use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
-use crate::layout::wrap_blocks;
+use crate::layout::{DisplayLine, wrap_blocks};
 use crate::store::Store;
 
 /// Number of decoded sections kept in memory (current ± neighbours).
@@ -47,7 +47,7 @@ pub struct Reader {
     pub section: usize,
     pub blocks: Vec<Block>,
     /// Wrapped display lines of the current section, valid for `wrap_width`.
-    pub lines: Vec<String>,
+    pub lines: Vec<DisplayLine>,
     pub wrap_width: usize,
     /// Index of the top visible line within `lines`.
     pub scroll: usize,
@@ -292,16 +292,16 @@ impl Reader {
 /// First wrapped line whose normalized text matches `needle`. Prefers a line
 /// that *is* the heading before falling back to a substring match, so a short
 /// heading like "Linux" lands on the header rather than an earlier mention.
-fn find_line(lines: &[String], needle: &str) -> Option<usize> {
+fn find_line(lines: &[DisplayLine], needle: &str) -> Option<usize> {
     let n = normalize_label(needle);
     if n.is_empty() {
         return None;
     }
-    if let Some(i) = lines.iter().position(|l| normalize_label(l) == n) {
+    if let Some(i) = lines.iter().position(|l| normalize_label(&l.text()) == n) {
         return Some(i);
     }
     lines.iter().position(|l| {
-        let line = normalize_label(l);
+        let line = normalize_label(&l.text());
         !line.is_empty() && (line.contains(&n) || (n.len() >= 8 && n.contains(&line)))
     })
 }

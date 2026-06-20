@@ -31,7 +31,7 @@ fn main() -> Result<()> {
     let section = doc.load_section(idx)?;
     let lines = wrap_blocks(&section.blocks, 72);
     for line in lines.iter().take(20) {
-        println!("{line}");
+        println!("{}", line.text());
     }
     println!("... ({} total wrapped lines)", lines.len());
     Ok(())
