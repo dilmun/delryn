@@ -54,6 +54,11 @@ pub struct Reader {
     pub code_theme: String,
     /// syntect theme the current `lines` were wrapped with.
     wrap_theme: String,
+    /// Desired spacing (set each render from config).
+    pub line_spacing: u8,
+    pub paragraph_spacing: u8,
+    wrap_line_spacing: u8,
+    wrap_para_spacing: u8,
     /// Index of the top visible line within `lines`.
     pub scroll: usize,
     pub focus: Focus,
@@ -106,6 +111,10 @@ impl Reader {
             wrap_width: 0,
             code_theme: theme::default_theme().syntect.to_string(),
             wrap_theme: String::new(),
+            line_spacing: 0,
+            paragraph_spacing: 1,
+            wrap_line_spacing: 0,
+            wrap_para_spacing: 1,
             scroll: 0,
             focus: Focus::Content,
             sidebar_sel: 0,
@@ -185,10 +194,22 @@ impl Reader {
 
     /// Re-wrap the current section if the measure changed.
     pub fn ensure_wrapped(&mut self, width: usize) {
-        if width != self.wrap_width || self.code_theme != self.wrap_theme {
-            self.lines = wrap_blocks(&self.blocks, width, &self.code_theme);
+        if width != self.wrap_width
+            || self.code_theme != self.wrap_theme
+            || self.line_spacing != self.wrap_line_spacing
+            || self.paragraph_spacing != self.wrap_para_spacing
+        {
+            self.lines = wrap_blocks(
+                &self.blocks,
+                width,
+                &self.code_theme,
+                self.line_spacing,
+                self.paragraph_spacing,
+            );
             self.wrap_width = width;
             self.wrap_theme = self.code_theme.clone();
+            self.wrap_line_spacing = self.line_spacing;
+            self.wrap_para_spacing = self.paragraph_spacing;
         }
     }
 
@@ -457,6 +478,22 @@ impl App {
             Action::CycleTheme => {
                 self.config.theme = self.config.theme.next();
                 save = true;
+            }
+            Action::ToggleFocus => self.config.focus_mode = !self.config.focus_mode,
+            Action::WidthDown => {
+                self.config.measure_width =
+                    self.config.measure_width.saturating_sub(4).max(crate::config::MIN_MEASURE);
+            }
+            Action::WidthUp => {
+                self.config.measure_width =
+                    (self.config.measure_width + 4).min(crate::config::MAX_MEASURE);
+            }
+            Action::LineSpacingDown => {
+                self.config.line_spacing = self.config.line_spacing.saturating_sub(1);
+            }
+            Action::LineSpacingUp => {
+                self.config.line_spacing =
+                    (self.config.line_spacing + 1).min(crate::config::MAX_LINE_SPACING);
             }
             Action::ToggleSidebar => {
                 self.config.show_sidebar = !self.config.show_sidebar;

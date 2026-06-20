@@ -28,6 +28,11 @@ pub enum Action {
     ToggleSidebar,
     CycleView,
     CycleTheme,
+    ToggleFocus,
+    WidthDown,
+    WidthUp,
+    LineSpacingDown,
+    LineSpacingUp,
     FocusToggle,
     Activate,
 }
@@ -76,6 +81,11 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('v') => Action::CycleView,
         KeyCode::Char('t') => Action::CycleTheme,
         KeyCode::Char('z') => Action::ToggleStatus,
+        KeyCode::Char('f') => Action::ToggleFocus,
+        KeyCode::Char('[') => Action::WidthDown,
+        KeyCode::Char(']') => Action::WidthUp,
+        KeyCode::Char('{') => Action::LineSpacingDown,
+        KeyCode::Char('}') => Action::LineSpacingUp,
         KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right => Action::Activate,
         _ => Action::None,
     }

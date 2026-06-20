@@ -51,8 +51,16 @@ impl DisplayLine {
 }
 
 /// Wrap a section's blocks to `width` columns, returning styled display lines.
-/// `code_theme` is the syntect theme used for code highlighting.
-pub fn wrap_blocks(blocks: &[Block], width: usize, code_theme: &str) -> Vec<DisplayLine> {
+/// `code_theme` is the syntect theme used for code highlighting; `line_spacing`
+/// inserts extra blank lines between text lines and `para_spacing` sets the gap
+/// between blocks.
+pub fn wrap_blocks(
+    blocks: &[Block],
+    width: usize,
+    code_theme: &str,
+    line_spacing: u8,
+    para_spacing: u8,
+) -> Vec<DisplayLine> {
     let width = width.max(1);
     let mut out = Vec::new();
     let mut prev_item = false;
@@ -61,10 +69,12 @@ pub fn wrap_blocks(blocks: &[Block], width: usize, code_theme: &str) -> Vec<Disp
     for block in blocks {
         let is_item = matches!(block, Block::Para { marker: Some(_), .. });
 
-        // Spacing between blocks: blank line, except between consecutive list
+        // Spacing between blocks: blank line(s), except between consecutive list
         // items and around explicit blanks.
         if !first && !matches!(block, Block::Blank) && !(is_item && prev_item) {
-            out.push(DisplayLine::blank());
+            for _ in 0..para_spacing {
+                out.push(DisplayLine::blank());
+            }
         }
 
         match block {
@@ -128,7 +138,22 @@ pub fn wrap_blocks(blocks: &[Block], width: usize, code_theme: &str) -> Vec<Disp
         first = false;
     }
 
-    out
+    if line_spacing == 0 {
+        return out;
+    }
+    // Insert extra blank lines between text lines (not code/rules).
+    let mut spaced = Vec::with_capacity(out.len() * (1 + line_spacing as usize));
+    for line in out {
+        let spread = !line.runs.is_empty()
+            && matches!(line.kind, LineKind::Body | LineKind::Heading(_) | LineKind::Quote);
+        spaced.push(line);
+        if spread {
+            for _ in 0..line_spacing {
+                spaced.push(DisplayLine::blank());
+            }
+        }
+    }
+    spaced
 }
 
 /// Word-wrap styled spans into display lines, with a prefix on the first line

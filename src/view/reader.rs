@@ -27,19 +27,25 @@ pub fn render(f: &mut Frame, app: &mut App) {
     };
     let theme = config.theme;
     reader.code_theme = theme.syntect.to_string();
+    reader.line_spacing = config.line_spacing;
+    reader.paragraph_spacing = config.paragraph_spacing;
     let area = f.area();
+
+    // Distraction-free hides chrome regardless of the show_* flags.
+    let show_sidebar = config.show_sidebar && !config.focus_mode;
+    let show_status = config.show_status && !config.focus_mode;
 
     // Paint the themed background across the whole screen first.
     if theme.bg.is_some() {
         f.render_widget(Block::default().style(base(theme)), area);
     }
 
-    let status_h = u16::from(config.show_status);
+    let status_h = u16::from(show_status);
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(area);
     let body = rows[0];
     let status = rows[1];
 
-    let (sidebar_area, content_area) = if config.show_sidebar {
+    let (sidebar_area, content_area) = if show_sidebar {
         let sw = (body.width / 3).clamp(16, 32);
         let cols = Layout::horizontal([Constraint::Length(sw), Constraint::Min(0)]).split(body);
         (Some(cols[0]), cols[1])
@@ -54,7 +60,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_sidebar(f, sb, reader, theme);
     }
     render_content(f, content_area, reader, config, theme);
-    if config.show_status {
+    if show_status {
         render_status(f, status, reader, config, theme);
     }
 }
