@@ -3,14 +3,13 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, Focus, Reader};
 use crate::config::{Config, ViewMode};
-use crate::document::Inline;
-use crate::layout::{DisplayLine, LineKind};
+use crate::layout::{DisplayLine, LineKind, Run};
 
 const GAUGE_WIDTH: usize = 16;
 
@@ -171,25 +170,26 @@ fn to_ratatui(line: &DisplayLine) -> Line<'static> {
     let spans: Vec<Span> = line
         .runs
         .iter()
-        .map(|r| Span::styled(r.text.clone(), run_style(&r.style, line.kind)))
+        .map(|r| Span::styled(r.text.clone(), run_style(r, line.kind)))
         .collect();
     Line::from(spans)
 }
 
-/// Map inline + line-kind to a ratatui style. Colour themes arrive with the
-/// theme system; for now this is modifier-only.
-fn run_style(inline: &Inline, kind: LineKind) -> Style {
+/// Map a run + line-kind to a ratatui style. Syntax-highlighted runs carry an
+/// explicit colour; everything else is modifier-only until colour themes land.
+fn run_style(run: &Run, kind: LineKind) -> Style {
     let mut style = Style::default();
-    if inline.bold || matches!(kind, LineKind::Heading(_)) {
+    if run.style.bold || matches!(kind, LineKind::Heading(_)) {
         style = style.add_modifier(Modifier::BOLD);
     }
-    if inline.italic || matches!(kind, LineKind::Quote) {
+    if run.style.italic || matches!(kind, LineKind::Quote) {
         style = style.add_modifier(Modifier::ITALIC);
     }
-    if matches!(kind, LineKind::Quote | LineKind::Rule) {
-        style = style.add_modifier(Modifier::DIM);
-    }
-    if inline.code || matches!(kind, LineKind::Code) {
+    if let Some((r, g, b)) = run.fg {
+        // Syntax colour: show at full strength.
+        style = style.fg(Color::Rgb(r, g, b));
+    } else if matches!(kind, LineKind::Quote | LineKind::Rule | LineKind::Code) {
+        // Quotes, rules, and the code gutter/plain code: dim.
         style = style.add_modifier(Modifier::DIM);
     }
     style

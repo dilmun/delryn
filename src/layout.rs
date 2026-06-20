@@ -5,12 +5,18 @@
 //! `DESIGN.md` §2.1, §4.
 
 use crate::document::{Block, Inline, Span};
+use crate::highlight::highlight_code;
+
+/// An RGB foreground colour (from syntax highlighting / themes).
+pub type Rgb = (u8, u8, u8);
 
 /// A styled run of text within a display line.
 #[derive(Clone)]
 pub struct Run {
     pub text: String,
     pub style: Inline,
+    /// Explicit foreground colour, if any (syntax highlighting).
+    pub fg: Option<Rgb>,
 }
 
 /// What a display line represents, so the view can style it by theme.
@@ -66,6 +72,7 @@ pub fn wrap_blocks(blocks: &[Block], width: usize) -> Vec<DisplayLine> {
                 runs: vec![Run {
                     text: "─".repeat(width),
                     style: Inline::default(),
+                    fg: None,
                 }],
                 kind: LineKind::Rule,
             }),
@@ -89,18 +96,28 @@ pub fn wrap_blocks(blocks: &[Block], width: usize) -> Vec<DisplayLine> {
                 };
                 wrap_spans(spans, width, &first_prefix, &cont_prefix, kind, &mut out);
             }
-            Block::Code { lines, .. } => {
-                for line in lines {
-                    out.push(DisplayLine {
-                        runs: vec![Run {
-                            text: line.clone(),
-                            style: Inline {
-                                code: true,
-                                ..Inline::default()
-                            },
-                        }],
-                        kind: LineKind::Code,
-                    });
+            Block::Code { lang, lines } => {
+                let gutter_w = lines.len().max(1).to_string().len();
+                for (i, runs) in highlight_code(lines, lang.as_deref()).into_iter().enumerate() {
+                    let num = format!("{:>gutter_w$} │ ", i + 1);
+                    let avail = width.saturating_sub(num.chars().count()).max(1);
+                    for (j, mut line_runs) in pack_runs(runs, avail).into_iter().enumerate() {
+                        let gutter = if j == 0 {
+                            num.clone()
+                        } else {
+                            format!("{:>gutter_w$}   ", "")
+                        };
+                        let mut full = vec![Run {
+                            text: gutter,
+                            style: Inline::default(),
+                            fg: None,
+                        }];
+                        full.append(&mut line_runs);
+                        out.push(DisplayLine {
+                            runs: full,
+                            kind: LineKind::Code,
+                        });
+                    }
                 }
             }
         }
@@ -141,6 +158,7 @@ fn wrap_spans(
             runs.push(Run {
                 text: prefix.to_string(),
                 style: Inline::default(),
+                fg: None,
             });
         }
 
@@ -157,12 +175,14 @@ fn wrap_spans(
                 runs.push(Run {
                     text: " ".to_string(),
                     style: Inline::default(),
+                    fg: None,
                 });
                 len += 1;
             }
             runs.push(Run {
                 text: word.to_string(),
                 style,
+                fg: None,
             });
             len += wlen;
             placed += 1;
@@ -172,4 +192,36 @@ fn wrap_spans(
         out.push(DisplayLine { runs, kind });
         first_line = false;
     }
+}
+
+/// Soft-wrap styled runs to `avail` columns, splitting runs at character
+/// boundaries and preserving each run's style/colour. Used for code lines.
+fn pack_runs(runs: Vec<Run>, avail: usize) -> Vec<Vec<Run>> {
+    let mut out: Vec<Vec<Run>> = Vec::new();
+    let mut cur: Vec<Run> = Vec::new();
+    let mut len = 0usize;
+
+    for run in runs {
+        let chars: Vec<char> = run.text.chars().collect();
+        let mut idx = 0;
+        while idx < chars.len() {
+            if len >= avail {
+                out.push(std::mem::take(&mut cur));
+                len = 0;
+            }
+            let take = (avail - len).min(chars.len() - idx);
+            cur.push(Run {
+                text: chars[idx..idx + take].iter().collect(),
+                style: run.style,
+                fg: run.fg,
+            });
+            len += take;
+            idx += take;
+        }
+    }
+
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
+    }
+    out
 }
