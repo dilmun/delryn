@@ -4,6 +4,10 @@
 //! Library is a stub; the Reader is the working EPUB vertical slice. See
 //! `DESIGN.md` §4, §6.
 
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread;
+
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -13,6 +17,9 @@ use crate::document::epub::EpubDocument;
 use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
 use crate::layout::wrap_blocks;
+
+/// Number of decoded sections kept in memory (current ± neighbours).
+const CACHE_CAP: usize = 9;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -51,17 +58,42 @@ pub struct Reader {
     pub page_lines: usize,
     /// Wrap width used by the last render; used to locate jump targets.
     pub last_measure: usize,
+    /// Decoded section blocks, keyed by section index (bounded LRU).
+    cache: HashMap<usize, Vec<Block>>,
+    /// Sections requested from the loader but not yet returned.
+    requested: HashSet<usize>,
+    /// Channel to ask the background loader for a section.
+    req_tx: Sender<usize>,
+    /// Channel of decoded sections from the background loader.
+    res_rx: Receiver<(usize, Vec<Block>)>,
 }
 
 impl Reader {
     pub fn new(mut doc: Box<dyn Document>) -> Result<Self> {
         let outline = doc.outline().to_vec();
-        let first = doc.load_section(0).unwrap_or_default();
-        Ok(Self {
+
+        // Background loader: a worker thread that decodes sections on request.
+        let mut loader = doc.loader();
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<usize>();
+        let (res_tx, res_rx) = std::sync::mpsc::channel::<(usize, Vec<Block>)>();
+        thread::spawn(move || {
+            while let Ok(index) = req_rx.recv() {
+                let blocks = loader.load(index);
+                if res_tx.send((index, blocks)).is_err() {
+                    break; // reader dropped
+                }
+            }
+        });
+
+        let first = doc.load_section(0).unwrap_or_default().blocks;
+        let mut cache = HashMap::new();
+        cache.insert(0usize, first.clone());
+
+        let mut reader = Self {
             doc,
             outline,
             section: 0,
-            blocks: first.blocks,
+            blocks: first,
             lines: Vec::new(),
             wrap_width: 0,
             scroll: 0,
@@ -70,7 +102,74 @@ impl Reader {
             viewport_lines: 1,
             page_lines: 1,
             last_measure: 72,
-        })
+            cache,
+            requested: HashSet::new(),
+            req_tx,
+            res_rx,
+        };
+        reader.prefetch_neighbors();
+        Ok(reader)
+    }
+
+    /// Collect any sections the loader has finished into the cache.
+    fn drain_loader(&mut self) {
+        while let Ok((index, blocks)) = self.res_rx.try_recv() {
+            self.requested.remove(&index);
+            self.cache.insert(index, blocks);
+        }
+    }
+
+    /// Blocks for a section: cache first, else decode synchronously.
+    fn fetch_blocks(&mut self, section: usize) -> Vec<Block> {
+        self.drain_loader();
+        if let Some(blocks) = self.cache.get(&section) {
+            return blocks.clone();
+        }
+        let blocks = self
+            .doc
+            .load_section(section)
+            .map(|s| s.blocks)
+            .unwrap_or_default();
+        self.cache.insert(section, blocks.clone());
+        blocks
+    }
+
+    /// Ask the loader to pre-decode the adjacent chapters, and bound the cache.
+    fn prefetch_neighbors(&mut self) {
+        self.drain_loader();
+        let n = self.doc.section_count();
+        let mut targets = Vec::new();
+        if self.section + 1 < n {
+            targets.push(self.section + 1);
+        }
+        if self.section > 0 {
+            targets.push(self.section - 1);
+        }
+        for t in targets {
+            if !self.cache.contains_key(&t) && self.requested.insert(t) {
+                let _ = self.req_tx.send(t);
+            }
+        }
+        self.evict();
+    }
+
+    /// Drop cached sections farthest from the current one when over capacity.
+    fn evict(&mut self) {
+        while self.cache.len() > CACHE_CAP {
+            let current = self.section;
+            match self
+                .cache
+                .keys()
+                .copied()
+                .filter(|&k| k != current)
+                .max_by_key(|&k| k.abs_diff(current))
+            {
+                Some(far) => {
+                    self.cache.remove(&far);
+                }
+                None => break,
+            }
+        }
     }
 
     /// Re-wrap the current section if the measure changed.
@@ -96,13 +195,11 @@ impl Reader {
         if section >= self.doc.section_count() {
             return;
         }
-        self.blocks = match self.doc.load_section(section) {
-            Ok(s) => s.blocks,
-            Err(_) => Vec::new(),
-        };
         self.section = section;
+        self.blocks = self.fetch_blocks(section);
         self.scroll = 0;
         self.wrap_width = 0; // force a re-wrap on next draw
+        self.prefetch_neighbors();
     }
 
     /// Scroll down, flowing into the next chapter at the bottom edge.

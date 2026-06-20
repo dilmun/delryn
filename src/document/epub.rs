@@ -10,7 +10,9 @@ use anyhow::{Context, Result};
 use epub::doc::{EpubDoc, NavPoint};
 use html2text::render::TrivialDecorator;
 
-use super::{Block, Document, Metadata, OutlineItem, Section, TocEntry, normalize_label};
+use super::{
+    Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry, normalize_label,
+};
 
 /// A heading found in a section's XHTML.
 struct Heading {
@@ -24,6 +26,7 @@ const EXTRACT_WIDTH: usize = 10_000;
 
 pub struct EpubDocument {
     doc: EpubDoc<BufReader<File>>,
+    path: PathBuf,
     metadata: Metadata,
     toc: Vec<TocEntry>,
     outline: Vec<OutlineItem>,
@@ -48,11 +51,48 @@ impl EpubDocument {
 
         Ok(Self {
             doc,
+            path: path.to_path_buf(),
             metadata,
             toc,
             outline,
         })
     }
+}
+
+/// Background loader: reopens its own `EpubDoc` lazily on first use.
+struct EpubLoader {
+    path: PathBuf,
+    doc: Option<EpubDoc<BufReader<File>>>,
+}
+
+impl SectionLoader for EpubLoader {
+    fn load(&mut self, index: usize) -> Vec<Block> {
+        if self.doc.is_none() {
+            self.doc = EpubDoc::new(&self.path).ok();
+        }
+        match self.doc.as_mut() {
+            Some(doc) => load_blocks(doc, index).unwrap_or_default(),
+            None => Vec::new(),
+        }
+    }
+}
+
+/// Load and reflow-prepare one section's blocks from an open `EpubDoc`.
+/// Shared by the foreground document and the background loader.
+fn load_blocks(doc: &mut EpubDoc<BufReader<File>>, index: usize) -> Result<Vec<Block>> {
+    if !doc.set_current_chapter(index) {
+        anyhow::bail!("section index {index} out of range");
+    }
+    let (xhtml, _mime) = doc
+        .get_current_str()
+        .context("reading current section content")?;
+    let text = html2text::from_read_with_decorator(
+        xhtml.as_bytes(),
+        EXTRACT_WIDTH,
+        TrivialDecorator::new(),
+    )
+    .context("converting XHTML to text")?;
+    Ok(blocks_from_text(&text))
 }
 
 impl Document for EpubDocument {
@@ -68,27 +108,21 @@ impl Document for EpubDocument {
         &self.outline
     }
 
+    fn loader(&self) -> Box<dyn SectionLoader> {
+        Box::new(EpubLoader {
+            path: self.path.clone(),
+            doc: None,
+        })
+    }
+
     fn section_count(&self) -> usize {
         self.doc.get_num_chapters()
     }
 
     fn load_section(&mut self, index: usize) -> Result<Section> {
-        if !self.doc.set_current_chapter(index) {
-            anyhow::bail!("section index {index} out of range");
-        }
-        let (xhtml, _mime) = self
-            .doc
-            .get_current_str()
-            .context("reading current section content")?;
-        let text = html2text::from_read_with_decorator(
-            xhtml.as_bytes(),
-            EXTRACT_WIDTH,
-            TrivialDecorator::new(),
-        )
-        .context("converting XHTML to text")?;
         Ok(Section {
             index,
-            blocks: blocks_from_text(&text),
+            blocks: load_blocks(&mut self.doc, index)?,
         })
     }
 }

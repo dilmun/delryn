@@ -71,12 +71,22 @@ pub fn normalize_label(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
+/// A self-contained, `Send` handle that loads a section's blocks off the main
+/// thread. Used to pre-wrap neighbouring chapters in the background so scrolling
+/// across a chapter boundary doesn't block on parsing. It reopens its own
+/// document handle, independent of the foreground `Document`.
+pub trait SectionLoader: Send {
+    fn load(&mut self, index: usize) -> Vec<Block>;
+}
+
 /// The interface the layout + view layers render against.
 pub trait Document {
     fn metadata(&self) -> &Metadata;
     fn toc(&self) -> &[TocEntry];
     /// Flattened, navigable outline (sections + their headings).
     fn outline(&self) -> &[OutlineItem];
+    /// A background loader for this document (opens its own handle).
+    fn loader(&self) -> Box<dyn SectionLoader>;
     /// Number of ordered sections (spine length).
     fn section_count(&self) -> usize;
     /// Load and reflow-prepare one section's content.
