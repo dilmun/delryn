@@ -31,7 +31,23 @@ CREATE TABLE IF NOT EXISTS books (
     last_opened INTEGER NOT NULL DEFAULT 0,
     mtime       INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS annotations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    path       TEXT NOT NULL,
+    section    INTEGER NOT NULL,
+    quote      TEXT NOT NULL,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
 ";
+
+/// A bookmark or note, anchored to content by a text quote (reflow-stable).
+pub struct Annotation {
+    pub id: i64,
+    pub section: usize,
+    pub quote: String,
+    pub note: String,
+}
 
 /// Which slice of the library to show.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -89,6 +105,11 @@ impl Store {
         // Migrate older databases that predate the theme column.
         let _ = conn.execute(
             "ALTER TABLE progress ADD COLUMN theme TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        // Reading-time accounting (migrate older databases).
+        let _ = conn.execute(
+            "ALTER TABLE books ADD COLUMN read_seconds INTEGER NOT NULL DEFAULT 0",
             [],
         );
         // Full-text index (graceful: skipped if FTS5 isn't compiled in).
@@ -279,6 +300,80 @@ impl Store {
         out
     }
 
+    pub fn add_annotation(&self, path: &str, section: usize, quote: &str, note: &str) {
+        let _ = self.conn.execute(
+            "INSERT INTO annotations (path, section, quote, note, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![path, section as i64, quote, note, now_secs()],
+        );
+    }
+
+    pub fn list_annotations(&self, path: &str) -> Vec<Annotation> {
+        let mut out = Vec::new();
+        let Ok(mut stmt) = self.conn.prepare(
+            "SELECT id, section, quote, note FROM annotations WHERE path = ?1 \
+             ORDER BY section, id",
+        ) else {
+            return out;
+        };
+        if let Ok(rows) = stmt.query_map(params![path], |r| {
+            Ok(Annotation {
+                id: r.get(0)?,
+                section: r.get::<_, i64>(1)?.max(0) as usize,
+                quote: r.get(2)?,
+                note: r.get(3)?,
+            })
+        }) {
+            out.extend(rows.flatten());
+        }
+        out
+    }
+
+    pub fn delete_annotation(&self, id: i64) {
+        let _ = self
+            .conn
+            .execute("DELETE FROM annotations WHERE id = ?1", params![id]);
+    }
+
+    /// Every annotation with its book path (for export).
+    pub fn all_annotations(&self) -> Vec<(String, Annotation)> {
+        let mut out = Vec::new();
+        let Ok(mut stmt) = self.conn.prepare(
+            "SELECT path, id, section, quote, note FROM annotations ORDER BY path, section, id",
+        ) else {
+            return out;
+        };
+        if let Ok(rows) = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                Annotation {
+                    id: r.get(1)?,
+                    section: r.get::<_, i64>(2)?.max(0) as usize,
+                    quote: r.get(3)?,
+                    note: r.get(4)?,
+                },
+            ))
+        }) {
+            out.extend(rows.flatten());
+        }
+        out
+    }
+
+    pub fn add_read_time(&self, path: &str, secs: i64) {
+        let _ = self.conn.execute(
+            "UPDATE books SET read_seconds = read_seconds + ?2 WHERE path = ?1",
+            params![path, secs],
+        );
+    }
+
+    pub fn total_read_seconds(&self) -> i64 {
+        self.conn
+            .query_row("SELECT COALESCE(SUM(read_seconds), 0) FROM books", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(0)
+    }
+
     fn query_books(&self, where_clause: &str, order: &str) -> Vec<BookRow> {
         let sql = format!(
             "SELECT b.path, b.title, b.author, b.year, b.size, b.favorite, b.sections, \
@@ -372,6 +467,22 @@ mod tests {
         assert_eq!(store.load_progress("/books/a.epub").unwrap().section, 9);
 
         assert!(store.load_progress("/books/missing.epub").is_none());
+
+        // Annotations + reading time.
+        store.add_annotation("/books/a.epub", 3, "the quote", "");
+        store.add_annotation("/books/a.epub", 5, "another", "my note");
+        let anns = store.list_annotations("/books/a.epub");
+        assert_eq!(anns.len(), 2);
+        assert_eq!(anns[0].section, 3);
+        assert_eq!(anns[1].note, "my note");
+        store.delete_annotation(anns[0].id);
+        assert_eq!(store.list_annotations("/books/a.epub").len(), 1);
+
+        store.upsert_book("/books/a.epub", "A", "Au", None, 10, 8, 1).unwrap();
+        store.add_read_time("/books/a.epub", 120);
+        store.add_read_time("/books/a.epub", 60);
+        assert_eq!(store.total_read_seconds(), 180);
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

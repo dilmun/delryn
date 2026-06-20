@@ -1,6 +1,7 @@
 //! Render dispatch by mode. The view layer is format-agnostic — it only ever
 //! sees the `Document` model and app state. See `DESIGN.md` §2.
 
+pub mod annotations;
 pub mod library;
 pub mod reader;
 pub mod settings;
@@ -17,4 +18,5 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.settings.is_some() {
         settings::render(f, app);
     }
+    annotations::render(f, app);
 }

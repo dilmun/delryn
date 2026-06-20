@@ -38,6 +38,25 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `delryn --export-annotations`: dump bookmarks/notes as Markdown, then exit.
+    if matches!(args.first().map(String::as_str), Some("--export-annotations")) {
+        if let Ok(store) = Store::open_default() {
+            let mut last = String::new();
+            for (path, a) in store.all_annotations() {
+                if path != last {
+                    println!("\n# {path}\n");
+                    last = path;
+                }
+                if a.note.is_empty() {
+                    println!("- §{} {}", a.section + 1, a.quote);
+                } else {
+                    println!("- §{} {} — {}", a.section + 1, a.quote, a.note);
+                }
+            }
+        }
+        return Ok(());
+    }
+
     let mut app = match args.first() {
         Some(path) => App::open_book(path)?,
         None => App::library(),
@@ -93,7 +112,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
             dirty = false;
         }
     }
-    app.save_progress();
+    app.on_exit();
     Ok(())
 }
 

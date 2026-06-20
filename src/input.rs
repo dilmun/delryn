@@ -42,6 +42,9 @@ pub enum Action {
     Search,
     SearchNext,
     SearchPrev,
+    AddBookmark,
+    AddNote,
+    OpenAnnotations,
 }
 
 pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
@@ -101,6 +104,9 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('/') => Action::Search,
         KeyCode::Char('n') => Action::SearchNext,
         KeyCode::Char('N') => Action::SearchPrev,
+        KeyCode::Char('m') => Action::AddBookmark,
+        KeyCode::Char('M') => Action::AddNote,
+        KeyCode::Char('\'') => Action::OpenAnnotations,
         _ => Action::None,
     }
 }

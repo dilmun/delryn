@@ -125,7 +125,14 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let left = if app.lib_filtering || !app.lib_filter.is_empty() {
         format!(" /{}", app.lib_filter)
     } else {
-        format!(" {} books · {}", app.lib_books.len(), app.lib_section.label())
+        let read = app.total_read_seconds();
+        format!(
+            " {} books · {} · {}h{}m read",
+            app.lib_books.len(),
+            app.lib_section.label(),
+            read / 3600,
+            (read % 3600) / 60,
+        )
     };
     let right = "Tab section  / filter  f fav  ⏎ open  q quit ";
     let width = area.width as usize;

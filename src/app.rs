@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
+use std::time::Instant;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
@@ -18,7 +19,7 @@ use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, wrap_blocks};
 use crate::library;
-use crate::store::{BookRow, LibrarySection, Store};
+use crate::store::{Annotation, BookRow, LibrarySection, Store};
 use crate::theme;
 
 /// Number of decoded sections kept in memory (current ± neighbours).
@@ -65,6 +66,12 @@ impl SettingsTab {
 pub struct Settings {
     pub tab: SettingsTab,
     pub row: usize,
+}
+
+/// Open annotations (bookmarks/notes) overlay state.
+pub struct AnnotState {
+    pub items: Vec<Annotation>,
+    pub sel: usize,
 }
 
 /// Labelled (name, value) rows for a settings tab, rendered by the popup.
@@ -575,6 +582,26 @@ impl Reader {
         ((self.section as f32) + within) / n
     }
 
+    /// A short text quote of the first non-blank visible line, used to anchor
+    /// annotations so they survive reflow.
+    pub fn current_quote(&self) -> String {
+        if self.lines.is_empty() {
+            return String::new();
+        }
+        let start = self.scroll.min(self.lines.len() - 1);
+        self.lines[start..]
+            .iter()
+            .map(|l| l.text())
+            .find(|t| !t.trim().is_empty())
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(80)
+            .collect()
+    }
+
     pub fn chapter_title(&self) -> String {
         self.outline
             .iter()
@@ -610,6 +637,12 @@ pub struct App {
     pub should_quit: bool,
     /// Open settings popup, if any.
     pub settings: Option<Settings>,
+    /// Open annotations overlay, if any.
+    pub annot: Option<AnnotState>,
+    /// Active note-entry buffer, if typing a note.
+    pub note_input: Option<String>,
+    /// Start of the current reading session, for time tracking.
+    session_start: Option<Instant>,
     store: Option<Store>,
     /// Canonical path of the open book; key for persistence.
     book_path: String,
@@ -658,6 +691,9 @@ impl App {
             pending: Pending::default(),
             should_quit: false,
             settings: None,
+            annot: None,
+            note_input: None,
+            session_start: Some(Instant::now()),
             store,
             book_path,
             lib_section: LibrarySection::All,
@@ -682,6 +718,9 @@ impl App {
             pending: Pending::default(),
             should_quit: false,
             settings: None,
+            annot: None,
+            note_input: None,
+            session_start: None,
             store,
             book_path: String::new(),
             lib_section: LibrarySection::All,
@@ -750,17 +789,16 @@ impl App {
         let Some(path) = self.lib_books.get(self.lib_sel).map(|b| b.path.clone()) else {
             return;
         };
-        match build_reader(&path, &self.store) {
-            Ok((reader, config, book_path)) => {
-                self.reader = Some(reader);
-                self.config = config;
-                self.book_path = book_path;
-                self.mode = Mode::Reader;
-                if let Some(s) = &self.store {
-                    s.mark_opened(&self.book_path);
-                }
+        self.flush_reading_time();
+        if let Ok((reader, config, book_path)) = build_reader(&path, &self.store) {
+            self.reader = Some(reader);
+            self.config = config;
+            self.book_path = book_path;
+            self.mode = Mode::Reader;
+            self.session_start = Some(Instant::now());
+            if let Some(s) = &self.store {
+                s.mark_opened(&self.book_path);
             }
-            Err(_) => {}
         }
     }
 
@@ -779,12 +817,43 @@ impl App {
         }
     }
 
+    /// Accumulate elapsed reading time into the open book and reset the clock.
+    fn flush_reading_time(&mut self) {
+        if let (Some(start), Some(store)) = (self.session_start, &self.store) {
+            let secs = start.elapsed().as_secs() as i64;
+            if secs > 0 && !self.book_path.is_empty() {
+                store.add_read_time(&self.book_path, secs);
+            }
+        }
+        if self.session_start.is_some() {
+            self.session_start = Some(Instant::now());
+        }
+    }
+
+    /// Save progress + reading time on quit.
+    pub fn on_exit(&mut self) {
+        self.flush_reading_time();
+        self.save_progress();
+    }
+
+    pub fn total_read_seconds(&self) -> i64 {
+        self.store.as_ref().map(|s| s.total_read_seconds()).unwrap_or(0)
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
         if key.kind != KeyEventKind::Press {
             return;
         }
         if self.settings.is_some() {
             self.settings_key(key);
+            return;
+        }
+        if self.note_input.is_some() {
+            self.note_key(key);
+            return;
+        }
+        if self.annot.is_some() {
+            self.annot_key(key);
             return;
         }
         if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.searching) {
@@ -803,8 +872,92 @@ impl App {
             Mode::Reader => {
                 let action = input::map_key(key, &mut self.pending);
                 self.apply(action);
+                // Returning to the library (Back) should reflect the latest state.
+                if self.mode == Mode::Library {
+                    self.refresh_library();
+                }
             }
             Mode::Library => self.library_key(key),
+        }
+    }
+
+    fn note_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.note_input = None,
+            KeyCode::Enter => {
+                if let Some(text) = self.note_input.take() {
+                    if let (Some(store), Some(r)) = (&self.store, &self.reader) {
+                        if !self.book_path.is_empty() {
+                            store.add_annotation(
+                                &self.book_path,
+                                r.section,
+                                &r.current_quote(),
+                                text.trim(),
+                            );
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(s) = self.note_input.as_mut() {
+                    s.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(s) = self.note_input.as_mut() {
+                    s.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn annot_key(&mut self, key: KeyEvent) {
+        let Some(a) = self.annot.as_ref() else {
+            return;
+        };
+        let (len, sel) = (a.items.len(), a.sel);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('\'') | KeyCode::Char('q') => self.annot = None,
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(a) = self.annot.as_mut() {
+                    if len > 0 {
+                        a.sel = (sel + 1).min(len - 1);
+                    }
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(a) = self.annot.as_mut() {
+                    a.sel = sel.saturating_sub(1);
+                }
+            }
+            KeyCode::Enter | KeyCode::Char('l') => {
+                let target = self
+                    .annot
+                    .as_ref()
+                    .and_then(|a| a.items.get(a.sel))
+                    .map(|i| (i.section, i.quote.clone()));
+                if let Some((section, quote)) = target {
+                    if let Some(r) = self.reader.as_mut() {
+                        r.jump_to(section, Some(&quote));
+                    }
+                    self.annot = None;
+                }
+            }
+            KeyCode::Char('d') => {
+                let id = self.annot.as_ref().and_then(|a| a.items.get(a.sel)).map(|i| i.id);
+                if let (Some(id), Some(store)) = (id, &self.store) {
+                    store.delete_annotation(id);
+                    let items = store.list_annotations(&self.book_path);
+                    if let Some(a) = self.annot.as_mut() {
+                        a.items = items;
+                        if a.sel >= a.items.len() {
+                            a.sel = a.items.len().saturating_sub(1);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -952,7 +1105,15 @@ impl App {
         match action {
             Action::Quit => self.should_quit = true,
             Action::Back => {
-                self.mode = Mode::Library; // book stays loaded
+                // Accumulate reading time for the session before leaving.
+                if let (Some(start), Some(store)) = (self.session_start, &self.store) {
+                    let secs = start.elapsed().as_secs() as i64;
+                    if secs > 0 && !self.book_path.is_empty() {
+                        store.add_read_time(&self.book_path, secs);
+                    }
+                }
+                self.session_start = Some(Instant::now());
+                self.mode = Mode::Library;
                 save = true;
             }
             Action::Down(n) => match reader.focus {
@@ -1044,6 +1205,25 @@ impl App {
             Action::Search => reader.start_search(),
             Action::SearchNext => reader.search_next(),
             Action::SearchPrev => reader.search_prev(),
+            Action::AddBookmark => {
+                if let Some(store) = &self.store {
+                    if !self.book_path.is_empty() {
+                        store.add_annotation(
+                            &self.book_path,
+                            reader.section,
+                            &reader.current_quote(),
+                            "",
+                        );
+                    }
+                }
+            }
+            Action::AddNote => self.note_input = Some(String::new()),
+            Action::OpenAnnotations => {
+                if let Some(store) = &self.store {
+                    let items = store.list_annotations(&self.book_path);
+                    self.annot = Some(AnnotState { items, sel: 0 });
+                }
+            }
             Action::None => {}
         }
 
