@@ -209,8 +209,14 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
                 // a later task); show the alt text or a kind-of-image symbol so
                 // icons/figures aren't silently dropped.
                 "img" => {
+                    let alt = e.attr("alt").unwrap_or("");
+                    let text = if crate::math::is_math(alt) {
+                        crate::math::latex_to_unicode(alt)
+                    } else {
+                        img_label(e)
+                    };
                     out.push(Span {
-                        text: img_label(e),
+                        text,
                         style: Inline {
                             italic: true,
                             ..style

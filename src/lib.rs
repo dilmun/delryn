@@ -10,5 +10,6 @@ pub mod document;
 pub mod highlight;
 pub mod input;
 pub mod layout;
+pub mod math;
 pub mod store;
 pub mod view;
