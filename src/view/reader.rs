@@ -262,15 +262,27 @@ fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config, th
     };
 
     let pct = (reader.progress() * 100.0).round() as u32;
-    let right = format!(
-        "{} · {} · {}/{} · {}%  {}",
-        theme.name,
-        config.view_mode.label(),
-        reader.section + 1,
-        reader.doc.section_count(),
-        pct,
-        gauge(reader.progress(), GAUGE_WIDTH),
-    );
+    let sf = config.status;
+    let mut parts: Vec<String> = Vec::new();
+    if sf.theme {
+        parts.push(theme.name.to_string());
+    }
+    if sf.view {
+        parts.push(config.view_mode.label().to_string());
+    }
+    if sf.position {
+        parts.push(format!("{}/{}", reader.section + 1, reader.doc.section_count()));
+    }
+    if sf.percent {
+        parts.push(format!("{pct}%"));
+    }
+    let mut right = parts.join(" · ");
+    if sf.gauge {
+        if !right.is_empty() {
+            right.push_str("  ");
+        }
+        right.push_str(&gauge(reader.progress(), GAUGE_WIDTH));
+    }
 
     let width = area.width as usize;
     let used = left.chars().count() + right.chars().count() + 2;

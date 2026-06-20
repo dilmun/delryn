@@ -3,6 +3,7 @@
 
 pub mod library;
 pub mod reader;
+pub mod settings;
 
 use ratatui::Frame;
 
@@ -12,5 +13,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     match app.mode {
         Mode::Reader => reader::render(f, app),
         Mode::Library => library::render(f, app),
+    }
+    if app.settings.is_some() {
+        settings::render(f, app);
     }
 }

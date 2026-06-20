@@ -33,6 +33,12 @@ impl Theme {
         let i = THEMES.iter().position(|t| t.name == self.name).unwrap_or(0);
         THEMES[(i + 1) % THEMES.len()]
     }
+
+    /// The previous theme in the cycle.
+    pub fn prev(&self) -> Theme {
+        let i = THEMES.iter().position(|t| t.name == self.name).unwrap_or(0);
+        THEMES[(i + THEMES.len() - 1) % THEMES.len()]
+    }
 }
 
 /// Look a theme up by name (for persistence).

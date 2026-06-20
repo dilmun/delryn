@@ -105,7 +105,7 @@ impl Store {
 
 /// The delryn config/data directory: `$XDG_CONFIG_HOME/delryn` or `~/.config/delryn`
 /// (per the project's single-dir decision), with a Windows fallback.
-fn config_dir() -> PathBuf {
+pub fn config_dir() -> PathBuf {
     if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
         if !x.is_empty() {
             return PathBuf::from(x).join("delryn");

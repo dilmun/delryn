@@ -35,6 +35,60 @@ pub enum Focus {
     Sidebar,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    General,
+    Reading,
+    Library,
+}
+
+impl SettingsTab {
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsTab::General => "General",
+            SettingsTab::Reading => "Reading",
+            SettingsTab::Library => "Library",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            SettingsTab::General => SettingsTab::Reading,
+            SettingsTab::Reading => SettingsTab::Library,
+            SettingsTab::Library => SettingsTab::General,
+        }
+    }
+}
+
+/// Open settings popup state.
+pub struct Settings {
+    pub tab: SettingsTab,
+    pub row: usize,
+}
+
+/// Labelled (name, value) rows for a settings tab, rendered by the popup.
+pub fn settings_rows(config: &Config, tab: SettingsTab) -> Vec<(String, String)> {
+    let onoff = |b: bool| if b { "on" } else { "off" }.to_string();
+    match tab {
+        SettingsTab::Reading => vec![
+            ("Theme".into(), config.theme.name.to_string()),
+            ("View mode".into(), config.view_mode.label().to_string()),
+            ("Content width".into(), config.measure_width.to_string()),
+            ("Line spacing".into(), config.line_spacing.to_string()),
+            ("Paragraph spacing".into(), config.paragraph_spacing.to_string()),
+            ("Sidebar by default".into(), onoff(config.show_sidebar)),
+            ("Status bar by default".into(), onoff(config.show_status)),
+            ("Status · theme".into(), onoff(config.status.theme)),
+            ("Status · view".into(), onoff(config.status.view)),
+            ("Status · position".into(), onoff(config.status.position)),
+            ("Status · percent".into(), onoff(config.status.percent)),
+            ("Status · gauge".into(), onoff(config.status.gauge)),
+        ],
+        SettingsTab::General => vec![("Mouse".into(), onoff(config.mouse_enabled))],
+        SettingsTab::Library => vec![],
+    }
+}
+
 /// Rects from the last render, used for mouse hit-testing.
 #[derive(Default)]
 pub struct LayoutRects {
@@ -342,6 +396,8 @@ pub struct App {
     pub last_layout: LayoutRects,
     pub pending: Pending,
     pub should_quit: bool,
+    /// Open settings popup, if any.
+    pub settings: Option<Settings>,
     store: Option<Store>,
     /// Canonical path of the open book; key for persistence.
     book_path: String,
@@ -351,7 +407,7 @@ impl App {
     pub fn open_book(path: &str) -> Result<Self> {
         let doc = EpubDocument::open(path)?;
         let mut reader = Reader::new(Box::new(doc))?;
-        let mut config = Config::default();
+        let mut config = Config::load();
 
         let book_path = std::fs::canonicalize(path)
             .map(|p| p.to_string_lossy().into_owned())
@@ -375,6 +431,7 @@ impl App {
             last_layout: LayoutRects::default(),
             pending: Pending::default(),
             should_quit: false,
+            settings: None,
             store,
             book_path,
         })
@@ -383,11 +440,12 @@ impl App {
     pub fn library() -> Self {
         Self {
             mode: Mode::Library,
-            config: Config::default(),
+            config: Config::load(),
             reader: None,
             last_layout: LayoutRects::default(),
             pending: Pending::default(),
             should_quit: false,
+            settings: None,
             store: Store::open_default().ok(),
             book_path: String::new(),
         }
@@ -412,12 +470,98 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return;
         }
+        if self.settings.is_some() {
+            self.settings_key(key);
+            return;
+        }
+        if key.code == KeyCode::Char(';') {
+            let tab = match self.mode {
+                Mode::Reader => SettingsTab::Reading,
+                Mode::Library => SettingsTab::Library,
+            };
+            self.settings = Some(Settings { tab, row: 0 });
+            return;
+        }
         match self.mode {
             Mode::Reader => {
                 let action = input::map_key(key, &mut self.pending);
                 self.apply(action);
             }
             Mode::Library => self.library_key(key),
+        }
+    }
+
+    fn settings_key(&mut self, key: KeyEvent) {
+        let Some(s) = self.settings.as_ref() else {
+            return;
+        };
+        let (tab, row) = (s.tab, s.row);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char(';') | KeyCode::Char('q') => {
+                self.settings = None;
+                self.config.save();
+            }
+            KeyCode::Tab => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.tab = tab.next();
+                    s.row = 0;
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let n = settings_rows(&self.config, tab).len();
+                if let Some(s) = self.settings.as_mut() {
+                    if n > 0 {
+                        s.row = (row + 1).min(n - 1);
+                    }
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.row = row.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.settings_change(1),
+            KeyCode::Char('h') | KeyCode::Left => self.settings_change(-1),
+            _ => {}
+        }
+    }
+
+    fn settings_change(&mut self, delta: i32) {
+        use crate::config::{MAX_LINE_SPACING, MAX_MEASURE, MIN_MEASURE};
+        let Some(s) = self.settings.as_ref() else {
+            return;
+        };
+        let c = &mut self.config;
+        match (s.tab, s.row) {
+            (SettingsTab::Reading, 0) => {
+                c.theme = if delta > 0 { c.theme.next() } else { c.theme.prev() }
+            }
+            (SettingsTab::Reading, 1) => {
+                c.view_mode = if delta > 0 {
+                    c.view_mode.next()
+                } else {
+                    c.view_mode.prev()
+                }
+            }
+            (SettingsTab::Reading, 2) => {
+                c.measure_width = (c.measure_width as i32 + delta * 4)
+                    .clamp(MIN_MEASURE as i32, MAX_MEASURE as i32) as u16
+            }
+            (SettingsTab::Reading, 3) => {
+                c.line_spacing = (c.line_spacing as i32 + delta).clamp(0, MAX_LINE_SPACING as i32) as u8
+            }
+            (SettingsTab::Reading, 4) => {
+                c.paragraph_spacing = (c.paragraph_spacing as i32 + delta).clamp(0, 3) as u8
+            }
+            (SettingsTab::Reading, 5) => c.show_sidebar = !c.show_sidebar,
+            (SettingsTab::Reading, 6) => c.show_status = !c.show_status,
+            (SettingsTab::Reading, 7) => c.status.theme = !c.status.theme,
+            (SettingsTab::Reading, 8) => c.status.view = !c.status.view,
+            (SettingsTab::Reading, 9) => c.status.position = !c.status.position,
+            (SettingsTab::Reading, 10) => c.status.percent = !c.status.percent,
+            (SettingsTab::Reading, 11) => c.status.gauge = !c.status.gauge,
+            (SettingsTab::General, 0) => c.mouse_enabled = !c.mouse_enabled,
+            _ => {}
         }
     }
 
