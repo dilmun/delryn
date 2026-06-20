@@ -100,7 +100,10 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
         }
         "ul" | "ol" => {
             let ordered = e.name() == "ol";
-            let mut n = 1usize;
+            let mut n: usize = e
+                .attr("start")
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(1);
             for c in node.children() {
                 if matches!(c.value(), Node::Element(le) if le.name() == "li") {
                     let marker = if ordered {
@@ -123,6 +126,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
         "pre" => {
             let text = raw_text(node);
             let lines = trim_blank_edges(text.split('\n').map(|l| l.trim_end().to_string()));
+            let lines = strip_line_numbers(lines);
             if !lines.is_empty() {
                 out.push(Block::Code {
                     lang: detect_lang(node),
@@ -153,28 +157,22 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
 }
 
 fn list_item(node: NodeRef<Node>, ctx: &Ctx, marker: String, out: &mut Vec<Block>) {
-    let mut inline = Vec::new();
-    let mut nested = Vec::new();
-    for c in node.children() {
-        if is_block(c) {
-            nested.push(c);
-        } else {
-            collect_inline(c, Inline::default(), &mut inline);
-        }
-    }
-    out.push(Block::Para {
-        spans: inline,
-        indent: ctx.indent,
-        quote: ctx.quote,
-        marker: Some(marker),
-    });
+    // Collect the item's content (handles `<li>text`, `<li><p>…`, `<li><div>…`,
+    // and nested lists) then attach the marker to its first paragraph.
+    let mut item: Vec<Block> = Vec::new();
     let inner = Ctx {
         indent: ctx.indent + 1,
         quote: ctx.quote,
     };
-    for c in nested {
-        block_element(c, &inner, out);
+    walk_children(node, &inner, &mut item);
+
+    if let Some(Block::Para { marker: m, indent, .. }) =
+        item.iter_mut().find(|b| matches!(b, Block::Para { .. }))
+    {
+        *m = Some(marker);
+        *indent = ctx.indent;
     }
+    out.append(&mut item);
 }
 
 fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
@@ -191,8 +189,22 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
                 },
                 "strong" | "b" => Inline { bold: true, ..style },
                 "code" | "kbd" | "samp" | "tt" => Inline { code: true, ..style },
+                "a" => Inline { link: true, ..style },
                 "br" => {
                     out.push(Span::plain(" "));
+                    return;
+                }
+                // Images can't render in the terminal yet (graphics protocol is
+                // a later task); show the alt text or a kind-of-image symbol so
+                // icons/figures aren't silently dropped.
+                "img" => {
+                    out.push(Span {
+                        text: img_label(e),
+                        style: Inline {
+                            italic: true,
+                            ..style
+                        },
+                    });
                     return;
                 }
                 _ => style,
@@ -214,6 +226,64 @@ fn raw_text(node: NodeRef<Node>) -> String {
         }
     }
     s
+}
+
+/// Some books bake line numbers into the code text ("1 import std;"). When most
+/// lines start with their own 1-based index, strip those so our gutter is the
+/// single source of line numbers.
+fn strip_line_numbers(lines: Vec<String>) -> Vec<String> {
+    let mut nonempty = 0usize;
+    let mut numbered = 0usize;
+    for (i, l) in lines.iter().enumerate() {
+        let t = l.trim_start();
+        if t.is_empty() {
+            continue;
+        }
+        nonempty += 1;
+        if let Some(rest) = t.strip_prefix(&(i + 1).to_string()) {
+            if rest.is_empty() || rest.starts_with([' ', '\t']) {
+                numbered += 1;
+            }
+        }
+    }
+    if nonempty < 2 || numbered * 4 < nonempty * 3 {
+        return lines;
+    }
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let t = l.trim_start();
+            match t.strip_prefix(&(i + 1).to_string()) {
+                Some(rest) => rest.strip_prefix([' ', '\t']).unwrap_or(rest).to_string(),
+                None => l,
+            }
+        })
+        .collect()
+}
+
+/// A stand-in for an image: its alt text, or a symbol guessed from the source
+/// filename (warning/tip/note icons are common in technical books).
+fn img_label(e: &scraper::node::Element) -> String {
+    if let Some(alt) = e.attr("alt") {
+        let alt = alt.trim();
+        if !alt.is_empty() {
+            return format!("🖼 {alt}");
+        }
+    }
+    let src = e.attr("src").unwrap_or("").to_lowercase();
+    let symbol = if src.contains("warning") || src.contains("caution") {
+        "⚠"
+    } else if src.contains("tip") {
+        "💡"
+    } else if src.contains("note") || src.contains("info") {
+        "ℹ"
+    } else if src.contains("error") || src.contains("danger") {
+        "✖"
+    } else {
+        "🖼"
+    };
+    symbol.to_string()
 }
 
 fn trim_blank_edges(lines: impl Iterator<Item = String>) -> Vec<String> {

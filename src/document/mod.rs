@@ -51,6 +51,7 @@ pub struct Inline {
     pub bold: bool,
     pub italic: bool,
     pub code: bool,
+    pub link: bool,
 }
 
 /// A run of text with uniform inline styling.

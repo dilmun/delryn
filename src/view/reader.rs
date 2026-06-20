@@ -185,7 +185,12 @@ fn run_style(run: &Run, kind: LineKind) -> Style {
     if run.style.italic || matches!(kind, LineKind::Quote) {
         style = style.add_modifier(Modifier::ITALIC);
     }
-    if let Some((r, g, b)) = run.fg {
+    if run.style.link {
+        // Links: distinct colour + underline (clickable activation is a future task).
+        style = style
+            .fg(Color::Rgb(88, 160, 255))
+            .add_modifier(Modifier::UNDERLINED);
+    } else if let Some((r, g, b)) = run.fg {
         // Syntax colour: show at full strength.
         style = style.fg(Color::Rgb(r, g, b));
     } else if matches!(kind, LineKind::Quote | LineKind::Rule | LineKind::Code) {

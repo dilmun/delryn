@@ -56,6 +56,7 @@ pub fn highlight_code(lines: &[String], lang: Option<&str>) -> Vec<Vec<Run>> {
                             bold: style.font_style.contains(FontStyle::BOLD),
                             italic: style.font_style.contains(FontStyle::ITALIC),
                             code: true,
+                            link: false,
                         },
                         fg: Some((c.r, c.g, c.b)),
                     });

@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     println!("\n--- section {idx}, wrapped to 72 ---");
     let section = doc.load_section(idx)?;
     let lines = wrap_blocks(&section.blocks, 72);
-    for line in lines.iter().take(20) {
+    for line in lines.iter() {
         println!("{}", line.text());
     }
     println!("... ({} total wrapped lines)", lines.len());
