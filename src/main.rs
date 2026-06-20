@@ -62,16 +62,20 @@ fn main() -> Result<()> {
         None => App::library(),
     };
 
+    // Synchronized output (DEC 2026) can be toggled off for terminals that
+    // mishandle it: `DELRYN_SYNC=0 delryn …`.
+    let sync = std::env::var("DELRYN_SYNC").map(|v| v != "0").unwrap_or(true);
+
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
-    let result = run(&mut terminal, &mut app);
+    let result = run(&mut terminal, &mut app, sync);
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
 
-fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
-    draw(terminal, app)?;
+fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> {
+    draw(terminal, app, sync)?;
     let mut last_draw = Instant::now();
     let mut dirty = false;
 
@@ -107,7 +111,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
         }
 
         if dirty && last_draw.elapsed() >= FRAME {
-            draw(terminal, app)?;
+            draw(terminal, app, sync)?;
             last_draw = Instant::now();
             dirty = false;
         }
@@ -144,9 +148,13 @@ fn add_library(dir: Option<&str>) -> Result<()> {
 /// Render one frame, bracketed in synchronized output (DEC mode 2026) so the
 /// terminal presents it atomically — no tearing or jitter while scrolling.
 /// Terminals that don't support it ignore the escape sequences.
-fn draw(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
-    execute!(io::stdout(), BeginSynchronizedUpdate)?;
-    terminal.draw(|f| view::render(f, app))?;
-    execute!(io::stdout(), EndSynchronizedUpdate)?;
+fn draw(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> {
+    if sync {
+        execute!(io::stdout(), BeginSynchronizedUpdate)?;
+        terminal.draw(|f| view::render(f, app))?;
+        execute!(io::stdout(), EndSynchronizedUpdate)?;
+    } else {
+        terminal.draw(|f| view::render(f, app))?;
+    }
     Ok(())
 }
