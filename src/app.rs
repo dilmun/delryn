@@ -130,6 +130,9 @@ pub struct Reader {
     wrap_para_spacing: u8,
     /// Index of the top visible line within `lines`.
     pub scroll: usize,
+    /// Requested but not-yet-applied line movement; eased a few lines per frame
+    /// so a flood of held-key repeats scrolls smoothly instead of jumping.
+    scroll_pending: isize,
     pub focus: Focus,
     pub sidebar_sel: usize,
     /// Height of one column in lines, refreshed each draw.
@@ -196,6 +199,7 @@ impl Reader {
             wrap_line_spacing: 0,
             wrap_para_spacing: 1,
             scroll: 0,
+            scroll_pending: 0,
             focus: Focus::Content,
             sidebar_sel: 0,
             viewport_lines: 1,
@@ -321,6 +325,32 @@ impl Reader {
         self.scroll = 0;
         self.wrap_width = 0; // force a re-wrap on next draw
         self.prefetch_neighbors();
+    }
+
+    /// Request a smooth line movement (eased by `step_scroll`).
+    pub fn queue_scroll(&mut self, delta: isize) {
+        self.scroll_pending += delta;
+    }
+
+    /// Apply a few lines of the pending movement; called once per frame.
+    /// Returns whether anything moved (so the loop keeps animating).
+    pub fn step_scroll(&mut self) -> bool {
+        if self.scroll_pending == 0 {
+            return false;
+        }
+        let step = self.scroll_pending.clamp(-3, 3);
+        let before = (self.section, self.scroll);
+        if step > 0 {
+            self.scroll_down(step as usize);
+        } else {
+            self.scroll_up((-step) as usize);
+        }
+        self.scroll_pending -= step;
+        let moved = before != (self.section, self.scroll);
+        if !moved {
+            self.scroll_pending = 0; // hit the start/end of the book
+        }
+        moved
     }
 
     /// Scroll down, flowing into the next chapter at the bottom edge.
@@ -840,6 +870,19 @@ impl App {
         self.store.as_ref().map(|s| s.total_read_seconds()).unwrap_or(0)
     }
 
+    /// Is a smooth scroll in progress (so the loop should keep drawing)?
+    pub fn animating(&self) -> bool {
+        self.reader.as_ref().is_some_and(|r| r.scroll_pending != 0)
+    }
+
+    /// Advance one frame of smooth scrolling; returns whether anything moved.
+    pub fn step_scroll(&mut self) -> bool {
+        if self.mode != Mode::Reader {
+            return false;
+        }
+        self.reader.as_mut().is_some_and(|r| r.step_scroll())
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
         if key.kind != KeyEventKind::Press {
             return;
@@ -1117,11 +1160,11 @@ impl App {
                 save = true;
             }
             Action::Down(n) => match reader.focus {
-                Focus::Content => reader.scroll_down(n),
+                Focus::Content => reader.queue_scroll(n as isize),
                 Focus::Sidebar => reader.sidebar_move(n as isize),
             },
             Action::Up(n) => match reader.focus {
-                Focus::Content => reader.scroll_up(n),
+                Focus::Content => reader.queue_scroll(-(n as isize)),
                 Focus::Sidebar => reader.sidebar_move(-(n as isize)),
             },
             Action::HalfDown => reader.scroll_down(reader.page_lines.max(2) / 2),
@@ -1250,12 +1293,12 @@ impl App {
         match m.kind {
             MouseEventKind::ScrollDown => {
                 if let Some(r) = self.reader.as_mut() {
-                    r.scroll_down(3);
+                    r.queue_scroll(3);
                 }
             }
             MouseEventKind::ScrollUp => {
                 if let Some(r) = self.reader.as_mut() {
-                    r.scroll_up(3);
+                    r.queue_scroll(-3);
                 }
             }
             MouseEventKind::Down(_) => self.mouse_click(m.column, m.row),

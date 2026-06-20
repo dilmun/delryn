@@ -81,16 +81,16 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
 
     while !app.should_quit {
         // Block for input — only until the next frame is due if a redraw is
-        // pending, otherwise block long so an idle reader costs ~0% CPU.
-        let timeout = if dirty {
+        // pending or a scroll is animating, otherwise block long so an idle
+        // reader costs ~0% CPU.
+        let timeout = if dirty || app.animating() {
             FRAME.saturating_sub(last_draw.elapsed())
         } else {
             IDLE
         };
 
         if event::poll(timeout)? {
-            // Drain the whole burst before drawing, so holding a key coalesces
-            // into a single frame instead of one repaint per event.
+            // Drain the whole burst before drawing.
             loop {
                 match event::read()? {
                     Event::Key(key) => {
@@ -108,6 +108,11 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
                     break;
                 }
             }
+        }
+
+        // Ease pending scroll a few lines toward its target this frame.
+        if app.step_scroll() {
+            dirty = true;
         }
 
         if dirty && last_draw.elapsed() >= FRAME {
