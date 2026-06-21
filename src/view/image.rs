@@ -19,7 +19,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     f.render_widget(Clear, area);
 
     let bg = theme.bg.unwrap_or(ratatui::style::Color::Black);
-    let title = format!(" Image {}/{}  (n/N · Esc) ", view.sel + 1, view.protocols.len());
+    let title = format!(" Image {}/{} ", view.sel + 1, view.protocols.len());
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))

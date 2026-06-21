@@ -522,10 +522,10 @@ fn title_cell(b: &BookRow, grouped: bool, theme: Theme) -> Cell<'static> {
 }
 
 fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let left = if let Some(flash) = &app.lib_flash {
-        format!(" {flash}")
+    let state = if let Some(flash) = &app.lib_flash {
+        flash.clone()
     } else if app.lib_filtering || !app.lib_filter.is_empty() {
-        format!(" /{}", app.lib_filter)
+        format!("/{}", app.lib_filter)
     } else {
         let read = app.total_read_seconds();
         let sort = if app.lib_sort == SortKey::Default {
@@ -542,19 +542,25 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         } else {
             format!("{}/{} · ", app.lib_sel.min(app.lib_books.len() - 1) + 1, app.lib_books.len())
         };
+        let size = if app.is_grid() {
+            format!(" · {} covers", app.config.library_grid_size.label())
+        } else {
+            String::new()
+        };
         format!(
-            " {pos}{} · {}h{}m read{sort}",
+            "{pos}{} · {}h{}m read{sort}{size}",
             app.lib_view.label(),
             read / 3600,
             (read % 3600) / 60,
         )
     };
-    let right = "Tab pane  hjkl move  ⏎ open  e edit  c shelf  s sort  b/d panes  [] size  v view  q ";
-    let width = area.width as usize;
-    let pad = width.saturating_sub(left.chars().count() + right.chars().count());
-    let line = format!("{left}{}{right}", " ".repeat(pad));
-    let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
-    f.render_widget(Paragraph::new(Line::raw(line)).style(style), area);
+    // Grid has no side panes / resize; it gets cover-size keys instead.
+    let keys = if app.is_grid() {
+        "Tab pane · hjkl move · ⏎ open · e edit · c shelf · s sort · v view · +/- size · q"
+    } else {
+        "Tab pane · hjkl move · ⏎ open · e edit · c shelf · s sort · v view · b/d panes · [] size · q"
+    };
+    super::status::bar(f, area, theme, &state, keys);
 }
 
 /// `  Foundation #2` for a series book, else empty. The leading spaces separate

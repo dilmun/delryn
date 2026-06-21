@@ -8,6 +8,7 @@ pub mod meta_edit;
 pub mod reader;
 pub mod settings;
 pub mod shelf_picker;
+pub mod status;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -81,6 +82,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.shelf_picker.is_some() {
         shelf_picker::render(f, app);
     }
+    // An open overlay shows its shortcuts on the shared bottom status row,
+    // drawn last so it sits above the popup (which never reaches that row).
+    let a = f.area();
+    let bottom = Rect {
+        x: a.x,
+        y: a.y + a.height.saturating_sub(1),
+        width: a.width,
+        height: 1,
+    };
+    status::overlay(f, bottom, app, app.config.theme);
 }
 
 /// Truncate `s` to at most `max` display chars, with an ellipsis (shared by the

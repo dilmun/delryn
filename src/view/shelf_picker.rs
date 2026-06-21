@@ -35,7 +35,6 @@ pub fn render(f: &mut Frame, app: &App) {
     let rows = Layout::vertical([
         Constraint::Length(1), // book title
         Constraint::Min(0),    // shelves + new row
-        Constraint::Length(1), // hint
     ])
     .split(inner);
 
@@ -83,14 +82,5 @@ pub fn render(f: &mut Frame, app: &App) {
         )));
     }
     f.render_widget(Paragraph::new(lines), rows[1]);
-
-    let hint = if p.new_name.is_some() {
-        "type a name   ⏎ create   Esc back"
-    } else {
-        "↑↓ move   ⏎ toggle   Esc close"
-    };
-    f.render_widget(
-        Paragraph::new(Line::styled(hint, Style::default().fg(theme.muted))),
-        rows[2],
-    );
+    // Shortcuts live in the bottom status bar (see view::status).
 }
