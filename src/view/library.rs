@@ -7,18 +7,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::app::App;
+use crate::app::{App, LibView};
 use crate::store::LibrarySection;
 use crate::theme::Theme;
-
-const SECTIONS: [LibrarySection; 6] = [
-    LibrarySection::Recent,
-    LibrarySection::All,
-    LibrarySection::Favorites,
-    LibrarySection::Reading,
-    LibrarySection::Series,
-    LibrarySection::Duplicates,
-];
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
@@ -44,22 +35,40 @@ fn base(theme: Theme) -> Style {
     }
 }
 
+/// One sidebar row (a fixed section or a collection), highlighted when active.
+fn section_item(label: &str, here: bool, theme: Theme) -> ListItem<'static> {
+    let mut style = Style::default().fg(if here { theme.accent } else { theme.fg });
+    if let Some(bg) = theme.bg {
+        style = style.bg(bg);
+    }
+    if here {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    let marker = if here { "▸ " } else { "  " };
+    ListItem::new(Line::from(Span::styled(format!("{marker}{label}"), style)))
+}
+
 fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let items: Vec<ListItem> = SECTIONS
+    let mut items: Vec<ListItem> = LibrarySection::ALL
         .iter()
         .map(|s| {
-            let here = *s == app.lib_section;
-            let mut style = Style::default().fg(if here { theme.accent } else { theme.fg });
-            if let Some(bg) = theme.bg {
-                style = style.bg(bg);
-            }
-            if here {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            let marker = if here { "▸ " } else { "  " };
-            ListItem::new(Line::from(Span::styled(format!("{marker}{}", s.label()), style)))
+            let here = matches!(&app.lib_view, LibView::Section(cur) if cur == s);
+            section_item(s.label(), here, theme)
         })
         .collect();
+
+    // User collections, below a divider, each with its book count.
+    if !app.lib_shelves.is_empty() {
+        let mut header = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
+        if let Some(bg) = theme.bg {
+            header = header.bg(bg);
+        }
+        items.push(ListItem::new(Line::from(Span::styled("  Collections", header))));
+        for (name, count) in &app.lib_shelves {
+            let here = matches!(&app.lib_view, LibView::Shelf(cur) if cur == name);
+            items.push(section_item(&format!("{name}  ({count})"), here, theme));
+        }
+    }
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -96,14 +105,14 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
             // Calibre-style series suffix (` Foundation #2`), dimmed, capped to
             // half the title cell so it never crowds out the title itself.
             let suffix = series_suffix(b);
-            let suffix = truncate(&suffix, title_w / 2);
+            let suffix = super::truncate(&suffix, title_w / 2);
             let suffix_w = suffix.chars().count();
-            let title = truncate(&b.title, title_w.saturating_sub(suffix_w).max(4));
+            let title = super::truncate(&b.title, title_w.saturating_sub(suffix_w).max(4));
             let pad = title_w.saturating_sub(title.chars().count() + suffix_w);
             let year = b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
             let meta = format!(
                 "{:<18}  {:>4}  {:>3}%  {:>6}",
-                truncate(&b.author, 18),
+                super::truncate(&b.author, 18),
                 year,
                 b.pct,
                 fmt_size(b.size),
@@ -139,12 +148,12 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         format!(
             " {} books · {} · {}h{}m read",
             app.lib_books.len(),
-            app.lib_section.label(),
+            app.lib_view.label(),
             read / 3600,
             (read % 3600) / 60,
         )
     };
-    let right = "Tab section  / filter  f fav  e edit  ⏎ open  q quit ";
+    let right = "Tab view  / filter  f fav  e edit  c collection  ⏎ open  q quit ";
     let width = area.width as usize;
     let pad = width.saturating_sub(left.chars().count() + right.chars().count());
     let line = format!("{left}{}{right}", " ".repeat(pad));
@@ -170,16 +179,6 @@ fn fmt_idx(i: f32) -> String {
         format!("{}", i as i64)
     } else {
         format!("{i}")
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
-        t.push('…');
-        t
     }
 }
 

@@ -7,6 +7,7 @@ pub mod library;
 pub mod meta_edit;
 pub mod reader;
 pub mod settings;
+pub mod shelf_picker;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -39,5 +40,20 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     if app.meta_edit.is_some() {
         meta_edit::render(f, app);
+    }
+    if app.shelf_picker.is_some() {
+        shelf_picker::render(f, app);
+    }
+}
+
+/// Truncate `s` to at most `max` display chars, with an ellipsis (shared by the
+/// list/popup views).
+pub fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
+        t.push('…');
+        t
     }
 }

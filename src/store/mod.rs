@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS annotations (
     note       TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS shelves (
+    path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (path, name)
+);
 ";
 
 /// A bookmark or note, anchored to content by a text quote (reflow-stable).
@@ -65,6 +70,16 @@ pub enum LibrarySection {
 }
 
 impl LibrarySection {
+    /// The fixed sections, in sidebar / Tab-cycle order.
+    pub const ALL: [LibrarySection; 6] = [
+        LibrarySection::Recent,
+        LibrarySection::All,
+        LibrarySection::Favorites,
+        LibrarySection::Reading,
+        LibrarySection::Series,
+        LibrarySection::Duplicates,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             LibrarySection::Recent => "Recent",
@@ -456,11 +471,84 @@ impl Store {
             .unwrap_or(0)
     }
 
+    // --- Collections (shelves) -------------------------------------------
+
+    /// File a book onto a named collection (idempotent). Blank names are ignored.
+    pub fn add_to_shelf(&self, path: &str, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let _ = self.conn.execute(
+            "INSERT OR IGNORE INTO shelves (path, name) VALUES (?1, ?2)",
+            params![path, name],
+        );
+    }
+
+    /// Remove a book from a collection. A collection with no books left simply
+    /// stops appearing (membership is its only definition).
+    pub fn remove_from_shelf(&self, path: &str, name: &str) {
+        let _ = self.conn.execute(
+            "DELETE FROM shelves WHERE path = ?1 AND name = ?2",
+            params![path, name],
+        );
+    }
+
+    /// Collection names a book belongs to, sorted.
+    pub fn shelves_for(&self, path: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT name FROM shelves WHERE path = ?1 ORDER BY name COLLATE NOCASE",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![path], |r| r.get::<_, String>(0)) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// All collections with their book counts, sorted by name.
+    pub fn all_shelves(&self) -> Vec<(String, usize)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT name, COUNT(*) FROM shelves GROUP BY name ORDER BY name COLLATE NOCASE",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as usize))
+            }) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// Books on a collection, ordered by title.
+    pub fn books_in_shelf(&self, name: &str) -> Vec<BookRow> {
+        self.query_books_sql(
+            "JOIN shelves s ON s.path = b.path",
+            "s.name = ?1",
+            "b.title COLLATE NOCASE",
+            params![name],
+        )
+    }
+
     fn query_books(&self, where_clause: &str, order: &str) -> Vec<BookRow> {
+        self.query_books_sql("", where_clause, order, [])
+    }
+
+    /// Shared book query. `join` adds extra FROM joins (the column list and the
+    /// `progress` join are fixed); `params` binds any `?` placeholders.
+    fn query_books_sql<P: rusqlite::Params>(
+        &self,
+        join: &str,
+        where_clause: &str,
+        order: &str,
+        params: P,
+    ) -> Vec<BookRow> {
         let sql = format!(
             "SELECT b.path, b.title, b.author, b.year, b.size, b.favorite, b.sections, \
              p.section, p.frac, b.series, b.series_index, b.publisher \
-             FROM books b LEFT JOIN progress p ON p.path = b.path \
+             FROM books b LEFT JOIN progress p ON p.path = b.path {join} \
              WHERE {where_clause} ORDER BY {order}"
         );
 
@@ -468,7 +556,7 @@ impl Store {
         let Ok(mut stmt) = self.conn.prepare(&sql) else {
             return out;
         };
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map(params, |r| {
             let sections: i64 = r.get(6)?;
             let section: Option<i64> = r.get(7)?;
             let frac: Option<f64> = r.get(8)?;
@@ -613,6 +701,37 @@ mod tests {
         assert!(series.iter().all(|b| !b.series.is_empty()), "no standalone books");
         assert_eq!(series[1].series_index, Some(1.0));
         assert_eq!(series[1].publisher, "Gnome");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn shelves_membership_and_listing() {
+        let tmp = std::env::temp_dir().join(format!("delryn_shelf_{}", std::process::id()));
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let store = Store::open_default().unwrap();
+
+        store.upsert_book("/a.epub", "Alpha", "A", None, 1, 1, 1, "", None, "").unwrap();
+        store.upsert_book("/b.epub", "Beta", "B", None, 1, 1, 1, "", None, "").unwrap();
+
+        store.add_to_shelf("/a.epub", "Sci-Fi");
+        store.add_to_shelf("/a.epub", "Sci-Fi"); // idempotent
+        store.add_to_shelf("/b.epub", "Sci-Fi");
+        store.add_to_shelf("/a.epub", "To Read");
+        store.add_to_shelf("/a.epub", "  "); // blank ignored
+
+        assert_eq!(store.shelves_for("/a.epub"), vec!["Sci-Fi", "To Read"]);
+
+        let shelves = store.all_shelves();
+        assert_eq!(shelves, vec![("Sci-Fi".into(), 2), ("To Read".into(), 1)]);
+
+        let scifi = store.books_in_shelf("Sci-Fi");
+        let titles: Vec<&str> = scifi.iter().map(|b| b.title.as_str()).collect();
+        assert_eq!(titles, vec!["Alpha", "Beta"]);
+
+        // Removing the last member drops the collection from the listing.
+        store.remove_from_shelf("/a.epub", "To Read");
+        assert_eq!(store.all_shelves(), vec![("Sci-Fi".into(), 2)]);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -41,6 +41,24 @@ pub enum Mode {
     Reader,
 }
 
+/// The active library view: one of the fixed smart sections, or a user
+/// collection (shelf). Tab cycles through the sections then the collections.
+#[derive(Clone, PartialEq, Eq)]
+pub enum LibView {
+    Section(LibrarySection),
+    Shelf(String),
+}
+
+impl LibView {
+    /// Display label for the status bar.
+    pub fn label(&self) -> String {
+        match self {
+            LibView::Section(s) => s.label().to_string(),
+            LibView::Shelf(name) => name.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Content,
@@ -96,6 +114,28 @@ pub struct MetaEdit {
     pub values: Vec<String>,
     /// Focused field.
     pub row: usize,
+}
+
+/// Add-to-collection picker: toggle the focused book's membership in existing
+/// collections, or type a new collection name. The last row is "new".
+pub struct ShelfPicker {
+    /// Book being filed.
+    pub path: String,
+    /// Title, for the popup header.
+    pub title: String,
+    /// (collection name, whether the book is currently on it).
+    pub shelves: Vec<(String, bool)>,
+    /// Focused row; `shelves.len()` selects the "＋ New collection" row.
+    pub sel: usize,
+    /// Buffer while typing a new collection name (`None` when not creating).
+    pub new_name: Option<String>,
+}
+
+impl ShelfPicker {
+    /// The "new collection" row index (one past the existing shelves).
+    pub fn new_row(&self) -> usize {
+        self.shelves.len()
+    }
 }
 
 /// Labelled (name, value) rows for a settings tab, rendered by the popup.
@@ -1172,11 +1212,15 @@ pub struct App {
     /// Canonical path of the open book; key for persistence.
     book_path: String,
     // Library view state.
-    pub lib_section: LibrarySection,
+    pub lib_view: LibView,
+    /// Cached (collection name, book count), refreshed with the book list.
+    pub lib_shelves: Vec<(String, usize)>,
     pub lib_books: Vec<BookRow>,
     pub lib_sel: usize,
     pub lib_filter: String,
     pub lib_filtering: bool,
+    /// Open add-to-collection picker, if any.
+    pub shelf_picker: Option<ShelfPicker>,
 }
 
 /// Series index without a trailing `.0` (`2.0` → "2", `2.5` → "2.5"), for
@@ -1235,11 +1279,13 @@ impl App {
             session_start: Some(Instant::now()),
             store,
             book_path,
-            lib_section: LibrarySection::All,
+            lib_view: LibView::Section(LibrarySection::All),
+            lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_filter: String::new(),
             lib_filtering: false,
+            shelf_picker: None,
         })
     }
 
@@ -1266,11 +1312,13 @@ impl App {
             session_start: None,
             store,
             book_path: String::new(),
-            lib_section: LibrarySection::All,
+            lib_view: LibView::Section(LibrarySection::All),
+            lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_filter: String::new(),
             lib_filtering: false,
+            shelf_picker: None,
         };
         app.refresh_library();
         app
@@ -1279,13 +1327,28 @@ impl App {
     fn refresh_library(&mut self) {
         let Some(store) = &self.store else {
             self.lib_books.clear();
+            self.lib_shelves.clear();
             return;
         };
+        // Computed while the immutable `store` borrow is live, assigned after.
+        let shelves = store.all_shelves();
+        // If the active collection just lost its last book it no longer exists;
+        // fall back to All so the view and sidebar stay consistent.
+        let view = match &self.lib_view {
+            LibView::Shelf(name) if !shelves.iter().any(|(n, _)| n == name) => {
+                LibView::Section(LibrarySection::All)
+            }
+            v => v.clone(),
+        };
         let f = self.lib_filter.to_lowercase();
-        self.lib_books = if f.is_empty() {
-            store.list_books(self.lib_section)
+        let books = if f.is_empty() {
+            match &view {
+                LibView::Section(s) => store.list_books(*s),
+                LibView::Shelf(name) => store.books_in_shelf(name),
+            }
         } else {
-            // Library-wide search: title/author substring OR full-text match.
+            // Library-wide search: title/author/series/publisher substring OR
+            // full-text match (ignores the active section, by design).
             let fts: HashSet<String> = store.fts_paths(&self.lib_filter).into_iter().collect();
             store
                 .all_books()
@@ -1299,6 +1362,9 @@ impl App {
                 })
                 .collect()
         };
+        self.lib_shelves = shelves;
+        self.lib_view = view;
+        self.lib_books = books;
         if self.lib_sel >= self.lib_books.len() {
             self.lib_sel = self.lib_books.len().saturating_sub(1);
         }
@@ -1379,17 +1445,42 @@ impl App {
         self.refresh_library();
     }
 
-    fn cycle_section(&mut self) {
-        self.lib_section = match self.lib_section {
-            LibrarySection::Recent => LibrarySection::All,
-            LibrarySection::All => LibrarySection::Favorites,
-            LibrarySection::Favorites => LibrarySection::Reading,
-            LibrarySection::Reading => LibrarySection::Series,
-            LibrarySection::Series => LibrarySection::Duplicates,
-            LibrarySection::Duplicates => LibrarySection::Recent,
-        };
+    /// Tab through the fixed sections, then each collection, wrapping around.
+    fn cycle_view(&mut self) {
+        let total = LibrarySection::ALL.len() + self.lib_shelves.len();
+        if total == 0 {
+            return;
+        }
+        let next = (self.lib_view_index() + 1) % total;
+        self.lib_view = self.lib_view_at(next);
         self.lib_sel = 0;
         self.refresh_library();
+    }
+
+    /// Position of the active view within the section+collection ring.
+    fn lib_view_index(&self) -> usize {
+        let n = LibrarySection::ALL.len();
+        match &self.lib_view {
+            LibView::Section(s) => {
+                LibrarySection::ALL.iter().position(|x| x == s).unwrap_or(0)
+            }
+            LibView::Shelf(name) => self
+                .lib_shelves
+                .iter()
+                .position(|(nm, _)| nm == name)
+                .map(|p| n + p)
+                .unwrap_or(0),
+        }
+    }
+
+    /// The view at ring index `i` (sections first, then collections).
+    fn lib_view_at(&self, i: usize) -> LibView {
+        let n = LibrarySection::ALL.len();
+        if i < n {
+            LibView::Section(LibrarySection::ALL[i])
+        } else {
+            LibView::Shelf(self.lib_shelves[i - n].0.clone())
+        }
     }
 
     fn open_selected(&mut self) {
@@ -1491,6 +1582,10 @@ impl App {
         }
         if self.meta_edit.is_some() {
             self.meta_edit_key(key);
+            return;
+        }
+        if self.shelf_picker.is_some() {
+            self.shelf_picker_key(key);
             return;
         }
         if self.image_view.is_some() {
@@ -1783,12 +1878,137 @@ impl App {
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Char('o') => self.open_selected(),
             KeyCode::Char('f') => self.lib_favorite(),
             KeyCode::Char('e') => self.open_meta_edit(),
+            KeyCode::Char('c') => self.open_shelf_picker(),
+            KeyCode::Char('x') => self.remove_from_current_shelf(),
             KeyCode::Char('/') => self.lib_filtering = true,
-            KeyCode::Tab => self.cycle_section(),
+            KeyCode::Tab => self.cycle_view(),
             KeyCode::Char('g') => self.lib_sel = 0,
             KeyCode::Char('G') => self.lib_sel = self.lib_books.len().saturating_sub(1),
             _ => {}
         }
+    }
+
+    /// Open the add-to-collection picker for the selected book, pre-ticking the
+    /// collections it already belongs to.
+    fn open_shelf_picker(&mut self) {
+        let (Some(store), Some(book)) = (&self.store, self.lib_books.get(self.lib_sel)) else {
+            return;
+        };
+        let on: HashSet<String> = store.shelves_for(&book.path).into_iter().collect();
+        let shelves = store
+            .all_shelves()
+            .into_iter()
+            .map(|(name, _)| {
+                let member = on.contains(&name);
+                (name, member)
+            })
+            .collect();
+        self.shelf_picker = Some(ShelfPicker {
+            path: book.path.clone(),
+            title: book.title.clone(),
+            shelves,
+            sel: 0,
+            new_name: None,
+        });
+    }
+
+    /// In a collection view, drop the selected book from that collection.
+    fn remove_from_current_shelf(&mut self) {
+        let LibView::Shelf(name) = &self.lib_view else {
+            return;
+        };
+        let name = name.clone();
+        if let (Some(store), Some(book)) = (&self.store, self.lib_books.get(self.lib_sel)) {
+            store.remove_from_shelf(&book.path, &name);
+        }
+        self.refresh_library();
+    }
+
+    fn shelf_picker_key(&mut self, key: KeyEvent) {
+        let Some(p) = self.shelf_picker.as_mut() else {
+            return;
+        };
+        // Creating a new collection: the row is a text input.
+        if let Some(buf) = p.new_name.as_mut() {
+            match key.code {
+                KeyCode::Esc => p.new_name = None,
+                KeyCode::Backspace => {
+                    buf.pop();
+                }
+                KeyCode::Enter => {
+                    let name = buf.trim().to_string();
+                    if !name.is_empty() {
+                        if let Some(store) = &self.store {
+                            store.add_to_shelf(&p.path, &name);
+                        }
+                        self.refresh_shelf_picker();
+                    } else {
+                        p.new_name = None;
+                    }
+                }
+                KeyCode::Char(c) => buf.push(c),
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.shelf_picker = None;
+                self.refresh_library();
+            }
+            KeyCode::Up | KeyCode::Char('k') => p.sel = p.sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => p.sel = (p.sel + 1).min(p.new_row()),
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if p.sel == p.new_row() {
+                    p.new_name = Some(String::new());
+                } else {
+                    self.toggle_picked_shelf();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Toggle the focused book's membership in the selected collection, in place.
+    fn toggle_picked_shelf(&mut self) {
+        let Some(p) = self.shelf_picker.as_mut() else {
+            return;
+        };
+        let Some((name, member)) = p.shelves.get_mut(p.sel) else {
+            return;
+        };
+        if let Some(store) = &self.store {
+            if *member {
+                store.remove_from_shelf(&p.path, name);
+            } else {
+                store.add_to_shelf(&p.path, name);
+            }
+        }
+        *member = !*member;
+    }
+
+    /// Rebuild the picker's shelf list after a new collection is created, then
+    /// leave creating mode with the cursor on the new entry.
+    fn refresh_shelf_picker(&mut self) {
+        let Some(p) = self.shelf_picker.as_mut() else {
+            return;
+        };
+        let path = p.path.clone();
+        let Some(store) = &self.store else {
+            p.new_name = None;
+            return;
+        };
+        let on: HashSet<String> = store.shelves_for(&path).into_iter().collect();
+        p.shelves = store
+            .all_shelves()
+            .into_iter()
+            .map(|(name, _)| {
+                let member = on.contains(&name);
+                (name, member)
+            })
+            .collect();
+        p.new_name = None;
+        p.sel = p.sel.min(p.new_row());
     }
 
     fn apply(&mut self, action: Action) {
