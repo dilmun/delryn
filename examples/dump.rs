@@ -4,7 +4,7 @@
 use anyhow::Result;
 use delryn::document::Document;
 use delryn::document::epub::EpubDocument;
-use delryn::layout::wrap_blocks;
+use delryn::layout::{WrapOpts, wrap_blocks};
 
 fn main() -> Result<()> {
     let path = std::env::args().nth(1).expect("usage: dump <file.epub>");
@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     let idx: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(0);
     println!("\n--- section {idx}, wrapped to 72 ---");
     let section = doc.load_section(idx)?;
-    let lines = wrap_blocks(&section.blocks, 72, "base16-ocean.dark", 0, 1, &[]);
+    let lines = wrap_blocks(&section.blocks, &WrapOpts::default(), &[]);
     for line in lines.iter() {
         println!("{}", line.text());
     }

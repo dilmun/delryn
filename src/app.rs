@@ -20,7 +20,7 @@ use crate::config::Config;
 use crate::document::epub::EpubDocument;
 use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
-use crate::layout::{DisplayLine, wrap_blocks};
+use crate::layout::{DisplayLine, WrapOpts, wrap_blocks};
 use crate::library;
 use crate::media::{self, ImageBuilder, ImagePlan, ImageView, ImgKey};
 use crate::search::{Matcher, SearchMode};
@@ -109,6 +109,7 @@ pub fn settings_rows(config: &Config, tab: SettingsTab) -> Vec<(String, String)>
                     config.image_max_px.to_string()
                 },
             ),
+            ("Code wrap".into(), onoff(config.code_wrap)),
         ],
         SettingsTab::General => vec![("Mouse".into(), onoff(config.mouse_enabled))],
         SettingsTab::Library => vec![],
@@ -146,6 +147,11 @@ pub struct Reader {
     pub paragraph_spacing: u8,
     wrap_line_spacing: u8,
     wrap_para_spacing: u8,
+    /// Code rendering (set each render from config / panning).
+    pub code_wrap: bool,
+    pub code_hscroll: usize,
+    wrap_code_wrap: bool,
+    wrap_code_hscroll: usize,
     /// Built image protocols, reused across sections (revisiting a section
     /// reuses the already-uploaded image instead of re-transmitting). LRU.
     image_cache: LruCache<ImgKey, ImagePlan>,
@@ -245,6 +251,10 @@ impl Reader {
             paragraph_spacing: 1,
             wrap_line_spacing: 0,
             wrap_para_spacing: 1,
+            code_wrap: true,
+            code_hscroll: 0,
+            wrap_code_wrap: true,
+            wrap_code_hscroll: 0,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
             section_images: HashMap::new(),
             image_rows_estimate: Vec::new(),
@@ -350,20 +360,28 @@ impl Reader {
             || self.code_theme != self.wrap_theme
             || self.line_spacing != self.wrap_line_spacing
             || self.paragraph_spacing != self.wrap_para_spacing
+            || self.code_wrap != self.wrap_code_wrap
+            || self.code_hscroll != self.wrap_code_hscroll
             || self.images_key != self.wrap_images_key
         {
             self.lines = wrap_blocks(
                 &self.blocks,
-                width,
-                &self.code_theme,
-                self.line_spacing,
-                self.paragraph_spacing,
+                &WrapOpts {
+                    width,
+                    code_theme: &self.code_theme,
+                    line_spacing: self.line_spacing,
+                    para_spacing: self.paragraph_spacing,
+                    code_wrap: self.code_wrap,
+                    code_hscroll: self.code_hscroll,
+                },
                 &self.image_rows_estimate,
             );
             self.wrap_width = width;
             self.wrap_theme = self.code_theme.clone();
             self.wrap_line_spacing = self.line_spacing;
             self.wrap_para_spacing = self.paragraph_spacing;
+            self.wrap_code_wrap = self.code_wrap;
+            self.wrap_code_hscroll = self.code_hscroll;
             self.wrap_images_key = self.images_key;
         }
     }
@@ -848,10 +866,15 @@ impl Reader {
                 let blocks = self.fetch_blocks(s);
                 let lines = wrap_blocks(
                     &blocks,
-                    width,
-                    &self.code_theme,
-                    self.line_spacing,
-                    self.paragraph_spacing,
+                    &WrapOpts {
+                        width,
+                        code_theme: &self.code_theme,
+                        line_spacing: self.line_spacing,
+                        para_spacing: self.paragraph_spacing,
+                        // Search always wraps code so no matches are hidden off-screen.
+                        code_wrap: true,
+                        code_hscroll: 0,
+                    },
                     &[],
                 );
                 for (li, line) in lines.iter().enumerate() {
@@ -1484,6 +1507,7 @@ impl App {
                     (c.image_max_px as i32 + delta * 128).clamp(0, crate::config::MAX_IMAGE_PX as i32)
                         as u16
             }
+            (SettingsTab::Reading, 13) => c.code_wrap = !c.code_wrap,
             (SettingsTab::General, 0) => c.mouse_enabled = !c.mouse_enabled,
             _ => {}
         }
@@ -1662,6 +1686,24 @@ impl App {
             }
             Action::CopyCode => {
                 reader.copy_visible_code();
+            }
+            Action::ToggleCodeWrap => {
+                self.config.code_wrap = !self.config.code_wrap;
+                reader.code_hscroll = 0;
+                reader.flash = Some(
+                    if self.config.code_wrap { "code: wrap" } else { "code: no-wrap (< > to pan)" }
+                        .to_string(),
+                );
+                save = true;
+            }
+            // Horizontal panning only applies to non-wrapped code.
+            Action::PanLeft => {
+                reader.code_hscroll = reader.code_hscroll.saturating_sub(8);
+            }
+            Action::PanRight => {
+                if !self.config.code_wrap {
+                    reader.code_hscroll = (reader.code_hscroll + 8).min(400);
+                }
             }
             Action::None => {}
         }
