@@ -303,6 +303,19 @@ impl Store {
         );
     }
 
+    /// Repoint every per-book record from `old` to `new` after a file rename
+    /// (books row + progress, annotations, and shelf memberships).
+    pub fn rename_book_path(&self, old: &str, new: &str) {
+        for sql in [
+            "UPDATE books SET path = ?2 WHERE path = ?1",
+            "UPDATE progress SET path = ?2 WHERE path = ?1",
+            "UPDATE annotations SET path = ?2 WHERE path = ?1",
+            "UPDATE shelves SET path = ?2 WHERE path = ?1",
+        ] {
+            let _ = self.conn.execute(sql, params![old, new]);
+        }
+    }
+
     pub fn set_favorite(&self, path: &str, favorite: bool) {
         let _ = self.conn.execute(
             "UPDATE books SET favorite = ?2 WHERE path = ?1",

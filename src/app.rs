@@ -151,27 +151,46 @@ const F_YEAR: usize = 2;
 /// Field index of the Series-position field (validated as a float).
 const F_INDEX: usize = 4;
 
-/// Online-tab row layout: the two query fields, the Search action, then results.
+/// Online/Cover-tab row layout: two query fields, the Search action, then results.
 pub const ONLINE_TITLE: usize = 0;
 pub const ONLINE_AUTHOR: usize = 1;
 pub const ONLINE_SEARCH_ROW: usize = 2;
 pub const ONLINE_RESULTS_START: usize = 3;
 
+/// File-tab row layout: the template, the resulting name, then the Rename action.
+pub const FILE_TEMPLATE: usize = 0;
+pub const FILE_NAME: usize = 1;
+pub const FILE_RENAME_ROW: usize = 2;
+
+/// Default rename template (`Title.epub`). Placeholders are filled from the
+/// edited metadata; see [`fill_template`].
+pub const DEFAULT_RENAME_TEMPLATE: &str = "%T.%E";
+
 /// Tabs of the metadata editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditTab {
     Details,
+    Cover,
     Collections,
     Online,
+    File,
 }
 
 impl EditTab {
-    pub const ALL: [EditTab; 3] = [EditTab::Details, EditTab::Collections, EditTab::Online];
+    pub const ALL: [EditTab; 5] = [
+        EditTab::Details,
+        EditTab::Cover,
+        EditTab::Collections,
+        EditTab::Online,
+        EditTab::File,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             EditTab::Details => "Details",
+            EditTab::Cover => "Cover",
             EditTab::Collections => "Collections",
             EditTab::Online => "Online",
+            EditTab::File => "File",
         }
     }
 }
@@ -215,10 +234,10 @@ pub struct MetaEdit {
     /// Buffer while typing a new collection name (`None` otherwise).
     pub new_shelf: Option<String>,
 
-    // Online tab ----------------------------------------------------------
+    // Online / Cover tabs (shared search) --------------------------------
     pub q_title: String,
     pub q_author: String,
-    /// Focused online row: title/author query, Search, or a result index.
+    /// Focused row: title/author query, Search, or a result index.
     pub online_row: usize,
     pub results: Vec<Candidate>,
     /// A search is in flight.
@@ -227,6 +246,15 @@ pub struct MetaEdit {
     pub cover_pending: bool,
     /// Cover bytes to persist on save (from the chosen candidate).
     pub cover: Option<Vec<u8>>,
+
+    // File tab ------------------------------------------------------------
+    /// Rename template (placeholders filled from the edited metadata).
+    pub rename_template: String,
+    /// The resulting filename — recomputed from the template, or hand-edited.
+    pub rename_name: String,
+    /// Focused File-tab row (template / name / Rename action).
+    pub file_row: usize,
+
     /// Transient one-line status (search progress, results, errors).
     pub status: Option<String>,
 }
@@ -240,22 +268,33 @@ impl MetaEdit {
     /// Char length of whichever field is currently being typed into.
     fn cur_field_len(&self) -> usize {
         match self.tab {
-            EditTab::Online => match self.online_row {
+            EditTab::Online | EditTab::Cover => match self.online_row {
                 ONLINE_TITLE => self.q_title.chars().count(),
                 ONLINE_AUTHOR => self.q_author.chars().count(),
+                _ => 0,
+            },
+            EditTab::File => match self.file_row {
+                FILE_TEMPLATE => self.rename_template.chars().count(),
+                FILE_NAME => self.rename_name.chars().count(),
                 _ => 0,
             },
             _ => self.field_len(),
         }
     }
 
-    /// The string currently being typed into (Details field or Online query).
+    /// The string currently being typed into (a Details field, a query, or a
+    /// File-tab field).
     fn edit_target(&mut self) -> Option<&mut String> {
         match self.tab {
             EditTab::Details => self.values.get_mut(self.row),
-            EditTab::Online => match self.online_row {
+            EditTab::Online | EditTab::Cover => match self.online_row {
                 ONLINE_TITLE => Some(&mut self.q_title),
                 ONLINE_AUTHOR => Some(&mut self.q_author),
+                _ => None,
+            },
+            EditTab::File => match self.file_row {
+                FILE_TEMPLATE => Some(&mut self.rename_template),
+                FILE_NAME => Some(&mut self.rename_name),
                 _ => None,
             },
             EditTab::Collections => None,
@@ -1536,6 +1575,64 @@ fn load_cover_bytes(path: &str) -> Option<Vec<u8>> {
     epub::read_metadata(path).ok().and_then(|(m, _)| m.cover.map(|(b, _)| b))
 }
 
+/// Fill a rename template from the edited metadata `values` (in [`META_FIELDS`]
+/// order) and the file `ext`. Placeholders: `%T` title, `%A` author, `%Y` year,
+/// `%S` series, `%I` series index, `%P` publisher, `%E` extension; `%%` → `%`.
+/// The result is sanitized for use as a filename.
+fn fill_template(template: &str, values: &[String], ext: &str) -> String {
+    let get = |i: usize| values.get(i).map(String::as_str).unwrap_or("").trim();
+    let mut out = String::new();
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('T') => out.push_str(get(0)),
+            Some('A') => out.push_str(get(1)),
+            Some('Y') => out.push_str(get(2)),
+            Some('S') => out.push_str(get(3)),
+            Some('I') => out.push_str(get(4)),
+            Some('P') => out.push_str(get(5)),
+            Some('E') => out.push_str(ext),
+            Some('%') => out.push('%'),
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    sanitize_filename(&out)
+}
+
+/// Make a string safe as a single filename: drop path separators and characters
+/// that misbehave across filesystems, collapse whitespace, trim.
+fn sanitize_filename(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_space = false;
+    for c in s.chars() {
+        let mapped = match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => Some(' '),
+            c if c.is_control() => Some(' '),
+            c => Some(c),
+        };
+        if let Some(m) = mapped {
+            if m == ' ' {
+                if !last_space {
+                    out.push(' ');
+                }
+                last_space = true;
+            } else {
+                out.push(m);
+                last_space = false;
+            }
+        }
+    }
+    out.trim().to_string()
+}
+
 /// The six editable metadata fields, in [`META_FIELDS`] order, from a document's
 /// [`Metadata`]. Shared by the editor's prefill and reset-to-source.
 fn meta_fields_from(m: &Metadata) -> Vec<String> {
@@ -1905,8 +2002,12 @@ impl App {
             fetching: false,
             cover_pending: false,
             cover: None,
+            rename_template: DEFAULT_RENAME_TEMPLATE.to_string(),
+            rename_name: String::new(),
+            file_row: FILE_TEMPLATE,
             status: None,
         });
+        self.recompute_rename();
     }
 
     fn meta_edit_key(&mut self, key: KeyEvent) {
@@ -1934,7 +2035,8 @@ impl App {
             _ => match tab {
                 EditTab::Details => self.details_nav_key(key),
                 EditTab::Collections => self.collections_nav_key(key),
-                EditTab::Online => self.online_nav_key(key),
+                EditTab::Online | EditTab::Cover => self.online_nav_key(key),
+                EditTab::File => self.file_nav_key(key),
             },
         }
     }
@@ -1947,6 +2049,10 @@ impl App {
         let n = EditTab::ALL.len() as isize;
         ed.tab = EditTab::ALL[(i + delta).rem_euclid(n) as usize];
         ed.mode = EditMode::Nav;
+        // Entering the File tab refreshes the previewed name from the template.
+        if ed.tab == EditTab::File {
+            self.recompute_rename();
+        }
     }
 
     /// Details tab, navigate mode: move between fields; Enter edits.
@@ -1977,47 +2083,55 @@ impl App {
 
     /// Edit mode: type into the focused field (Details or Online query).
     fn meta_edit_typing(&mut self, key: KeyEvent) {
-        let Some(ed) = self.meta_edit.as_mut() else {
-            return;
-        };
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Esc | KeyCode::Enter => ed.mode = EditMode::Nav,
-            KeyCode::Left => ed.cursor = ed.cursor.saturating_sub(1),
-            KeyCode::Right => ed.cursor = (ed.cursor + 1).min(ed.cur_field_len()),
-            KeyCode::Home => ed.cursor = 0,
-            KeyCode::End => ed.cursor = ed.cur_field_len(),
-            KeyCode::Char('u') if ctrl => {
-                if let Some(s) = ed.edit_target() {
-                    s.clear();
+        let recompute;
+        {
+            let Some(ed) = self.meta_edit.as_mut() else {
+                return;
+            };
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => ed.mode = EditMode::Nav,
+                KeyCode::Left => ed.cursor = ed.cursor.saturating_sub(1),
+                KeyCode::Right => ed.cursor = (ed.cursor + 1).min(ed.cur_field_len()),
+                KeyCode::Home => ed.cursor = 0,
+                KeyCode::End => ed.cursor = ed.cur_field_len(),
+                KeyCode::Char('u') if ctrl => {
+                    if let Some(s) = ed.edit_target() {
+                        s.clear();
+                    }
+                    ed.cursor = 0;
                 }
-                ed.cursor = 0;
+                KeyCode::Backspace => {
+                    let cur = ed.cursor;
+                    let removed = ed.edit_target().is_some_and(|s| str_delete_before(s, cur));
+                    if removed {
+                        ed.cursor -= 1;
+                    }
+                }
+                KeyCode::Delete => {
+                    let cur = ed.cursor;
+                    if let Some(s) = ed.edit_target() {
+                        str_delete_at(s, cur);
+                    }
+                }
+                KeyCode::Char(c) => {
+                    let cur = ed.cursor;
+                    let mut inserted = false;
+                    if let Some(s) = ed.edit_target() {
+                        str_insert(s, cur, c);
+                        inserted = true;
+                    }
+                    if inserted {
+                        ed.cursor += 1;
+                    }
+                }
+                _ => {}
             }
-            KeyCode::Backspace => {
-                let cur = ed.cursor;
-                let removed = ed.edit_target().is_some_and(|s| str_delete_before(s, cur));
-                if removed {
-                    ed.cursor -= 1;
-                }
-            }
-            KeyCode::Delete => {
-                let cur = ed.cursor;
-                if let Some(s) = ed.edit_target() {
-                    str_delete_at(s, cur);
-                }
-            }
-            KeyCode::Char(c) => {
-                let cur = ed.cursor;
-                let mut inserted = false;
-                if let Some(s) = ed.edit_target() {
-                    str_insert(s, cur, c);
-                    inserted = true;
-                }
-                if inserted {
-                    ed.cursor += 1;
-                }
-            }
-            _ => {}
+            // Editing the rename template re-derives the previewed filename.
+            recompute = ed.tab == EditTab::File && ed.file_row == FILE_TEMPLATE;
+        }
+        if recompute {
+            self.recompute_rename();
         }
     }
 
@@ -2115,11 +2229,12 @@ impl App {
         }
     }
 
-    /// Online tab, navigate mode: move between the query fields, Search, and
-    /// results; Enter edits a query / runs the search / applies a result.
+    /// Online/Cover tabs, navigate mode: move between the query fields, Search,
+    /// and results; Enter edits a query, runs the search, or applies a result
+    /// (metadata on the Online tab, cover on the Cover tab).
     fn online_nav_key(&mut self, key: KeyEvent) {
-        let (row, results) = match &self.meta_edit {
-            Some(e) => (e.online_row, e.results.len()),
+        let (row, results, tab) = match &self.meta_edit {
+            Some(e) => (e.online_row, e.results.len(), e.tab),
             None => return,
         };
         let max_row = if results == 0 {
@@ -2146,10 +2261,133 @@ impl App {
                     }
                 }
                 ONLINE_SEARCH_ROW => self.online_search(),
-                _ => self.apply_candidate(row - ONLINE_RESULTS_START),
+                _ => {
+                    let idx = row - ONLINE_RESULTS_START;
+                    if tab == EditTab::Cover {
+                        self.apply_cover(idx);
+                    } else {
+                        self.apply_candidate(idx);
+                    }
+                }
             },
             _ => {}
         }
+    }
+
+    /// Cover tab: download the chosen candidate's cover and stage it for save.
+    fn apply_cover(&mut self, idx: usize) {
+        let url = {
+            let Some(ed) = self.meta_edit.as_mut() else {
+                return;
+            };
+            let Some(c) = ed.results.get(idx) else {
+                return;
+            };
+            let Some(url) = c.cover_url() else {
+                ed.status = Some("that result has no cover".into());
+                return;
+            };
+            ed.cover_pending = true;
+            ed.status = Some("fetching cover…".into());
+            url
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(OnlineMsg::Cover(online::fetch_cover(&url)));
+        });
+        self.online_rx = Some(rx);
+    }
+
+    /// File tab, navigate mode: move between the template, name, and Rename
+    /// action; Enter edits a field or performs the rename.
+    fn file_nav_key(&mut self, key: KeyEvent) {
+        let row = match &self.meta_edit {
+            Some(e) => e.file_row,
+            None => return,
+        };
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    e.file_row = e.file_row.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    e.file_row = (e.file_row + 1).min(FILE_RENAME_ROW);
+                }
+            }
+            KeyCode::Enter => match row {
+                FILE_TEMPLATE | FILE_NAME => {
+                    if let Some(e) = self.meta_edit.as_mut() {
+                        e.mode = EditMode::Edit;
+                        e.cursor = e.cur_field_len();
+                    }
+                }
+                _ => self.apply_rename(),
+            },
+            _ => {}
+        }
+    }
+
+    /// Recompute the previewed filename from the template + current metadata.
+    fn recompute_rename(&mut self) {
+        let Some(ed) = self.meta_edit.as_mut() else {
+            return;
+        };
+        let ext = std::path::Path::new(&ed.path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("epub");
+        ed.rename_name = fill_template(&ed.rename_template, &ed.values, ext);
+    }
+
+    /// Perform the rename: move the file, then repoint the database + cover.
+    fn apply_rename(&mut self) {
+        let Some(ed) = self.meta_edit.as_ref() else {
+            return;
+        };
+        let name = sanitize_filename(ed.rename_name.trim());
+        let old = ed.path.clone();
+        if name.is_empty() {
+            if let Some(e) = self.meta_edit.as_mut() {
+                e.status = Some("name is empty".into());
+            }
+            return;
+        }
+        let old_path = std::path::Path::new(&old);
+        let new_path = match old_path.parent() {
+            Some(dir) => dir.join(&name),
+            None => std::path::PathBuf::from(&name),
+        };
+        let new = new_path.to_string_lossy().into_owned();
+        if new == old {
+            if let Some(e) = self.meta_edit.as_mut() {
+                e.status = Some("name unchanged".into());
+            }
+            return;
+        }
+        if new_path.exists() {
+            if let Some(e) = self.meta_edit.as_mut() {
+                e.status = Some("a file with that name already exists".into());
+            }
+            return;
+        }
+        if std::fs::rename(&old, &new_path).is_err() {
+            if let Some(e) = self.meta_edit.as_mut() {
+                e.status = Some("rename failed".into());
+            }
+            return;
+        }
+        // Repoint persistence + move the cached cover to the new key.
+        if let Some(store) = &self.store {
+            store.rename_book_path(&old, &new);
+        }
+        let _ = std::fs::rename(online::cover_cache_path(&old), online::cover_cache_path(&new));
+        if let Some(e) = self.meta_edit.as_mut() {
+            e.path = new;
+            e.status = Some(format!("renamed to {name}"));
+        }
+        self.refresh_library();
     }
 
     /// Kick off a background Open Library search from the query fields.
@@ -3412,6 +3650,75 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[test]
+    fn rename_template_fills_and_sanitizes() {
+        let v: Vec<String> = ["Dune", "Frank Herbert", "1965", "Dune", "1", "Ace"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(fill_template("%T.%E", &v, "epub"), "Dune.epub");
+        assert_eq!(
+            fill_template("%A - %T (%Y).%E", &v, "epub"),
+            "Frank Herbert - Dune (1965).epub"
+        );
+        assert_eq!(fill_template("%S %I - %T.%E", &v, "epub"), "Dune 1 - Dune.epub");
+        assert_eq!(fill_template("100%% %T.%E", &v, "epub"), "100% Dune.epub");
+        // Path separators / illegal chars become spaces (collapsed).
+        let bad: Vec<String> = ["A/B:C", "", "", "", "", ""]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(fill_template("%T.%E", &bad, "epub"), "A B C.epub");
+    }
+
+    // Renaming a book moves the file and repoints the DB; the list reflects it.
+    #[test]
+    fn rename_book_moves_file_and_updates_db() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_rn_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let books = tmp.join("books");
+        std::fs::create_dir_all(&books).unwrap();
+        let old = books.join("messy old name.epub");
+        std::fs::write(&old, b"not really an epub").unwrap();
+        let old_str = old.to_string_lossy().into_owned();
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book(&old_str, "Clean Title", "Auth", Some(2001), 1, 1, 1, "", None, "")
+                .unwrap();
+            store.set_favorite(&old_str, true);
+        }
+
+        let mut app = App::library();
+        assert_eq!(app.lib_books.len(), 1);
+        app.on_key(key('e'));
+        // Details → Cover → Collections → Online → File.
+        for _ in 0..4 {
+            app.on_key(code(KeyCode::Tab));
+        }
+        assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::File);
+        // Entering the File tab derived the name from "%T.%E".
+        assert_eq!(app.meta_edit.as_ref().unwrap().rename_name, "Clean Title.epub");
+        // Move to the Rename action and trigger it.
+        app.on_key(code(KeyCode::Down));
+        app.on_key(code(KeyCode::Down));
+        app.on_key(code(KeyCode::Enter));
+
+        let new = books.join("Clean Title.epub");
+        assert!(new.exists(), "renamed file exists");
+        assert!(!old.exists(), "old file is gone");
+        assert_eq!(
+            app.lib_books[0].path,
+            new.to_string_lossy(),
+            "DB path repointed and reloaded"
+        );
+        assert!(app.lib_books[0].favorite, "favorite preserved across rename");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     // The settings cursor lands only on items, never on section headers.
     #[test]
     fn settings_nav_skips_section_headers() {
@@ -3456,7 +3763,8 @@ mod tests {
 
         let mut app = App::library();
         app.on_key(key('e'));
-        // Tab to Collections.
+        // Tab to Collections (Details → Cover → Collections).
+        app.on_key(code(KeyCode::Tab));
         app.on_key(code(KeyCode::Tab));
         assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Collections);
         // No shelves yet → cursor sits on the "new" row; Enter starts typing.
