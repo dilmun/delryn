@@ -63,6 +63,21 @@ impl LibView {
     }
 }
 
+/// Which library pane has the keyboard. Tab cycles through the visible ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibPane {
+    Sidebar,
+    List,
+    Detail,
+}
+
+/// Sidebar width bounds (cells).
+pub const SIDEBAR_W_MIN: u16 = 16;
+pub const SIDEBAR_W_MAX: u16 = 44;
+/// Detail-pane width bounds (cells).
+pub const DETAIL_W_MIN: u16 = 24;
+pub const DETAIL_W_MAX: u16 = 60;
+
 /// How the book list is sorted. `Default` keeps each section's natural order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
@@ -1521,9 +1536,13 @@ pub struct App {
     book_path: String,
     // Library view state.
     pub lib_view: LibView,
-    /// Which pane has the keyboard: the book list (Content) or the sections /
-    /// collections sidebar. Tab toggles it.
-    pub lib_focus: Focus,
+    /// Which pane has the keyboard (Sidebar / List / Detail). Tab cycles it.
+    pub lib_pane: LibPane,
+    /// Show the sections/collections sidebar.
+    pub lib_show_sidebar: bool,
+    /// Sidebar / detail pane widths (resizable with `[` `]`).
+    pub lib_sidebar_w: u16,
+    pub lib_detail_w: u16,
     /// Cached (collection name, book count), refreshed with the book list.
     pub lib_shelves: Vec<(String, usize)>,
     pub lib_books: Vec<BookRow>,
@@ -1722,7 +1741,10 @@ impl App {
             store,
             book_path,
             lib_view: LibView::Section(LibrarySection::All),
-            lib_focus: Focus::Content,
+            lib_pane: LibPane::List,
+            lib_show_sidebar: true,
+            lib_sidebar_w: 24,
+            lib_detail_w: 36,
             lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
@@ -1765,7 +1787,10 @@ impl App {
             store,
             book_path: String::new(),
             lib_view: LibView::Section(LibrarySection::All),
-            lib_focus: Focus::Content,
+            lib_pane: LibPane::List,
+            lib_show_sidebar: true,
+            lib_sidebar_w: 24,
+            lib_detail_w: 36,
             lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
@@ -2530,12 +2555,53 @@ impl App {
         self.refresh_library();
     }
 
-    /// Toggle the keyboard focus between the book list and the sidebar.
-    fn lib_toggle_focus(&mut self) {
-        self.lib_focus = match self.lib_focus {
-            Focus::Content => Focus::Sidebar,
-            Focus::Sidebar => Focus::Content,
-        };
+    /// Visible panes, left → right, given show flags and the active layout.
+    fn lib_visible_panes(&self) -> Vec<LibPane> {
+        let mut panes = Vec::new();
+        if self.lib_show_sidebar {
+            panes.push(LibPane::Sidebar);
+        }
+        panes.push(LibPane::List);
+        // The detail pane only exists alongside the list views.
+        if self.lib_detail && self.config.library_layout != LibLayout::Grid {
+            panes.push(LibPane::Detail);
+        }
+        panes
+    }
+
+    /// Move the keyboard focus to the next/previous visible pane.
+    fn lib_cycle_pane(&mut self, delta: isize) {
+        let panes = self.lib_visible_panes();
+        if panes.is_empty() {
+            return;
+        }
+        let cur = panes.iter().position(|p| *p == self.lib_pane).unwrap_or(0) as isize;
+        let next = (cur + delta).rem_euclid(panes.len() as isize) as usize;
+        self.lib_pane = panes[next];
+    }
+
+    /// Keep the focused pane valid when one is hidden.
+    fn lib_ensure_pane_visible(&mut self) {
+        if !self.lib_visible_panes().contains(&self.lib_pane) {
+            self.lib_pane = LibPane::List;
+        }
+    }
+
+    /// Grow/shrink the focused side pane (`[`/`]`); the list takes the slack.
+    fn lib_resize(&mut self, delta: i16) {
+        match self.lib_pane {
+            LibPane::Sidebar => {
+                self.lib_sidebar_w = (self.lib_sidebar_w as i16 + delta)
+                    .clamp(SIDEBAR_W_MIN as i16, SIDEBAR_W_MAX as i16)
+                    as u16;
+            }
+            LibPane::Detail => {
+                self.lib_detail_w = (self.lib_detail_w as i16 + delta)
+                    .clamp(DETAIL_W_MIN as i16, DETAIL_W_MAX as i16)
+                    as u16;
+            }
+            LibPane::List => {}
+        }
     }
 
     /// Total entries in the sidebar (fixed sections + collections).
@@ -2991,7 +3057,8 @@ impl App {
             }
             return;
         }
-        let sidebar = self.lib_focus == Focus::Sidebar;
+        let pane = self.lib_pane;
+        let grid = self.is_grid();
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Esc => {
@@ -3002,65 +3069,66 @@ impl App {
                     self.refresh_library();
                 }
             }
-            // Tab toggles which pane has the keyboard.
-            KeyCode::Tab | KeyCode::BackTab => self.lib_toggle_focus(),
-            // Up/down: sidebar cursor when focused; else one row (grid rows are
-            // `cols` wide).
-            KeyCode::Char('j') | KeyCode::Down => {
-                if sidebar {
-                    self.lib_side_move(1)
-                } else {
-                    self.lib_move(self.grid_step())
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if sidebar {
-                    self.lib_side_move(-1)
-                } else {
-                    self.lib_move(-self.grid_step())
-                }
-            }
-            // Left: in the grid move one cell left; otherwise jump to the sidebar.
+            // Tab cycles focus through the visible panes.
+            KeyCode::Tab => self.lib_cycle_pane(1),
+            KeyCode::BackTab => self.lib_cycle_pane(-1),
+            // Up/down: sidebar cursor, or one list row (grid rows are `cols` wide).
+            KeyCode::Char('j') | KeyCode::Down => match pane {
+                LibPane::Sidebar => self.lib_side_move(1),
+                LibPane::List => self.lib_move(self.grid_step()),
+                LibPane::Detail => {}
+            },
+            KeyCode::Char('k') | KeyCode::Up => match pane {
+                LibPane::Sidebar => self.lib_side_move(-1),
+                LibPane::List => self.lib_move(-self.grid_step()),
+                LibPane::Detail => {}
+            },
+            // Left/right: move a grid cell when browsing the grid, else move the
+            // pane focus left/right.
             KeyCode::Char('h') | KeyCode::Left => {
-                if !sidebar && self.is_grid() {
+                if pane == LibPane::List && grid {
                     self.lib_move(-1)
                 } else {
-                    self.lib_focus = Focus::Sidebar
+                    self.lib_cycle_pane(-1)
                 }
             }
-            // Right: sidebar → list; grid → one cell right; list → open.
             KeyCode::Char('l') | KeyCode::Right => {
-                if sidebar {
-                    self.lib_focus = Focus::Content;
-                } else if self.is_grid() {
+                if pane == LibPane::List && grid {
                     self.lib_move(1)
                 } else {
-                    self.open_selected();
+                    self.lib_cycle_pane(1)
                 }
             }
-            // Enter: sidebar → list; else open the selected book.
+            // Enter: from the sidebar step into the list; else open the book.
             KeyCode::Enter => {
-                if sidebar {
-                    self.lib_focus = Focus::Content;
+                if pane == LibPane::Sidebar {
+                    self.lib_pane = LibPane::List;
                 } else {
                     self.open_selected();
-                }
-            }
-            KeyCode::Char('g') => {
-                if sidebar {
-                    self.lib_set_view_index(0)
-                } else {
-                    self.lib_sel = 0
-                }
-            }
-            KeyCode::Char('G') => {
-                if sidebar {
-                    self.lib_set_view_index(self.lib_view_count().saturating_sub(1))
-                } else {
-                    self.lib_sel = self.lib_books.len().saturating_sub(1)
                 }
             }
             KeyCode::Char('o') => self.open_selected(),
+            KeyCode::Char('g') => match pane {
+                LibPane::Sidebar => self.lib_set_view_index(0),
+                _ => self.lib_sel = 0,
+            },
+            KeyCode::Char('G') => match pane {
+                LibPane::Sidebar => {
+                    self.lib_set_view_index(self.lib_view_count().saturating_sub(1))
+                }
+                _ => self.lib_sel = self.lib_books.len().saturating_sub(1),
+            },
+            // Resize the focused side pane; show/hide the sidebar / detail pane.
+            KeyCode::Char('[') => self.lib_resize(-2),
+            KeyCode::Char(']') => self.lib_resize(2),
+            KeyCode::Char('b') => {
+                self.lib_show_sidebar = !self.lib_show_sidebar;
+                self.lib_ensure_pane_visible();
+            }
+            KeyCode::Char('d') => {
+                self.lib_detail = !self.lib_detail;
+                self.lib_ensure_pane_visible();
+            }
             // Book actions operate on the selected book regardless of focus.
             KeyCode::Char('f') => self.lib_favorite(),
             KeyCode::Char('e') => self.open_meta_edit(),
@@ -3069,10 +3137,10 @@ impl App {
             KeyCode::Char('v') => {
                 self.config.library_layout = self.config.library_layout.next();
                 self.config.save();
+                self.lib_ensure_pane_visible();
             }
             KeyCode::Char('s') => self.cycle_sort(),
             KeyCode::Char('S') => self.toggle_sort_dir(),
-            KeyCode::Char('d') => self.lib_detail = !self.lib_detail,
             KeyCode::Char('/') => self.lib_filtering = true,
             _ => {}
         }
@@ -3501,12 +3569,12 @@ mod tests {
         }
 
         let mut app = App::library();
-        assert_eq!(app.lib_focus, Focus::Content, "starts in the list");
+        assert_eq!(app.lib_pane, LibPane::List, "starts in the list");
         assert_eq!(app.lib_view, LibView::Section(LibrarySection::All));
 
-        // Tab moves the keyboard into the sidebar.
-        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.lib_focus, Focus::Sidebar);
+        // h moves the keyboard left into the sidebar.
+        app.on_key(key('h'));
+        assert_eq!(app.lib_pane, LibPane::Sidebar);
 
         // j/k now walk the sections (All → Favorites → All), not the book list.
         app.on_key(key('j'));
@@ -3522,13 +3590,54 @@ mod tests {
 
         // Enter steps into the list.
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.lib_focus, Focus::Content);
+        assert_eq!(app.lib_pane, LibPane::List);
+
+        // b hides the sidebar; focus falls back to the list (it can't stay there).
+        app.on_key(key('h')); // focus sidebar
+        assert_eq!(app.lib_pane, LibPane::Sidebar);
+        app.on_key(key('b')); // hide sidebar
+        assert!(!app.lib_show_sidebar);
+        assert_eq!(app.lib_pane, LibPane::List, "focus leaves the hidden pane");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    // Tab cycles the three panes; [ ] resize the focused side pane (clamped).
+    #[test]
+    fn pane_cycle_and_resize() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_panes_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let mut app = App::library();
+
+        // List → Detail → Sidebar → List.
+        assert_eq!(app.lib_pane, LibPane::List);
+        app.on_key(code(KeyCode::Tab));
+        assert_eq!(app.lib_pane, LibPane::Detail);
+        app.on_key(code(KeyCode::Tab));
+        assert_eq!(app.lib_pane, LibPane::Sidebar);
+        app.on_key(code(KeyCode::Tab));
+        assert_eq!(app.lib_pane, LibPane::List);
+
+        // Resize the sidebar (focus it first).
+        app.on_key(key('h'));
+        assert_eq!(app.lib_pane, LibPane::Sidebar);
+        let w0 = app.lib_sidebar_w;
+        app.on_key(key(']'));
+        assert_eq!(app.lib_sidebar_w, w0 + 2);
+        app.on_key(key('['));
+        assert_eq!(app.lib_sidebar_w, w0);
+        for _ in 0..40 {
+            app.on_key(key('['));
+        }
+        assert_eq!(app.lib_sidebar_w, SIDEBAR_W_MIN, "clamped at the minimum");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // Two-mode editing: j/k navigate fields, Enter enters edit mode, ^S saves;

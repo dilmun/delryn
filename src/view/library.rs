@@ -12,15 +12,13 @@ use ratatui::widgets::{
 };
 use ratatui_image::{Resize, StatefulImage};
 
-use crate::app::{App, Focus, LibView, SortKey};
+use crate::app::{App, LibPane, LibView, SortKey};
 use crate::config::LibLayout;
 use crate::store::{BookRow, LibrarySection};
 use crate::theme::Theme;
 
 /// Minimum body width before the detail pane is shown.
 const DETAIL_MIN_WIDTH: u16 = 90;
-/// Width of the detail pane.
-const DETAIL_WIDTH: u16 = 36;
 
 /// Grid cover-card width and height in cells.
 const COVER_W: u16 = 14;
@@ -44,36 +42,51 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let body = rows[0];
 
     let grid = app.config.library_layout == LibLayout::Grid;
+    let show_sidebar = app.lib_show_sidebar;
     // Detail pane: only for the list views, when wanted and there's room (the
     // grid is itself a cover view, so it takes the full width).
     let show_detail = !grid && app.lib_detail && body.width >= DETAIL_MIN_WIDTH;
+    // Clamp pane widths so the list always keeps a usable middle.
+    let cap = (body.width / 3).max(1);
+    let sidebar_w = app.lib_sidebar_w.min(cap);
+    let detail_w = app.lib_detail_w.min(cap);
 
+    let mut constraints = Vec::new();
+    if show_sidebar {
+        constraints.push(Constraint::Length(sidebar_w));
+    }
+    constraints.push(Constraint::Min(10));
+    if show_detail {
+        constraints.push(Constraint::Length(detail_w));
+    }
+    let cols = Layout::horizontal(constraints).split(body);
+
+    let mut i = 0;
+    if show_sidebar {
+        render_sections(f, cols[i], app, theme, app.lib_pane == LibPane::Sidebar);
+        i += 1;
+    }
+    let list_area = cols[i];
+    i += 1;
     if grid {
-        let cols = Layout::horizontal([Constraint::Length(24), Constraint::Min(0)]).split(body);
-        render_sections(f, cols[0], app, theme);
-        render_grid(f, cols[1], app, theme);
-    } else if show_detail {
-        let cols = Layout::horizontal([
-            Constraint::Length(24),
-            Constraint::Min(30),
-            Constraint::Length(DETAIL_WIDTH),
-        ])
-        .split(body);
-        render_sections(f, cols[0], app, theme);
-        render_books(f, cols[1], app, theme);
-        app.update_lib_cover();
-        render_detail(f, cols[2], app, theme);
+        render_grid(f, list_area, app, theme, app.lib_pane == LibPane::List);
     } else {
-        let cols = Layout::horizontal([Constraint::Length(24), Constraint::Min(0)]).split(body);
-        render_sections(f, cols[0], app, theme);
-        render_books(f, cols[1], app, theme);
+        render_books(f, list_area, app, theme, app.lib_pane == LibPane::List);
+    }
+    if show_detail {
+        app.update_lib_cover();
+        render_detail(f, cols[i], app, theme, app.lib_pane == LibPane::Detail);
     }
     render_status(f, rows[1], app, theme);
 }
 
 /// Cover-grid view: cards of cover thumbnails (built lazily) reflowing to width,
 /// with the title under each and the selection framed in the accent colour.
-fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
+fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: bool) {
+    let block = pane_block("Books", focused, theme);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let area = inner;
     if app.lib_books.is_empty() {
         let msg = if app.config.library_paths.is_empty() {
             "No library configured.\n\nAdd a folder:  delryn --add <dir>"
@@ -157,15 +170,8 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
 
 /// Right-hand pane: the selected book's cover (via the image protocol) plus its
 /// full metadata.
-fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.muted))
-        .title(Span::styled(
-            "Details",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
-        ))
-        .style(base(theme));
+fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: bool) {
+    let block = pane_block("Details", focused, theme);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -253,6 +259,21 @@ fn base(theme: Theme) -> Style {
     }
 }
 
+/// A bordered pane block whose border + title turn accent when the pane is
+/// focused, else muted.
+fn pane_block(title: &str, focused: bool, theme: Theme) -> Block<'static> {
+    let border = if focused { theme.accent } else { theme.muted };
+    let mut title_style = Style::default().fg(if focused { theme.accent } else { theme.muted });
+    if focused {
+        title_style = title_style.add_modifier(Modifier::BOLD);
+    }
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border))
+        .title(Span::styled(title.to_string(), title_style))
+        .style(base(theme))
+}
+
 /// One sidebar row (a fixed section or a collection). The active entry gets a
 /// solid cursor highlight when the sidebar is focused, else just a marker.
 fn section_item(label: &str, here: bool, focused: bool, theme: Theme) -> ListItem<'static> {
@@ -278,8 +299,7 @@ fn section_item(label: &str, here: bool, focused: bool, theme: Theme) -> ListIte
     ListItem::new(Line::from(Span::styled(format!("{marker}{label}"), style)))
 }
 
-fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let focused = app.lib_focus == Focus::Sidebar;
+fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: bool) {
     let mut items: Vec<ListItem> = LibrarySection::ALL
         .iter()
         .map(|s| {
@@ -301,33 +321,24 @@ fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         }
     }
 
-    // The focused pane gets an accent border to show where the keyboard is.
-    let border = if focused { theme.accent } else { theme.muted };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border))
-        .title(Span::styled(
-            "Library",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
-        ))
-        .style(base(theme));
-    f.render_widget(List::new(items).block(block), area);
+    f.render_widget(List::new(items).block(pane_block("Library", focused, theme)), area);
 }
 
-fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
+fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: bool) {
+    let block = pane_block("Books", focused, theme);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let area = inner;
     if app.lib_books.is_empty() {
         let msg = if app.config.library_paths.is_empty() {
             "No library configured.\n\nAdd a folder:  delryn --add <dir>\nthen run:      delryn"
         } else {
             "No books in this section."
         };
-        let p = Paragraph::new(msg).style(base(theme));
-        f.render_widget(p, area);
+        f.render_widget(Paragraph::new(msg).style(base(theme)), area);
         return;
     }
 
-    // A column of breathing room from the sidebar border.
-    let area = Rect { x: area.x + 1, width: area.width.saturating_sub(1), ..area };
     let compact = app.config.library_layout == LibLayout::Compact;
     let sel = app.lib_sel.min(app.lib_books.len() - 1);
     // The Series view groups books under series headers.
@@ -370,8 +381,8 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     };
 
     // Solid highlight bar when the list is focused; a quieter accent-text
-    // selection when the keyboard is over in the sidebar.
-    let highlight = if app.lib_focus == Focus::Content {
+    // selection when the keyboard is elsewhere.
+    let highlight = if focused {
         Style::default()
             .fg(theme.bg.unwrap_or(Color::Black))
             .bg(theme.accent)
@@ -382,7 +393,7 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let mut table = Table::new(rows, widths)
         .column_spacing(1)
         .row_highlight_style(highlight)
-        .block(Block::default().style(base(theme)));
+        .style(base(theme));
     if !compact {
         table = table.header(header_row(app, theme));
     }
@@ -508,7 +519,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
             (read % 3600) / 60,
         )
     };
-    let right = "Tab focus  hjkl move  ⏎ open  e edit  c shelf  s sort  d detail  v view  q quit ";
+    let right = "Tab pane  hjkl move  ⏎ open  e edit  c shelf  s sort  b/d panes  [] size  v view  q ";
     let width = area.width as usize;
     let pad = width.saturating_sub(left.chars().count() + right.chars().count());
     let line = format!("{left}{}{right}", " ".repeat(pad));
