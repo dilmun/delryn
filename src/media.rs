@@ -62,12 +62,36 @@ pub fn target_cells(
     (cols, rows)
 }
 
+/// Identifies one built image so it can be cached and reused across sections
+/// (revisiting a section reuses the already-uploaded image — no re-transmit).
+/// Equal keys ⇒ identical build, so they share one cache entry.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImgKey {
+    pub section: usize,
+    pub idx: usize,
+    pub avail: u16,
+    pub max_rows: u16,
+    pub max_px: u16,
+}
+
 /// A built, ready-to-render inline image: a sliced protocol (so partial rows
 /// can be drawn as it scrolls past an edge) plus its exact cell size.
 pub struct ImagePlan {
     pub proto: SlicedProtocol,
     pub cols: u16,
     pub rows: u16,
+}
+
+impl ImagePlan {
+    /// The terminal image id (Kitty), if any — used to delete it on eviction.
+    pub fn image_id(&self) -> Option<u32> {
+        self.proto.image_id()
+    }
+}
+
+/// Kitty escape sequence to delete an image (and free its data) by id.
+pub fn delete_image_seq(id: u32) -> String {
+    format!("\x1b_Ga=d,d=I,i={id}\x1b\\")
 }
 
 /// Decode, upscale-to-fill, and encode one image into a sliced protocol. This
@@ -102,20 +126,14 @@ fn build_plan(
 
 /// A request to build one image's protocol off the main thread.
 struct BuildReq {
-    token: u64,
-    idx: usize,
+    key: ImgKey,
     bytes: Vec<u8>,
-    avail_cols: u16,
-    max_rows: u16,
-    max_px: u16,
 }
 
-/// A completed image build, tagged so stale results (from a previous section or
-/// size) can be discarded. `plan` is `None` if the image failed to build, so
+/// A completed image build. `plan` is `None` if the image failed to build, so
 /// the reader can stop waiting on it.
 pub struct BuiltImage {
-    pub token: u64,
-    pub idx: usize,
+    pub key: ImgKey,
     pub plan: Option<ImagePlan>,
 }
 
@@ -133,12 +151,10 @@ impl ImageBuilder {
         let (res_tx, res_rx) = std::sync::mpsc::channel::<BuiltImage>();
         thread::spawn(move || {
             while let Ok(req) = req_rx.recv() {
+                let k = req.key;
                 // Always reply (even on failure) so the reader stops waiting.
-                let plan = build_plan(&picker, &req.bytes, req.avail_cols, req.max_rows, req.max_px);
-                if res_tx
-                    .send(BuiltImage { token: req.token, idx: req.idx, plan })
-                    .is_err()
-                {
+                let plan = build_plan(&picker, &req.bytes, k.avail, k.max_rows, k.max_px);
+                if res_tx.send(BuiltImage { key: k, plan }).is_err() {
                     break;
                 }
             }
@@ -146,18 +162,8 @@ impl ImageBuilder {
         ImageBuilder { req_tx, res_rx }
     }
 
-    pub fn request(
-        &self,
-        token: u64,
-        idx: usize,
-        bytes: Vec<u8>,
-        avail_cols: u16,
-        max_rows: u16,
-        max_px: u16,
-    ) {
-        let _ = self
-            .req_tx
-            .send(BuildReq { token, idx, bytes, avail_cols, max_rows, max_px });
+    pub fn request(&self, key: ImgKey, bytes: Vec<u8>) {
+        let _ = self.req_tx.send(BuildReq { key, bytes });
     }
 
     pub fn poll(&self) -> impl Iterator<Item = BuiltImage> + '_ {

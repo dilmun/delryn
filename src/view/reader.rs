@@ -243,7 +243,7 @@ fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize) {
         if end <= top || start >= view_end {
             continue;
         }
-        let Some(plan) = reader.images.get(&idx) else {
+        let Some(plan) = reader.image_plan(idx) else {
             continue;
         };
 

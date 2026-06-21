@@ -158,6 +158,16 @@ pub enum SlicedProtocol {
 }
 
 impl SlicedProtocol {
+    /// delryn patch: the underlying Kitty image id, if this is a Kitty protocol.
+    /// Used to delete the image from the terminal when it's evicted from the
+    /// cache.
+    pub fn image_id(&self) -> Option<u32> {
+        match self {
+            SlicedProtocol::Kitty(kitty) => Some(kitty.image_id()),
+            _ => None,
+        }
+    }
+
     /// Create a `SlicedProtocol` for the target [`ratatui::layout::Size`].
     ///
     /// If `size` is omitted, it will be calculated based on `dyn_img`'s image-pixel-size and

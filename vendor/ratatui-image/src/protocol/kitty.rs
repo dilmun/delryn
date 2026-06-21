@@ -57,6 +57,12 @@ pub struct Kitty {
 }
 
 impl Kitty {
+    /// delryn patch: the Kitty image id, for lifecycle management (delete on
+    /// eviction).
+    pub fn image_id(&self) -> u32 {
+        self.proto_state.id.0
+    }
+
     pub fn new(image: DynamicImage, size: Size, id: u32, is_tmux: bool) -> Result<Self> {
         let proto_state = KittyProtoState::new(&image, id, is_tmux);
         Ok(Self { proto_state, size })

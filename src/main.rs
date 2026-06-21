@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
 use crossterm::execute;
+use crossterm::style::Print;
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::DefaultTerminal;
 
@@ -124,6 +125,11 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         // so finished images pop in without needing a keypress.
         if app.animating() {
             dirty = true;
+        }
+
+        // Free terminal-side images evicted from the cache.
+        for id in app.take_image_deletes() {
+            let _ = execute!(io::stdout(), Print(delryn::media::delete_image_seq(id)));
         }
 
         if dirty && last_draw.elapsed() >= FRAME {
