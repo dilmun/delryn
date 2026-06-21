@@ -41,7 +41,6 @@ pub fn render(f: &mut Frame, app: &App) {
         Constraint::Length(1), // tabs
         Constraint::Length(1), // spacer
         Constraint::Min(0),    // body
-        Constraint::Length(1), // hint
     ])
     .split(inner);
 
@@ -93,12 +92,5 @@ pub fn render(f: &mut Frame, app: &App) {
         }
     }
     f.render_widget(Paragraph::new(lines), rows[2]);
-
-    f.render_widget(
-        Paragraph::new(Line::styled(
-            "↑↓ move   ←→ change   Tab switch   Esc close",
-            Style::default().fg(theme.muted),
-        )),
-        rows[3],
-    );
+    // Shortcuts live in the bottom status bar (see view::status).
 }

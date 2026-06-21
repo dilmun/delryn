@@ -59,8 +59,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         Constraint::Length(1), // tab strip
         Constraint::Length(1), // rule
         Constraint::Min(0),    // body
-        Constraint::Length(1), // status
-        Constraint::Length(1), // hint
+        Constraint::Length(1), // status (transient feedback)
     ])
     .split(inner);
 
@@ -86,9 +85,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         EditTab::Cover => render_cover(f, body, app, theme),
     }
 
-    let (status, hint_text) = {
+    // Transient feedback only — the shortcut legend lives in the bottom status
+    // bar (see view::status), not in the popup.
+    let status = {
         let ed = app.meta_edit.as_ref().unwrap();
-        (ed.status.clone().unwrap_or_default(), hint(ed))
+        ed.status.clone().unwrap_or_default()
     };
     f.render_widget(
         Paragraph::new(Line::styled(
@@ -96,10 +97,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
             Style::default().fg(theme.heading).add_modifier(Modifier::ITALIC),
         )),
         rows[3],
-    );
-    f.render_widget(
-        Paragraph::new(Line::styled(hint_text, Style::default().fg(theme.muted))),
-        rows[4],
     );
 }
 
@@ -434,22 +431,6 @@ fn form_field(
         }
     }
     Line::from(spans)
-}
-
-fn hint(ed: &MetaEdit) -> &'static str {
-    if ed.search().editing {
-        return "type to search   ←→ move   ^U clear   ⏎ run   Esc done";
-    }
-    if ed.mode == EditMode::Edit || ed.new_shelf.is_some() {
-        return "type to edit   ←→ move   ^U clear   ⏎/Esc done";
-    }
-    match ed.tab {
-        EditTab::Details => "Tab tab · j/k move · ⏎ edit · r/R reset · ^S save · Esc cancel",
-        EditTab::Cover => "Tab tab · / search · j/k pick · ⏎ use cover · ^S save · Esc",
-        EditTab::Collections => "Tab tab · j/k move · ⏎ toggle/new · ^S save · Esc cancel",
-        EditTab::Online => "Tab tab · / search · j/k pick · ⏎ apply · ^S save · Esc",
-        EditTab::File => "Tab tab · j/k move · ⏎ edit · ^S rename + save · Esc cancel",
-    }
 }
 
 /// A centered rect scaled to the terminal (≈72% × 70%, clamped).

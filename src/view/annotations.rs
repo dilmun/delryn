@@ -54,7 +54,7 @@ fn render_overlay(f: &mut Frame, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
+    let rows = Layout::vertical([Constraint::Min(0)]).split(inner);
 
     if state.items.is_empty() {
         f.render_widget(
@@ -92,12 +92,5 @@ fn render_overlay(f: &mut Frame, app: &App) {
         st.select(Some(state.sel.min(state.items.len().saturating_sub(1))));
         f.render_stateful_widget(list, rows[0], &mut st);
     }
-
-    f.render_widget(
-        Paragraph::new(Line::styled(
-            "↑↓ move   ⏎ jump   d delete   Esc close",
-            Style::default().fg(theme.muted),
-        )),
-        rows[1],
-    );
+    // Shortcuts live in the bottom status bar (see view::status).
 }

@@ -2052,7 +2052,7 @@ impl App {
             && self.lib_grid_pending
     }
 
-    fn is_grid(&self) -> bool {
+    pub fn is_grid(&self) -> bool {
         self.config.library_layout == LibLayout::Grid
     }
 
