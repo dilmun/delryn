@@ -26,6 +26,7 @@ use crate::layout::{DisplayLine, WrapOpts, wrap_blocks};
 use crate::library;
 use crate::media::{self, ImageBuilder, ImagePlan, ImageView, ImgKey};
 use crate::online::{self, Candidate};
+use ratatui_image::protocol::StatefulProtocol;
 use crate::search::{Matcher, SearchMode};
 use crate::store::{Annotation, BookRow, LibrarySection, Store};
 use crate::theme;
@@ -1408,6 +1409,12 @@ pub struct App {
     /// Receiver for async Open Library results (search / cover), if a request
     /// from the editor's Online tab is in flight.
     pub online_rx: Option<Receiver<OnlineMsg>>,
+    /// Show the right-hand detail pane (cover + metadata).
+    pub lib_detail: bool,
+    /// Cover image protocol for the detail pane, rebuilt on selection change.
+    pub lib_cover: Option<StatefulProtocol>,
+    /// Book path the current `lib_cover` was built for (avoids rebuilds).
+    pub lib_cover_path: String,
 }
 
 /// Series index without a trailing `.0` (`2.0` → "2", `2.5` → "2.5"), for
@@ -1418,6 +1425,19 @@ fn fmt_series_index(i: f32) -> String {
     } else {
         format!("{i}")
     }
+}
+
+/// Cover image bytes for a book: a fetched cover from the cache if present,
+/// otherwise the EPUB's own cover. `None` if neither exists.
+fn load_cover_bytes(path: &str) -> Option<Vec<u8>> {
+    if path.is_empty() {
+        return None;
+    }
+    match std::fs::read(online::cover_cache_path(path)) {
+        Ok(bytes) if !bytes.is_empty() => return Some(bytes),
+        _ => {}
+    }
+    epub::read_metadata(path).ok().and_then(|(m, _)| m.cover.map(|(b, _)| b))
 }
 
 /// The six editable metadata fields, in [`META_FIELDS`] order, from a document's
@@ -1515,6 +1535,9 @@ impl App {
             lib_filtering: false,
             shelf_picker: None,
             online_rx: None,
+            lib_detail: true,
+            lib_cover: None,
+            lib_cover_path: String::new(),
         })
     }
 
@@ -1552,6 +1575,9 @@ impl App {
             lib_filtering: false,
             shelf_picker: None,
             online_rx: None,
+            lib_detail: true,
+            lib_cover: None,
+            lib_cover_path: String::new(),
         };
         app.refresh_library();
         app
@@ -1650,6 +1676,27 @@ impl App {
             store.set_favorite(&book.path, !book.favorite);
         }
         self.refresh_library();
+    }
+
+    /// Rebuild the detail-pane cover protocol when the selected book changes.
+    /// Cheap no-op when the selection is unchanged. Called from the view before
+    /// the detail pane renders.
+    pub fn update_lib_cover(&mut self) {
+        let path = self
+            .lib_books
+            .get(self.lib_sel)
+            .map(|b| b.path.clone())
+            .unwrap_or_default();
+        if path == self.lib_cover_path {
+            return;
+        }
+        self.lib_cover_path = path.clone();
+        self.lib_cover = match (&self.picker, load_cover_bytes(&path)) {
+            (Some(picker), Some(bytes)) => {
+                media::decode(&bytes).map(|img| picker.new_resize_protocol(img))
+            }
+            _ => None,
+        };
     }
 
     /// (collection name, is-member) pairs for a book, sorted by name.
@@ -2585,6 +2632,7 @@ impl App {
             }
             KeyCode::Char('s') => self.cycle_sort(),
             KeyCode::Char('S') => self.toggle_sort_dir(),
+            KeyCode::Char('d') => self.lib_detail = !self.lib_detail,
             KeyCode::Char('/') => self.lib_filtering = true,
             _ => {}
         }

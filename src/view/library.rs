@@ -5,11 +5,19 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{
+    Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, TableState, Wrap,
+};
+use ratatui_image::{Resize, StatefulImage};
 
 use crate::app::{App, Focus, LibView, SortKey};
 use crate::store::{BookRow, LibrarySection};
 use crate::theme::Theme;
+
+/// Minimum body width before the detail pane is shown.
+const DETAIL_MIN_WIDTH: u16 = 90;
+/// Width of the detail pane.
+const DETAIL_WIDTH: u16 = 36;
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
@@ -20,11 +28,100 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
     let body = rows[0];
-    let cols = Layout::horizontal([Constraint::Length(24), Constraint::Min(0)]).split(body);
 
-    render_sections(f, cols[0], app, theme);
-    render_books(f, cols[1], app, theme);
+    // Detail pane only when the user wants it and there's room.
+    if app.lib_detail && body.width >= DETAIL_MIN_WIDTH {
+        let cols = Layout::horizontal([
+            Constraint::Length(24),
+            Constraint::Min(30),
+            Constraint::Length(DETAIL_WIDTH),
+        ])
+        .split(body);
+        render_sections(f, cols[0], app, theme);
+        render_books(f, cols[1], app, theme);
+        app.update_lib_cover();
+        render_detail(f, cols[2], app, theme);
+    } else {
+        let cols = Layout::horizontal([Constraint::Length(24), Constraint::Min(0)]).split(body);
+        render_sections(f, cols[0], app, theme);
+        render_books(f, cols[1], app, theme);
+    }
     render_status(f, rows[1], app, theme);
+}
+
+/// Right-hand pane: the selected book's cover (via the image protocol) plus its
+/// full metadata.
+fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.muted))
+        .title(Span::styled(
+            "Details",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ))
+        .style(base(theme));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Gather the selected book's fields (immutable) before the mutable cover render.
+    let Some(b) = app.lib_books.get(app.lib_sel) else {
+        return;
+    };
+    let title = b.title.clone();
+    let author = b.author.clone();
+    let series = series_suffix(b).trim_start().to_string();
+    let year = b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
+    let publisher = b.publisher.clone();
+    let size = fmt_size(b.size);
+    let pct = b.pct;
+    let fav = b.favorite;
+
+    let parts = Layout::vertical([Constraint::Min(3), Constraint::Length(10)]).split(inner);
+
+    // Cover (or a fallback box when there's none / no graphics protocol).
+    if let Some(proto) = app.lib_cover.as_mut() {
+        let img = StatefulImage::default().resize(Resize::Fit(None));
+        f.render_stateful_widget(img, parts[0], proto);
+    } else {
+        let ph = Paragraph::new("\n  (no cover)")
+            .style(Style::default().fg(theme.muted))
+            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme.muted)));
+        f.render_widget(ph, parts[0]);
+    }
+
+    // Metadata.
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                if fav { "★ " } else { "" },
+                Style::default().fg(theme.marker),
+            ),
+            Span::styled(title, Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::styled(author, Style::default().fg(theme.muted)),
+        Line::raw(""),
+    ];
+    if !series.is_empty() {
+        lines.push(meta_kv("Series", &series, theme));
+    }
+    lines.push(meta_kv("Year", &year, theme));
+    if !publisher.is_empty() {
+        lines.push(meta_kv("Publisher", &publisher, theme));
+    }
+    lines.push(meta_kv("Size", &size, theme));
+    lines.push(meta_kv("Progress", &format!("{pct}%"), theme));
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: true }).style(base(theme)),
+        parts[1],
+    );
+}
+
+/// A `key: value` metadata line.
+fn meta_kv(key: &str, val: &str, theme: Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{key}: "), Style::default().fg(theme.muted)),
+        Span::styled(val.to_string(), Style::default().fg(theme.fg)),
+    ])
 }
 
 fn base(theme: Theme) -> Style {
@@ -231,7 +328,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
             (read % 3600) / 60,
         )
     };
-    let right = "Tab focus  j/k move  ⏎ open  s sort  e edit  c shelf  v dense  q quit ";
+    let right = "Tab focus  j/k move  ⏎ open  e edit  c shelf  s sort  d detail  v dense  q quit ";
     let width = area.width as usize;
     let pad = width.saturating_sub(left.chars().count() + right.chars().count());
     let line = format!("{left}{}{right}", " ".repeat(pad));
