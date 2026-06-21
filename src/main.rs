@@ -131,6 +131,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         for id in app.take_image_deletes() {
             let _ = execute!(io::stdout(), Print(delryn::media::delete_image_seq(id)));
         }
+        // Copy requested text to the system clipboard (OSC 52).
+        if let Some(text) = app.take_clipboard() {
+            let _ = execute!(io::stdout(), Print(delryn::clipboard::osc52(&text)));
+        }
 
         if dirty && last_draw.elapsed() >= FRAME {
             draw(terminal, app, sync)?;

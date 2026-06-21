@@ -45,6 +45,7 @@ pub enum Action {
     AddBookmark,
     AddNote,
     OpenAnnotations,
+    CopyCode,
 }
 
 pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
@@ -107,6 +108,7 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('m') => Action::AddBookmark,
         KeyCode::Char('M') => Action::AddNote,
         KeyCode::Char('\'') => Action::OpenAnnotations,
+        KeyCode::Char('y') => Action::CopyCode,
         _ => Action::None,
     }
 }

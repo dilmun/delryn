@@ -25,7 +25,8 @@ pub enum LineKind {
     Body,
     Heading(u8),
     Quote,
-    Code,
+    /// A code line belonging to the code block with this section-local index.
+    Code(usize),
     Rule,
     /// A reserved row for the inline image with this section-local index.
     Image(usize),
@@ -69,6 +70,7 @@ pub fn wrap_blocks(
     let mut prev_item = false;
     let mut first = true;
     let mut img_idx = 0usize;
+    let mut code_idx = 0usize;
 
     for block in blocks {
         let is_item = matches!(block, Block::Para { marker: Some(_), .. });
@@ -160,10 +162,11 @@ pub fn wrap_blocks(
                         full.append(&mut line_runs);
                         out.push(DisplayLine {
                             runs: full,
-                            kind: LineKind::Code,
+                            kind: LineKind::Code(code_idx),
                         });
                     }
                 }
+                code_idx += 1;
             }
         }
 

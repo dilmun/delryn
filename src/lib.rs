@@ -5,6 +5,7 @@
 //! See `DESIGN.md` for the full design.
 
 pub mod app;
+pub mod clipboard;
 pub mod config;
 pub mod document;
 pub mod highlight;

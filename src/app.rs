@@ -163,6 +163,10 @@ pub struct Reader {
     /// Terminal image ids evicted from the cache, to be deleted from the
     /// terminal by the main loop.
     pending_deletes: Vec<u32>,
+    /// Text queued to be copied to the system clipboard by the main loop.
+    pending_clipboard: Option<String>,
+    /// A transient status-bar message (e.g. "copied"), cleared on next key.
+    pub flash: Option<String>,
     /// images_key the current `lines` were wrapped against.
     wrap_images_key: (usize, u16, u16, u16),
     /// Index of the top visible line within `lines`.
@@ -248,6 +252,8 @@ impl Reader {
             img_requested: HashSet::new(),
             img_failed: HashSet::new(),
             pending_deletes: Vec::new(),
+            pending_clipboard: None,
+            flash: None,
             wrap_images_key: (usize::MAX, 0, 0, 0),
             scroll: 0,
             scroll_pending: 0,
@@ -516,6 +522,39 @@ impl Reader {
     /// Drain terminal image ids that should be deleted (evicted from cache).
     pub fn take_image_deletes(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.pending_deletes)
+    }
+
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.pending_clipboard.take()
+    }
+
+    /// Raw lines of the `n`-th code block in the current section.
+    fn code_block(&self, n: usize) -> Option<&[String]> {
+        self.blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Code { lines, .. } => Some(lines.as_slice()),
+                _ => None,
+            })
+            .nth(n)
+    }
+
+    /// Copy the code block currently in view (the topmost visible one) to the
+    /// system clipboard. Returns the number of lines copied.
+    pub fn copy_visible_code(&mut self) -> Option<usize> {
+        let end = (self.scroll + self.viewport_lines).min(self.lines.len());
+        let idx = self.lines[self.scroll.min(self.lines.len())..end]
+            .iter()
+            .find_map(|l| match l.kind {
+                crate::layout::LineKind::Code(i) => Some(i),
+                _ => None,
+            })?;
+        let lines = self.code_block(idx)?;
+        let text = lines.join("\n");
+        let n = lines.len();
+        self.pending_clipboard = Some(text);
+        self.flash = Some(format!("✓ copied {n} line{} of code", if n == 1 { "" } else { "s" }));
+        Some(n)
     }
 
     /// Whether a smooth scroll is currently in progress (so heavy image
@@ -1164,6 +1203,11 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Text queued for the system clipboard (OSC 52), if any.
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.reader.as_mut().and_then(|r| r.take_clipboard())
+    }
+
     /// Is a smooth scroll in progress, or are inline images still building (so
     /// the loop should keep drawing until things settle)?
     pub fn animating(&self) -> bool {
@@ -1219,6 +1263,10 @@ impl App {
         }
         match self.mode {
             Mode::Reader => {
+                // Clear any transient flash message on the next keypress.
+                if let Some(r) = self.reader.as_mut() {
+                    r.flash = None;
+                }
                 let action = input::map_key(key, &mut self.pending);
                 self.apply(action);
                 // Returning to the library (Back) should reflect the latest state.
@@ -1611,6 +1659,9 @@ impl App {
                     let items = store.list_annotations(&self.book_path);
                     self.annot = Some(AnnotState { items, sel: 0 });
                 }
+            }
+            Action::CopyCode => {
+                reader.copy_visible_code();
             }
             Action::None => {}
         }
