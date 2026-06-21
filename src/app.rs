@@ -18,7 +18,7 @@ use crossterm::event::{
 };
 use ratatui::layout::Rect;
 
-use crate::config::Config;
+use crate::config::{Config, LibLayout};
 use crate::document::epub::{self, EpubDocument};
 use crate::document::{Block, Document, Metadata, OutlineItem};
 use crate::input::{self, Action, Pending};
@@ -337,7 +337,7 @@ pub enum SettingItem {
     CodeWrap,
     ChapterLock,
     Mouse,
-    LibCompact,
+    LibLayout,
 }
 
 impl SettingItem {
@@ -359,7 +359,7 @@ impl SettingItem {
             SettingItem::CodeWrap => "Wrap code blocks",
             SettingItem::ChapterLock => "Chapter lock",
             SettingItem::Mouse => "Mouse",
-            SettingItem::LibCompact => "Compact list",
+            SettingItem::LibLayout => "Layout",
         }
     }
 
@@ -389,7 +389,7 @@ impl SettingItem {
             SettingItem::CodeWrap => onoff(c.code_wrap),
             SettingItem::ChapterLock => onoff(c.chapter_lock),
             SettingItem::Mouse => onoff(c.mouse_enabled),
-            SettingItem::LibCompact => onoff(c.library_compact),
+            SettingItem::LibLayout => c.library_layout.label().to_string(),
         }
     }
 }
@@ -427,7 +427,7 @@ pub fn settings_rows(tab: SettingsTab) -> Vec<SettingRow> {
             I(ChapterLock),
         ],
         SettingsTab::General => vec![S("Input"), I(Mouse)],
-        SettingsTab::Library => vec![S("List"), I(LibCompact)],
+        SettingsTab::Library => vec![S("View"), I(LibLayout)],
     }
 }
 
@@ -1504,6 +1504,13 @@ pub struct App {
     pub lib_cover: Option<StatefulProtocol>,
     /// Book path the current `lib_cover` was built for (avoids rebuilds).
     pub lib_cover_path: String,
+    /// Grid view: number of columns from the last render (for 2D navigation).
+    pub lib_grid_cols: usize,
+    /// Grid view: lazily-built cover protocols, keyed by book path
+    /// (`None` = no cover / failed, so we don't retry every frame).
+    pub lib_grid_covers: HashMap<String, Option<StatefulProtocol>>,
+    /// Grid view: visible covers still waiting to be built (keeps redrawing).
+    pub lib_grid_pending: bool,
 }
 
 /// Series index without a trailing `.0` (`2.0` → "2", `2.5` → "2.5"), for
@@ -1627,6 +1634,9 @@ impl App {
             lib_detail: true,
             lib_cover: None,
             lib_cover_path: String::new(),
+            lib_grid_cols: 1,
+            lib_grid_covers: HashMap::new(),
+            lib_grid_pending: false,
         })
     }
 
@@ -1667,6 +1677,9 @@ impl App {
             lib_detail: true,
             lib_cover: None,
             lib_cover_path: String::new(),
+            lib_grid_cols: 1,
+            lib_grid_covers: HashMap::new(),
+            lib_grid_pending: false,
         };
         app.refresh_library();
         app
@@ -1786,6 +1799,52 @@ impl App {
             }
             _ => None,
         };
+    }
+
+    /// Build cover protocols for the visible grid `paths`, up to `limit` per
+    /// call so a screenful pops in over a few frames instead of freezing. Sets
+    /// `lib_grid_pending` while any visible cover is still unbuilt.
+    pub fn ensure_grid_covers(&mut self, paths: &[String], limit: usize) {
+        let mut built = 0;
+        let mut pending = false;
+        for path in paths {
+            if self.lib_grid_covers.contains_key(path) {
+                continue;
+            }
+            if built >= limit {
+                pending = true;
+                break;
+            }
+            let proto = match (&self.picker, load_cover_bytes(path)) {
+                (Some(picker), Some(bytes)) => {
+                    media::decode(&bytes).map(|img| picker.new_resize_protocol(img))
+                }
+                _ => None,
+            };
+            self.lib_grid_covers.insert(path.clone(), proto);
+            built += 1;
+        }
+        self.lib_grid_pending = pending;
+    }
+
+    /// Whether the grid is still building visible covers (keeps the loop drawing).
+    pub fn lib_grid_pending(&self) -> bool {
+        self.mode == Mode::Library
+            && self.config.library_layout == LibLayout::Grid
+            && self.lib_grid_pending
+    }
+
+    fn is_grid(&self) -> bool {
+        self.config.library_layout == LibLayout::Grid
+    }
+
+    /// Vertical step for j/k: one grid row in grid view, else one list row.
+    fn grid_step(&self) -> isize {
+        if self.is_grid() {
+            self.lib_grid_cols.max(1) as isize
+        } else {
+            1
+        }
     }
 
     /// (collection name, is-member) pairs for a book, sorted by name.
@@ -2651,7 +2710,13 @@ impl App {
             SettingItem::CodeWrap => c.code_wrap = !c.code_wrap,
             SettingItem::ChapterLock => c.chapter_lock = !c.chapter_lock,
             SettingItem::Mouse => c.mouse_enabled = !c.mouse_enabled,
-            SettingItem::LibCompact => c.library_compact = !c.library_compact,
+            SettingItem::LibLayout => {
+                c.library_layout = if delta > 0 {
+                    c.library_layout.next()
+                } else {
+                    c.library_layout.prev()
+                }
+            }
         }
     }
 
@@ -2687,22 +2752,48 @@ impl App {
                     self.refresh_library();
                 }
             }
-            // Tab toggles which pane has the keyboard; h/l cross between them.
+            // Tab toggles which pane has the keyboard.
             KeyCode::Tab | KeyCode::BackTab => self.lib_toggle_focus(),
-            KeyCode::Char('h') | KeyCode::Left => self.lib_focus = Focus::Sidebar,
-            // Up/down: move the sidebar cursor when it's focused, else the list.
+            // Up/down: sidebar cursor when focused; else one row (grid rows are
+            // `cols` wide).
             KeyCode::Char('j') | KeyCode::Down => {
                 if sidebar {
                     self.lib_side_move(1)
                 } else {
-                    self.lib_move(1)
+                    self.lib_move(self.grid_step())
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if sidebar {
                     self.lib_side_move(-1)
                 } else {
+                    self.lib_move(-self.grid_step())
+                }
+            }
+            // Left: in the grid move one cell left; otherwise jump to the sidebar.
+            KeyCode::Char('h') | KeyCode::Left => {
+                if !sidebar && self.is_grid() {
                     self.lib_move(-1)
+                } else {
+                    self.lib_focus = Focus::Sidebar
+                }
+            }
+            // Right: sidebar → list; grid → one cell right; list → open.
+            KeyCode::Char('l') | KeyCode::Right => {
+                if sidebar {
+                    self.lib_focus = Focus::Content;
+                } else if self.is_grid() {
+                    self.lib_move(1)
+                } else {
+                    self.open_selected();
+                }
+            }
+            // Enter: sidebar → list; else open the selected book.
+            KeyCode::Enter => {
+                if sidebar {
+                    self.lib_focus = Focus::Content;
+                } else {
+                    self.open_selected();
                 }
             }
             KeyCode::Char('g') => {
@@ -2719,14 +2810,6 @@ impl App {
                     self.lib_sel = self.lib_books.len().saturating_sub(1)
                 }
             }
-            // Enter/l: from the sidebar, step into the list; in the list, open.
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-                if sidebar {
-                    self.lib_focus = Focus::Content;
-                } else {
-                    self.open_selected();
-                }
-            }
             KeyCode::Char('o') => self.open_selected(),
             // Book actions operate on the selected book regardless of focus.
             KeyCode::Char('f') => self.lib_favorite(),
@@ -2734,7 +2817,7 @@ impl App {
             KeyCode::Char('c') => self.open_shelf_picker(),
             KeyCode::Char('x') => self.remove_from_current_shelf(),
             KeyCode::Char('v') => {
-                self.config.library_compact = !self.config.library_compact;
+                self.config.library_layout = self.config.library_layout.next();
                 self.config.save();
             }
             KeyCode::Char('s') => self.cycle_sort(),
@@ -3130,10 +3213,14 @@ mod tests {
         let mut app = App::library();
         assert_eq!(app.lib_books.len(), 1, "seeded book loads into the list");
 
-        // v toggles the compact view.
-        assert!(!app.config.library_compact);
+        // v cycles the layout: List → Compact → Grid → List.
+        assert_eq!(app.config.library_layout, LibLayout::List);
         app.on_key(key('v'));
-        assert!(app.config.library_compact, "v toggles compact view");
+        assert_eq!(app.config.library_layout, LibLayout::Compact);
+        app.on_key(key('v'));
+        assert_eq!(app.config.library_layout, LibLayout::Grid);
+        app.on_key(key('v'));
+        assert_eq!(app.config.library_layout, LibLayout::List, "v wraps back to list");
 
         // e opens the metadata editor; Esc closes it.
         app.on_key(key('e'));
@@ -3284,6 +3371,43 @@ mod tests {
         app.on_key(key('S'));
         assert!(app.lib_sort_desc);
         assert_eq!(titles(&app), ["A", "C", "B"], "year descending");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // Grid view: h/l move ±1, j/k move ±cols (clamped).
+    #[test]
+    fn grid_2d_navigation() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_grid_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for t in ["A", "B", "C", "D", "E", "F"] {
+                store
+                    .upsert_book(&format!("/{t}.epub"), t, "x", None, 1, 1, 1, "", None, "")
+                    .unwrap();
+            }
+        }
+
+        let mut app = App::library();
+        app.config.library_layout = LibLayout::Grid;
+        app.lib_grid_cols = 3; // normally set by the renderer
+        assert_eq!(app.lib_sel, 0);
+
+        app.on_key(key('l')); // → 1
+        app.on_key(key('l')); // → 2
+        assert_eq!(app.lib_sel, 2);
+        app.on_key(key('j')); // down a row: 2 + 3 = 5
+        assert_eq!(app.lib_sel, 5);
+        app.on_key(key('k')); // up a row: 5 - 3 = 2
+        assert_eq!(app.lib_sel, 2);
+        app.on_key(key('h')); // ← 1
+        assert_eq!(app.lib_sel, 1);
+        app.on_key(key('j')); // 1 + 3 = 4
+        app.on_key(key('j')); // 4 + 3 = 7 → clamped to 5
+        assert_eq!(app.lib_sel, 5, "clamped to last");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -75,6 +75,48 @@ impl ViewMode {
     }
 }
 
+/// How the library lists books: a metadata table, a dense table, or a cover grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibLayout {
+    List,
+    Compact,
+    Grid,
+}
+
+impl LibLayout {
+    pub fn next(self) -> Self {
+        match self {
+            LibLayout::List => LibLayout::Compact,
+            LibLayout::Compact => LibLayout::Grid,
+            LibLayout::Grid => LibLayout::List,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            LibLayout::List => LibLayout::Grid,
+            LibLayout::Compact => LibLayout::List,
+            LibLayout::Grid => LibLayout::Compact,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LibLayout::List => "list",
+            LibLayout::Compact => "compact",
+            LibLayout::Grid => "grid",
+        }
+    }
+
+    pub fn from_label(s: &str) -> LibLayout {
+        match s {
+            "compact" => LibLayout::Compact,
+            "grid" => LibLayout::Grid,
+            _ => LibLayout::List,
+        }
+    }
+}
+
 /// Bounds for the per-side text padding (percent of the content pane width).
 pub const MAX_SIDE_PADDING: u16 = 40;
 /// Smallest text column we'll ever wrap to, so heavy padding on a narrow
@@ -115,9 +157,8 @@ pub struct Config {
     pub image_max_px: u16,
     /// Directories scanned for the library.
     pub library_paths: Vec<String>,
-    /// Dense single-line library rows (title + progress only) instead of the
-    /// full metadata columns.
-    pub library_compact: bool,
+    /// How the library lists books (table / dense table / cover grid).
+    pub library_layout: LibLayout,
 }
 
 impl Default for Config {
@@ -137,7 +178,7 @@ impl Default for Config {
             status: StatusFields::default(),
             image_max_px: 0, // no cap by default — images fill the text column
             library_paths: Vec::new(),
-            library_compact: false,
+            library_layout: LibLayout::List,
         }
     }
 }
@@ -159,7 +200,7 @@ struct ConfigFile {
     status: StatusFields,
     image_max_px: u16,
     library_paths: Vec<String>,
-    library_compact: bool,
+    library_layout: String,
 }
 
 impl Default for ConfigFile {
@@ -179,7 +220,7 @@ impl Default for ConfigFile {
             status: c.status,
             image_max_px: c.image_max_px,
             library_paths: c.library_paths,
-            library_compact: c.library_compact,
+            library_layout: c.library_layout.label().to_string(),
         }
     }
 }
@@ -213,7 +254,7 @@ impl Config {
         c.status = cf.status;
         c.image_max_px = cf.image_max_px.min(MAX_IMAGE_PX);
         c.library_paths = cf.library_paths;
-        c.library_compact = cf.library_compact;
+        c.library_layout = LibLayout::from_label(&cf.library_layout);
         c
     }
 
@@ -233,7 +274,7 @@ impl Config {
             status: self.status,
             image_max_px: self.image_max_px,
             library_paths: self.library_paths.clone(),
-            library_compact: self.library_compact,
+            library_layout: self.library_layout.label().to_string(),
         };
         let path = config_path();
         if let Some(dir) = path.parent() {
