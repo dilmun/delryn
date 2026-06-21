@@ -4,10 +4,11 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use epub::doc::{EpubDoc, NavPoint};
+use scraper::{Html, Selector};
 
 use super::{
     Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry, normalize_label,
@@ -118,6 +119,86 @@ impl Document for EpubDocument {
             blocks: load_blocks(&mut self.doc, index)?,
         })
     }
+
+    fn section_images(&mut self, section: usize) -> Vec<Vec<u8>> {
+        if !self.doc.set_current_chapter(section) {
+            return Vec::new();
+        }
+        let Some((xhtml, _)) = self.doc.get_current_str() else {
+            return Vec::new();
+        };
+        let dir = self
+            .doc
+            .get_current_path()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .unwrap_or_default();
+        scan_image_srcs(&xhtml)
+            .into_iter()
+            .filter_map(|src| resolve_image(&mut self.doc, &dir, &src))
+            .collect()
+    }
+}
+
+/// Renderable image `src`s in a section (skipping math equations and icons).
+fn scan_image_srcs(xhtml: &str) -> Vec<String> {
+    let doc = Html::parse_document(xhtml);
+    let Ok(sel) = Selector::parse("img") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for el in doc.select(&sel) {
+        let alt = el.value().attr("alt").unwrap_or("");
+        if crate::math::is_math(alt) {
+            continue;
+        }
+        let Some(src) = el.value().attr("src") else {
+            continue;
+        };
+        if is_icon_src(src) {
+            continue;
+        }
+        out.push(src.to_string());
+    }
+    out
+}
+
+fn is_icon_src(src: &str) -> bool {
+    let s = src.to_lowercase();
+    ["warning", "info", "tip", "note", "pencil", "key", "question", "icon", "leanpub_"]
+        .iter()
+        .any(|k| s.contains(k))
+}
+
+/// Resolve an image `src` (relative to the chapter dir) to its bytes, with a
+/// filename-match fallback for base-path mismatches.
+fn resolve_image(doc: &mut EpubDoc<BufReader<File>>, dir: &Path, src: &str) -> Option<Vec<u8>> {
+    let src = src.split('#').next().unwrap_or(src);
+    let joined = normalize_path(&dir.join(src));
+    if let Some(bytes) = doc.get_resource_by_path(&joined) {
+        return Some(bytes);
+    }
+    let fname = Path::new(src).file_name()?;
+    let id = doc
+        .resources
+        .iter()
+        .find(|(_, r)| r.path.file_name() == Some(fname))
+        .map(|(k, _)| k.clone())?;
+    doc.get_resource(&id).map(|(bytes, _)| bytes)
+}
+
+/// Resolve `.`/`..` components without touching the filesystem.
+fn normalize_path(p: &Path) -> PathBuf {
+    let mut out: Vec<std::ffi::OsString> = Vec::new();
+    for comp in p.components() {
+        match comp {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            c => out.push(c.as_os_str().to_os_string()),
+        }
+    }
+    out.iter().collect()
 }
 
 /// Read just the metadata (+ spine length) without parsing TOC/headings.

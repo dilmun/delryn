@@ -19,8 +19,10 @@ use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, wrap_blocks};
 use crate::library;
+use crate::media::ImageView;
 use crate::store::{Annotation, BookRow, LibrarySection, Store};
 use crate::theme;
+use ratatui_image::picker::Picker;
 
 /// Number of decoded sections kept in memory (current ± neighbours).
 const CACHE_CAP: usize = 9;
@@ -671,6 +673,10 @@ pub struct App {
     pub annot: Option<AnnotState>,
     /// Active note-entry buffer, if typing a note.
     pub note_input: Option<String>,
+    /// Open image viewer overlay, if any.
+    pub image_view: Option<ImageView>,
+    /// Detected terminal image protocol (None if unsupported / headless).
+    pub picker: Option<Picker>,
     /// Start of the current reading session, for time tracking.
     session_start: Option<Instant>,
     store: Option<Store>,
@@ -723,6 +729,8 @@ impl App {
             settings: None,
             annot: None,
             note_input: None,
+            image_view: None,
+            picker: None,
             session_start: Some(Instant::now()),
             store,
             book_path,
@@ -750,6 +758,8 @@ impl App {
             settings: None,
             annot: None,
             note_input: None,
+            image_view: None,
+            picker: None,
             session_start: None,
             store,
             book_path: String::new(),
@@ -895,8 +905,16 @@ impl App {
             self.note_key(key);
             return;
         }
+        if self.image_view.is_some() {
+            self.image_key(key);
+            return;
+        }
         if self.annot.is_some() {
             self.annot_key(key);
+            return;
+        }
+        if self.mode == Mode::Reader && key.code == KeyCode::Char('i') {
+            self.open_images();
             return;
         }
         if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.searching) {
@@ -921,6 +939,32 @@ impl App {
                 }
             }
             Mode::Library => self.library_key(key),
+        }
+    }
+
+    /// Open the image viewer on the current section's images.
+    fn open_images(&mut self) {
+        let (Some(picker), Some(reader)) = (self.picker.as_ref(), self.reader.as_mut()) else {
+            return;
+        };
+        let images = reader.doc.section_images(reader.section);
+        self.image_view = ImageView::new(picker, &images);
+    }
+
+    fn image_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => self.image_view = None,
+            KeyCode::Char('n') | KeyCode::Char('l') | KeyCode::Right | KeyCode::Char('j') => {
+                if let Some(v) = self.image_view.as_mut() {
+                    v.next();
+                }
+            }
+            KeyCode::Char('N') | KeyCode::Char('h') | KeyCode::Left | KeyCode::Char('k') => {
+                if let Some(v) = self.image_view.as_mut() {
+                    v.prev();
+                }
+            }
+            _ => {}
         }
     }
 

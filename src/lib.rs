@@ -12,6 +12,7 @@ pub mod input;
 pub mod layout;
 pub mod library;
 pub mod math;
+pub mod media;
 pub mod store;
 pub mod theme;
 pub mod view;

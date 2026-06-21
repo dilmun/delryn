@@ -2,6 +2,7 @@
 //! sees the `Document` model and app state. See `DESIGN.md` §2.
 
 pub mod annotations;
+pub mod image;
 pub mod library;
 pub mod reader;
 pub mod settings;
@@ -19,4 +20,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         settings::render(f, app);
     }
     annotations::render(f, app);
+    if app.image_view.is_some() {
+        image::render(f, app);
+    }
 }

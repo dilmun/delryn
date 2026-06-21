@@ -57,10 +57,14 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Detect the terminal's image protocol before entering the alt screen.
+    let picker = delryn::media::detect_picker();
+
     let mut app = match args.first() {
         Some(path) => App::open_book(path)?,
         None => App::library(),
     };
+    app.picker = picker;
 
     // Synchronized output (DEC 2026) can be toggled off for terminals that
     // mishandle it: `DELRYN_SYNC=0 delryn …`.
