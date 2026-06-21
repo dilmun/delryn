@@ -177,7 +177,6 @@ pub const ONLINE_LIMIT: usize = 5;
 /// File-tab row layout: the template, the resulting name, then the Rename action.
 pub const FILE_TEMPLATE: usize = 0;
 pub const FILE_NAME: usize = 1;
-pub const FILE_RENAME_ROW: usize = 2;
 
 /// Default rename template (`Title.epub`). Placeholders are filled from the
 /// edited metadata; see [`fill_template`].
@@ -2165,7 +2164,14 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.meta_edit = None,
-            KeyCode::Char('s') if ctrl => self.save_meta_edit(),
+            KeyCode::Char('s') if ctrl => {
+                // On the File tab, ^S applies the rename first (no separate
+                // button); a hard rename error keeps the editor open.
+                let on_file = self.meta_edit.as_ref().map(|e| e.tab) == Some(EditTab::File);
+                if !on_file || self.apply_rename() {
+                    self.save_meta_edit();
+                }
+            }
             KeyCode::Tab => self.meta_edit_switch_tab(1),
             KeyCode::BackTab => self.meta_edit_switch_tab(-1),
             _ => match tab {
@@ -2487,10 +2493,9 @@ impl App {
     /// File tab, navigate mode: move between the template, name, and Rename
     /// action; Enter edits a field or performs the rename.
     fn file_nav_key(&mut self, key: KeyEvent) {
-        let row = match &self.meta_edit {
-            Some(e) => e.file_row,
-            None => return,
-        };
+        if self.meta_edit.is_none() {
+            return;
+        }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if let Some(e) = self.meta_edit.as_mut() {
@@ -2499,18 +2504,16 @@ impl App {
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if let Some(e) = self.meta_edit.as_mut() {
-                    e.file_row = (e.file_row + 1).min(FILE_RENAME_ROW);
+                    e.file_row = (e.file_row + 1).min(FILE_NAME);
                 }
             }
-            KeyCode::Enter => match row {
-                FILE_TEMPLATE | FILE_NAME => {
-                    if let Some(e) = self.meta_edit.as_mut() {
-                        e.mode = EditMode::Edit;
-                        e.cursor = e.cur_field_len();
-                    }
+            // Enter edits the focused field; ^S performs the rename + save.
+            KeyCode::Enter => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    e.mode = EditMode::Edit;
+                    e.cursor = e.cur_field_len();
                 }
-                _ => self.apply_rename(),
-            },
+            }
             _ => {}
         }
     }
@@ -2528,9 +2531,12 @@ impl App {
     }
 
     /// Perform the rename: move the file, then repoint the database + cover.
-    fn apply_rename(&mut self) {
+    /// Returns `true` when it's safe to proceed with saving (renamed, or the name
+    /// was unchanged); `false` on a hard error (empty / target exists / move
+    /// failed), leaving the editor open with the reason in its status line.
+    fn apply_rename(&mut self) -> bool {
         let Some(ed) = self.meta_edit.as_ref() else {
-            return;
+            return false;
         };
         let name = sanitize_filename(ed.rename_name.trim());
         let old = ed.path.clone();
@@ -2538,7 +2544,7 @@ impl App {
             if let Some(e) = self.meta_edit.as_mut() {
                 e.status = Some("name is empty".into());
             }
-            return;
+            return false;
         }
         let old_path = std::path::Path::new(&old);
         let new_path = match old_path.parent() {
@@ -2547,22 +2553,19 @@ impl App {
         };
         let new = new_path.to_string_lossy().into_owned();
         if new == old {
-            if let Some(e) = self.meta_edit.as_mut() {
-                e.status = Some("name unchanged".into());
-            }
-            return;
+            return true; // nothing to rename — let the save proceed
         }
         if new_path.exists() {
             if let Some(e) = self.meta_edit.as_mut() {
                 e.status = Some("a file with that name already exists".into());
             }
-            return;
+            return false;
         }
         if std::fs::rename(&old, &new_path).is_err() {
             if let Some(e) = self.meta_edit.as_mut() {
                 e.status = Some("rename failed".into());
             }
-            return;
+            return false;
         }
         // Repoint persistence + move the cached cover to the new key.
         if let Some(store) = &self.store {
@@ -2574,6 +2577,7 @@ impl App {
             e.status = Some(format!("renamed to {name}"));
         }
         self.refresh_library();
+        true
     }
 
     /// Kick off a background Open Library search from the query bar.
@@ -4069,10 +4073,8 @@ mod tests {
         assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::File);
         // Entering the File tab derived the name from "%T.%E".
         assert_eq!(app.meta_edit.as_ref().unwrap().rename_name, "Clean Title.epub");
-        // Move to the Rename action and trigger it.
-        app.on_key(code(KeyCode::Down));
-        app.on_key(code(KeyCode::Down));
-        app.on_key(code(KeyCode::Enter));
+        // ^S on the File tab renames the file and saves (no separate button).
+        app.on_key(ctrl('s'));
 
         let new = books.join("Clean Title.epub");
         assert!(new.exists(), "renamed file exists");
