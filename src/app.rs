@@ -18,7 +18,7 @@ use ratatui::layout::Rect;
 
 use crate::config::Config;
 use crate::document::epub::EpubDocument;
-use crate::document::{Block, Document, OutlineItem, normalize_label};
+use crate::document::{Block, Document, OutlineItem};
 use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, WrapOpts, wrap_blocks};
 use crate::library;
@@ -155,6 +155,9 @@ pub struct Reader {
     wrap_code_hscroll: usize,
     /// Keep scrolling within the current chapter (set each render from config).
     pub chapter_lock: bool,
+    /// Cached (outline index, line) for the current section's entries, recomputed
+    /// on re-wrap; drives the TOC scroll-spy cheaply.
+    heading_lines: Vec<(usize, usize)>,
     /// Built image protocols, reused across sections (revisiting a section
     /// reuses the already-uploaded image instead of re-transmitting). LRU.
     image_cache: LruCache<ImgKey, ImagePlan>,
@@ -185,6 +188,12 @@ pub struct Reader {
     scroll_pending: isize,
     pub focus: Focus,
     pub sidebar_sel: usize,
+    /// Top visible row of the TOC viewport (free mouse scroll / centered cursor).
+    pub sidebar_offset: usize,
+    /// TOC viewport height in rows, refreshed each draw.
+    pub sidebar_h: usize,
+    /// Last active (scroll-spy) row the TOC auto-followed to.
+    last_active: Option<usize>,
     /// Height of one column in lines, refreshed each draw.
     pub viewport_lines: usize,
     /// Total lines visible at once (2 columns in two-page mode), for scroll math.
@@ -259,6 +268,7 @@ impl Reader {
             wrap_code_wrap: true,
             wrap_code_hscroll: 0,
             chapter_lock: false,
+            heading_lines: Vec::new(),
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
             section_images: HashMap::new(),
             image_rows_estimate: Vec::new(),
@@ -273,6 +283,9 @@ impl Reader {
             scroll_pending: 0,
             focus: Focus::Content,
             sidebar_sel: 0,
+            sidebar_offset: 0,
+            sidebar_h: 1,
+            last_active: None,
             viewport_lines: 1,
             page_lines: 1,
             last_measure: 72,
@@ -387,7 +400,25 @@ impl Reader {
             self.wrap_code_wrap = self.code_wrap;
             self.wrap_code_hscroll = self.code_hscroll;
             self.wrap_images_key = self.images_key;
+            self.recompute_heading_lines();
         }
+    }
+
+    /// Recompute each current-section outline entry's line position (for the
+    /// TOC scroll-spy). Done once per re-wrap, not per frame.
+    fn recompute_heading_lines(&mut self) {
+        let mut hl = Vec::new();
+        for (oi, e) in self.outline.iter().enumerate() {
+            if e.section != self.section {
+                continue;
+            }
+            let line = match &e.locator {
+                Some(loc) => find_line(&self.lines, loc).unwrap_or(0),
+                None => 0,
+            };
+            hl.push((oi, line));
+        }
+        self.heading_lines = hl;
     }
 
     /// Collect any finished background image builds, and — when the section or
@@ -704,6 +735,73 @@ impl Reader {
         }
         let last = n as isize - 1;
         self.sidebar_sel = (self.sidebar_sel as isize + delta).clamp(0, last) as usize;
+        self.center_sidebar();
+    }
+
+    /// Centre the TOC viewport on the keyboard cursor (so it doesn't ride the
+    /// top/bottom edge), clamped to the list bounds.
+    pub fn center_sidebar(&mut self) {
+        let h = self.sidebar_h.max(1);
+        let len = self.outline_visible().len();
+        let max_off = len.saturating_sub(h);
+        self.sidebar_offset = self.sidebar_sel.saturating_sub(h / 2).min(max_off);
+    }
+
+    /// Free-scroll the TOC viewport by `delta` rows (mouse wheel) without moving
+    /// the selection.
+    pub fn sidebar_wheel(&mut self, delta: isize) {
+        let len = self.outline_visible().len();
+        let max_off = len.saturating_sub(self.sidebar_h.max(1)) as isize;
+        self.sidebar_offset = (self.sidebar_offset as isize + delta).clamp(0, max_off) as usize;
+    }
+
+    /// Refresh the TOC viewport each draw: record its height, and while reading
+    /// (content focused) keep it following the scroll-spy position — but only
+    /// when that position moves, so a manual wheel-scroll isn't fought.
+    pub fn update_sidebar_view(&mut self, height: usize) {
+        self.sidebar_h = height.max(1);
+        let len = self.outline_visible().len();
+        let max_off = len.saturating_sub(self.sidebar_h);
+        // While reading, keep the active entry in view by scrolling minimally
+        // (not re-centering), so the TOC stays stable and clicks land where
+        // they're shown. Only act when the position actually moves.
+        if self.focus == Focus::Content {
+            let active = self.active_outline_row();
+            if active != self.last_active {
+                self.last_active = active;
+                if let Some(a) = active {
+                    if a < self.sidebar_offset {
+                        self.sidebar_offset = a;
+                    } else if a >= self.sidebar_offset + self.sidebar_h {
+                        self.sidebar_offset = a + 1 - self.sidebar_h;
+                    }
+                }
+            }
+        }
+        self.sidebar_offset = self.sidebar_offset.min(max_off);
+    }
+
+    /// The outline entry matching the current reading position: the deepest
+    /// heading in the current section at or above the top of the viewport
+    /// (scroll-spy), falling back to the section's first entry. Reads the cached
+    /// `heading_lines` so it's cheap per frame.
+    pub fn active_outline(&self) -> Option<usize> {
+        let mut best: Option<(usize, usize)> = None; // (line, outline index)
+        for &(oi, line) in &self.heading_lines {
+            // Greatest line at/above the viewport top; on ties keep the earlier
+            // entry (strictly greater to replace).
+            if line <= self.scroll && best.is_none_or(|(bl, _)| line > bl) {
+                best = Some((line, oi));
+            }
+        }
+        best.map(|(_, oi)| oi)
+            .or_else(|| self.heading_lines.first().map(|&(oi, _)| oi))
+    }
+
+    /// Position of `active_outline` within the visible (collapsed-aware) list.
+    pub fn active_outline_row(&self) -> Option<usize> {
+        let active = self.active_outline()?;
+        self.outline_visible().iter().position(|&oi| oi == active)
     }
 
     /// Outline indices currently visible (respecting collapsed parents).
@@ -986,9 +1084,11 @@ impl Reader {
     }
 
     pub fn chapter_title(&self) -> String {
-        self.outline
-            .iter()
-            .find(|e| e.section == self.section && e.depth == 0)
+        // Prefer the entry at the current reading position (handles single-file
+        // books where the section never changes); else the section's first entry.
+        self.active_outline()
+            .or_else(|| self.outline.iter().position(|e| e.section == self.section))
+            .and_then(|oi| self.outline.get(oi))
             .map(|e| e.label.clone())
             .unwrap_or_else(|| format!("Section {}", self.section + 1))
     }
@@ -998,17 +1098,37 @@ impl Reader {
 /// that *is* the heading before falling back to a substring match, so a short
 /// heading like "Linux" lands on the header rather than an earlier mention.
 fn find_line(lines: &[DisplayLine], needle: &str) -> Option<usize> {
-    let n = normalize_label(needle);
+    let n = loose_key(needle);
     if n.is_empty() {
         return None;
     }
-    if let Some(i) = lines.iter().position(|l| normalize_label(&l.text()) == n) {
+    if let Some(i) = lines.iter().position(|l| loose_key(&l.text()) == n) {
         return Some(i);
     }
     lines.iter().position(|l| {
-        let line = normalize_label(&l.text());
+        let line = loose_key(&l.text());
         !line.is_empty() && (line.contains(&n) || (n.len() >= 8 && n.contains(&line)))
     })
+}
+
+/// Lowercase, drop punctuation, collapse whitespace — a tolerant key so TOC
+/// labels match body headings that differ only in punctuation (e.g. a stray
+/// comma) or spacing.
+fn loose_key(s: &str) -> String {
+    let mut out = String::new();
+    let mut pending_space = false;
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            if pending_space && !out.is_empty() {
+                out.push(' ');
+            }
+            pending_space = false;
+            out.extend(c.to_lowercase());
+        } else {
+            pending_space = true;
+        }
+    }
+    out
 }
 
 pub struct App {
@@ -1654,12 +1774,17 @@ impl App {
             }
             Action::FocusToggle => {
                 // Tab moves focus into the sidebar (showing it first if hidden),
-                // then back to the content.
+                // then back to the content. Entering the sidebar, start the
+                // cursor at the entry tracking the current reading position.
                 if !self.config.show_sidebar {
                     self.config.show_sidebar = true;
                     reader.focus = Focus::Sidebar;
+                    reader.sidebar_sel = reader.active_outline_row().unwrap_or(0);
+                    reader.center_sidebar();
                 } else if reader.focus == Focus::Content {
                     reader.focus = Focus::Sidebar;
+                    reader.sidebar_sel = reader.active_outline_row().unwrap_or(0);
+                    reader.center_sidebar();
                 } else {
                     reader.focus = Focus::Content;
                 }
@@ -1757,15 +1882,29 @@ impl App {
         if !self.config.mouse_enabled || self.mode != Mode::Reader {
             return;
         }
+        // The wheel scrolls whichever pane the cursor is over: the TOC view
+        // (without changing the selection) or the content.
+        let over_sidebar = self
+            .last_layout
+            .sidebar
+            .is_some_and(|sb| sb.contains((m.column, m.row).into()));
         match m.kind {
             MouseEventKind::ScrollDown => {
                 if let Some(r) = self.reader.as_mut() {
-                    r.queue_scroll(3);
+                    if over_sidebar {
+                        r.sidebar_wheel(3);
+                    } else {
+                        r.queue_scroll(3);
+                    }
                 }
             }
             MouseEventKind::ScrollUp => {
                 if let Some(r) = self.reader.as_mut() {
-                    r.queue_scroll(-3);
+                    if over_sidebar {
+                        r.sidebar_wheel(-3);
+                    } else {
+                        r.queue_scroll(-3);
+                    }
                 }
             }
             MouseEventKind::Down(_) => self.mouse_click(m.column, m.row),
@@ -1785,8 +1924,9 @@ impl App {
         if !in_x || row < first || row >= last {
             return;
         }
-        let idx = (row - first) as usize;
         if let Some(r) = self.reader.as_mut() {
+            // Screen row → list index, accounting for the scrolled viewport.
+            let idx = r.sidebar_offset + (row - first) as usize;
             let vis = r.outline_visible();
             if let Some(&oi) = vis.get(idx) {
                 r.sidebar_sel = idx;

@@ -111,12 +111,6 @@ pub struct OutlineItem {
     pub locator: Option<String>,
 }
 
-/// Normalize a label for tolerant matching (lowercase, collapsed whitespace).
-/// Shared by outline building and jump-target location.
-pub fn normalize_label(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
-}
-
 /// A self-contained, `Send` handle that loads a section's blocks off the main
 /// thread. Used to pre-wrap neighbouring chapters in the background so scrolling
 /// across a chapter boundary doesn't block on parsing. It reopens its own

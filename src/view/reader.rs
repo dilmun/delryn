@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use ratatui_image::picker::Picker;
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
@@ -68,6 +68,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     last_layout.content = Some(content_area);
 
     if let Some(sb) = sidebar_area {
+        reader.update_sidebar_view(sb.height.saturating_sub(2) as usize);
         render_sidebar(f, sb, reader, theme);
     }
     render_content(f, content_area, reader, config, theme, images);
@@ -90,29 +91,6 @@ fn base(theme: Theme) -> Style {
 }
 
 fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
-    let items: Vec<ListItem> = reader
-        .outline_visible()
-        .iter()
-        .map(|&oi| {
-            let e = &reader.outline[oi];
-            let indent = "  ".repeat(e.depth);
-            let marker = if reader.outline_is_parent(oi) {
-                if reader.outline_collapsed(oi) { "▸ " } else { "▾ " }
-            } else {
-                "  "
-            };
-            let here = e.section == reader.section && e.depth == 0;
-            let mut style = Style::default().fg(if here { theme.accent } else { theme.fg });
-            if let Some(bg) = theme.bg {
-                style = style.bg(bg);
-            }
-            if here {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            ListItem::new(Line::from(Span::styled(format!("{indent}{marker}{}", e.label), style)))
-        })
-        .collect();
-
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.muted))
@@ -121,17 +99,55 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         ))
         .style(base(theme));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    let highlight = Style::default()
+    // The highlighted row: the keyboard cursor when focused, else the entry at
+    // the current reading position (scroll-spy).
+    let marked = if reader.focus == Focus::Sidebar {
+        Some(reader.sidebar_sel)
+    } else {
+        reader.active_outline_row()
+    };
+
+    // Manual viewport slice from the scroll offset, so the wheel can scroll the
+    // TOC freely and the keyboard cursor can stay centered.
+    let vis = reader.outline_visible();
+    let off = reader.sidebar_offset.min(vis.len().saturating_sub(1));
+    let height = inner.height as usize;
+    let hilite = Style::default()
         .fg(theme.bg.unwrap_or(Color::Black))
-        .bg(theme.accent);
-    let list = List::new(items).block(block).highlight_style(highlight);
+        .bg(theme.accent)
+        .add_modifier(Modifier::BOLD);
 
-    let mut state = ListState::default();
-    if reader.focus == Focus::Sidebar {
-        state.select(Some(reader.sidebar_sel));
-    }
-    f.render_stateful_widget(list, area, &mut state);
+    let lines: Vec<Line> = vis
+        .iter()
+        .enumerate()
+        .skip(off)
+        .take(height)
+        .map(|(row, &oi)| {
+            let e = &reader.outline[oi];
+            let indent = "  ".repeat(e.depth);
+            let marker = if reader.outline_is_parent(oi) {
+                if reader.outline_collapsed(oi) { "▸ " } else { "▾ " }
+            } else {
+                "  "
+            };
+            let text = format!("{indent}{marker}{}", e.label);
+            let style = if Some(row) == marked {
+                hilite
+            } else {
+                let mut s = Style::default().fg(theme.fg);
+                if let Some(bg) = theme.bg {
+                    s = s.bg(bg);
+                }
+                s
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+
+    f.render_widget(Paragraph::new(Text::from(lines)).style(base(theme)), inner);
 }
 
 fn render_content(
