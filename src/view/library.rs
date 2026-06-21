@@ -74,7 +74,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_books(f, list_area, app, theme, app.lib_pane == LibPane::List);
     }
     if show_detail {
-        app.update_lib_cover();
         render_detail(f, cols[i], app, theme, app.lib_pane == LibPane::Detail);
     }
     render_status(f, rows[1], app, theme);
