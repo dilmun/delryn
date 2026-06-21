@@ -101,6 +101,9 @@ pub struct Config {
     /// Soft-wrap code blocks to the column (true) vs. keep lines intact and
     /// scroll horizontally (false).
     pub code_wrap: bool,
+    /// Keep scrolling within the current chapter (true) instead of flowing into
+    /// the next/previous one at the edges.
+    pub chapter_lock: bool,
     pub show_sidebar: bool,
     pub show_status: bool,
     /// Distraction-free: hide chrome regardless of the show_* flags.
@@ -123,6 +126,7 @@ impl Default for Config {
             view_mode: ViewMode::Center,
             theme: theme::default_theme(),
             code_wrap: true,
+            chapter_lock: false,
             show_sidebar: true,
             show_status: true,
             focus_mode: false,
@@ -144,6 +148,7 @@ struct ConfigFile {
     view_mode: String,
     theme: String,
     code_wrap: bool,
+    chapter_lock: bool,
     show_sidebar: bool,
     show_status: bool,
     mouse_enabled: bool,
@@ -162,6 +167,7 @@ impl Default for ConfigFile {
             view_mode: c.view_mode.label().to_string(),
             theme: c.theme.name.to_string(),
             code_wrap: c.code_wrap,
+            chapter_lock: c.chapter_lock,
             show_sidebar: c.show_sidebar,
             show_status: c.show_status,
             mouse_enabled: c.mouse_enabled,
@@ -194,6 +200,7 @@ impl Config {
             c.theme = t;
         }
         c.code_wrap = cf.code_wrap;
+        c.chapter_lock = cf.chapter_lock;
         c.show_sidebar = cf.show_sidebar;
         c.show_status = cf.show_status;
         c.mouse_enabled = cf.mouse_enabled;
@@ -212,6 +219,7 @@ impl Config {
             view_mode: self.view_mode.label().to_string(),
             theme: self.theme.name.to_string(),
             code_wrap: self.code_wrap,
+            chapter_lock: self.chapter_lock,
             show_sidebar: self.show_sidebar,
             show_status: self.show_status,
             mouse_enabled: self.mouse_enabled,

@@ -110,6 +110,7 @@ pub fn settings_rows(config: &Config, tab: SettingsTab) -> Vec<(String, String)>
                 },
             ),
             ("Code wrap".into(), onoff(config.code_wrap)),
+            ("Chapter lock".into(), onoff(config.chapter_lock)),
         ],
         SettingsTab::General => vec![("Mouse".into(), onoff(config.mouse_enabled))],
         SettingsTab::Library => vec![],
@@ -152,6 +153,8 @@ pub struct Reader {
     pub code_hscroll: usize,
     wrap_code_wrap: bool,
     wrap_code_hscroll: usize,
+    /// Keep scrolling within the current chapter (set each render from config).
+    pub chapter_lock: bool,
     /// Built image protocols, reused across sections (revisiting a section
     /// reuses the already-uploaded image instead of re-transmitting). LRU.
     image_cache: LruCache<ImgKey, ImagePlan>,
@@ -255,6 +258,7 @@ impl Reader {
             code_hscroll: 0,
             wrap_code_wrap: true,
             wrap_code_hscroll: 0,
+            chapter_lock: false,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
             section_images: HashMap::new(),
             image_rows_estimate: Vec::new(),
@@ -646,18 +650,32 @@ impl Reader {
         let max = self.max_scroll();
         if self.scroll < max {
             self.scroll = (self.scroll + n).min(max);
-        } else if self.section + 1 < self.doc.section_count() {
+        } else if !self.chapter_lock && self.section + 1 < self.doc.section_count() {
             self.load(self.section + 1);
         }
     }
 
-    /// Scroll up, flowing into the previous chapter at the top edge.
+    /// Scroll up, flowing into the previous chapter at the top edge (unless
+    /// chapter-locked).
     pub fn scroll_up(&mut self, n: usize) {
         if self.scroll > 0 {
             self.scroll = self.scroll.saturating_sub(n);
-        } else if self.section > 0 {
+        } else if !self.chapter_lock && self.section > 0 {
             self.load(self.section - 1);
             self.scroll = usize::MAX; // clamped to the bottom on next draw
+        }
+    }
+
+    /// Jump to the next/previous chapter (works regardless of chapter-lock).
+    pub fn next_chapter(&mut self) {
+        if self.section + 1 < self.doc.section_count() {
+            self.jump_to(self.section + 1, None);
+        }
+    }
+
+    pub fn prev_chapter(&mut self) {
+        if self.section > 0 {
+            self.jump_to(self.section - 1, None);
         }
     }
 
@@ -1508,6 +1526,7 @@ impl App {
                         as u16
             }
             (SettingsTab::Reading, 13) => c.code_wrap = !c.code_wrap,
+            (SettingsTab::Reading, 14) => c.chapter_lock = !c.chapter_lock,
             (SettingsTab::General, 0) => c.mouse_enabled = !c.mouse_enabled,
             _ => {}
         }
@@ -1705,6 +1724,16 @@ impl App {
                     reader.code_hscroll = (reader.code_hscroll + 8).min(400);
                 }
             }
+            Action::ToggleChapterLock => {
+                self.config.chapter_lock = !self.config.chapter_lock;
+                reader.flash = Some(
+                    if self.config.chapter_lock { "chapter lock: on" } else { "chapter lock: off" }
+                        .to_string(),
+                );
+                save = true;
+            }
+            Action::NextChapter => reader.next_chapter(),
+            Action::PrevChapter => reader.prev_chapter(),
             Action::None => {}
         }
 
