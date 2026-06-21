@@ -268,8 +268,10 @@ fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, bg: Colo
         .style(base(theme));
     let pinner = block.inner(cols[1]);
     f.render_widget(block, cols[1]);
-    if let Some(proto) = app.edit_cover.as_mut() {
-        f.render_stateful_widget(StatefulImage::default().resize(Resize::Fit(None)), pinner, proto);
+    let font = super::image_font(app);
+    if let Some(cover) = app.edit_cover.as_mut() {
+        let rect = super::cover_image_rect(pinner, font, cover.dims);
+        f.render_stateful_widget(StatefulImage::default().resize(Resize::Scale(None)), rect, &mut cover.proto);
     } else {
         let msg = if app.preview_pending() {
             "\n  loading…"
