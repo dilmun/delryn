@@ -56,6 +56,7 @@ pub enum LibrarySection {
     All,
     Favorites,
     Reading,
+    Duplicates,
 }
 
 impl LibrarySection {
@@ -65,6 +66,7 @@ impl LibrarySection {
             LibrarySection::All => "All Books",
             LibrarySection::Favorites => "Favorites",
             LibrarySection::Reading => "Currently Reading",
+            LibrarySection::Duplicates => "Duplicates",
         }
     }
 }
@@ -246,9 +248,17 @@ impl Store {
                 "b.last_opened > 0 AND p.path IS NOT NULL \
                  AND (p.section + p.frac) < (b.sections * 0.98)"
             }
+            // Books that share a (case-insensitive) title with another book.
+            LibrarySection::Duplicates => {
+                "b.title <> '' AND LOWER(b.title) IN \
+                 (SELECT LOWER(title) FROM books WHERE title <> '' \
+                  GROUP BY LOWER(title) HAVING COUNT(*) > 1)"
+            }
         };
         let order = match section {
-            LibrarySection::All | LibrarySection::Favorites => "b.title COLLATE NOCASE",
+            LibrarySection::All | LibrarySection::Favorites | LibrarySection::Duplicates => {
+                "b.title COLLATE NOCASE"
+            }
             _ => "b.last_opened DESC",
         };
         self.query_books(where_clause, order)
@@ -482,6 +492,23 @@ mod tests {
         store.add_read_time("/books/a.epub", 120);
         store.add_read_time("/books/a.epub", 60);
         assert_eq!(store.total_read_seconds(), 180);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn duplicates_section_groups_same_title() {
+        let tmp = std::env::temp_dir().join(format!("delryn_dup_{}", std::process::id()));
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let store = Store::open_default().unwrap();
+
+        store.upsert_book("/a.epub", "Dune", "Herbert", None, 1, 1, 1).unwrap();
+        store.upsert_book("/b.epub", "dune", "Other", None, 1, 1, 1).unwrap();
+        store.upsert_book("/c.epub", "Unique", "Someone", None, 1, 1, 1).unwrap();
+
+        let dups = store.list_books(LibrarySection::Duplicates);
+        assert_eq!(dups.len(), 2, "both 'Dune' editions are duplicates");
+        assert!(dups.iter().all(|b| b.title.eq_ignore_ascii_case("dune")));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
