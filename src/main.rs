@@ -30,6 +30,20 @@ fn main() -> Result<()> {
         return add_library(args.get(1).map(String::as_str));
     }
 
+    // `delryn --rescan`: re-read metadata for every known book (backfills new
+    // fields like series/publisher for an already-indexed library), then exit.
+    if matches!(args.first().map(String::as_str), Some("--rescan")) {
+        let config = Config::load();
+        match Store::open_default() {
+            Ok(store) => {
+                let n = library::rescan(&config.library_paths, &store);
+                println!("Re-indexed {n} book(s).");
+            }
+            Err(e) => eprintln!("could not open library database: {e}"),
+        }
+        return Ok(());
+    }
+
     // `delryn --index`: build the full-text search index, then exit.
     if matches!(args.first().map(String::as_str), Some("--index")) {
         match Store::open_default() {
