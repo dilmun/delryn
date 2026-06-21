@@ -100,6 +100,14 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
     let len = app.lib_books.len();
     let sel = app.lib_sel.min(len - 1);
 
+    // Center the card block within the pane so the leftover width/height becomes
+    // balanced margins instead of one big gap on the right / bottom. The trailing
+    // gutter (cell pitch − card) is trimmed off each edge before centering.
+    let block_w = (cols as u16 * cell_w).saturating_sub(1).min(area.width);
+    let block_h = (rows_screen as u16 * cell_h).saturating_sub(1).min(area.height);
+    let x0 = area.x + (area.width - block_w) / 2;
+    let y0 = area.y + (area.height - block_h) / 2;
+
     // Scroll so the selected row stays visible.
     let sel_row = sel / cols;
     let top_row = sel_row.saturating_sub(rows_screen.saturating_sub(1));
@@ -122,8 +130,8 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
     for (i, path, title, fav) in &visible {
         let pos = i - start;
         let (r, c) = ((pos / cols) as u16, (pos % cols) as u16);
-        let x = area.x + c * cell_w;
-        let y = area.y + r * cell_h;
+        let x = x0 + c * cell_w;
+        let y = y0 + r * cell_h;
         let card = Rect { x, y, width: cover_w, height: cover_h };
         let label = Rect { x, y: y + cover_h, width: cover_w, height: LABEL_H };
         let selected = *i == sel;
