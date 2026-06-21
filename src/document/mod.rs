@@ -12,6 +12,8 @@ use anyhow::Result;
 #[derive(Debug, Clone, Default)]
 pub struct Metadata {
     pub title: String,
+    /// Subtitle, if declared (rare in EPUB; usually filled online or by hand).
+    pub subtitle: Option<String>,
     pub authors: Vec<String>,
     pub year: Option<i32>,
     pub language: Option<String>,

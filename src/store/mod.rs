@@ -33,7 +33,10 @@ CREATE TABLE IF NOT EXISTS books (
     series       TEXT NOT NULL DEFAULT '',
     series_index REAL,
     publisher    TEXT NOT NULL DEFAULT '',
-    edited       INTEGER NOT NULL DEFAULT 0
+    edited       INTEGER NOT NULL DEFAULT 0,
+    subtitle     TEXT NOT NULL DEFAULT '',
+    isbn         TEXT NOT NULL DEFAULT '',
+    language     TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS annotations (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,6 +111,12 @@ pub struct BookRow {
     pub series_index: Option<f32>,
     /// Publisher, empty if none.
     pub publisher: String,
+    /// Subtitle, empty if none.
+    pub subtitle: String,
+    /// ISBN, empty if none.
+    pub isbn: String,
+    /// Language, empty if none.
+    pub language: String,
 }
 
 /// Saved reading position for a book.
@@ -157,6 +166,13 @@ impl Store {
             "ALTER TABLE books ADD COLUMN edited INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // Extra descriptive fields (migrate older databases).
+        for col in ["subtitle", "isbn", "language"] {
+            let _ = conn.execute(
+                &format!("ALTER TABLE books ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"),
+                [],
+            );
+        }
         // Full-text index (graceful: skipped if FTS5 isn't compiled in).
         let _ = conn.execute_batch(
             "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(path UNINDEXED, body);",
@@ -247,6 +263,9 @@ impl Store {
         series: &str,
         series_index: Option<f32>,
         publisher: &str,
+        subtitle: &str,
+        isbn: &str,
+        language: &str,
     ) -> Result<()> {
         // On rescan, file stats (size/sections/mtime) always refresh, but the
         // descriptive fields are preserved when the user has hand-edited them
@@ -254,8 +273,8 @@ impl Store {
         self.conn.execute(
             "INSERT INTO books
                 (path, title, author, year, size, sections, mtime, added_at,
-                 series, series_index, publisher)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 series, series_index, publisher, subtitle, isbn, language)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(path) DO UPDATE SET
                 title  = CASE WHEN edited = 1 THEN title  ELSE excluded.title  END,
                 author = CASE WHEN edited = 1 THEN author ELSE excluded.author END,
@@ -265,6 +284,9 @@ impl Store {
                     CASE WHEN edited = 1 THEN series_index ELSE excluded.series_index END,
                 publisher =
                     CASE WHEN edited = 1 THEN publisher ELSE excluded.publisher END,
+                subtitle = CASE WHEN edited = 1 THEN subtitle ELSE excluded.subtitle END,
+                isbn     = CASE WHEN edited = 1 THEN isbn     ELSE excluded.isbn     END,
+                language = CASE WHEN edited = 1 THEN language ELSE excluded.language END,
                 size = excluded.size, sections = excluded.sections, mtime = excluded.mtime",
             params![
                 path,
@@ -278,6 +300,9 @@ impl Store {
                 series,
                 series_index,
                 publisher,
+                subtitle,
+                isbn,
+                language,
             ],
         )?;
         Ok(())
@@ -295,11 +320,18 @@ impl Store {
         series: &str,
         series_index: Option<f32>,
         publisher: &str,
+        subtitle: &str,
+        isbn: &str,
+        language: &str,
     ) {
         let _ = self.conn.execute(
             "UPDATE books SET title = ?2, author = ?3, year = ?4, series = ?5, \
-             series_index = ?6, publisher = ?7, edited = 1 WHERE path = ?1",
-            params![path, title, author, year, series, series_index, publisher],
+             series_index = ?6, publisher = ?7, subtitle = ?8, isbn = ?9, \
+             language = ?10, edited = 1 WHERE path = ?1",
+            params![
+                path, title, author, year, series, series_index, publisher, subtitle, isbn,
+                language
+            ],
         );
     }
 
@@ -560,7 +592,8 @@ impl Store {
     ) -> Vec<BookRow> {
         let sql = format!(
             "SELECT b.path, b.title, b.author, b.year, b.size, b.favorite, b.sections, \
-             p.section, p.frac, b.series, b.series_index, b.publisher \
+             p.section, p.frac, b.series, b.series_index, b.publisher, \
+             b.subtitle, b.isbn, b.language \
              FROM books b LEFT JOIN progress p ON p.path = b.path {join} \
              WHERE {where_clause} ORDER BY {order}"
         );
@@ -591,6 +624,9 @@ impl Store {
                 series: r.get(9)?,
                 series_index: r.get::<_, Option<f64>>(10)?.map(|i| i as f32),
                 publisher: r.get(11)?,
+                subtitle: r.get(12)?,
+                isbn: r.get(13)?,
+                language: r.get(14)?,
             })
         });
         if let Ok(rows) = rows {
@@ -667,7 +703,7 @@ mod tests {
         assert_eq!(store.list_annotations("/books/a.epub").len(), 1);
 
         store
-            .upsert_book("/books/a.epub", "A", "Au", None, 10, 8, 1, "", None, "")
+            .upsert_book("/books/a.epub", "A", "Au", None, 10, 8, 1, "", None, "", "", "", "")
             .unwrap();
         store.add_read_time("/books/a.epub", 120);
         store.add_read_time("/books/a.epub", 60);
@@ -683,9 +719,9 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         let store = Store::open_default().unwrap();
 
-        store.upsert_book("/a.epub", "Dune", "Herbert", None, 1, 1, 1, "", None, "").unwrap();
-        store.upsert_book("/b.epub", "dune", "Other", None, 1, 1, 1, "", None, "").unwrap();
-        store.upsert_book("/c.epub", "Unique", "Someone", None, 1, 1, 1, "", None, "").unwrap();
+        store.upsert_book("/a.epub", "Dune", "Herbert", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
+        store.upsert_book("/b.epub", "dune", "Other", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
+        store.upsert_book("/c.epub", "Unique", "Someone", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
 
         let dups = store.list_books(LibrarySection::Duplicates);
         assert_eq!(dups.len(), 2, "both 'Dune' editions are duplicates");
@@ -702,13 +738,13 @@ mod tests {
         let store = Store::open_default().unwrap();
 
         store.upsert_book("/f2.epub", "Foundation and Empire", "Asimov", None, 1, 1, 1,
-            "Foundation", Some(2.0), "Gnome").unwrap();
+            "Foundation", Some(2.0), "Gnome", "", "", "").unwrap();
         store.upsert_book("/f1.epub", "Foundation", "Asimov", None, 1, 1, 1,
-            "Foundation", Some(1.0), "Gnome").unwrap();
+            "Foundation", Some(1.0), "Gnome", "", "", "").unwrap();
         store.upsert_book("/d.epub", "Dune", "Herbert", None, 1, 1, 1,
-            "Dune Chronicles", Some(1.0), "Chilton").unwrap();
+            "Dune Chronicles", Some(1.0), "Chilton", "", "", "").unwrap();
         store.upsert_book("/x.epub", "Standalone", "Nobody", None, 1, 1, 1,
-            "", None, "Self").unwrap();
+            "", None, "Self", "", "", "").unwrap();
 
         let series = store.list_books(LibrarySection::Series);
         let titles: Vec<&str> = series.iter().map(|b| b.title.as_str()).collect();
@@ -728,8 +764,8 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         let store = Store::open_default().unwrap();
 
-        store.upsert_book("/a.epub", "Alpha", "A", None, 1, 1, 1, "", None, "").unwrap();
-        store.upsert_book("/b.epub", "Beta", "B", None, 1, 1, 1, "", None, "").unwrap();
+        store.upsert_book("/a.epub", "Alpha", "A", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
+        store.upsert_book("/b.epub", "Beta", "B", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
 
         store.add_to_shelf("/a.epub", "Sci-Fi");
         store.add_to_shelf("/a.epub", "Sci-Fi"); // idempotent
@@ -762,14 +798,14 @@ mod tests {
 
         // Initial index, then a hand-edit.
         store.upsert_book("/b.epub", "raw title", "raw author", Some(1990), 1, 5, 1,
-            "", None, "").unwrap();
+            "", None, "", "", "", "").unwrap();
         store.update_book_meta("/b.epub", "Clean Title", "Real Author", Some(2001),
-            "My Series", Some(3.0), "Pub");
+            "My Series", Some(3.0), "Pub", "A Subtitle", "9780000000001", "eng");
 
         // A rescan (file changed: new size/sections) must not clobber the edits,
         // but must still refresh the file stats.
         store.upsert_book("/b.epub", "raw title", "raw author", Some(1990), 999, 9, 2,
-            "", None, "").unwrap();
+            "", None, "", "", "", "").unwrap();
 
         let b = &store.list_books(LibrarySection::All)[0];
         assert_eq!(b.title, "Clean Title");
@@ -778,6 +814,9 @@ mod tests {
         assert_eq!(b.series, "My Series");
         assert_eq!(b.series_index, Some(3.0));
         assert_eq!(b.publisher, "Pub");
+        assert_eq!(b.subtitle, "A Subtitle");
+        assert_eq!(b.isbn, "9780000000001");
+        assert_eq!(b.language, "eng");
         assert_eq!(b.size, 999, "file stats still refresh on rescan");
 
         let _ = std::fs::remove_dir_all(&tmp);

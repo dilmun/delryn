@@ -95,6 +95,9 @@ fn index_book(path: &Path, store: &Store, force: bool) -> bool {
         book.series.as_deref().unwrap_or(""),
         book.series_index,
         book.publisher.as_deref().unwrap_or(""),
+        book.subtitle.as_deref().unwrap_or(""),
+        book.identifier.as_deref().unwrap_or(""),
+        book.language.as_deref().unwrap_or(""),
     );
     true
 }
