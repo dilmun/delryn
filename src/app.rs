@@ -2273,8 +2273,9 @@ mod tests {
     // the new e/c/v actions).
     #[test]
     fn library_keys_dispatch() {
+        let _env = crate::test_env_guard();
         let tmp = std::env::temp_dir().join(format!("delryn_keys_{}", std::process::id()));
-        // SAFETY: single-threaded test; scopes the config dir to this process.
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         {
             let store = Store::open_default().unwrap();

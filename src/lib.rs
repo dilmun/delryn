@@ -18,3 +18,13 @@ pub mod search;
 pub mod store;
 pub mod theme;
 pub mod view;
+
+/// Serializes tests that mutate the process-global `XDG_CONFIG_HOME` (which the
+/// store reads to locate its database). Without this, the parallel test runner
+/// lets two such tests clobber each other's config dir. Poison-tolerant: a
+/// panic in one test must not wedge the rest.
+#[cfg(test)]
+pub fn test_env_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
