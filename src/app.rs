@@ -13,12 +13,14 @@ use std::time::Instant;
 use lru::LruCache;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::Rect;
 
 use crate::config::Config;
-use crate::document::epub::EpubDocument;
-use crate::document::{Block, Document, OutlineItem};
+use crate::document::epub::{self, EpubDocument};
+use crate::document::{Block, Document, Metadata, OutlineItem};
 use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, WrapOpts, wrap_blocks};
 use crate::library;
@@ -106,14 +108,57 @@ pub struct AnnotState {
 /// hold numeric text, validated on save.
 pub const META_FIELDS: [&str; 6] =
     ["Title", "Author", "Year", "Series", "Series #", "Publisher"];
+/// Field index of the Year field (validated as an integer).
+const F_YEAR: usize = 2;
+/// Field index of the Series-position field (validated as a float).
+const F_INDEX: usize = 4;
 
-/// Open metadata-edit form: a book path and one editable string per field.
+/// Open metadata-edit form: a book path and one editable string per field, with
+/// a text cursor and the EPUB's original values (for reset).
 pub struct MetaEdit {
     pub path: String,
     /// Current value of each field, indexed to match [`META_FIELDS`].
     pub values: Vec<String>,
+    /// Values as declared by the EPUB file, for reset-to-source.
+    pub original: Vec<String>,
     /// Focused field.
     pub row: usize,
+    /// Cursor position (char index) within the focused field's value.
+    pub cursor: usize,
+}
+
+impl MetaEdit {
+    /// Char length of the focused field's value.
+    fn field_len(&self) -> usize {
+        self.values.get(self.row).map_or(0, |s| s.chars().count())
+    }
+
+    /// Is field `i`'s current value invalid (a numeric field with unparsable,
+    /// non-empty text)?
+    pub fn field_invalid(&self, i: usize) -> bool {
+        let Some(s) = self.values.get(i) else {
+            return false;
+        };
+        let t = s.trim();
+        if t.is_empty() {
+            return false;
+        }
+        match i {
+            F_YEAR => t.parse::<i32>().is_err(),
+            F_INDEX => t.parse::<f32>().is_err(),
+            _ => false,
+        }
+    }
+
+    /// Has field `i` been changed from its EPUB original?
+    pub fn changed(&self, i: usize) -> bool {
+        self.original.get(i).map(String::as_str) != self.values.get(i).map(String::as_str)
+    }
+
+    /// Any field currently invalid (blocks save).
+    pub fn has_invalid(&self) -> bool {
+        (0..self.values.len()).any(|i| self.field_invalid(i))
+    }
 }
 
 /// Add-to-collection picker: toggle the focused book's membership in existing
@@ -1236,6 +1281,44 @@ fn fmt_series_index(i: f32) -> String {
     }
 }
 
+/// The six editable metadata fields, in [`META_FIELDS`] order, from a document's
+/// [`Metadata`]. Shared by the editor's prefill and reset-to-source.
+fn meta_fields_from(m: &Metadata) -> Vec<String> {
+    vec![
+        m.title.clone(),
+        m.author_line(),
+        m.year.map(|y| y.to_string()).unwrap_or_default(),
+        m.series.clone().unwrap_or_default(),
+        m.series_index.map(fmt_series_index).unwrap_or_default(),
+        m.publisher.clone().unwrap_or_default(),
+    ]
+}
+
+/// Insert `ch` at char index `cursor` in `s` (clamped to the end).
+fn str_insert(s: &mut String, cursor: usize, ch: char) {
+    let byte = s.char_indices().nth(cursor).map_or(s.len(), |(b, _)| b);
+    s.insert(byte, ch);
+}
+
+/// Remove the char before `cursor`; returns whether one was removed.
+fn str_delete_before(s: &mut String, cursor: usize) -> bool {
+    if cursor == 0 {
+        return false;
+    }
+    if let Some((byte, _)) = s.char_indices().nth(cursor - 1) {
+        s.remove(byte);
+        return true;
+    }
+    false
+}
+
+/// Remove the char at `cursor` (no-op past the end).
+fn str_delete_at(s: &mut String, cursor: usize) {
+    if let Some((byte, _)) = s.char_indices().nth(cursor) {
+        s.remove(byte);
+    }
+}
+
 /// Build a reader for `path`, applying global config and any saved per-book
 /// overrides (theme, view mode, resume position).
 fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, String)> {
@@ -1390,7 +1473,9 @@ impl App {
         self.refresh_library();
     }
 
-    /// Open the metadata-edit form on the selected book, prefilling each field.
+    /// Open the metadata-edit form on the selected book, prefilling each field
+    /// from the current (DB) values and capturing the EPUB's own values for the
+    /// reset-to-source action.
     fn open_meta_edit(&mut self) {
         let Some(b) = self.lib_books.get(self.lib_sel) else {
             return;
@@ -1403,10 +1488,17 @@ impl App {
             b.series_index.map(fmt_series_index).unwrap_or_default(),
             b.publisher.clone(),
         ];
+        // The EPUB's declared metadata, for per-field reset (best-effort).
+        let original = epub::read_metadata(&b.path)
+            .map(|(m, _)| meta_fields_from(&m))
+            .unwrap_or_else(|_| vec![String::new(); META_FIELDS.len()]);
+        let cursor = values[0].chars().count();
         self.meta_edit = Some(MetaEdit {
             path: b.path.clone(),
             values,
+            original,
             row: 0,
+            cursor,
         });
     }
 
@@ -1415,15 +1507,48 @@ impl App {
             return;
         };
         let last = META_FIELDS.len() - 1;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.meta_edit = None,
-            KeyCode::Enter => self.save_meta_edit(),
-            KeyCode::Up | KeyCode::BackTab => ed.row = ed.row.saturating_sub(1),
-            KeyCode::Down | KeyCode::Tab => ed.row = (ed.row + 1).min(last),
-            KeyCode::Backspace => {
-                ed.values[ed.row].pop();
+            // Block save while a numeric field is invalid.
+            KeyCode::Enter => {
+                if !ed.has_invalid() {
+                    self.save_meta_edit();
+                }
             }
-            KeyCode::Char(c) => ed.values[ed.row].push(c),
+            // Ctrl+R resets the focused field to the EPUB's value; Ctrl+U clears.
+            KeyCode::Char('r') if ctrl => {
+                if let Some(orig) = ed.original.get(ed.row).cloned() {
+                    ed.values[ed.row] = orig;
+                    ed.cursor = ed.field_len();
+                }
+            }
+            KeyCode::Char('u') if ctrl => {
+                ed.values[ed.row].clear();
+                ed.cursor = 0;
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                ed.row = ed.row.saturating_sub(1);
+                ed.cursor = ed.field_len();
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                ed.row = (ed.row + 1).min(last);
+                ed.cursor = ed.field_len();
+            }
+            KeyCode::Left => ed.cursor = ed.cursor.saturating_sub(1),
+            KeyCode::Right => ed.cursor = (ed.cursor + 1).min(ed.field_len()),
+            KeyCode::Home => ed.cursor = 0,
+            KeyCode::End => ed.cursor = ed.field_len(),
+            KeyCode::Backspace => {
+                if str_delete_before(&mut ed.values[ed.row], ed.cursor) {
+                    ed.cursor -= 1;
+                }
+            }
+            KeyCode::Delete => str_delete_at(&mut ed.values[ed.row], ed.cursor),
+            KeyCode::Char(c) => {
+                str_insert(&mut ed.values[ed.row], ed.cursor, c);
+                ed.cursor += 1;
+            }
             _ => {}
         }
     }
@@ -2329,6 +2454,10 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
+    fn code(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
     // Proves the library key bindings reach their handlers (regression guard for
     // the new e/c/v actions).
     #[test]
@@ -2403,6 +2532,54 @@ mod tests {
         // Enter steps into the list.
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.lib_focus, Focus::Content);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // In-field cursor editing, numeric validation, and save-blocking.
+    #[test]
+    fn meta_editor_cursor_and_validation() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_edit2_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book("/k.epub", "K", "Auth", Some(1999), 1, 1, 1, "", None, "")
+                .unwrap();
+        }
+
+        let mut app = App::library();
+        app.on_key(key('e'));
+        // Mid-string insert: cursor starts at end of "K"; Left then 'X' → "XK".
+        app.on_key(code(KeyCode::Left));
+        app.on_key(key('X'));
+        assert_eq!(app.meta_edit.as_ref().unwrap().values[0], "XK");
+
+        // Go to the Year field and make it invalid.
+        app.on_key(code(KeyCode::Down)); // Author
+        app.on_key(code(KeyCode::Down)); // Year
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)); // clear
+        app.on_key(key('a'));
+        app.on_key(key('b'));
+        let ed = app.meta_edit.as_ref().unwrap();
+        assert!(ed.field_invalid(2) && ed.has_invalid(), "non-numeric year is invalid");
+
+        // Enter must NOT save while invalid.
+        app.on_key(code(KeyCode::Enter));
+        assert!(app.meta_edit.is_some(), "save blocked while a field is invalid");
+
+        // Fix it; now Enter saves and persists.
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        for c in "2001".chars() {
+            app.on_key(key(c));
+        }
+        app.on_key(code(KeyCode::Enter));
+        assert!(app.meta_edit.is_none(), "valid edit saves");
+        let b = &app.lib_books[0];
+        assert_eq!(b.title, "XK");
+        assert_eq!(b.year, Some(2001));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
