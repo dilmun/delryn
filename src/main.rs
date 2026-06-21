@@ -108,7 +108,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         // pending or a scroll is animating, otherwise block long so an idle
         // reader costs ~0% CPU.
         let busy = app.animating() || app.online_active() || app.lib_grid_pending()
-            || app.cover_pending();
+            || app.cover_pending() || app.preview_pending();
         let timeout = if dirty || busy {
             FRAME.saturating_sub(last_draw.elapsed())
         } else {
@@ -148,6 +148,8 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         if app.tick_cover() {
             dirty = true;
         }
+        // Fetch the editor's Cover-tab preview when the highlighted result settles.
+        app.tick_preview();
 
         // Ease pending scroll a few lines toward its target this frame.
         if app.step_scroll() {

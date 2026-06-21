@@ -48,10 +48,10 @@ impl Candidate {
     }
 }
 
-/// Search Open Library by title (and optional author). Returns up to `limit`
-/// candidates; empty on any network/parse error (callers degrade gracefully).
-pub fn search(title: &str, author: &str, limit: usize) -> Vec<Candidate> {
-    let url = search_url(title, author, limit);
+/// Free-text Open Library search (title + author together). Returns up to
+/// `limit` candidates; empty on any network/parse error (callers degrade).
+pub fn search(query: &str, limit: usize) -> Vec<Candidate> {
+    let url = search_url(query, limit);
     let Ok(mut resp) = ureq::get(&url).header("User-Agent", USER_AGENT).call() else {
         return Vec::new();
     };
@@ -89,12 +89,8 @@ pub fn save_cover(book_path: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-fn search_url(title: &str, author: &str, limit: usize) -> String {
-    let mut url = format!("{SEARCH_URL}?title={}&limit={limit}&fields={FIELDS}", enc(title));
-    if !author.trim().is_empty() {
-        url.push_str(&format!("&author={}", enc(author)));
-    }
-    url
+fn search_url(query: &str, limit: usize) -> String {
+    format!("{SEARCH_URL}?q={}&limit={limit}&fields={FIELDS}", enc(query))
 }
 
 /// Minimal percent-encoding for query values (no extra dependency).
@@ -204,9 +200,8 @@ mod tests {
     #[test]
     fn encodes_query_values() {
         assert_eq!(enc("the lord & co"), "the+lord+%26+co");
-        let url = search_url("Dune", "Herbert", 5);
-        assert!(url.contains("title=Dune"));
-        assert!(url.contains("author=Herbert"));
+        let url = search_url("dune herbert", 5);
+        assert!(url.contains("q=dune+herbert"));
         assert!(url.contains("limit=5"));
     }
 
@@ -214,7 +209,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_search_dune() {
-        let cands = search("Dune", "Herbert", 3);
+        let cands = search("dune frank herbert", 3);
         assert!(!cands.is_empty(), "expected live results");
         assert!(cands.iter().any(|c| c.title.to_lowercase().contains("dune")));
     }
