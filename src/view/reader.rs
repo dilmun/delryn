@@ -38,6 +38,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.code_theme = theme.syntect.to_string();
     reader.line_spacing = config.line_spacing;
     reader.paragraph_spacing = config.paragraph_spacing;
+    reader.code_wrap = config.code_wrap;
     let area = f.area();
 
     // Distraction-free hides chrome regardless of the show_* flags.
@@ -386,7 +387,7 @@ fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
         LineKind::Heading(_) => theme.heading,
         LineKind::Quote => theme.quote,
         LineKind::Rule => theme.muted,
-        LineKind::Code => theme.muted, // gutter / unhighlighted
+        LineKind::Code(_) => theme.muted, // gutter / unhighlighted
         LineKind::Body | LineKind::Image(_) => theme.fg,
     };
     if let Some((r, g, b)) = run.fg {
@@ -403,7 +404,10 @@ fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
 
 fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config, theme: Theme) {
     let meta = reader.doc.metadata();
-    let left = if meta.authors.is_empty() {
+    // A transient flash (e.g. "copied") takes over the left side when present.
+    let left = if let Some(flash) = &reader.flash {
+        flash.clone()
+    } else if meta.authors.is_empty() {
         meta.title.clone()
     } else {
         format!("{} — {}", meta.title, meta.author_line())

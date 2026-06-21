@@ -20,7 +20,7 @@ use crate::config::Config;
 use crate::document::epub::EpubDocument;
 use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
-use crate::layout::{DisplayLine, wrap_blocks};
+use crate::layout::{DisplayLine, WrapOpts, wrap_blocks};
 use crate::library;
 use crate::media::{self, ImageBuilder, ImagePlan, ImageView, ImgKey};
 use crate::search::{Matcher, SearchMode};
@@ -109,6 +109,7 @@ pub fn settings_rows(config: &Config, tab: SettingsTab) -> Vec<(String, String)>
                     config.image_max_px.to_string()
                 },
             ),
+            ("Code wrap".into(), onoff(config.code_wrap)),
         ],
         SettingsTab::General => vec![("Mouse".into(), onoff(config.mouse_enabled))],
         SettingsTab::Library => vec![],
@@ -146,6 +147,11 @@ pub struct Reader {
     pub paragraph_spacing: u8,
     wrap_line_spacing: u8,
     wrap_para_spacing: u8,
+    /// Code rendering (set each render from config / panning).
+    pub code_wrap: bool,
+    pub code_hscroll: usize,
+    wrap_code_wrap: bool,
+    wrap_code_hscroll: usize,
     /// Built image protocols, reused across sections (revisiting a section
     /// reuses the already-uploaded image instead of re-transmitting). LRU.
     image_cache: LruCache<ImgKey, ImagePlan>,
@@ -163,6 +169,10 @@ pub struct Reader {
     /// Terminal image ids evicted from the cache, to be deleted from the
     /// terminal by the main loop.
     pending_deletes: Vec<u32>,
+    /// Text queued to be copied to the system clipboard by the main loop.
+    pending_clipboard: Option<String>,
+    /// A transient status-bar message (e.g. "copied"), cleared on next key.
+    pub flash: Option<String>,
     /// images_key the current `lines` were wrapped against.
     wrap_images_key: (usize, u16, u16, u16),
     /// Index of the top visible line within `lines`.
@@ -241,6 +251,10 @@ impl Reader {
             paragraph_spacing: 1,
             wrap_line_spacing: 0,
             wrap_para_spacing: 1,
+            code_wrap: true,
+            code_hscroll: 0,
+            wrap_code_wrap: true,
+            wrap_code_hscroll: 0,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
             section_images: HashMap::new(),
             image_rows_estimate: Vec::new(),
@@ -248,6 +262,8 @@ impl Reader {
             img_requested: HashSet::new(),
             img_failed: HashSet::new(),
             pending_deletes: Vec::new(),
+            pending_clipboard: None,
+            flash: None,
             wrap_images_key: (usize::MAX, 0, 0, 0),
             scroll: 0,
             scroll_pending: 0,
@@ -344,20 +360,28 @@ impl Reader {
             || self.code_theme != self.wrap_theme
             || self.line_spacing != self.wrap_line_spacing
             || self.paragraph_spacing != self.wrap_para_spacing
+            || self.code_wrap != self.wrap_code_wrap
+            || self.code_hscroll != self.wrap_code_hscroll
             || self.images_key != self.wrap_images_key
         {
             self.lines = wrap_blocks(
                 &self.blocks,
-                width,
-                &self.code_theme,
-                self.line_spacing,
-                self.paragraph_spacing,
+                &WrapOpts {
+                    width,
+                    code_theme: &self.code_theme,
+                    line_spacing: self.line_spacing,
+                    para_spacing: self.paragraph_spacing,
+                    code_wrap: self.code_wrap,
+                    code_hscroll: self.code_hscroll,
+                },
                 &self.image_rows_estimate,
             );
             self.wrap_width = width;
             self.wrap_theme = self.code_theme.clone();
             self.wrap_line_spacing = self.line_spacing;
             self.wrap_para_spacing = self.paragraph_spacing;
+            self.wrap_code_wrap = self.code_wrap;
+            self.wrap_code_hscroll = self.code_hscroll;
             self.wrap_images_key = self.images_key;
         }
     }
@@ -516,6 +540,39 @@ impl Reader {
     /// Drain terminal image ids that should be deleted (evicted from cache).
     pub fn take_image_deletes(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.pending_deletes)
+    }
+
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.pending_clipboard.take()
+    }
+
+    /// Raw lines of the `n`-th code block in the current section.
+    fn code_block(&self, n: usize) -> Option<&[String]> {
+        self.blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Code { lines, .. } => Some(lines.as_slice()),
+                _ => None,
+            })
+            .nth(n)
+    }
+
+    /// Copy the code block currently in view (the topmost visible one) to the
+    /// system clipboard. Returns the number of lines copied.
+    pub fn copy_visible_code(&mut self) -> Option<usize> {
+        let end = (self.scroll + self.viewport_lines).min(self.lines.len());
+        let idx = self.lines[self.scroll.min(self.lines.len())..end]
+            .iter()
+            .find_map(|l| match l.kind {
+                crate::layout::LineKind::Code(i) => Some(i),
+                _ => None,
+            })?;
+        let lines = self.code_block(idx)?;
+        let text = lines.join("\n");
+        let n = lines.len();
+        self.pending_clipboard = Some(text);
+        self.flash = Some(format!("✓ copied {n} line{} of code", if n == 1 { "" } else { "s" }));
+        Some(n)
     }
 
     /// Whether a smooth scroll is currently in progress (so heavy image
@@ -809,10 +866,15 @@ impl Reader {
                 let blocks = self.fetch_blocks(s);
                 let lines = wrap_blocks(
                     &blocks,
-                    width,
-                    &self.code_theme,
-                    self.line_spacing,
-                    self.paragraph_spacing,
+                    &WrapOpts {
+                        width,
+                        code_theme: &self.code_theme,
+                        line_spacing: self.line_spacing,
+                        para_spacing: self.paragraph_spacing,
+                        // Search always wraps code so no matches are hidden off-screen.
+                        code_wrap: true,
+                        code_hscroll: 0,
+                    },
                     &[],
                 );
                 for (li, line) in lines.iter().enumerate() {
@@ -1164,6 +1226,11 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Text queued for the system clipboard (OSC 52), if any.
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.reader.as_mut().and_then(|r| r.take_clipboard())
+    }
+
     /// Is a smooth scroll in progress, or are inline images still building (so
     /// the loop should keep drawing until things settle)?
     pub fn animating(&self) -> bool {
@@ -1219,6 +1286,10 @@ impl App {
         }
         match self.mode {
             Mode::Reader => {
+                // Clear any transient flash message on the next keypress.
+                if let Some(r) = self.reader.as_mut() {
+                    r.flash = None;
+                }
                 let action = input::map_key(key, &mut self.pending);
                 self.apply(action);
                 // Returning to the library (Back) should reflect the latest state.
@@ -1436,6 +1507,7 @@ impl App {
                     (c.image_max_px as i32 + delta * 128).clamp(0, crate::config::MAX_IMAGE_PX as i32)
                         as u16
             }
+            (SettingsTab::Reading, 13) => c.code_wrap = !c.code_wrap,
             (SettingsTab::General, 0) => c.mouse_enabled = !c.mouse_enabled,
             _ => {}
         }
@@ -1610,6 +1682,27 @@ impl App {
                 if let Some(store) = &self.store {
                     let items = store.list_annotations(&self.book_path);
                     self.annot = Some(AnnotState { items, sel: 0 });
+                }
+            }
+            Action::CopyCode => {
+                reader.copy_visible_code();
+            }
+            Action::ToggleCodeWrap => {
+                self.config.code_wrap = !self.config.code_wrap;
+                reader.code_hscroll = 0;
+                reader.flash = Some(
+                    if self.config.code_wrap { "code: wrap" } else { "code: no-wrap (< > to pan)" }
+                        .to_string(),
+                );
+                save = true;
+            }
+            // Horizontal panning only applies to non-wrapped code.
+            Action::PanLeft => {
+                reader.code_hscroll = reader.code_hscroll.saturating_sub(8);
+            }
+            Action::PanRight => {
+                if !self.config.code_wrap {
+                    reader.code_hscroll = (reader.code_hscroll + 8).min(400);
                 }
             }
             Action::None => {}

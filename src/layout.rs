@@ -25,7 +25,8 @@ pub enum LineKind {
     Body,
     Heading(u8),
     Quote,
-    Code,
+    /// A code line belonging to the code block with this section-local index.
+    Code(usize),
     Rule,
     /// A reserved row for the inline image with this section-local index.
     Image(usize),
@@ -52,23 +53,46 @@ impl DisplayLine {
     }
 }
 
-/// Wrap a section's blocks to `width` columns, returning styled display lines.
-/// `code_theme` is the syntect theme used for code highlighting; `line_spacing`
-/// inserts extra blank lines between text lines and `para_spacing` sets the gap
-/// between blocks.
-pub fn wrap_blocks(
-    blocks: &[Block],
-    width: usize,
-    code_theme: &str,
-    line_spacing: u8,
-    para_spacing: u8,
-    image_rows: &[u16],
-) -> Vec<DisplayLine> {
-    let width = width.max(1);
+/// Options controlling a reflow pass.
+pub struct WrapOpts<'a> {
+    pub width: usize,
+    /// syntect theme used to highlight code.
+    pub code_theme: &'a str,
+    /// Extra blank lines between wrapped text lines.
+    pub line_spacing: u8,
+    /// Blank lines between blocks.
+    pub para_spacing: u8,
+    /// Soft-wrap code to the column (true) vs. keep lines intact and pan
+    /// horizontally by `code_hscroll` (false).
+    pub code_wrap: bool,
+    pub code_hscroll: usize,
+}
+
+impl Default for WrapOpts<'_> {
+    fn default() -> Self {
+        WrapOpts {
+            width: 72,
+            code_theme: "base16-ocean.dark",
+            line_spacing: 0,
+            para_spacing: 1,
+            code_wrap: true,
+            code_hscroll: 0,
+        }
+    }
+}
+
+/// Wrap a section's blocks to styled display lines per `opts`. `image_rows` gives
+/// the reserved row count for each image block (0 → text placeholder).
+pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec<DisplayLine> {
+    let width = opts.width.max(1);
+    let code_theme = opts.code_theme;
+    let line_spacing = opts.line_spacing;
+    let para_spacing = opts.para_spacing;
     let mut out = Vec::new();
     let mut prev_item = false;
     let mut first = true;
     let mut img_idx = 0usize;
+    let mut code_idx = 0usize;
 
     for block in blocks {
         let is_item = matches!(block, Block::Para { marker: Some(_), .. });
@@ -146,24 +170,34 @@ pub fn wrap_blocks(
                 for (i, runs) in highlighted.into_iter().enumerate() {
                     let num = format!("{:>gutter_w$} │ ", i + 1);
                     let avail = width.saturating_sub(num.chars().count()).max(1);
-                    for (j, mut line_runs) in pack_runs(runs, avail).into_iter().enumerate() {
-                        let gutter = if j == 0 {
-                            num.clone()
-                        } else {
-                            format!("{:>gutter_w$}   ", "")
-                        };
+                    if opts.code_wrap {
+                        // Soft-wrap: one source line spills onto several rows.
+                        for (j, mut line_runs) in pack_runs(runs, avail).into_iter().enumerate() {
+                            let gutter = if j == 0 {
+                                num.clone()
+                            } else {
+                                format!("{:>gutter_w$}   ", "")
+                            };
+                            let mut full = vec![Run {
+                                text: gutter,
+                                style: Inline::default(),
+                                fg: None,
+                            }];
+                            full.append(&mut line_runs);
+                            out.push(DisplayLine { runs: full, kind: LineKind::Code(code_idx) });
+                        }
+                    } else {
+                        // No-wrap: one row per source line, panned by code_hscroll.
                         let mut full = vec![Run {
-                            text: gutter,
+                            text: num,
                             style: Inline::default(),
                             fg: None,
                         }];
-                        full.append(&mut line_runs);
-                        out.push(DisplayLine {
-                            runs: full,
-                            kind: LineKind::Code,
-                        });
+                        full.extend(shift_runs(runs, opts.code_hscroll, avail));
+                        out.push(DisplayLine { runs: full, kind: LineKind::Code(code_idx) });
                     }
                 }
+                code_idx += 1;
             }
         }
 
@@ -252,6 +286,36 @@ fn wrap_spans(
         out.push(DisplayLine { runs, kind });
         first_line = false;
     }
+}
+
+/// Take a horizontal window of styled runs: skip the first `skip` columns, then
+/// keep up to `avail` columns, preserving each run's style. For no-wrap code
+/// panning.
+fn shift_runs(runs: Vec<Run>, skip: usize, avail: usize) -> Vec<Run> {
+    let mut out = Vec::new();
+    let mut skipped = 0usize;
+    let mut taken = 0usize;
+    for run in runs {
+        if taken >= avail {
+            break;
+        }
+        let mut text = String::new();
+        for c in run.text.chars() {
+            if skipped < skip {
+                skipped += 1;
+                continue;
+            }
+            if taken >= avail {
+                break;
+            }
+            text.push(c);
+            taken += 1;
+        }
+        if !text.is_empty() {
+            out.push(Run { text, style: run.style, fg: run.fg });
+        }
+    }
+    out
 }
 
 /// Soft-wrap styled runs to `avail` columns, splitting runs at character

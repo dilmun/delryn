@@ -98,6 +98,9 @@ pub struct Config {
     pub paragraph_spacing: u8,
     pub view_mode: ViewMode,
     pub theme: Theme,
+    /// Soft-wrap code blocks to the column (true) vs. keep lines intact and
+    /// scroll horizontally (false).
+    pub code_wrap: bool,
     pub show_sidebar: bool,
     pub show_status: bool,
     /// Distraction-free: hide chrome regardless of the show_* flags.
@@ -119,6 +122,7 @@ impl Default for Config {
             paragraph_spacing: 1,
             view_mode: ViewMode::Center,
             theme: theme::default_theme(),
+            code_wrap: true,
             show_sidebar: true,
             show_status: true,
             focus_mode: false,
@@ -139,6 +143,7 @@ struct ConfigFile {
     paragraph_spacing: u8,
     view_mode: String,
     theme: String,
+    code_wrap: bool,
     show_sidebar: bool,
     show_status: bool,
     mouse_enabled: bool,
@@ -156,6 +161,7 @@ impl Default for ConfigFile {
             paragraph_spacing: c.paragraph_spacing,
             view_mode: c.view_mode.label().to_string(),
             theme: c.theme.name.to_string(),
+            code_wrap: c.code_wrap,
             show_sidebar: c.show_sidebar,
             show_status: c.show_status,
             mouse_enabled: c.mouse_enabled,
@@ -187,6 +193,7 @@ impl Config {
         if let Some(t) = theme::by_name(&cf.theme) {
             c.theme = t;
         }
+        c.code_wrap = cf.code_wrap;
         c.show_sidebar = cf.show_sidebar;
         c.show_status = cf.show_status;
         c.mouse_enabled = cf.mouse_enabled;
@@ -204,6 +211,7 @@ impl Config {
             paragraph_spacing: self.paragraph_spacing,
             view_mode: self.view_mode.label().to_string(),
             theme: self.theme.name.to_string(),
+            code_wrap: self.code_wrap,
             show_sidebar: self.show_sidebar,
             show_status: self.show_status,
             mouse_enabled: self.mouse_enabled,

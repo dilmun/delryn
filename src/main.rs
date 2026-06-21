@@ -85,6 +85,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
     draw(terminal, app, sync)?;
     let mut last_draw = Instant::now();
     let mut dirty = false;
+    // Native system clipboard (reliable across terminals); OSC 52 is the
+    // fallback when it's unavailable (e.g. SSH/headless).
+    let mut clipboard = arboard::Clipboard::new().ok();
 
     while !app.should_quit {
         // Block for input — only until the next frame is due if a redraw is
@@ -130,6 +133,15 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         // Free terminal-side images evicted from the cache.
         for id in app.take_image_deletes() {
             let _ = execute!(io::stdout(), Print(delryn::media::delete_image_seq(id)));
+        }
+        // Copy requested text to the system clipboard: native first, else OSC 52.
+        if let Some(text) = app.take_clipboard() {
+            let copied = clipboard
+                .as_mut()
+                .is_some_and(|c| c.set_text(text.clone()).is_ok());
+            if !copied {
+                let _ = execute!(io::stdout(), Print(delryn::clipboard::osc52(&text)));
+            }
         }
 
         if dirty && last_draw.elapsed() >= FRAME {
