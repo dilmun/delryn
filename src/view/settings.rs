@@ -7,7 +7,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::{App, SettingsTab, settings_rows};
+use crate::app::{App, SettingRow, SettingsTab, settings_rows};
 
 const TABS: [SettingsTab; 3] = [
     SettingsTab::General,
@@ -20,7 +20,8 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = super::centered(f.area(), 60, 20);
+    // Tall enough for the grouped Reading tab (sections + items), clamped to fit.
+    let area = super::centered(f.area(), 64, 28);
 
     f.render_widget(Clear, area);
 
@@ -60,29 +61,36 @@ pub fn render(f: &mut Frame, app: &App) {
     }
     f.render_widget(Paragraph::new(Line::from(tab_spans)), rows[0]);
 
-    // Rows.
-    let items = settings_rows(&app.config, state.tab);
+    // Rows: section headers (non-selectable) interleaved with settings.
     let mut lines: Vec<Line> = Vec::new();
-    if items.is_empty() {
-        lines.push(Line::styled(
-            "  (coming soon)",
-            Style::default().fg(theme.muted),
-        ));
-    }
-    for (i, (label, value)) in items.iter().enumerate() {
-        let selected = i == state.row;
-        let marker = if selected { "▸ " } else { "  " };
-        let label_style = if selected {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.fg)
-        };
-        let pad = 26usize.saturating_sub(label.chars().count() + 2);
-        lines.push(Line::from(vec![
-            Span::styled(format!("{marker}{label}"), label_style),
-            Span::raw(" ".repeat(pad)),
-            Span::styled(value.clone(), Style::default().fg(theme.heading)),
-        ]));
+    for (i, row) in settings_rows(state.tab).iter().enumerate() {
+        match row {
+            SettingRow::Section(title) => {
+                if i > 0 {
+                    lines.push(Line::raw(""));
+                }
+                lines.push(Line::styled(
+                    format!("  {title}"),
+                    Style::default().fg(theme.muted).add_modifier(Modifier::BOLD | Modifier::DIM),
+                ));
+            }
+            SettingRow::Item(item) => {
+                let selected = i == state.row;
+                let marker = if selected { "  ▸ " } else { "    " };
+                let label = item.label();
+                let label_style = if selected {
+                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.fg)
+                };
+                let pad = 28usize.saturating_sub(label.chars().count() + 4);
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{marker}{label}"), label_style),
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled(item.value(&app.config), Style::default().fg(theme.heading)),
+                ]));
+            }
+        }
     }
     f.render_widget(Paragraph::new(lines), rows[2]);
 
