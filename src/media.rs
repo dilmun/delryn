@@ -7,7 +7,8 @@ use std::thread;
 
 use image::DynamicImage;
 use ratatui_image::picker::Picker;
-use ratatui_image::protocol::{Protocol, StatefulProtocol};
+use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::sliced::SlicedProtocol;
 
 /// Detect the terminal's image protocol + cell size by querying stdio. Returns
 /// `None` if there's no tty or detection fails (then images are unavailable).
@@ -45,16 +46,17 @@ pub fn fit_rows(w: u32, h: u32, fw: u16, fh: u16, avail_cols: u16, max_rows: u16
     ((h as f64 * scale / fh as f64).ceil() as u16).clamp(1, max_rows)
 }
 
-/// A built, ready-to-render inline image: its protocol plus the exact cell size
-/// it occupies.
+/// A built, ready-to-render inline image: a sliced protocol (so partial rows
+/// can be drawn as it scrolls past an edge) plus its exact cell size.
 pub struct ImagePlan {
-    pub proto: Protocol,
+    pub proto: SlicedProtocol,
     pub cols: u16,
     pub rows: u16,
 }
 
-/// Decode, upscale-to-fill, and encode one image into a protocol. This is the
-/// expensive step (RGBA encode), so it runs on the [`ImageBuilder`] worker.
+/// Decode, upscale-to-fill, and encode one image into a sliced protocol. This
+/// is the expensive step (RGBA encode), so it runs on the [`ImageBuilder`]
+/// worker.
 fn build_plan(picker: &Picker, bytes: &[u8], avail_cols: u16, max_rows: u16) -> Option<ImagePlan> {
     let mut img = decode(bytes)?;
     let fs = picker.font_size();
@@ -66,8 +68,7 @@ fn build_plan(picker: &Picker, bytes: &[u8], avail_cols: u16, max_rows: u16) -> 
         img = img.resize(box_w, box_h, image::imageops::FilterType::Triangle);
     }
     let size = ratatui::layout::Size::new(avail_cols, max_rows);
-    let proto = picker
-        .new_protocol(img, size, ratatui_image::Resize::Fit(None))
+    let proto = SlicedProtocol::new_with_resize(picker, img, size, ratatui_image::Resize::Fit(None))
         .ok()?;
     let s = proto.size();
     Some(ImagePlan { proto, cols: s.width, rows: s.height })

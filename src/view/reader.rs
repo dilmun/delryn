@@ -8,8 +8,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use ratatui_image::Image as ImageWidget;
 use ratatui_image::picker::Picker;
+use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
 use crate::app::{App, Focus, Reader};
 use crate::media::ImageBuilder;
@@ -214,10 +214,10 @@ fn render_column(
     }
 }
 
-/// Draw the ready figure images whose reserved rows fall in `[top, top+height)`
-/// of the line flow, into `area` (centered, vertically positioned by row). An
-/// image is drawn only when its top row is visible; it clips at the bottom edge
-/// while scrolling (terminal protocols can't clip from the top).
+/// Draw the ready figure images that intersect `[top, top+height)` of the line
+/// flow into `area`, centered. Uses a sliced protocol with a signed vertical
+/// offset so an image scrolling past either edge shows its visible slice
+/// (rather than appearing/vanishing whole).
 fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize) {
     let view_end = top + area.height as usize;
     let lines = &reader.lines;
@@ -231,23 +231,19 @@ fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize) {
         while i < lines.len() && lines[i].kind == LineKind::Image(idx) {
             i += 1;
         }
-        let reserved = i - start;
+        let end = i; // exclusive
 
-        if start < top || start >= view_end {
+        // Skip images entirely outside the viewport.
+        if end <= top || start >= view_end {
             continue;
         }
         let Some(plan) = reader.images.get(&idx) else {
             continue;
         };
 
-        let height = plan.rows.min((view_end - start).min(reserved) as u16);
-        let rect = Rect {
-            x: area.x + area.width.saturating_sub(plan.cols) / 2,
-            y: area.y + (start - top) as u16,
-            width: plan.cols,
-            height,
-        };
-        f.render_widget(ImageWidget::new(&plan.proto).allow_clipping(true), rect);
+        let x = (area.width.saturating_sub(plan.cols) / 2) as i16;
+        let y = start as i16 - top as i16; // negative when the top scrolled off
+        f.render_widget(SlicedImage::new(&plan.proto, SignedPosition { x, y }), area);
     }
 }
 
