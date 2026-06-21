@@ -39,6 +39,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.line_spacing = config.line_spacing;
     reader.paragraph_spacing = config.paragraph_spacing;
     reader.code_wrap = config.code_wrap;
+    reader.chapter_lock = config.chapter_lock;
     let area = f.area();
 
     // Distraction-free hides chrome regardless of the show_* flags.

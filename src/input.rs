@@ -49,6 +49,9 @@ pub enum Action {
     ToggleCodeWrap,
     PanLeft,
     PanRight,
+    ToggleChapterLock,
+    NextChapter,
+    PrevChapter,
 }
 
 pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
@@ -115,6 +118,9 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('\\') => Action::ToggleCodeWrap,
         KeyCode::Char('<') => Action::PanLeft,
         KeyCode::Char('>') => Action::PanRight,
+        KeyCode::Char('c') => Action::ToggleChapterLock,
+        KeyCode::Char('J') => Action::NextChapter,
+        KeyCode::Char('K') => Action::PrevChapter,
         _ => Action::None,
     }
 }
