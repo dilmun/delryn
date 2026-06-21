@@ -19,7 +19,7 @@ use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, wrap_blocks};
 use crate::library;
-use crate::media::ImageView;
+use crate::media::{ImagePlan, ImageView};
 use crate::store::{Annotation, BookRow, LibrarySection, Store};
 use crate::theme;
 use ratatui_image::picker::Picker;
@@ -130,9 +130,12 @@ pub struct Reader {
     pub paragraph_spacing: u8,
     wrap_line_spacing: u8,
     wrap_para_spacing: u8,
-    /// Terminal cell size in px (for sizing inline images); None if no images.
-    pub font: Option<(u16, u16)>,
-    wrap_font: Option<(u16, u16)>,
+    /// Built inline-image protocols for the current section, by image index.
+    pub images: HashMap<usize, ImagePlan>,
+    /// (section, avail-cols) the image plans were built for.
+    images_key: (usize, u16),
+    /// images_key the current `lines` were wrapped against.
+    wrap_images_key: (usize, u16),
     /// Index of the top visible line within `lines`.
     pub scroll: usize,
     /// Requested but not-yet-applied line movement; eased a few lines per frame
@@ -203,8 +206,9 @@ impl Reader {
             paragraph_spacing: 1,
             wrap_line_spacing: 0,
             wrap_para_spacing: 1,
-            font: None,
-            wrap_font: None,
+            images: HashMap::new(),
+            images_key: (usize::MAX, 0),
+            wrap_images_key: (usize::MAX, 0),
             scroll: 0,
             scroll_pending: 0,
             focus: Focus::Content,
@@ -297,7 +301,7 @@ impl Reader {
             || self.code_theme != self.wrap_theme
             || self.line_spacing != self.wrap_line_spacing
             || self.paragraph_spacing != self.wrap_para_spacing
-            || self.font != self.wrap_font
+            || self.images_key != self.wrap_images_key
         {
             self.lines = wrap_blocks(
                 &self.blocks,
@@ -305,26 +309,50 @@ impl Reader {
                 &self.code_theme,
                 self.line_spacing,
                 self.paragraph_spacing,
-                self.font,
+                &self.image_rows(),
             );
             self.wrap_width = width;
             self.wrap_theme = self.code_theme.clone();
             self.wrap_line_spacing = self.line_spacing;
             self.wrap_para_spacing = self.paragraph_spacing;
-            self.wrap_font = self.font;
+            self.wrap_images_key = self.images_key;
         }
     }
 
-    /// Raw bytes of the `idx`-th figure image in the current section (counting
-    /// all image blocks, matching the layout's image index). May be empty.
-    pub fn image_data(&self, idx: usize) -> Option<&[u8]> {
+    /// Number of image blocks in the current section.
+    fn image_count(&self) -> usize {
         self.blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Image { .. }))
+            .count()
+    }
+
+    /// Rows each image occupies (0 if it has no built plan), by image index.
+    fn image_rows(&self) -> Vec<u16> {
+        (0..self.image_count())
+            .map(|i| self.images.get(&i).map(|p| p.rows).unwrap_or(0))
+            .collect()
+    }
+
+    /// Build/refresh the image protocols for the current section, fitting each
+    /// within `avail_cols`×`max_rows`. No-op if already built for this size.
+    pub fn ensure_images(&mut self, picker: &Picker, avail_cols: u16, max_rows: u16) {
+        let key = (self.section, avail_cols);
+        if self.images_key == key {
+            return;
+        }
+        let datas: Vec<(usize, &[u8])> = self
+            .blocks
             .iter()
             .filter_map(|b| match b {
                 Block::Image { data, .. } => Some(data.as_slice()),
                 _ => None,
             })
-            .nth(idx)
+            .enumerate()
+            .filter(|(_, d)| !d.is_empty())
+            .collect();
+        self.images = crate::media::plan_images(picker, datas.into_iter(), avail_cols, max_rows);
+        self.images_key = key;
     }
 
     pub fn max_scroll(&self) -> usize {
@@ -564,7 +592,7 @@ impl Reader {
                 &self.code_theme,
                 self.line_spacing,
                 self.paragraph_spacing,
-                self.font,
+                &[],
             );
             for (li, line) in lines.iter().enumerate() {
                 if line.text().to_lowercase().contains(&query) {
@@ -698,8 +726,6 @@ pub struct App {
     pub image_view: Option<ImageView>,
     /// Detected terminal image protocol (None if unsupported / headless).
     pub picker: Option<Picker>,
-    /// Cached inline-image protocols for the current section.
-    pub image_cache: crate::media::ImgCache,
     /// Start of the current reading session, for time tracking.
     session_start: Option<Instant>,
     store: Option<Store>,
@@ -754,7 +780,6 @@ impl App {
             note_input: None,
             image_view: None,
             picker: None,
-            image_cache: crate::media::ImgCache::default(),
             session_start: Some(Instant::now()),
             store,
             book_path,
@@ -784,7 +809,6 @@ impl App {
             note_input: None,
             image_view: None,
             picker: None,
-            image_cache: crate::media::ImgCache::default(),
             session_start: None,
             store,
             book_path: String::new(),

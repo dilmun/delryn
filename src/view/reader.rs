@@ -8,16 +8,17 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use ratatui::layout::Size;
 use ratatui_image::Image as ImageWidget;
-use ratatui_image::Resize;
 use ratatui_image::picker::Picker;
 
 use crate::app::{App, Focus, Reader};
 use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
-use crate::media::{self, ImgCache};
 use crate::theme::Theme;
+
+/// Image height cap (rows) and width cap (cols) for inline figures, so a single
+/// image never dwarfs the page on a large window.
+const MAX_IMAGE_COLS: u16 = 100;
 
 const GAUGE_WIDTH: usize = 16;
 
@@ -27,7 +28,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
         reader,
         last_layout,
         picker,
-        image_cache,
         ..
     } = app;
     let Some(reader) = reader.as_mut() else {
@@ -37,10 +37,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.code_theme = theme.syntect.to_string();
     reader.line_spacing = config.line_spacing;
     reader.paragraph_spacing = config.paragraph_spacing;
-    reader.font = picker.as_ref().map(|p| {
-        let f = p.font_size();
-        (f.width, f.height)
-    });
     let area = f.area();
 
     // Distraction-free hides chrome regardless of the show_* flags.
@@ -71,7 +67,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if let Some(sb) = sidebar_area {
         render_sidebar(f, sb, reader, theme);
     }
-    render_content(f, content_area, reader, config, theme, picker.as_ref(), image_cache);
+    render_content(f, content_area, reader, config, theme, picker.as_ref());
     if reader.searching {
         let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
         let prompt = format!("/{}", reader.search_input);
@@ -142,7 +138,6 @@ fn render_content(
     config: &Config,
     theme: Theme,
     picker: Option<&Picker>,
-    cache: &mut ImgCache,
 ) {
     let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
     let header_area = rows[0];
@@ -158,9 +153,17 @@ fn render_content(
     .style(base(theme));
     f.render_widget(header, header_area);
 
+    // Build image plans against the content pane (so figures scale with the
+    // window, not the narrower text measure) before wrapping reserves rows.
+    if let Some(picker) = picker {
+        let avail = body.width.saturating_sub(2).min(MAX_IMAGE_COLS);
+        let max_rows = body.height.saturating_sub(1).max(1);
+        reader.ensure_images(picker, avail, max_rows);
+    }
+
     match config.view_mode {
-        ViewMode::Center => render_column(f, body, reader, true, config.measure_width, theme, picker, cache),
-        ViewMode::Fill => render_column(f, body, reader, false, config.measure_width, theme, picker, cache),
+        ViewMode::Center => render_column(f, body, reader, true, config.measure_width, theme, picker.is_some()),
+        ViewMode::Fill => render_column(f, body, reader, false, config.measure_width, theme, picker.is_some()),
         // Inline images aren't drawn in two-page mode yet; rows reserve as gaps.
         ViewMode::TwoPage => render_two_page(f, body, reader, config.measure_width, theme),
     }
@@ -168,7 +171,6 @@ fn render_content(
 
 /// One text column. `centered` caps to the measure and centers it; otherwise
 /// the text fills the pane (minus a thin gutter).
-#[allow(clippy::too_many_arguments)]
 fn render_column(
     f: &mut Frame,
     body: Rect,
@@ -176,8 +178,7 @@ fn render_column(
     centered: bool,
     measure_cfg: u16,
     theme: Theme,
-    picker: Option<&Picker>,
-    cache: &mut ImgCache,
+    draw_images: bool,
 ) {
     let measure = if centered {
         measure_cfg.min(body.width.saturating_sub(2)).max(1)
@@ -203,24 +204,18 @@ fn render_column(
     let lines = visible_lines(reader, reader.scroll, reader.viewport_lines, theme);
     f.render_widget(Paragraph::new(Text::from(lines)).style(base(theme)), text_area);
 
-    if let Some(picker) = picker {
-        draw_inline_images(f, text_area, reader, picker, cache);
+    if draw_images {
+        // Vertical position follows the text rows; horizontal extent uses the
+        // full pane so figures can be wider than the text measure.
+        draw_inline_images(f, body, text_area.y, reader);
     }
 }
 
-/// Draw figure images over their reserved (blank) rows. An image is drawn only
-/// when its top row is within the viewport; it clips at the bottom edge while
-/// scrolling. Protocols are cached per image, rebuilt on section/width change.
-fn draw_inline_images(f: &mut Frame, area: Rect, reader: &Reader, picker: &Picker, cache: &mut ImgCache) {
-    let Some((fw, fh)) = reader.font else {
-        return;
-    };
-    let key = (reader.section, reader.last_measure);
-    if cache.key != key {
-        cache.map.clear();
-        cache.key = key;
-    }
-
+/// Draw figure images over their reserved (blank) rows, using each image's
+/// pre-built protocol and exact cell size. An image is drawn only when its top
+/// row is within the viewport; it clips at the bottom edge while scrolling
+/// (terminal protocols can't clip from the top). Centered in `pane`.
+fn draw_inline_images(f: &mut Frame, pane: Rect, top_y: u16, reader: &Reader) {
     let scroll = reader.scroll;
     let view_end = scroll + reader.viewport_lines;
     let lines = &reader.lines;
@@ -236,44 +231,23 @@ fn draw_inline_images(f: &mut Frame, area: Rect, reader: &Reader, picker: &Picke
         }
         let reserved = i - start;
 
-        // Only draw when the image's top row is visible (we can't clip the top).
+        // Only draw when the image's top row is on screen.
         if start < scroll || start >= view_end {
             continue;
         }
-        let Some(bytes) = reader.image_data(idx) else {
-            continue;
-        };
-        let Some((w, h)) = media::image_dimensions(bytes) else {
-            continue;
-        };
-        let (img_cols, img_rows) = media::fit_cells(w, h, fw, fh, area.width, reserved as u16);
-
-        if !cache.map.contains_key(&idx) {
-            if let Some(img) = media::decode(bytes) {
-                if let Ok(proto) = picker.new_protocol(
-                    img,
-                    Size::new(img_cols, img_rows),
-                    Resize::Fit(None),
-                ) {
-                    cache.map.insert(idx, proto);
-                }
-            }
-        }
-        let Some(proto) = cache.map.get(&idx) else {
+        let Some(plan) = reader.images.get(&idx) else {
             continue;
         };
 
-        let screen_y = area.y + (start - scroll) as u16;
+        let screen_y = top_y + (start - scroll) as u16;
         let avail = (view_end - start).min(reserved) as u16;
-        let height = img_rows.min(avail);
-        let x = area.x + area.width.saturating_sub(img_cols) / 2;
         let rect = Rect {
-            x,
+            x: pane.x + pane.width.saturating_sub(plan.cols) / 2,
             y: screen_y,
-            width: img_cols,
-            height,
+            width: plan.cols,
+            height: plan.rows.min(avail),
         };
-        f.render_widget(ImageWidget::new(proto).allow_clipping(true), rect);
+        f.render_widget(ImageWidget::new(&plan.proto).allow_clipping(true), rect);
     }
 }
 

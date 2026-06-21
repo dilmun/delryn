@@ -6,10 +6,6 @@
 
 use crate::document::{Block, Inline, Span};
 use crate::highlight::highlight_code;
-use crate::media;
-
-/// Maximum rows an inline image may reserve, so a tall cover doesn't dominate.
-const MAX_IMAGE_ROWS: u16 = 30;
 
 /// An RGB foreground colour (from syntax highlighting / themes).
 pub type Rgb = (u8, u8, u8);
@@ -66,7 +62,7 @@ pub fn wrap_blocks(
     code_theme: &str,
     line_spacing: u8,
     para_spacing: u8,
-    font: Option<(u16, u16)>,
+    image_rows: &[u16],
 ) -> Vec<DisplayLine> {
     let width = width.max(1);
     let mut out = Vec::new();
@@ -115,39 +111,32 @@ pub fn wrap_blocks(
                 };
                 wrap_spans(spans, width, &first_prefix, &cont_prefix, kind, &mut out);
             }
-            Block::Image { alt, data, .. } => {
-                let dims = if data.is_empty() {
-                    None
-                } else {
-                    media::image_dimensions(data)
-                };
-                match (font, dims) {
-                    (Some((fw, fh)), Some((w, h))) => {
-                        let (_cols, rows) =
-                            media::fit_cells(w, h, fw, fh, width as u16, MAX_IMAGE_ROWS);
-                        for _ in 0..rows {
-                            out.push(DisplayLine {
-                                runs: Vec::new(),
-                                kind: LineKind::Image(img_idx),
-                            });
-                        }
-                    }
-                    // No image support (or undecodable): show a text placeholder.
-                    _ => {
-                        let label = if alt.is_empty() {
-                            "[image]".to_string()
-                        } else {
-                            format!("[image: {alt}]")
-                        };
+            Block::Image { alt, .. } => {
+                // The reader pre-computes each image's height; reserve exactly
+                // that many blank rows. Zero rows → no image support → show a
+                // text placeholder instead.
+                let rows = image_rows.get(img_idx).copied().unwrap_or(0);
+                if rows > 0 {
+                    for _ in 0..rows {
                         out.push(DisplayLine {
-                            runs: vec![Run {
-                                text: label,
-                                style: Inline::default(),
-                                fg: None,
-                            }],
-                            kind: LineKind::Body,
+                            runs: Vec::new(),
+                            kind: LineKind::Image(img_idx),
                         });
                     }
+                } else {
+                    let label = if alt.is_empty() {
+                        "[image]".to_string()
+                    } else {
+                        format!("[image: {alt}]")
+                    };
+                    out.push(DisplayLine {
+                        runs: vec![Run {
+                            text: label,
+                            style: Inline::default(),
+                            fg: None,
+                        }],
+                        kind: LineKind::Body,
+                    });
                 }
                 img_idx += 1;
             }
