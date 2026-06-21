@@ -115,6 +115,9 @@ pub struct Config {
     pub image_max_px: u16,
     /// Directories scanned for the library.
     pub library_paths: Vec<String>,
+    /// Dense single-line library rows (title + progress only) instead of the
+    /// full metadata columns.
+    pub library_compact: bool,
 }
 
 impl Default for Config {
@@ -134,6 +137,7 @@ impl Default for Config {
             status: StatusFields::default(),
             image_max_px: 0, // no cap by default — images fill the text column
             library_paths: Vec::new(),
+            library_compact: false,
         }
     }
 }
@@ -155,6 +159,7 @@ struct ConfigFile {
     status: StatusFields,
     image_max_px: u16,
     library_paths: Vec<String>,
+    library_compact: bool,
 }
 
 impl Default for ConfigFile {
@@ -174,6 +179,7 @@ impl Default for ConfigFile {
             status: c.status,
             image_max_px: c.image_max_px,
             library_paths: c.library_paths,
+            library_compact: c.library_compact,
         }
     }
 }
@@ -207,6 +213,7 @@ impl Config {
         c.status = cf.status;
         c.image_max_px = cf.image_max_px.min(MAX_IMAGE_PX);
         c.library_paths = cf.library_paths;
+        c.library_compact = cf.library_compact;
         c
     }
 
@@ -226,6 +233,7 @@ impl Config {
             status: self.status,
             image_max_px: self.image_max_px,
             library_paths: self.library_paths.clone(),
+            library_compact: self.library_compact,
         };
         let path = config_path();
         if let Some(dir) = path.parent() {

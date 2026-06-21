@@ -167,7 +167,7 @@ pub fn settings_rows(config: &Config, tab: SettingsTab) -> Vec<(String, String)>
             ("Chapter lock".into(), onoff(config.chapter_lock)),
         ],
         SettingsTab::General => vec![("Mouse".into(), onoff(config.mouse_enabled))],
-        SettingsTab::Library => vec![],
+        SettingsTab::Library => vec![("Compact list".into(), onoff(config.library_compact))],
     }
 }
 
@@ -1838,6 +1838,7 @@ impl App {
             (SettingsTab::Reading, 13) => c.code_wrap = !c.code_wrap,
             (SettingsTab::Reading, 14) => c.chapter_lock = !c.chapter_lock,
             (SettingsTab::General, 0) => c.mouse_enabled = !c.mouse_enabled,
+            (SettingsTab::Library, 0) => c.library_compact = !c.library_compact,
             _ => {}
         }
     }
@@ -1880,6 +1881,10 @@ impl App {
             KeyCode::Char('e') => self.open_meta_edit(),
             KeyCode::Char('c') => self.open_shelf_picker(),
             KeyCode::Char('x') => self.remove_from_current_shelf(),
+            KeyCode::Char('v') => {
+                self.config.library_compact = !self.config.library_compact;
+                self.config.save();
+            }
             KeyCode::Char('/') => self.lib_filtering = true,
             KeyCode::Tab => self.cycle_view(),
             KeyCode::Char('g') => self.lib_sel = 0,

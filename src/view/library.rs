@@ -94,38 +94,16 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     }
 
     let inner_w = area.width.saturating_sub(1) as usize;
-    let meta_w = 34usize.min(inner_w / 2);
-    let title_w = inner_w.saturating_sub(meta_w + 2).max(8);
-
+    let compact = app.config.library_compact;
     let items: Vec<ListItem> = app
         .lib_books
         .iter()
         .map(|b| {
-            let star = if b.favorite { "★ " } else { "  " };
-            // Calibre-style series suffix (` Foundation #2`), dimmed, capped to
-            // half the title cell so it never crowds out the title itself.
-            let suffix = series_suffix(b);
-            let suffix = super::truncate(&suffix, title_w / 2);
-            let suffix_w = suffix.chars().count();
-            let title = super::truncate(&b.title, title_w.saturating_sub(suffix_w).max(4));
-            let pad = title_w.saturating_sub(title.chars().count() + suffix_w);
-            let year = b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
-            let meta = format!(
-                "{:<18}  {:>4}  {:>3}%  {:>6}",
-                super::truncate(&b.author, 18),
-                year,
-                b.pct,
-                fmt_size(b.size),
-            );
-            Line::from(vec![
-                Span::styled(star, Style::default().fg(theme.marker)),
-                Span::styled(title, Style::default().fg(theme.fg)),
-                Span::styled(suffix, Style::default().fg(theme.muted)),
-                Span::raw(" ".repeat(pad)),
-                Span::raw("  "),
-                Span::styled(meta, Style::default().fg(theme.muted)),
-            ])
-            .into()
+            if compact {
+                compact_row(b, inner_w, theme)
+            } else {
+                rich_row(b, inner_w, theme)
+            }
         })
         .collect();
 
@@ -138,6 +116,54 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let mut state = ListState::default();
     state.select(Some(app.lib_sel.min(app.lib_books.len().saturating_sub(1))));
     f.render_stateful_widget(list, area, &mut state);
+}
+
+/// Full row: star · title (+ series suffix) · author · year · % · size.
+fn rich_row(b: &crate::store::BookRow, inner_w: usize, theme: Theme) -> ListItem<'static> {
+    let meta_w = 34usize.min(inner_w / 2);
+    let title_w = inner_w.saturating_sub(meta_w + 2).max(8);
+    let star = if b.favorite { "★ " } else { "  " };
+    // Calibre-style series suffix (` Foundation #2`), dimmed, capped to half the
+    // title cell so it never crowds out the title itself.
+    let suffix = super::truncate(&series_suffix(b), title_w / 2);
+    let suffix_w = suffix.chars().count();
+    let title = super::truncate(&b.title, title_w.saturating_sub(suffix_w).max(4));
+    let pad = title_w.saturating_sub(title.chars().count() + suffix_w);
+    let year = b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
+    let meta = format!(
+        "{:<18}  {:>4}  {:>3}%  {:>6}",
+        super::truncate(&b.author, 18),
+        year,
+        b.pct,
+        fmt_size(b.size),
+    );
+    ListItem::new(Line::from(vec![
+        Span::styled(star, Style::default().fg(theme.marker)),
+        Span::styled(title, Style::default().fg(theme.fg)),
+        Span::styled(suffix, Style::default().fg(theme.muted)),
+        Span::raw(" ".repeat(pad)),
+        Span::raw("  "),
+        Span::styled(meta, Style::default().fg(theme.muted)),
+    ]))
+}
+
+/// Dense row: star · title (+ series suffix) · right-aligned %. Fits more books.
+fn compact_row(b: &crate::store::BookRow, inner_w: usize, theme: Theme) -> ListItem<'static> {
+    let pct = format!("{:>3}%", b.pct);
+    let star = if b.favorite { "★ " } else { "  " };
+    // Leave room for the star (2) and " 100%" (pct width + a gap).
+    let title_w = inner_w.saturating_sub(2 + pct.chars().count() + 1).max(8);
+    let suffix = super::truncate(&series_suffix(b), title_w / 2);
+    let suffix_w = suffix.chars().count();
+    let title = super::truncate(&b.title, title_w.saturating_sub(suffix_w).max(4));
+    let pad = title_w.saturating_sub(title.chars().count() + suffix_w) + 1;
+    ListItem::new(Line::from(vec![
+        Span::styled(star, Style::default().fg(theme.marker)),
+        Span::styled(title, Style::default().fg(theme.fg)),
+        Span::styled(suffix, Style::default().fg(theme.muted)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(pct, Style::default().fg(theme.muted)),
+    ]))
 }
 
 fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
@@ -153,7 +179,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
             (read % 3600) / 60,
         )
     };
-    let right = "Tab view  / filter  f fav  e edit  c collection  ⏎ open  q quit ";
+    let right = "Tab view  / filter  f fav  e edit  c shelf  v dense  ⏎ open  q quit ";
     let width = area.width as usize;
     let pad = width.saturating_sub(left.chars().count() + right.chars().count());
     let line = format!("{left}{}{right}", " ".repeat(pad));
