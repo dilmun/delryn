@@ -40,10 +40,21 @@ pub fn plan_images<'a>(
     avail_cols: u16,
     max_rows: u16,
 ) -> HashMap<usize, ImagePlan> {
+    // Target pixel box for the column. We upscale small images to fill it,
+    // because the protocol's own Fit only ever shrinks — on HiDPI terminals a
+    // modest-resolution figure would otherwise render tiny.
+    let fs = picker.font_size();
+    let box_w = avail_cols as u32 * fs.width.max(1) as u32;
+    let box_h = max_rows as u32 * fs.height.max(1) as u32;
+    let size = ratatui::layout::Size::new(avail_cols, max_rows);
+
     let mut plans = HashMap::new();
     for (idx, bytes) in images {
-        let Some(img) = decode(bytes) else { continue };
-        let size = ratatui::layout::Size::new(avail_cols, max_rows);
+        let Some(mut img) = decode(bytes) else { continue };
+        if box_w > 0 && box_h > 0 {
+            // Scales up or down to fit the box, preserving aspect ratio.
+            img = img.resize(box_w, box_h, image::imageops::FilterType::Lanczos3);
+        }
         if let Ok(proto) = picker.new_protocol(img, size, ratatui_image::Resize::Fit(None)) {
             let s = proto.size();
             plans.insert(idx, ImagePlan { proto, cols: s.width, rows: s.height });
