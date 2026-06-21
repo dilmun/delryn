@@ -130,6 +130,9 @@ pub struct Reader {
     pub paragraph_spacing: u8,
     wrap_line_spacing: u8,
     wrap_para_spacing: u8,
+    /// Terminal cell size in px (for sizing inline images); None if no images.
+    pub font: Option<(u16, u16)>,
+    wrap_font: Option<(u16, u16)>,
     /// Index of the top visible line within `lines`.
     pub scroll: usize,
     /// Requested but not-yet-applied line movement; eased a few lines per frame
@@ -200,6 +203,8 @@ impl Reader {
             paragraph_spacing: 1,
             wrap_line_spacing: 0,
             wrap_para_spacing: 1,
+            font: None,
+            wrap_font: None,
             scroll: 0,
             scroll_pending: 0,
             focus: Focus::Content,
@@ -292,6 +297,7 @@ impl Reader {
             || self.code_theme != self.wrap_theme
             || self.line_spacing != self.wrap_line_spacing
             || self.paragraph_spacing != self.wrap_para_spacing
+            || self.font != self.wrap_font
         {
             self.lines = wrap_blocks(
                 &self.blocks,
@@ -299,12 +305,26 @@ impl Reader {
                 &self.code_theme,
                 self.line_spacing,
                 self.paragraph_spacing,
+                self.font,
             );
             self.wrap_width = width;
             self.wrap_theme = self.code_theme.clone();
             self.wrap_line_spacing = self.line_spacing;
             self.wrap_para_spacing = self.paragraph_spacing;
+            self.wrap_font = self.font;
         }
+    }
+
+    /// Raw bytes of the `idx`-th figure image in the current section (counting
+    /// all image blocks, matching the layout's image index). May be empty.
+    pub fn image_data(&self, idx: usize) -> Option<&[u8]> {
+        self.blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Image { data, .. } => Some(data.as_slice()),
+                _ => None,
+            })
+            .nth(idx)
     }
 
     pub fn max_scroll(&self) -> usize {
@@ -544,6 +564,7 @@ impl Reader {
                 &self.code_theme,
                 self.line_spacing,
                 self.paragraph_spacing,
+                self.font,
             );
             for (li, line) in lines.iter().enumerate() {
                 if line.text().to_lowercase().contains(&query) {
@@ -677,6 +698,8 @@ pub struct App {
     pub image_view: Option<ImageView>,
     /// Detected terminal image protocol (None if unsupported / headless).
     pub picker: Option<Picker>,
+    /// Cached inline-image protocols for the current section.
+    pub image_cache: crate::media::ImgCache,
     /// Start of the current reading session, for time tracking.
     session_start: Option<Instant>,
     store: Option<Store>,
@@ -731,6 +754,7 @@ impl App {
             note_input: None,
             image_view: None,
             picker: None,
+            image_cache: crate::media::ImgCache::default(),
             session_start: Some(Instant::now()),
             store,
             book_path,
@@ -760,6 +784,7 @@ impl App {
             note_input: None,
             image_view: None,
             picker: None,
+            image_cache: crate::media::ImgCache::default(),
             session_start: None,
             store,
             book_path: String::new(),

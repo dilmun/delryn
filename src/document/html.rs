@@ -29,16 +29,33 @@ struct Ctx {
 }
 
 fn is_block(node: NodeRef<Node>) -> bool {
-    matches!(
-        node.value(),
-        Node::Element(e) if matches!(
+    match node.value() {
+        // Real figure/cover images render block-level; math/icon images stay
+        // inline (handled in collect_inline).
+        Node::Element(e) if e.name() == "img" => is_real_image(e),
+        Node::Element(e) => matches!(
             e.name(),
             "p" | "div" | "section" | "article" | "header" | "footer" | "main"
                 | "figure" | "figcaption" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
                 | "ul" | "ol" | "li" | "blockquote" | "pre" | "hr"
                 | "table" | "thead" | "tbody" | "tr" | "td" | "th"
-        )
-    )
+        ),
+        _ => false,
+    }
+}
+
+/// A "real" image is a figure/cover — not a math equation or a UI icon.
+fn is_real_image(e: &scraper::node::Element) -> bool {
+    let alt = e.attr("alt").unwrap_or("");
+    let src = e.attr("src").unwrap_or("");
+    !crate::math::is_math(alt) && !is_icon_src(src)
+}
+
+fn is_icon_src(src: &str) -> bool {
+    let s = src.to_lowercase();
+    ["warning", "info", "tip", "note", "pencil", "key", "question", "icon", "leanpub_"]
+        .iter()
+        .any(|k| s.contains(k))
 }
 
 /// Iterate children, grouping loose inline content into implicit paragraphs and
@@ -135,6 +152,11 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             }
         }
         "hr" => out.push(Block::Rule),
+        "img" => out.push(Block::Image {
+            src: e.attr("src").unwrap_or("").to_string(),
+            alt: e.attr("alt").unwrap_or("").to_string(),
+            data: Vec::new(),
+        }),
         // Aside/callout tables (icon cell + content cell): render the content
         // inline, prefixed with a symbol standing in for the icon.
         "table" if aside_icon(node).is_some() => {

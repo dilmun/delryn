@@ -8,7 +8,6 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use epub::doc::{EpubDoc, NavPoint};
-use scraper::{Html, Selector};
 
 use super::{
     Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry, normalize_label,
@@ -86,7 +85,21 @@ fn load_blocks(doc: &mut EpubDoc<BufReader<File>>, index: usize) -> Result<Vec<B
     let (xhtml, _mime) = doc
         .get_current_str()
         .context("reading current section content")?;
-    Ok(super::html::parse_blocks(&xhtml))
+    let mut blocks = super::html::parse_blocks(&xhtml);
+
+    // Resolve each figure image's bytes from the archive.
+    let dir = doc
+        .get_current_path()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_default();
+    for block in &mut blocks {
+        if let Block::Image { src, data, .. } = block {
+            if let Some(bytes) = resolve_image(doc, &dir, src) {
+                *data = bytes;
+            }
+        }
+    }
+    Ok(blocks)
 }
 
 impl Document for EpubDocument {
@@ -121,52 +134,20 @@ impl Document for EpubDocument {
     }
 
     fn section_images(&mut self, section: usize) -> Vec<Vec<u8>> {
-        if !self.doc.set_current_chapter(section) {
-            return Vec::new();
-        }
-        let Some((xhtml, _)) = self.doc.get_current_str() else {
-            return Vec::new();
-        };
-        let dir = self
-            .doc
-            .get_current_path()
-            .and_then(|p| p.parent().map(Path::to_path_buf))
-            .unwrap_or_default();
-        scan_image_srcs(&xhtml)
-            .into_iter()
-            .filter_map(|src| resolve_image(&mut self.doc, &dir, &src))
-            .collect()
+        // Reuse the parsed blocks so the overlay sees exactly the figures the
+        // reader renders inline (single source of truth for image selection).
+        load_blocks(&mut self.doc, section)
+            .map(|blocks| {
+                blocks
+                    .into_iter()
+                    .filter_map(|b| match b {
+                        Block::Image { data, .. } if !data.is_empty() => Some(data),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
-}
-
-/// Renderable image `src`s in a section (skipping math equations and icons).
-fn scan_image_srcs(xhtml: &str) -> Vec<String> {
-    let doc = Html::parse_document(xhtml);
-    let Ok(sel) = Selector::parse("img") else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for el in doc.select(&sel) {
-        let alt = el.value().attr("alt").unwrap_or("");
-        if crate::math::is_math(alt) {
-            continue;
-        }
-        let Some(src) = el.value().attr("src") else {
-            continue;
-        };
-        if is_icon_src(src) {
-            continue;
-        }
-        out.push(src.to_string());
-    }
-    out
-}
-
-fn is_icon_src(src: &str) -> bool {
-    let s = src.to_lowercase();
-    ["warning", "info", "tip", "note", "pencil", "key", "question", "icon", "leanpub_"]
-        .iter()
-        .any(|k| s.contains(k))
 }
 
 /// Resolve an image `src` (relative to the chapter dir) to its bytes, with a

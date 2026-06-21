@@ -6,6 +6,10 @@
 
 use crate::document::{Block, Inline, Span};
 use crate::highlight::highlight_code;
+use crate::media;
+
+/// Maximum rows an inline image may reserve, so a tall cover doesn't dominate.
+const MAX_IMAGE_ROWS: u16 = 30;
 
 /// An RGB foreground colour (from syntax highlighting / themes).
 pub type Rgb = (u8, u8, u8);
@@ -27,6 +31,8 @@ pub enum LineKind {
     Quote,
     Code,
     Rule,
+    /// A reserved row for the inline image with this section-local index.
+    Image(usize),
 }
 
 /// One wrapped, styled display line.
@@ -60,11 +66,13 @@ pub fn wrap_blocks(
     code_theme: &str,
     line_spacing: u8,
     para_spacing: u8,
+    font: Option<(u16, u16)>,
 ) -> Vec<DisplayLine> {
     let width = width.max(1);
     let mut out = Vec::new();
     let mut prev_item = false;
     let mut first = true;
+    let mut img_idx = 0usize;
 
     for block in blocks {
         let is_item = matches!(block, Block::Para { marker: Some(_), .. });
@@ -106,6 +114,42 @@ pub fn wrap_blocks(
                     (ind.clone(), ind.clone(), LineKind::Body)
                 };
                 wrap_spans(spans, width, &first_prefix, &cont_prefix, kind, &mut out);
+            }
+            Block::Image { alt, data, .. } => {
+                let dims = if data.is_empty() {
+                    None
+                } else {
+                    media::image_dimensions(data)
+                };
+                match (font, dims) {
+                    (Some((fw, fh)), Some((w, h))) => {
+                        let (_cols, rows) =
+                            media::fit_cells(w, h, fw, fh, width as u16, MAX_IMAGE_ROWS);
+                        for _ in 0..rows {
+                            out.push(DisplayLine {
+                                runs: Vec::new(),
+                                kind: LineKind::Image(img_idx),
+                            });
+                        }
+                    }
+                    // No image support (or undecodable): show a text placeholder.
+                    _ => {
+                        let label = if alt.is_empty() {
+                            "[image]".to_string()
+                        } else {
+                            format!("[image: {alt}]")
+                        };
+                        out.push(DisplayLine {
+                            runs: vec![Run {
+                                text: label,
+                                style: Inline::default(),
+                                fg: None,
+                            }],
+                            kind: LineKind::Body,
+                        });
+                    }
+                }
+                img_idx += 1;
             }
             Block::Code { lang, lines } => {
                 let gutter_w = lines.len().max(1).to_string().len();

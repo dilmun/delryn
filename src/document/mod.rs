@@ -86,6 +86,13 @@ pub enum Block {
         lang: Option<String>,
         lines: Vec<String>,
     },
+    /// A figure/cover image. `data` holds the raw encoded bytes (filled by the
+    /// format layer from `src`); empty if it couldn't be resolved.
+    Image {
+        src: String,
+        alt: String,
+        data: Vec<u8>,
+    },
     /// Horizontal rule.
     Rule,
     /// Vertical spacing between blocks.
