@@ -1,14 +1,14 @@
-//! Library view — sections sidebar + a list of books. Grid/cover view and
-//! richer columns come later. See `DESIGN.md` §5.
+//! Library view — sections sidebar + a sortable book table. Grid/cover view
+//! comes later. See `DESIGN.md` §5.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, TableState};
 
-use crate::app::{App, Focus, LibView};
-use crate::store::LibrarySection;
+use crate::app::{App, Focus, LibView, SortKey};
+use crate::store::{BookRow, LibrarySection};
 use crate::theme::Theme;
 
 pub fn render(f: &mut Frame, app: &mut App) {
@@ -108,19 +108,20 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         return;
     }
 
-    let inner_w = area.width.saturating_sub(1) as usize;
     let compact = app.config.library_compact;
-    let items: Vec<ListItem> = app
-        .lib_books
-        .iter()
-        .map(|b| {
-            if compact {
-                compact_row(b, inner_w, theme)
-            } else {
-                rich_row(b, inner_w, theme)
-            }
-        })
-        .collect();
+    let rows: Vec<Row> = app.lib_books.iter().map(|b| book_row(b, compact, theme)).collect();
+    let widths: Vec<Constraint> = if compact {
+        vec![Constraint::Length(1), Constraint::Min(10), Constraint::Length(4)]
+    } else {
+        vec![
+            Constraint::Length(1),  // favorite star
+            Constraint::Min(10),    // title (+ series)
+            Constraint::Length(20), // author
+            Constraint::Length(4),  // year
+            Constraint::Length(4),  // %
+            Constraint::Length(7),  // size
+        ]
+    };
 
     // Solid highlight bar when the list is focused; a quieter accent-text
     // selection when the keyboard is over in the sidebar.
@@ -131,60 +132,81 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     } else {
         Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
     };
-    let list = List::new(items)
-        .block(Block::default().style(base(theme)))
-        .highlight_style(highlight);
-    let mut state = ListState::default();
-    state.select(Some(app.lib_sel.min(app.lib_books.len().saturating_sub(1))));
-    f.render_stateful_widget(list, area, &mut state);
+
+    let mut table = Table::new(rows, widths)
+        .column_spacing(1)
+        .row_highlight_style(highlight)
+        .block(Block::default().style(base(theme)));
+    if !compact {
+        table = table.header(header_row(app, theme));
+    }
+    let mut state = TableState::new()
+        .with_selected(Some(app.lib_sel.min(app.lib_books.len().saturating_sub(1))));
+    f.render_stateful_widget(table, area, &mut state);
 }
 
-/// Full row: star · title (+ series suffix) · author · year · % · size.
-fn rich_row(b: &crate::store::BookRow, inner_w: usize, theme: Theme) -> ListItem<'static> {
-    let meta_w = 34usize.min(inner_w / 2);
-    let title_w = inner_w.saturating_sub(meta_w + 2).max(8);
-    let star = if b.favorite { "★ " } else { "  " };
-    // Calibre-style series suffix (` Foundation #2`), dimmed, capped to half the
-    // title cell so it never crowds out the title itself.
-    let suffix = super::truncate(&series_suffix(b), title_w / 2);
-    let suffix_w = suffix.chars().count();
-    let title = super::truncate(&b.title, title_w.saturating_sub(suffix_w).max(4));
-    let pad = title_w.saturating_sub(title.chars().count() + suffix_w);
-    let year = b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
-    let meta = format!(
-        "{:<18}  {:>4}  {:>3}%  {:>6}",
-        super::truncate(&b.author, 18),
-        year,
-        b.pct,
-        fmt_size(b.size),
-    );
-    ListItem::new(Line::from(vec![
-        Span::styled(star, Style::default().fg(theme.marker)),
-        Span::styled(title, Style::default().fg(theme.fg)),
-        Span::styled(suffix, Style::default().fg(theme.muted)),
-        Span::raw(" ".repeat(pad)),
-        Span::raw("  "),
-        Span::styled(meta, Style::default().fg(theme.muted)),
-    ]))
+/// The sortable column header, marking the active sort column with an arrow.
+fn header_row(app: &App, theme: Theme) -> Row<'static> {
+    let cell = |key: SortKey, text: &str, right: bool| -> Cell<'static> {
+        let active = app.lib_sort == key;
+        let label = if active {
+            format!("{text} {}", if app.lib_sort_desc { "↓" } else { "↑" })
+        } else {
+            text.to_string()
+        };
+        let style = if active {
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.muted).add_modifier(Modifier::BOLD)
+        };
+        let line = Line::from(Span::styled(label, style));
+        Cell::from(if right { line.alignment(Alignment::Right) } else { line })
+    };
+    Row::new(vec![
+        Cell::from(""),
+        cell(SortKey::Title, "Title", false),
+        cell(SortKey::Author, "Author", false),
+        cell(SortKey::Year, "Year", true),
+        cell(SortKey::Progress, "%", true),
+        cell(SortKey::Size, "Size", true),
+    ])
 }
 
-/// Dense row: star · title (+ series suffix) · right-aligned %. Fits more books.
-fn compact_row(b: &crate::store::BookRow, inner_w: usize, theme: Theme) -> ListItem<'static> {
-    let pct = format!("{:>3}%", b.pct);
-    let star = if b.favorite { "★ " } else { "  " };
-    // Leave room for the star (2) and " 100%" (pct width + a gap).
-    let title_w = inner_w.saturating_sub(2 + pct.chars().count() + 1).max(8);
-    let suffix = super::truncate(&series_suffix(b), title_w / 2);
-    let suffix_w = suffix.chars().count();
-    let title = super::truncate(&b.title, title_w.saturating_sub(suffix_w).max(4));
-    let pad = title_w.saturating_sub(title.chars().count() + suffix_w) + 1;
-    ListItem::new(Line::from(vec![
-        Span::styled(star, Style::default().fg(theme.marker)),
-        Span::styled(title, Style::default().fg(theme.fg)),
-        Span::styled(suffix, Style::default().fg(theme.muted)),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(pct, Style::default().fg(theme.muted)),
-    ]))
+/// A book row: rich (all columns) or compact (star · title · %).
+fn book_row(b: &BookRow, compact: bool, theme: Theme) -> Row<'static> {
+    let star = if b.favorite {
+        Cell::from(Span::styled("★", Style::default().fg(theme.marker)))
+    } else {
+        Cell::from(" ")
+    };
+    let title = title_cell(b, theme);
+    let num = |s: String| {
+        Cell::from(Line::from(Span::styled(s, Style::default().fg(theme.muted))).alignment(Alignment::Right))
+    };
+    if compact {
+        Row::new(vec![star, title, num(format!("{}%", b.pct))])
+    } else {
+        let author = Cell::from(Span::styled(b.author.clone(), Style::default().fg(theme.muted)));
+        let year = num(b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into()));
+        Row::new(vec![
+            star,
+            title,
+            author,
+            year,
+            num(format!("{}%", b.pct)),
+            num(fmt_size(b.size)),
+        ])
+    }
+}
+
+/// Title cell with a dimmed Calibre-style series suffix when present.
+fn title_cell(b: &BookRow, theme: Theme) -> Cell<'static> {
+    let mut spans = vec![Span::styled(b.title.clone(), Style::default().fg(theme.fg))];
+    let suffix = series_suffix(b);
+    if !suffix.is_empty() {
+        spans.push(Span::styled(suffix, Style::default().fg(theme.muted)));
+    }
+    Cell::from(Line::from(spans))
 }
 
 fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
@@ -192,15 +214,24 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         format!(" /{}", app.lib_filter)
     } else {
         let read = app.total_read_seconds();
+        let sort = if app.lib_sort == SortKey::Default {
+            String::new()
+        } else {
+            format!(
+                " · sort {} {}",
+                app.lib_sort.label(),
+                if app.lib_sort_desc { "↓" } else { "↑" }
+            )
+        };
         format!(
-            " {} books · {} · {}h{}m read",
+            " {} books · {} · {}h{}m read{sort}",
             app.lib_books.len(),
             app.lib_view.label(),
             read / 3600,
             (read % 3600) / 60,
         )
     };
-    let right = "Tab focus  j/k move  ⏎ open  / filter  f fav  e edit  c shelf  v dense  q quit ";
+    let right = "Tab focus  j/k move  ⏎ open  s sort  e edit  c shelf  v dense  q quit ";
     let width = area.width as usize;
     let pad = width.saturating_sub(left.chars().count() + right.chars().count());
     let line = format!("{left}{}{right}", " ".repeat(pad));
@@ -210,7 +241,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
 
 /// `  Foundation #2` for a series book, else empty. The leading spaces separate
 /// it from the title.
-fn series_suffix(b: &crate::store::BookRow) -> String {
+fn series_suffix(b: &BookRow) -> String {
     if b.series.is_empty() {
         return String::new();
     }
