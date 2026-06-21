@@ -154,10 +154,12 @@ fn render_content(
     f.render_widget(header, header_area);
 
     match config.view_mode {
-        ViewMode::Center => render_column(f, body, reader, config.side_padding, theme, images),
+        ViewMode::Center => {
+            render_column(f, body, reader, config.side_padding, config.image_max_px, theme, images)
+        }
         // Fill: edge-to-edge text (zero side margin).
-        ViewMode::Fill => render_column(f, body, reader, 0, theme, images),
-        ViewMode::TwoPage => render_two_page(f, body, reader, theme, images),
+        ViewMode::Fill => render_column(f, body, reader, 0, config.image_max_px, theme, images),
+        ViewMode::TwoPage => render_two_page(f, body, reader, config.image_max_px, theme, images),
     }
 }
 
@@ -174,11 +176,13 @@ fn measure_for(pane_width: u16, side_padding: u16) -> u16 {
 }
 
 /// A single reading column padded by `side_padding` percent on each side.
+#[allow(clippy::too_many_arguments)]
 fn render_column(
     f: &mut Frame,
     body: Rect,
     reader: &mut Reader,
     side_padding: u16,
+    image_max_px: u16,
     theme: Theme,
     images: Images,
 ) {
@@ -199,7 +203,7 @@ fn render_column(
     // Images align to the text column and scale with it. Sync (which estimates
     // rows + dispatches background builds) must run before wrapping.
     if let Some((picker, builder)) = images {
-        reader.sync_images(builder, picker, text_area.width, text_area.height.max(1));
+        reader.sync_images(builder, picker, text_area.width, text_area.height.max(1), image_max_px);
     }
 
     reader.ensure_wrapped(measure as usize);
@@ -209,7 +213,9 @@ fn render_column(
     let lines = visible_lines(reader, reader.scroll, reader.viewport_lines, theme);
     f.render_widget(Paragraph::new(Text::from(lines)).style(base(theme)), text_area);
 
-    if images.is_some() {
+    // Defer the (blocking) image transmit until scrolling settles, so motion
+    // stays smooth; the figure pops in when you stop.
+    if images.is_some() && !reader.is_scrolling() {
         draw_images_in(f, text_area, reader, reader.scroll);
     }
 }
@@ -249,7 +255,14 @@ fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize) {
 
 /// Two side-by-side columns forming a spread; the right column continues from
 /// the left, so scrolling flows left-to-right.
-fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, theme: Theme, images: Images) {
+fn render_two_page(
+    f: &mut Frame,
+    body: Rect,
+    reader: &mut Reader,
+    image_max_px: u16,
+    theme: Theme,
+    images: Images,
+) {
     const GAP: u16 = 3;
     // Each column takes half the pane (minus the gap); a thin outer margin.
     let usable = body.width.saturating_sub(GAP + 4).max(2);
@@ -272,7 +285,7 @@ fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, theme: Theme,
     reader.last_measure = col_w as usize;
 
     if let Some((picker, builder)) = images {
-        reader.sync_images(builder, picker, col_w, h.max(1) as u16);
+        reader.sync_images(builder, picker, col_w, h.max(1) as u16, image_max_px);
     }
 
     reader.ensure_wrapped(col_w as usize);
@@ -285,7 +298,8 @@ fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, theme: Theme,
     f.render_widget(Paragraph::new(Text::from(right)).style(base(theme)), right_area);
 
     // Images: left column shows the first `h` rows, right column the next `h`.
-    if images.is_some() {
+    // Deferred while scrolling so the heavy transmit doesn't stutter motion.
+    if images.is_some() && !reader.is_scrolling() {
         draw_images_in(f, left_area, reader, reader.scroll);
         draw_images_in(f, right_area, reader, reader.scroll + h);
     }

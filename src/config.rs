@@ -82,6 +82,10 @@ pub const MAX_SIDE_PADDING: u16 = 40;
 pub const MIN_TEXT_COLS: u16 = 20;
 /// Maximum extra blank lines between text lines.
 pub const MAX_LINE_SPACING: u8 = 3;
+/// Bounds for the inline-image resolution cap (longest side, px). Larger =
+/// sharper/bigger but slower to transmit to the terminal.
+pub const MIN_IMAGE_PX: u16 = 256;
+pub const MAX_IMAGE_PX: u16 = 2000;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -100,6 +104,9 @@ pub struct Config {
     pub focus_mode: bool,
     pub mouse_enabled: bool,
     pub status: StatusFields,
+    /// Max inline-image resolution (longest side, px). Caps the data sent to the
+    /// terminal so big figures don't stall scrolling.
+    pub image_max_px: u16,
     /// Directories scanned for the library.
     pub library_paths: Vec<String>,
 }
@@ -117,6 +124,7 @@ impl Default for Config {
             focus_mode: false,
             mouse_enabled: true,
             status: StatusFields::default(),
+            image_max_px: 768,
             library_paths: Vec::new(),
         }
     }
@@ -135,6 +143,7 @@ struct ConfigFile {
     show_status: bool,
     mouse_enabled: bool,
     status: StatusFields,
+    image_max_px: u16,
     library_paths: Vec<String>,
 }
 
@@ -151,6 +160,7 @@ impl Default for ConfigFile {
             show_status: c.show_status,
             mouse_enabled: c.mouse_enabled,
             status: c.status,
+            image_max_px: c.image_max_px,
             library_paths: c.library_paths,
         }
     }
@@ -181,6 +191,7 @@ impl Config {
         c.show_status = cf.show_status;
         c.mouse_enabled = cf.mouse_enabled;
         c.status = cf.status;
+        c.image_max_px = cf.image_max_px.clamp(MIN_IMAGE_PX, MAX_IMAGE_PX);
         c.library_paths = cf.library_paths;
         c
     }
@@ -197,6 +208,7 @@ impl Config {
             show_status: self.show_status,
             mouse_enabled: self.mouse_enabled,
             status: self.status,
+            image_max_px: self.image_max_px,
             library_paths: self.library_paths.clone(),
         };
         let path = config_path();

@@ -93,6 +93,7 @@ pub fn settings_rows(config: &Config, tab: SettingsTab) -> Vec<(String, String)>
             ("Status · position".into(), onoff(config.status.position)),
             ("Status · percent".into(), onoff(config.status.percent)),
             ("Status · gauge".into(), onoff(config.status.gauge)),
+            ("Image max px".into(), config.image_max_px.to_string()),
         ],
         SettingsTab::General => vec![("Mouse".into(), onoff(config.mouse_enabled))],
         SettingsTab::Library => vec![],
@@ -136,15 +137,15 @@ pub struct Reader {
     /// Reserved rows per image index, estimated up front so reflow doesn't wait
     /// on the background build.
     image_rows_estimate: Vec<u16>,
-    /// (section, avail-cols, max-rows) the current estimates/plans are for.
-    images_key: (usize, u16, u16),
+    /// (section, avail-cols, max-rows, max-px) the current estimates/plans are for.
+    images_key: (usize, u16, u16, u16),
     /// Image indices the builder has finished (built or failed), so we know
     /// when nothing is pending and can stop forcing redraws.
     img_done: HashSet<usize>,
     /// Token tagging in-flight builds, so stale results are discarded.
     img_token: u64,
     /// images_key the current `lines` were wrapped against.
-    wrap_images_key: (usize, u16, u16),
+    wrap_images_key: (usize, u16, u16, u16),
     /// Index of the top visible line within `lines`.
     pub scroll: usize,
     /// Requested but not-yet-applied line movement; eased a few lines per frame
@@ -217,10 +218,10 @@ impl Reader {
             wrap_para_spacing: 1,
             images: HashMap::new(),
             image_rows_estimate: Vec::new(),
-            images_key: (usize::MAX, 0, 0),
+            images_key: (usize::MAX, 0, 0, 0),
             img_done: HashSet::new(),
             img_token: 0,
-            wrap_images_key: (usize::MAX, 0, 0),
+            wrap_images_key: (usize::MAX, 0, 0, 0),
             scroll: 0,
             scroll_pending: 0,
             focus: Focus::Content,
@@ -334,7 +335,14 @@ impl Reader {
     /// Collect any finished background image builds, and — when the section or
     /// size changes — estimate each image's rows (cheaply, for reflow) and
     /// dispatch the protocol builds to the worker. Never blocks on encoding.
-    pub fn sync_images(&mut self, builder: &ImageBuilder, picker: &Picker, avail: u16, max_rows: u16) {
+    pub fn sync_images(
+        &mut self,
+        builder: &ImageBuilder,
+        picker: &Picker,
+        avail: u16,
+        max_rows: u16,
+        max_px: u16,
+    ) {
         for done in builder.poll() {
             if done.token == self.img_token {
                 self.img_done.insert(done.idx);
@@ -344,7 +352,7 @@ impl Reader {
             }
         }
 
-        let key = (self.section, avail, max_rows);
+        let key = (self.section, avail, max_rows, max_px);
         if self.images_key == key {
             return;
         }
@@ -364,7 +372,7 @@ impl Reader {
                     0
                 } else {
                     media::image_dimensions(data)
-                        .map(|(w, h)| media::fit_rows(w, h, fw, fh, avail, max_rows))
+                        .map(|(w, h)| media::target_cells(w, h, fw, fh, avail, max_rows, max_px).1)
                         .unwrap_or(0)
                 };
                 estimates.push(rows);
@@ -376,8 +384,14 @@ impl Reader {
         }
         self.image_rows_estimate = estimates;
         for (i, bytes) in requests {
-            builder.request(self.img_token, i, bytes, avail, max_rows);
+            builder.request(self.img_token, i, bytes, avail, max_rows, max_px);
         }
+    }
+
+    /// Whether a smooth scroll is currently in progress (so heavy image
+    /// transmits can be deferred until it settles).
+    pub fn is_scrolling(&self) -> bool {
+        self.scroll_pending != 0
     }
 
     /// Are any inline images still building (so the loop should keep redrawing
@@ -1226,6 +1240,12 @@ impl App {
             (SettingsTab::Reading, 9) => c.status.position = !c.status.position,
             (SettingsTab::Reading, 10) => c.status.percent = !c.status.percent,
             (SettingsTab::Reading, 11) => c.status.gauge = !c.status.gauge,
+            (SettingsTab::Reading, 12) => {
+                c.image_max_px = (c.image_max_px as i32 + delta * 128).clamp(
+                    crate::config::MIN_IMAGE_PX as i32,
+                    crate::config::MAX_IMAGE_PX as i32,
+                ) as u16
+            }
             (SettingsTab::General, 0) => c.mouse_enabled = !c.mouse_enabled,
             _ => {}
         }

@@ -34,16 +34,32 @@ pub fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
         .ok()
 }
 
-/// Rows a `w`×`h` px image will occupy when fitted within `avail_cols`×`max_rows`
-/// cells (preserving aspect), given the terminal cell size `fw`×`fh` px. Used to
-/// reserve reflow rows up front, before the protocol is built in the background.
-pub fn fit_rows(w: u32, h: u32, fw: u16, fh: u16, avail_cols: u16, max_rows: u16) -> u16 {
+/// Cell size (cols, rows) for a `w`×`h` px image: fit its aspect within
+/// `avail_cols`×`max_rows` cells, then cap the displayed longest side to
+/// `max_px` pixels so the data transmitted to the terminal stays bounded.
+/// `fw`×`fh` is the terminal cell size in px. Used by both the up-front row
+/// estimate and the background build, so the two always agree (no gap).
+pub fn target_cells(
+    w: u32,
+    h: u32,
+    fw: u16,
+    fh: u16,
+    avail_cols: u16,
+    max_rows: u16,
+    max_px: u16,
+) -> (u16, u16) {
     if w == 0 || h == 0 || fw == 0 || fh == 0 {
-        return 1;
+        return (1, 1);
     }
-    let scale = (avail_cols as f64 * fw as f64 / w as f64)
-        .min(max_rows as f64 * fh as f64 / h as f64);
-    ((h as f64 * scale / fh as f64).ceil() as u16).clamp(1, max_rows)
+    let (wf, hf, fwf, fhf) = (w as f64, h as f64, fw as f64, fh as f64);
+    let mut scale = (avail_cols as f64 * fwf / wf).min(max_rows as f64 * fhf / hf);
+    let longest = (wf * scale).max(hf * scale);
+    if max_px > 0 && longest > max_px as f64 {
+        scale *= max_px as f64 / longest;
+    }
+    let cols = ((wf * scale / fwf).ceil() as u16).clamp(1, avail_cols.max(1));
+    let rows = ((hf * scale / fhf).ceil() as u16).clamp(1, max_rows.max(1));
+    (cols, rows)
 }
 
 /// A built, ready-to-render inline image: a sliced protocol (so partial rows
@@ -57,17 +73,27 @@ pub struct ImagePlan {
 /// Decode, upscale-to-fill, and encode one image into a sliced protocol. This
 /// is the expensive step (RGBA encode), so it runs on the [`ImageBuilder`]
 /// worker.
-fn build_plan(picker: &Picker, bytes: &[u8], avail_cols: u16, max_rows: u16) -> Option<ImagePlan> {
-    let mut img = decode(bytes)?;
+fn build_plan(
+    picker: &Picker,
+    bytes: &[u8],
+    avail_cols: u16,
+    max_rows: u16,
+    max_px: u16,
+) -> Option<ImagePlan> {
+    use image::GenericImageView;
+    let img = decode(bytes)?;
+    let (w, h) = img.dimensions();
     let fs = picker.font_size();
-    let box_w = avail_cols as u32 * fs.width.max(1) as u32;
-    let box_h = max_rows as u32 * fs.height.max(1) as u32;
-    if box_w > 0 && box_h > 0 {
-        // Triangle (bilinear) is much faster than Lanczos3 and fine for figures;
-        // scales up or down to the box, preserving aspect.
-        img = img.resize(box_w, box_h, image::imageops::FilterType::Triangle);
-    }
-    let size = ratatui::layout::Size::new(avail_cols, max_rows);
+    let (cols, rows) = target_cells(w, h, fs.width, fs.height, avail_cols, max_rows, max_px);
+
+    // Resize to exactly the target cell box in pixels (Triangle: fast, fine for
+    // figures; up- or down-scales), so the protocol fills (cols, rows) precisely.
+    let img = img.resize(
+        cols as u32 * fs.width.max(1) as u32,
+        rows as u32 * fs.height.max(1) as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    let size = ratatui::layout::Size::new(cols, rows);
     let proto = SlicedProtocol::new_with_resize(picker, img, size, ratatui_image::Resize::Fit(None))
         .ok()?;
     let s = proto.size();
@@ -81,6 +107,7 @@ struct BuildReq {
     bytes: Vec<u8>,
     avail_cols: u16,
     max_rows: u16,
+    max_px: u16,
 }
 
 /// A completed image build, tagged so stale results (from a previous section or
@@ -107,7 +134,7 @@ impl ImageBuilder {
         thread::spawn(move || {
             while let Ok(req) = req_rx.recv() {
                 // Always reply (even on failure) so the reader stops waiting.
-                let plan = build_plan(&picker, &req.bytes, req.avail_cols, req.max_rows);
+                let plan = build_plan(&picker, &req.bytes, req.avail_cols, req.max_rows, req.max_px);
                 if res_tx
                     .send(BuiltImage { token: req.token, idx: req.idx, plan })
                     .is_err()
@@ -119,8 +146,18 @@ impl ImageBuilder {
         ImageBuilder { req_tx, res_rx }
     }
 
-    pub fn request(&self, token: u64, idx: usize, bytes: Vec<u8>, avail_cols: u16, max_rows: u16) {
-        let _ = self.req_tx.send(BuildReq { token, idx, bytes, avail_cols, max_rows });
+    pub fn request(
+        &self,
+        token: u64,
+        idx: usize,
+        bytes: Vec<u8>,
+        avail_cols: u16,
+        max_rows: u16,
+        max_px: u16,
+    ) {
+        let _ = self
+            .req_tx
+            .send(BuildReq { token, idx, bytes, avail_cols, max_rows, max_px });
     }
 
     pub fn poll(&self) -> impl Iterator<Item = BuiltImage> + '_ {
