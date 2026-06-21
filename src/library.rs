@@ -81,6 +81,9 @@ fn index_book(path: &Path, store: &Store) -> bool {
         size,
         sections,
         mtime,
+        book.series.as_deref().unwrap_or(""),
+        book.series_index,
+        book.publisher.as_deref().unwrap_or(""),
     );
     true
 }

@@ -11,11 +11,12 @@ use crate::app::App;
 use crate::store::LibrarySection;
 use crate::theme::Theme;
 
-const SECTIONS: [LibrarySection; 5] = [
+const SECTIONS: [LibrarySection; 6] = [
     LibrarySection::Recent,
     LibrarySection::All,
     LibrarySection::Favorites,
     LibrarySection::Reading,
+    LibrarySection::Series,
     LibrarySection::Duplicates,
 ];
 
@@ -92,7 +93,13 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         .iter()
         .map(|b| {
             let star = if b.favorite { "★ " } else { "  " };
-            let title = truncate(&b.title, title_w);
+            // Calibre-style series suffix (` Foundation #2`), dimmed, capped to
+            // half the title cell so it never crowds out the title itself.
+            let suffix = series_suffix(b);
+            let suffix = truncate(&suffix, title_w / 2);
+            let suffix_w = suffix.chars().count();
+            let title = truncate(&b.title, title_w.saturating_sub(suffix_w).max(4));
+            let pad = title_w.saturating_sub(title.chars().count() + suffix_w);
             let year = b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
             let meta = format!(
                 "{:<18}  {:>4}  {:>3}%  {:>6}",
@@ -103,7 +110,9 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
             );
             Line::from(vec![
                 Span::styled(star, Style::default().fg(theme.marker)),
-                Span::styled(format!("{title:<title_w$}"), Style::default().fg(theme.fg)),
+                Span::styled(title, Style::default().fg(theme.fg)),
+                Span::styled(suffix, Style::default().fg(theme.muted)),
+                Span::raw(" ".repeat(pad)),
                 Span::raw("  "),
                 Span::styled(meta, Style::default().fg(theme.muted)),
             ])
@@ -141,6 +150,27 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let line = format!("{left}{}{right}", " ".repeat(pad));
     let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
     f.render_widget(Paragraph::new(Line::raw(line)).style(style), area);
+}
+
+/// `  Foundation #2` for a series book, else empty. The leading spaces separate
+/// it from the title.
+fn series_suffix(b: &crate::store::BookRow) -> String {
+    if b.series.is_empty() {
+        return String::new();
+    }
+    match b.series_index {
+        Some(i) => format!("  {} #{}", b.series, fmt_idx(i)),
+        None => format!("  {}", b.series),
+    }
+}
+
+/// Series index without a trailing `.0` (`2.0` → "2", `2.5` → "2.5").
+fn fmt_idx(i: f32) -> String {
+    if (i.fract()).abs() < f32::EPSILON {
+        format!("{}", i as i64)
+    } else {
+        format!("{i}")
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {

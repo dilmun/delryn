@@ -1265,6 +1265,8 @@ impl App {
                 .filter(|b| {
                     b.title.to_lowercase().contains(&f)
                         || b.author.to_lowercase().contains(&f)
+                        || b.series.to_lowercase().contains(&f)
+                        || b.publisher.to_lowercase().contains(&f)
                         || fts.contains(&b.path)
                 })
                 .collect()
@@ -1294,7 +1296,8 @@ impl App {
             LibrarySection::Recent => LibrarySection::All,
             LibrarySection::All => LibrarySection::Favorites,
             LibrarySection::Favorites => LibrarySection::Reading,
-            LibrarySection::Reading => LibrarySection::Duplicates,
+            LibrarySection::Reading => LibrarySection::Series,
+            LibrarySection::Series => LibrarySection::Duplicates,
             LibrarySection::Duplicates => LibrarySection::Recent,
         };
         self.lib_sel = 0;

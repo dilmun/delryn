@@ -16,6 +16,12 @@ pub struct Metadata {
     pub year: Option<i32>,
     pub language: Option<String>,
     pub identifier: Option<String>,
+    /// Series this book belongs to (e.g. "Foundation"), if declared.
+    pub series: Option<String>,
+    /// Position within the series (e.g. `2.0`), if declared.
+    pub series_index: Option<f32>,
+    /// Publisher, if declared.
+    pub publisher: Option<String>,
     /// Raw cover image bytes + mime type, if the book has a cover.
     pub cover: Option<(Vec<u8>, String)>,
     /// Source file size in bytes.
