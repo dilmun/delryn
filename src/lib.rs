@@ -14,6 +14,7 @@ pub mod layout;
 pub mod library;
 pub mod math;
 pub mod media;
+pub mod online;
 pub mod search;
 pub mod store;
 pub mod theme;
