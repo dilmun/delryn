@@ -39,7 +39,7 @@ fn render_overlay(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = centered(f.area(), 72, 18);
+    let area = super::centered(f.area(), 72, 18);
     f.render_widget(Clear, area);
 
     let bg = theme.bg.unwrap_or(Color::Black);
@@ -100,15 +100,4 @@ fn render_overlay(f: &mut Frame, app: &App) {
         )),
         rows[1],
     );
-}
-
-fn centered(area: Rect, w: u16, h: u16) -> Rect {
-    let w = w.min(area.width.saturating_sub(2)).max(1);
-    let h = h.min(area.height.saturating_sub(2)).max(1);
-    Rect {
-        x: area.x + (area.width.saturating_sub(w)) / 2,
-        y: area.y + (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    }
 }

@@ -2,7 +2,7 @@
 //! navigable, edits the live config. See `DESIGN.md` §7.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -20,7 +20,7 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = centered(f.area(), 60, 20);
+    let area = super::centered(f.area(), 60, 20);
 
     f.render_widget(Clear, area);
 
@@ -93,18 +93,4 @@ pub fn render(f: &mut Frame, app: &App) {
         )),
         rows[3],
     );
-}
-
-/// A centered rect of at most `w`×`h`, clamped to `area`.
-fn centered(area: Rect, w: u16, h: u16) -> Rect {
-    let w = w.min(area.width.saturating_sub(2)).max(1);
-    let h = h.min(area.height.saturating_sub(2)).max(1);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    }
 }

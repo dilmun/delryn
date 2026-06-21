@@ -144,7 +144,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
             (read % 3600) / 60,
         )
     };
-    let right = "Tab section  / filter  f fav  ⏎ open  q quit ";
+    let right = "Tab section  / filter  f fav  e edit  ⏎ open  q quit ";
     let width = area.width as usize;
     let pad = width.saturating_sub(left.chars().count() + right.chars().count());
     let line = format!("{left}{}{right}", " ".repeat(pad));

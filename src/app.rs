@@ -84,6 +84,20 @@ pub struct AnnotState {
     pub sel: usize,
 }
 
+/// Editable book-metadata fields, in display order. `Year` and `Series #`
+/// hold numeric text, validated on save.
+pub const META_FIELDS: [&str; 6] =
+    ["Title", "Author", "Year", "Series", "Series #", "Publisher"];
+
+/// Open metadata-edit form: a book path and one editable string per field.
+pub struct MetaEdit {
+    pub path: String,
+    /// Current value of each field, indexed to match [`META_FIELDS`].
+    pub values: Vec<String>,
+    /// Focused field.
+    pub row: usize,
+}
+
 /// Labelled (name, value) rows for a settings tab, rendered by the popup.
 pub fn settings_rows(config: &Config, tab: SettingsTab) -> Vec<(String, String)> {
     let onoff = |b: bool| if b { "on" } else { "off" }.to_string();
@@ -1144,6 +1158,8 @@ pub struct App {
     pub annot: Option<AnnotState>,
     /// Active note-entry buffer, if typing a note.
     pub note_input: Option<String>,
+    /// Open metadata-edit form (library), if any.
+    pub meta_edit: Option<MetaEdit>,
     /// Open image viewer overlay, if any.
     pub image_view: Option<ImageView>,
     /// Detected terminal image protocol (None if unsupported / headless).
@@ -1161,6 +1177,16 @@ pub struct App {
     pub lib_sel: usize,
     pub lib_filter: String,
     pub lib_filtering: bool,
+}
+
+/// Series index without a trailing `.0` (`2.0` → "2", `2.5` → "2.5"), for
+/// prefilling the edit form.
+fn fmt_series_index(i: f32) -> String {
+    if i.fract().abs() < f32::EPSILON {
+        format!("{}", i as i64)
+    } else {
+        format!("{i}")
+    }
 }
 
 /// Build a reader for `path`, applying global config and any saved per-book
@@ -1202,6 +1228,7 @@ impl App {
             settings: None,
             annot: None,
             note_input: None,
+            meta_edit: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -1232,6 +1259,7 @@ impl App {
             settings: None,
             annot: None,
             note_input: None,
+            meta_edit: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -1287,6 +1315,66 @@ impl App {
     fn lib_favorite(&mut self) {
         if let (Some(store), Some(book)) = (&self.store, self.lib_books.get(self.lib_sel)) {
             store.set_favorite(&book.path, !book.favorite);
+        }
+        self.refresh_library();
+    }
+
+    /// Open the metadata-edit form on the selected book, prefilling each field.
+    fn open_meta_edit(&mut self) {
+        let Some(b) = self.lib_books.get(self.lib_sel) else {
+            return;
+        };
+        let values = vec![
+            b.title.clone(),
+            b.author.clone(),
+            b.year.map(|y| y.to_string()).unwrap_or_default(),
+            b.series.clone(),
+            b.series_index.map(fmt_series_index).unwrap_or_default(),
+            b.publisher.clone(),
+        ];
+        self.meta_edit = Some(MetaEdit {
+            path: b.path.clone(),
+            values,
+            row: 0,
+        });
+    }
+
+    fn meta_edit_key(&mut self, key: KeyEvent) {
+        let Some(ed) = self.meta_edit.as_mut() else {
+            return;
+        };
+        let last = META_FIELDS.len() - 1;
+        match key.code {
+            KeyCode::Esc => self.meta_edit = None,
+            KeyCode::Enter => self.save_meta_edit(),
+            KeyCode::Up | KeyCode::BackTab => ed.row = ed.row.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => ed.row = (ed.row + 1).min(last),
+            KeyCode::Backspace => {
+                ed.values[ed.row].pop();
+            }
+            KeyCode::Char(c) => ed.values[ed.row].push(c),
+            _ => {}
+        }
+    }
+
+    /// Persist the edited fields (year/index parsed leniently; blank → unset).
+    fn save_meta_edit(&mut self) {
+        let Some(ed) = self.meta_edit.take() else {
+            return;
+        };
+        let v = |i: usize| ed.values.get(i).map(|s| s.trim()).unwrap_or("");
+        let year = v(2).parse::<i32>().ok();
+        let series_index = v(4).parse::<f32>().ok();
+        if let Some(store) = &self.store {
+            store.update_book_meta(
+                &ed.path,
+                v(0),
+                v(1),
+                year,
+                v(3),
+                series_index,
+                v(5),
+            );
         }
         self.refresh_library();
     }
@@ -1399,6 +1487,10 @@ impl App {
         }
         if self.note_input.is_some() {
             self.note_key(key);
+            return;
+        }
+        if self.meta_edit.is_some() {
+            self.meta_edit_key(key);
             return;
         }
         if self.image_view.is_some() {
@@ -1690,6 +1782,7 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.lib_move(-1),
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Char('o') => self.open_selected(),
             KeyCode::Char('f') => self.lib_favorite(),
+            KeyCode::Char('e') => self.open_meta_edit(),
             KeyCode::Char('/') => self.lib_filtering = true,
             KeyCode::Tab => self.cycle_section(),
             KeyCode::Char('g') => self.lib_sel = 0,
