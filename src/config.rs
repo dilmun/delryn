@@ -82,10 +82,10 @@ pub const MAX_SIDE_PADDING: u16 = 40;
 pub const MIN_TEXT_COLS: u16 = 20;
 /// Maximum extra blank lines between text lines.
 pub const MAX_LINE_SPACING: u8 = 3;
-/// Bounds for the inline-image resolution cap (longest side, px). Larger =
-/// sharper/bigger but slower to transmit to the terminal.
-pub const MIN_IMAGE_PX: u16 = 256;
-pub const MAX_IMAGE_PX: u16 = 2000;
+/// Upper bound for the inline-image resolution cap (longest side, px). `0` means
+/// no cap — images fill the text column. A cap trades size for a faster transmit
+/// to the terminal.
+pub const MAX_IMAGE_PX: u16 = 4096;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -124,7 +124,7 @@ impl Default for Config {
             focus_mode: false,
             mouse_enabled: true,
             status: StatusFields::default(),
-            image_max_px: 768,
+            image_max_px: 0, // no cap by default — images fill the text column
             library_paths: Vec::new(),
         }
     }
@@ -191,7 +191,7 @@ impl Config {
         c.show_status = cf.show_status;
         c.mouse_enabled = cf.mouse_enabled;
         c.status = cf.status;
-        c.image_max_px = cf.image_max_px.clamp(MIN_IMAGE_PX, MAX_IMAGE_PX);
+        c.image_max_px = cf.image_max_px.min(MAX_IMAGE_PX);
         c.library_paths = cf.library_paths;
         c
     }

@@ -93,7 +93,14 @@ pub fn settings_rows(config: &Config, tab: SettingsTab) -> Vec<(String, String)>
             ("Status · position".into(), onoff(config.status.position)),
             ("Status · percent".into(), onoff(config.status.percent)),
             ("Status · gauge".into(), onoff(config.status.gauge)),
-            ("Image max px".into(), config.image_max_px.to_string()),
+            (
+                "Image max px".into(),
+                if config.image_max_px == 0 {
+                    "off".into()
+                } else {
+                    config.image_max_px.to_string()
+                },
+            ),
         ],
         SettingsTab::General => vec![("Mouse".into(), onoff(config.mouse_enabled))],
         SettingsTab::Library => vec![],
@@ -1241,10 +1248,10 @@ impl App {
             (SettingsTab::Reading, 10) => c.status.percent = !c.status.percent,
             (SettingsTab::Reading, 11) => c.status.gauge = !c.status.gauge,
             (SettingsTab::Reading, 12) => {
-                c.image_max_px = (c.image_max_px as i32 + delta * 128).clamp(
-                    crate::config::MIN_IMAGE_PX as i32,
-                    crate::config::MAX_IMAGE_PX as i32,
-                ) as u16
+                // 0 = off (uncapped); otherwise step in 128px increments.
+                c.image_max_px =
+                    (c.image_max_px as i32 + delta * 128).clamp(0, crate::config::MAX_IMAGE_PX as i32)
+                        as u16
             }
             (SettingsTab::General, 0) => c.mouse_enabled = !c.mouse_enabled,
             _ => {}
