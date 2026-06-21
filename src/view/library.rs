@@ -20,14 +20,8 @@ use crate::theme::Theme;
 /// Minimum body width before the detail pane is shown.
 const DETAIL_MIN_WIDTH: u16 = 90;
 
-/// Grid cover-card width and height in cells.
-const COVER_W: u16 = 14;
-const COVER_H: u16 = 9;
-/// Title rows under each cover.
+/// Title rows under each grid cover.
 const LABEL_H: u16 = 2;
-/// Cell pitch = card + a one-cell gutter.
-const CELL_W: u16 = COVER_W + 1;
-const CELL_H: u16 = COVER_H + LABEL_H + 1;
 /// Cover protocols built per frame, so a screenful pops in over a few frames.
 const GRID_BUILD_PER_FRAME: usize = 2;
 
@@ -96,8 +90,13 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
         return;
     }
 
-    let cols = (area.width / CELL_W).max(1) as usize;
-    let rows_screen = (area.height / CELL_H).max(1) as usize;
+    // Card size from the configured grid size; cell pitch adds a 1-cell gutter.
+    let (cover_w, cover_h) = app.config.library_grid_size.card();
+    let cell_w = cover_w + 1;
+    let cell_h = cover_h + LABEL_H + 1;
+
+    let cols = (area.width / cell_w).max(1) as usize;
+    let rows_screen = (area.height / cell_h).max(1) as usize;
     let len = app.lib_books.len();
     let sel = app.lib_sel.min(len - 1);
 
@@ -118,14 +117,15 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
 
     app.lib_grid_cols = cols;
     app.ensure_grid_covers(&paths, GRID_BUILD_PER_FRAME);
+    let font = super::image_font(app);
 
     for (i, path, title, fav) in &visible {
         let pos = i - start;
         let (r, c) = ((pos / cols) as u16, (pos % cols) as u16);
-        let x = area.x + c * CELL_W;
-        let y = area.y + r * CELL_H;
-        let card = Rect { x, y, width: COVER_W, height: COVER_H };
-        let label = Rect { x, y: y + COVER_H, width: COVER_W, height: LABEL_H };
+        let x = area.x + c * cell_w;
+        let y = area.y + r * cell_h;
+        let card = Rect { x, y, width: cover_w, height: cover_h };
+        let label = Rect { x, y: y + cover_h, width: cover_w, height: LABEL_H };
         let selected = *i == sel;
 
         // Card frame — accent when selected, else a quiet border.
@@ -138,9 +138,10 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
         f.render_widget(frame, card);
 
         match app.lib_grid_covers.get_mut(path) {
-            Some(Some(proto)) => {
-                let w = StatefulImage::default().resize(Resize::Fit(None));
-                f.render_stateful_widget(w, inner, proto);
+            Some(Some(cover)) => {
+                let rect = super::cover_image_rect(inner, font, cover.dims);
+                let w = StatefulImage::default().resize(Resize::Scale(None));
+                f.render_stateful_widget(w, rect, &mut cover.proto);
             }
             _ => {
                 let star = if *fav { "★\n" } else { "" };
@@ -160,7 +161,7 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
         };
         let star = if *fav { "★ " } else { "" };
         f.render_widget(
-            Paragraph::new(super::truncate(&format!("{star}{title}"), COVER_W as usize))
+            Paragraph::new(super::truncate(&format!("{star}{title}"), cover_w as usize))
                 .style(style),
             label,
         );
@@ -193,9 +194,11 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused
     let parts = Layout::vertical([Constraint::Min(2), Constraint::Length(13)]).split(inner);
 
     // Cover (or a fallback box when there's none / no graphics protocol).
-    if let Some(proto) = app.lib_cover.as_mut() {
-        let img = StatefulImage::default().resize(Resize::Fit(None));
-        f.render_stateful_widget(img, parts[0], proto);
+    let font = super::image_font(app);
+    if let Some(cover) = app.lib_cover.as_mut() {
+        let rect = super::cover_image_rect(parts[0], font, cover.dims);
+        let img = StatefulImage::default().resize(Resize::Scale(None));
+        f.render_stateful_widget(img, rect, &mut cover.proto);
     } else {
         let ph = Paragraph::new("\n  (no cover)")
             .style(Style::default().fg(theme.muted))

@@ -27,6 +27,26 @@ pub fn decode(bytes: &[u8]) -> Option<DynamicImage> {
         .ok()
 }
 
+/// A decoded cover plus its source pixel dimensions, so the renderer can size a
+/// render rect to the cover's aspect ratio (filling it with no letterbox).
+pub struct CoverImage {
+    pub proto: StatefulProtocol,
+    /// Source pixel dimensions (w, h).
+    pub dims: (u32, u32),
+}
+
+/// Decode `bytes` and build a resize protocol for `picker`, capturing the source
+/// dimensions. `None` if the bytes aren't a decodable image.
+pub fn build_cover(picker: &Picker, bytes: &[u8]) -> Option<CoverImage> {
+    decode(bytes).map(|img| {
+        let dims = (img.width(), img.height());
+        CoverImage {
+            proto: picker.new_resize_protocol(img),
+            dims,
+        }
+    })
+}
+
 /// Read just an image's pixel dimensions (header only — cheap).
 pub fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     image::ImageReader::new(std::io::Cursor::new(bytes))

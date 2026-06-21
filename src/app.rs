@@ -27,7 +27,6 @@ use crate::layout::{DisplayLine, WrapOpts, wrap_blocks};
 use crate::library;
 use crate::media::{self, ImageBuilder, ImagePlan, ImageView, ImgKey};
 use crate::online::{self, Candidate};
-use ratatui_image::protocol::StatefulProtocol;
 use crate::search::{Matcher, SearchMode};
 use crate::store::{Annotation, BookRow, LibrarySection, Store};
 use crate::theme;
@@ -1593,7 +1592,7 @@ pub struct App {
     pub lib_detail: bool,
     /// Cover image protocol for the detail pane, rebuilt when the selection
     /// settles (debounced so holding j/k stays smooth).
-    pub lib_cover: Option<StatefulProtocol>,
+    pub lib_cover: Option<media::CoverImage>,
     /// Book path the current `lib_cover` was built for (avoids rebuilds).
     pub lib_cover_path: String,
     /// Path the cover wants to settle on, and when it last changed (debounce).
@@ -1603,12 +1602,12 @@ pub struct App {
     pub lib_grid_cols: usize,
     /// Grid view: lazily-built cover protocols, keyed by book path
     /// (`None` = no cover / failed, so we don't retry every frame).
-    pub lib_grid_covers: HashMap<String, Option<StatefulProtocol>>,
+    pub lib_grid_covers: HashMap<String, Option<media::CoverImage>>,
     /// Grid view: visible covers still waiting to be built (keeps redrawing).
     pub lib_grid_pending: bool,
     /// Cover-tab preview image protocol + the URL it was built for, plus the
     /// debounce target/timer for fetching the highlighted result's cover.
-    pub edit_cover: Option<StatefulProtocol>,
+    pub edit_cover: Option<media::CoverImage>,
     pub edit_cover_url: String,
     edit_cover_target: String,
     edit_cover_at: Instant,
@@ -2017,9 +2016,7 @@ impl App {
         }
         self.lib_cover_path = target.clone();
         self.lib_cover = match (&self.picker, load_cover_bytes(&target)) {
-            (Some(picker), Some(bytes)) => {
-                media::decode(&bytes).map(|img| picker.new_resize_protocol(img))
-            }
+            (Some(picker), Some(bytes)) => media::build_cover(picker, &bytes),
             _ => None,
         };
         true
@@ -2039,13 +2036,11 @@ impl App {
                 pending = true;
                 break;
             }
-            let proto = match (&self.picker, load_cover_bytes(path)) {
-                (Some(picker), Some(bytes)) => {
-                    media::decode(&bytes).map(|img| picker.new_resize_protocol(img))
-                }
+            let cover = match (&self.picker, load_cover_bytes(path)) {
+                (Some(picker), Some(bytes)) => media::build_cover(picker, &bytes),
                 _ => None,
             };
-            self.lib_grid_covers.insert(path.clone(), proto);
+            self.lib_grid_covers.insert(path.clone(), cover);
             built += 1;
         }
         self.lib_grid_pending = pending;
@@ -2698,7 +2693,7 @@ impl App {
                 ed.preview_url = url;
                 ed.preview_cover = bytes.clone();
                 self.edit_cover = match (&self.picker, &bytes) {
-                    (Some(p), Some(b)) => media::decode(b).map(|img| p.new_resize_protocol(img)),
+                    (Some(p), Some(b)) => media::build_cover(p, b),
                     _ => None,
                 };
             }
@@ -3377,6 +3372,15 @@ impl App {
                 self.config.library_layout = self.config.library_layout.next();
                 self.config.save();
                 self.lib_ensure_pane_visible();
+            }
+            // Grid view: grow/shrink the cover cards.
+            KeyCode::Char('+') | KeyCode::Char('=') if grid => {
+                self.config.library_grid_size = self.config.library_grid_size.next();
+                self.config.save();
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') if grid => {
+                self.config.library_grid_size = self.config.library_grid_size.prev();
+                self.config.save();
             }
             KeyCode::Char('s') => self.cycle_sort(),
             KeyCode::Char('S') => self.toggle_sort_dir(),
