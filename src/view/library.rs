@@ -11,6 +11,7 @@ use ratatui::widgets::{
 use ratatui_image::{Resize, StatefulImage};
 
 use crate::app::{App, Focus, LibView, SortKey};
+use crate::config::LibLayout;
 use crate::store::{BookRow, LibrarySection};
 use crate::theme::Theme;
 
@@ -18,6 +19,17 @@ use crate::theme::Theme;
 const DETAIL_MIN_WIDTH: u16 = 90;
 /// Width of the detail pane.
 const DETAIL_WIDTH: u16 = 36;
+
+/// Grid cover-card width and height in cells.
+const COVER_W: u16 = 14;
+const COVER_H: u16 = 9;
+/// Title rows under each cover.
+const LABEL_H: u16 = 2;
+/// Cell pitch = card + a one-cell gutter.
+const CELL_W: u16 = COVER_W + 1;
+const CELL_H: u16 = COVER_H + LABEL_H + 1;
+/// Cover protocols built per frame, so a screenful pops in over a few frames.
+const GRID_BUILD_PER_FRAME: usize = 2;
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
@@ -29,8 +41,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
     let body = rows[0];
 
-    // Detail pane only when the user wants it and there's room.
-    if app.lib_detail && body.width >= DETAIL_MIN_WIDTH {
+    let grid = app.config.library_layout == LibLayout::Grid;
+    // Detail pane: only for the list views, when wanted and there's room (the
+    // grid is itself a cover view, so it takes the full width).
+    let show_detail = !grid && app.lib_detail && body.width >= DETAIL_MIN_WIDTH;
+
+    if grid {
+        let cols = Layout::horizontal([Constraint::Length(24), Constraint::Min(0)]).split(body);
+        render_sections(f, cols[0], app, theme);
+        render_grid(f, cols[1], app, theme);
+    } else if show_detail {
         let cols = Layout::horizontal([
             Constraint::Length(24),
             Constraint::Min(30),
@@ -47,6 +67,90 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_books(f, cols[1], app, theme);
     }
     render_status(f, rows[1], app, theme);
+}
+
+/// Cover-grid view: cards of cover thumbnails (built lazily) reflowing to width,
+/// with the title under each and the selection framed in the accent colour.
+fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
+    if app.lib_books.is_empty() {
+        let msg = if app.config.library_paths.is_empty() {
+            "No library configured.\n\nAdd a folder:  delryn --add <dir>"
+        } else {
+            "No books in this section."
+        };
+        f.render_widget(Paragraph::new(msg).style(base(theme)), area);
+        return;
+    }
+
+    let cols = (area.width / CELL_W).max(1) as usize;
+    let rows_screen = (area.height / CELL_H).max(1) as usize;
+    let len = app.lib_books.len();
+    let sel = app.lib_sel.min(len - 1);
+
+    // Scroll so the selected row stays visible.
+    let sel_row = sel / cols;
+    let top_row = sel_row.saturating_sub(rows_screen.saturating_sub(1));
+    let start = top_row * cols;
+    let end = ((top_row + rows_screen) * cols).min(len);
+
+    // Snapshot the visible cells (ends the immutable borrow before building).
+    let visible: Vec<(usize, String, String, bool)> = (start..end)
+        .map(|i| {
+            let b = &app.lib_books[i];
+            (i, b.path.clone(), b.title.clone(), b.favorite)
+        })
+        .collect();
+    let paths: Vec<String> = visible.iter().map(|(_, p, _, _)| p.clone()).collect();
+
+    app.lib_grid_cols = cols;
+    app.ensure_grid_covers(&paths, GRID_BUILD_PER_FRAME);
+
+    for (i, path, title, fav) in &visible {
+        let pos = i - start;
+        let (r, c) = ((pos / cols) as u16, (pos % cols) as u16);
+        let x = area.x + c * CELL_W;
+        let y = area.y + r * CELL_H;
+        let card = Rect { x, y, width: COVER_W, height: COVER_H };
+        let label = Rect { x, y: y + COVER_H, width: COVER_W, height: LABEL_H };
+        let selected = *i == sel;
+
+        // Card frame — accent when selected, else a quiet border.
+        let border = if selected { theme.accent } else { theme.muted };
+        let frame = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border))
+            .style(base(theme));
+        let inner = frame.inner(card);
+        f.render_widget(frame, card);
+
+        match app.lib_grid_covers.get_mut(path) {
+            Some(Some(proto)) => {
+                let w = StatefulImage::default().resize(Resize::Fit(None));
+                f.render_stateful_widget(w, inner, proto);
+            }
+            _ => {
+                let star = if *fav { "★\n" } else { "" };
+                f.render_widget(
+                    Paragraph::new(format!("{star}\nno\ncover"))
+                        .alignment(Alignment::Center)
+                        .style(Style::default().fg(theme.muted)),
+                    inner,
+                );
+            }
+        }
+
+        let style = if selected {
+            Style::default().fg(theme.bg.unwrap_or(Color::Black)).bg(theme.accent)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+        let star = if *fav { "★ " } else { "" };
+        f.render_widget(
+            Paragraph::new(super::truncate(&format!("{star}{title}"), COVER_W as usize))
+                .style(style),
+            label,
+        );
+    }
 }
 
 /// Right-hand pane: the selected book's cover (via the image protocol) plus its
@@ -205,7 +309,7 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         return;
     }
 
-    let compact = app.config.library_compact;
+    let compact = app.config.library_layout == LibLayout::Compact;
     let rows: Vec<Row> = app.lib_books.iter().map(|b| book_row(b, compact, theme)).collect();
     let widths: Vec<Constraint> = if compact {
         vec![Constraint::Length(1), Constraint::Min(10), Constraint::Length(4)]
@@ -328,7 +432,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
             (read % 3600) / 60,
         )
     };
-    let right = "Tab focus  j/k move  ⏎ open  e edit  c shelf  s sort  d detail  v dense  q quit ";
+    let right = "Tab focus  hjkl move  ⏎ open  e edit  c shelf  s sort  d detail  v view  q quit ";
     let width = area.width as usize;
     let pad = width.saturating_sub(left.chars().count() + right.chars().count());
     let line = format!("{left}{}{right}", " ".repeat(pad));

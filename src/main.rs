@@ -107,7 +107,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         // Block for input — only until the next frame is due if a redraw is
         // pending or a scroll is animating, otherwise block long so an idle
         // reader costs ~0% CPU.
-        let timeout = if dirty || app.animating() || app.online_active() {
+        let timeout = if dirty || app.animating() || app.online_active() || app.lib_grid_pending() {
             FRAME.saturating_sub(last_draw.elapsed())
         } else {
             IDLE
@@ -136,6 +136,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
 
         // Pick up finished Open Library results (editor's Online tab).
         if app.poll_online() {
+            dirty = true;
+        }
+        // Keep redrawing while the grid is still building visible covers.
+        if app.lib_grid_pending() {
             dirty = true;
         }
 
