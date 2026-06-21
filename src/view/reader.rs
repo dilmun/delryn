@@ -13,6 +13,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
 use crate::app::{App, Focus, Reader};
 use crate::media::ImageBuilder;
+use crate::search::Matcher;
 use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
 use crate::theme::Theme;
@@ -70,7 +71,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     render_content(f, content_area, reader, config, theme, images);
     if reader.searching {
         let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
-        let prompt = format!("/{}", reader.search_input);
+        let prompt = format!("[{}] /{}", reader.search_mode.label(), reader.search_input);
         f.render_widget(Paragraph::new(Line::raw(prompt)).style(style), status);
     } else if show_status {
         render_status(f, status, reader, config, theme);
@@ -308,15 +309,15 @@ fn render_two_page(
 fn visible_lines(reader: &Reader, start: usize, count: usize, theme: Theme) -> Vec<Line<'static>> {
     let start = start.min(reader.lines.len());
     let end = (start + count).min(reader.lines.len());
-    let query = reader.search.as_deref().filter(|q| !q.is_empty());
+    let matcher = reader.search_matcher.as_ref().filter(|m| !m.is_empty());
     reader.lines[start..end]
         .iter()
-        .map(|l| to_ratatui(l, theme, query))
+        .map(|l| to_ratatui(l, theme, matcher))
         .collect()
 }
 
-fn to_ratatui(line: &DisplayLine, theme: Theme, query: Option<&str>) -> Line<'static> {
-    let Some(q) = query else {
+fn to_ratatui(line: &DisplayLine, theme: Theme, matcher: Option<&Matcher>) -> Line<'static> {
+    let Some(m) = matcher else {
         let spans: Vec<Span> = line
             .runs
             .iter()
@@ -325,7 +326,7 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, query: Option<&str>) -> Line<'st
         return Line::from(spans);
     };
 
-    // Expand to per-char styles, mark search matches, then regroup into spans.
+    // Expand to per-char styles, mark search-match ranges, then regroup.
     let mut chars: Vec<(char, Style)> = Vec::new();
     for run in &line.runs {
         let style = run_style(run, line.kind, theme);
@@ -333,18 +334,11 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, query: Option<&str>) -> Line<'st
             chars.push((c, style));
         }
     }
-    let hay: Vec<char> = chars.iter().map(|(c, _)| c.to_ascii_lowercase()).collect();
-    let needle: Vec<char> = q.chars().collect();
     let mut matched = vec![false; chars.len()];
-    if !needle.is_empty() {
-        let mut i = 0;
-        while i + needle.len() <= hay.len() {
-            if hay[i..i + needle.len()] == needle[..] {
-                matched[i..i + needle.len()].fill(true);
-                i += needle.len();
-            } else {
-                i += 1;
-            }
+    let text: String = chars.iter().map(|(c, _)| *c).collect();
+    for (s, e) in m.highlight_ranges(&text) {
+        for flag in matched.iter_mut().take(e.min(chars.len())).skip(s) {
+            *flag = true;
         }
     }
 
@@ -418,7 +412,7 @@ fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config, th
     let pct = (reader.progress() * 100.0).round() as u32;
     let sf = config.status;
     let mut parts: Vec<String> = Vec::new();
-    if reader.search.is_some() {
+    if reader.search_matcher.is_some() {
         let n = reader.search_count();
         let cur = if n == 0 { 0 } else { reader.search_idx + 1 };
         parts.push(format!("⌕ {cur}/{n}"));

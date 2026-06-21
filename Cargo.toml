@@ -13,6 +13,7 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 lru = "0.18.0"
 ratatui = "0.30.2"
 ratatui-image = { version = "11.0.5", default-features = false, features = ["crossterm", "image-defaults"] }
+regex = "1.12.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 scraper = "0.27.0"
 serde = { version = "1.0.228", features = ["derive"] }

@@ -818,6 +818,7 @@ dependencies = [
  "lru",
  "ratatui",
  "ratatui-image",
+ "regex",
  "rusqlite",
  "scraper",
  "serde",

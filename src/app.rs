@@ -23,6 +23,7 @@ use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, wrap_blocks};
 use crate::library;
 use crate::media::{self, ImageBuilder, ImagePlan, ImageView, ImgKey};
+use crate::search::{Matcher, SearchMode};
 use crate::store::{Annotation, BookRow, LibrarySection, Store};
 use crate::theme;
 use ratatui_image::picker::Picker;
@@ -187,9 +188,15 @@ pub struct Reader {
     /// In-book search state.
     pub searching: bool,
     pub search_input: String,
-    pub search: Option<String>,
+    pub search_mode: SearchMode,
+    /// The active matcher (set when a search runs); drives highlighting.
+    pub search_matcher: Option<Matcher>,
     search_matches: Vec<(usize, usize)>,
     pub search_idx: usize,
+    /// Recent queries, most-recent last; recalled with Up/Down in the prompt.
+    search_history: Vec<String>,
+    /// Position while browsing history in the prompt (None = editing fresh).
+    history_pos: Option<usize>,
     /// Decoded section blocks, keyed by section index (bounded LRU).
     cache: HashMap<usize, Vec<Block>>,
     /// Sections requested from the loader but not yet returned.
@@ -255,9 +262,12 @@ impl Reader {
             fwd_stack: Vec::new(),
             searching: false,
             search_input: String::new(),
-            search: None,
+            search_mode: SearchMode::Plain,
+            search_matcher: None,
             search_matches: Vec::new(),
             search_idx: 0,
+            search_history: Vec::new(),
+            history_pos: None,
             cache,
             requested: HashSet::new(),
             req_tx,
@@ -737,41 +747,82 @@ impl Reader {
     pub fn start_search(&mut self) {
         self.searching = true;
         self.search_input.clear();
+        self.history_pos = None;
     }
 
     pub fn search_count(&self) -> usize {
         self.search_matches.len()
     }
 
-    /// Run the typed query across the whole book (case-insensitive substring),
-    /// recording matching (section, line) positions and jumping to the first.
-    pub fn run_search(&mut self) {
-        self.searching = false;
-        let query = self.search_input.trim().to_lowercase();
-        self.search_matches.clear();
-        self.search_idx = 0;
-        if query.is_empty() {
-            self.search = None;
+    /// Cycle the search mode (plain → regex → fuzzy) while typing a query.
+    pub fn cycle_search_mode(&mut self) {
+        self.search_mode = self.search_mode.next();
+    }
+
+    /// Recall the previous (`-1`) or next (`+1`) query from history into the
+    /// prompt.
+    pub fn search_history_recall(&mut self, dir: i32) {
+        if self.search_history.is_empty() {
             return;
         }
-        let width = self.last_measure.max(1);
-        for s in 0..self.doc.section_count() {
-            let blocks = self.fetch_blocks(s);
-            let lines = wrap_blocks(
-                &blocks,
-                width,
-                &self.code_theme,
-                self.line_spacing,
-                self.paragraph_spacing,
-                &[],
-            );
-            for (li, line) in lines.iter().enumerate() {
-                if line.text().to_lowercase().contains(&query) {
-                    self.search_matches.push((s, li));
+        let len = self.search_history.len();
+        let pos = match (self.history_pos, dir) {
+            (None, -1) => len - 1,
+            (Some(p), -1) => p.saturating_sub(1),
+            (Some(p), 1) if p + 1 < len => p + 1,
+            (Some(_), 1) => {
+                // Past the newest → back to a fresh, empty prompt.
+                self.history_pos = None;
+                self.search_input.clear();
+                return;
+            }
+            _ => return,
+        };
+        self.history_pos = Some(pos);
+        self.search_input = self.search_history[pos].clone();
+    }
+
+    /// Run the typed query across the whole book in the current mode, recording
+    /// matching (section, line) positions and jumping to the first.
+    pub fn run_search(&mut self) {
+        self.searching = false;
+        let query = self.search_input.trim().to_string();
+        self.search_matches.clear();
+        self.search_idx = 0;
+        self.history_pos = None;
+        if query.is_empty() {
+            self.search_matcher = None;
+            return;
+        }
+
+        // Record in history (dedup, most-recent last, bounded).
+        self.search_history.retain(|q| q != &query);
+        self.search_history.push(query.clone());
+        if self.search_history.len() > 50 {
+            self.search_history.remove(0);
+        }
+
+        let matcher = Matcher::new(self.search_mode, &query);
+        if matcher.is_valid() {
+            let width = self.last_measure.max(1);
+            for s in 0..self.doc.section_count() {
+                let blocks = self.fetch_blocks(s);
+                let lines = wrap_blocks(
+                    &blocks,
+                    width,
+                    &self.code_theme,
+                    self.line_spacing,
+                    self.paragraph_spacing,
+                    &[],
+                );
+                for (li, line) in lines.iter().enumerate() {
+                    if matcher.matches(&line.text()) {
+                        self.search_matches.push((s, li));
+                    }
                 }
             }
         }
-        self.search = Some(query);
+        self.search_matcher = Some(matcher);
         if !self.search_matches.is_empty() {
             self.goto_match(0);
         }
@@ -1294,10 +1345,17 @@ impl App {
                 reader.search_input.clear();
             }
             KeyCode::Enter => reader.run_search(),
+            KeyCode::Tab => reader.cycle_search_mode(),
+            KeyCode::Up => reader.search_history_recall(-1),
+            KeyCode::Down => reader.search_history_recall(1),
             KeyCode::Backspace => {
+                reader.history_pos = None;
                 reader.search_input.pop();
             }
-            KeyCode::Char(c) => reader.search_input.push(c),
+            KeyCode::Char(c) => {
+                reader.history_pos = None;
+                reader.search_input.push(c);
+            }
             _ => {}
         }
     }
