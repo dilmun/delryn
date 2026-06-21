@@ -149,20 +149,21 @@ fn render_content(
     .style(base(theme));
     f.render_widget(header, header_area);
 
-    // Size images to the content pane (so figures grow with the window, while
-    // text stays at its readable measure) before wrapping reserves their rows.
-    if let Some(picker) = picker {
-        let avail = body.width.saturating_sub(2).max(1);
-        let max_rows = body.height.max(1);
-        reader.ensure_images(picker, avail, max_rows);
-    }
-
     match config.view_mode {
-        ViewMode::Center => render_column(f, body, reader, true, config.measure_width, theme, picker.is_some()),
-        ViewMode::Fill => render_column(f, body, reader, false, config.measure_width, theme, picker.is_some()),
+        ViewMode::Center => render_column(f, body, reader, config.side_padding, theme, picker),
+        // Fill: edge-to-edge text (a single column of cells of margin).
+        ViewMode::Fill => render_column(f, body, reader, 0, theme, picker),
         // Inline images aren't drawn in two-page mode yet; rows reserve as gaps.
-        ViewMode::TwoPage => render_two_page(f, body, reader, config.measure_width, theme),
+        ViewMode::TwoPage => render_two_page(f, body, reader, theme),
     }
+}
+
+/// The reading column width for a given pane width and per-side padding percent.
+fn measure_for(pane_width: u16, side_padding: u16) -> u16 {
+    let pad = (pane_width as u32 * side_padding as u32 / 100) as u16;
+    pane_width
+        .saturating_sub(pad.saturating_mul(2))
+        .max(crate::config::MIN_TEXT_COLS.min(pane_width).max(1))
 }
 
 /// One text column. `centered` caps to the measure and centers it; otherwise
@@ -171,16 +172,11 @@ fn render_column(
     f: &mut Frame,
     body: Rect,
     reader: &mut Reader,
-    centered: bool,
-    measure_cfg: u16,
+    side_padding: u16,
     theme: Theme,
-    draw_images: bool,
+    picker: Option<&Picker>,
 ) {
-    let measure = if centered {
-        measure_cfg.min(body.width.saturating_sub(2)).max(1)
-    } else {
-        body.width.saturating_sub(2).max(1)
-    };
+    let measure = measure_for(body.width, side_padding);
     let left_pad = body.width.saturating_sub(measure) / 2;
     let cols = Layout::horizontal([
         Constraint::Length(left_pad),
@@ -193,6 +189,14 @@ fn render_column(
     reader.viewport_lines = text_area.height as usize;
     reader.page_lines = reader.viewport_lines;
     reader.last_measure = measure as usize;
+
+    // Images align to the text column: same width, same edges. Since the
+    // measure scales with the window, figures scale with it too. Must run
+    // before wrapping reserves their rows.
+    if let Some(picker) = picker {
+        reader.ensure_images(picker, text_area.width, text_area.height.max(1));
+    }
+
     reader.ensure_wrapped(measure as usize);
     reader.resolve_pending();
     reader.clamp_scroll();
@@ -200,10 +204,8 @@ fn render_column(
     let lines = visible_lines(reader, reader.scroll, reader.viewport_lines, theme);
     f.render_widget(Paragraph::new(Text::from(lines)).style(base(theme)), text_area);
 
-    if draw_images {
-        // Images are sized to the pane and centered in it, so they can be wider
-        // than the text column and grow with the window.
-        draw_inline_images(f, body, reader);
+    if picker.is_some() {
+        draw_inline_images(f, text_area, reader);
     }
 }
 
@@ -211,7 +213,7 @@ fn render_column(
 /// pre-built protocol and exact cell size. An image is drawn only when its top
 /// row is within the viewport; it clips at the bottom edge while scrolling
 /// (terminal protocols can't clip from the top). Centered in `pane`.
-fn draw_inline_images(f: &mut Frame, pane: Rect, reader: &Reader) {
+fn draw_inline_images(f: &mut Frame, text_area: Rect, reader: &Reader) {
     let scroll = reader.scroll;
     let view_end = scroll + reader.viewport_lines;
     let lines = &reader.lines;
@@ -237,8 +239,8 @@ fn draw_inline_images(f: &mut Frame, pane: Rect, reader: &Reader) {
 
         let height = plan.rows.min((view_end - start).min(reserved) as u16);
         let rect = Rect {
-            x: pane.x + pane.width.saturating_sub(plan.cols) / 2,
-            y: pane.y + (start - scroll) as u16,
+            x: text_area.x + text_area.width.saturating_sub(plan.cols) / 2,
+            y: text_area.y + (start - scroll) as u16,
             width: plan.cols,
             height,
         };
@@ -248,9 +250,11 @@ fn draw_inline_images(f: &mut Frame, pane: Rect, reader: &Reader) {
 
 /// Two side-by-side columns forming a spread; the right column continues from
 /// the left, so scrolling flows left-to-right.
-fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, measure_cfg: u16, theme: Theme) {
+fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, theme: Theme) {
     const GAP: u16 = 3;
-    let col_w = (body.width.saturating_sub(GAP) / 2).min(measure_cfg).max(1);
+    // Each column takes half the pane (minus the gap); a thin outer margin.
+    let usable = body.width.saturating_sub(GAP + 4).max(2);
+    let col_w = (usable / 2).max(1);
     let side_pad = body.width.saturating_sub(col_w * 2 + GAP) / 2;
     let cols = Layout::horizontal([
         Constraint::Length(side_pad),

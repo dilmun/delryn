@@ -83,7 +83,7 @@ pub fn settings_rows(config: &Config, tab: SettingsTab) -> Vec<(String, String)>
         SettingsTab::Reading => vec![
             ("Theme".into(), config.theme.name.to_string()),
             ("View mode".into(), config.view_mode.label().to_string()),
-            ("Content width".into(), config.measure_width.to_string()),
+            ("Side margin %".into(), config.side_padding.to_string()),
             ("Line spacing".into(), config.line_spacing.to_string()),
             ("Paragraph spacing".into(), config.paragraph_spacing.to_string()),
             ("Sidebar by default".into(), onoff(config.show_sidebar)),
@@ -1151,7 +1151,7 @@ impl App {
     }
 
     fn settings_change(&mut self, delta: i32) {
-        use crate::config::{MAX_LINE_SPACING, MAX_MEASURE, MIN_MEASURE};
+        use crate::config::{MAX_LINE_SPACING, MAX_SIDE_PADDING};
         let Some(s) = self.settings.as_ref() else {
             return;
         };
@@ -1168,8 +1168,8 @@ impl App {
                 }
             }
             (SettingsTab::Reading, 2) => {
-                c.measure_width = (c.measure_width as i32 + delta * 4)
-                    .clamp(MIN_MEASURE as i32, MAX_MEASURE as i32) as u16
+                c.side_padding =
+                    (c.side_padding as i32 + delta).clamp(0, MAX_SIDE_PADDING as i32) as u16
             }
             (SettingsTab::Reading, 3) => {
                 c.line_spacing = (c.line_spacing as i32 + delta).clamp(0, MAX_LINE_SPACING as i32) as u8
@@ -1288,13 +1288,13 @@ impl App {
                 save = true;
             }
             Action::ToggleFocus => self.config.focus_mode = !self.config.focus_mode,
-            Action::WidthDown => {
-                self.config.measure_width =
-                    self.config.measure_width.saturating_sub(4).max(crate::config::MIN_MEASURE);
-            }
+            // `]` widens the text (less margin), `[` narrows it (more margin).
             Action::WidthUp => {
-                self.config.measure_width =
-                    (self.config.measure_width + 4).min(crate::config::MAX_MEASURE);
+                self.config.side_padding = self.config.side_padding.saturating_sub(1);
+            }
+            Action::WidthDown => {
+                self.config.side_padding =
+                    (self.config.side_padding + 1).min(crate::config::MAX_SIDE_PADDING);
             }
             Action::LineSpacingDown => {
                 self.config.line_spacing = self.config.line_spacing.saturating_sub(1);

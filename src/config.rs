@@ -75,16 +75,19 @@ impl ViewMode {
     }
 }
 
-/// Bounds for the adjustable content measure.
-pub const MIN_MEASURE: u16 = 40;
-pub const MAX_MEASURE: u16 = 120;
+/// Bounds for the per-side text padding (percent of the content pane width).
+pub const MAX_SIDE_PADDING: u16 = 40;
+/// Smallest text column we'll ever wrap to, so heavy padding on a narrow
+/// terminal still leaves a readable line.
+pub const MIN_TEXT_COLS: u16 = 20;
 /// Maximum extra blank lines between text lines.
 pub const MAX_LINE_SPACING: u8 = 3;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Maximum text column ("measure"); body text is centered within it.
-    pub measure_width: u16,
+    /// Text padding from each edge, as a percent of the content pane width, so
+    /// the reading column scales with the window (Center mode).
+    pub side_padding: u16,
     /// Extra blank lines between wrapped text lines (0 = single-spaced).
     pub line_spacing: u8,
     /// Blank lines between blocks/paragraphs.
@@ -104,7 +107,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            measure_width: 72,
+            side_padding: 6,
             line_spacing: 0,
             paragraph_spacing: 1,
             view_mode: ViewMode::Center,
@@ -123,7 +126,7 @@ impl Default for Config {
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct ConfigFile {
-    measure_width: u16,
+    side_padding: u16,
     line_spacing: u8,
     paragraph_spacing: u8,
     view_mode: String,
@@ -139,7 +142,7 @@ impl Default for ConfigFile {
     fn default() -> Self {
         let c = Config::default();
         Self {
-            measure_width: c.measure_width,
+            side_padding: c.side_padding,
             line_spacing: c.line_spacing,
             paragraph_spacing: c.paragraph_spacing,
             view_mode: c.view_mode.label().to_string(),
@@ -167,7 +170,7 @@ impl Config {
         let Ok(cf) = toml::from_str::<ConfigFile>(&text) else {
             return c;
         };
-        c.measure_width = cf.measure_width.clamp(MIN_MEASURE, MAX_MEASURE);
+        c.side_padding = cf.side_padding.min(MAX_SIDE_PADDING);
         c.line_spacing = cf.line_spacing.min(MAX_LINE_SPACING);
         c.paragraph_spacing = cf.paragraph_spacing.min(3);
         c.view_mode = ViewMode::from_label(&cf.view_mode);
@@ -185,7 +188,7 @@ impl Config {
     /// Persist the current settings as the global defaults (best-effort).
     pub fn save(&self) {
         let cf = ConfigFile {
-            measure_width: self.measure_width,
+            side_padding: self.side_padding,
             line_spacing: self.line_spacing,
             paragraph_spacing: self.paragraph_spacing,
             view_mode: self.view_mode.label().to_string(),
