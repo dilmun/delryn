@@ -2259,3 +2259,48 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    // Proves the library key bindings reach their handlers (regression guard for
+    // the new e/c/v actions).
+    #[test]
+    fn library_keys_dispatch() {
+        let tmp = std::env::temp_dir().join(format!("delryn_keys_{}", std::process::id()));
+        // SAFETY: single-threaded test; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "")
+                .unwrap();
+        }
+
+        let mut app = App::library();
+        assert_eq!(app.lib_books.len(), 1, "seeded book loads into the list");
+
+        // v toggles the compact view.
+        assert!(!app.config.library_compact);
+        app.on_key(key('v'));
+        assert!(app.config.library_compact, "v toggles compact view");
+
+        // e opens the metadata editor; Esc closes it.
+        app.on_key(key('e'));
+        assert!(app.meta_edit.is_some(), "e opens the metadata editor");
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.meta_edit.is_none(), "Esc closes the editor");
+
+        // c opens the add-to-collection picker.
+        app.on_key(key('c'));
+        assert!(app.shelf_picker.is_some(), "c opens the collection picker");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
