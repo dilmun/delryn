@@ -1,5 +1,7 @@
-//! Library view — sections sidebar + a sortable book table. Grid/cover view
-//! comes later. See `DESIGN.md` §5.
+//! Library view — sections sidebar + a sortable book table, a cover grid, and a
+//! detail pane. See `DESIGN.md` §5.
+
+use std::collections::HashMap;
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -309,8 +311,36 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         return;
     }
 
+    // A column of breathing room from the sidebar border.
+    let area = Rect { x: area.x + 1, width: area.width.saturating_sub(1), ..area };
     let compact = app.config.library_layout == LibLayout::Compact;
-    let rows: Vec<Row> = app.lib_books.iter().map(|b| book_row(b, compact, theme)).collect();
+    let sel = app.lib_sel.min(app.lib_books.len() - 1);
+    // The Series view groups books under series headers.
+    let grouped = matches!(app.lib_view, LibView::Section(LibrarySection::Series));
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    if grouped {
+        for b in &app.lib_books {
+            *counts.entry(b.series.as_str()).or_insert(0) += 1;
+        }
+    }
+
+    // Build rows, interleaving series headers; track the selected book's row
+    // index (it shifts down past the headers above it).
+    let mut rows: Vec<Row> = Vec::new();
+    let mut sel_row = 0;
+    let mut last_series: Option<&str> = None;
+    for (i, b) in app.lib_books.iter().enumerate() {
+        if grouped && last_series != Some(b.series.as_str()) {
+            let n = counts.get(b.series.as_str()).copied().unwrap_or(0);
+            rows.push(series_header_row(&b.series, n, theme));
+            last_series = Some(b.series.as_str());
+        }
+        if i == sel {
+            sel_row = rows.len();
+        }
+        rows.push(book_row(b, compact, grouped, theme));
+    }
+
     let widths: Vec<Constraint> = if compact {
         vec![Constraint::Length(1), Constraint::Min(10), Constraint::Length(4)]
     } else {
@@ -341,9 +371,24 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     if !compact {
         table = table.header(header_row(app, theme));
     }
-    let mut state = TableState::new()
-        .with_selected(Some(app.lib_sel.min(app.lib_books.len().saturating_sub(1))));
+    let mut state = TableState::new().with_selected(Some(sel_row));
     f.render_stateful_widget(table, area, &mut state);
+}
+
+/// A series group header row (spans the title column).
+fn series_header_row(series: &str, count: usize, theme: Theme) -> Row<'static> {
+    let label = if series.is_empty() {
+        "(no series)".to_string()
+    } else {
+        format!("▾ {series}  ({count})")
+    };
+    Row::new(vec![
+        Cell::from(""),
+        Cell::from(Line::from(Span::styled(
+            label,
+            Style::default().fg(theme.heading).add_modifier(Modifier::BOLD),
+        ))),
+    ])
 }
 
 /// The sortable column header, marking the active sort column with an arrow.
@@ -373,14 +418,15 @@ fn header_row(app: &App, theme: Theme) -> Row<'static> {
     ])
 }
 
-/// A book row: rich (all columns) or compact (star · title · %).
-fn book_row(b: &BookRow, compact: bool, theme: Theme) -> Row<'static> {
+/// A book row: rich (all columns) or compact (star · title · %). In `grouped`
+/// (Series) view the title is indented under its header and prefixed with #idx.
+fn book_row(b: &BookRow, compact: bool, grouped: bool, theme: Theme) -> Row<'static> {
     let star = if b.favorite {
         Cell::from(Span::styled("★", Style::default().fg(theme.marker)))
     } else {
         Cell::from(" ")
     };
-    let title = title_cell(b, theme);
+    let title = title_cell(b, grouped, theme);
     let num = |s: String| {
         Cell::from(Line::from(Span::styled(s, Style::default().fg(theme.muted))).alignment(Alignment::Right))
     };
@@ -400,8 +446,19 @@ fn book_row(b: &BookRow, compact: bool, theme: Theme) -> Row<'static> {
     }
 }
 
-/// Title cell with a dimmed Calibre-style series suffix when present.
-fn title_cell(b: &BookRow, theme: Theme) -> Cell<'static> {
+/// Title cell. Normally `Title  Series #n` (dimmed suffix); in a grouped Series
+/// view, indented under the header and prefixed with the position (`#2 Title`).
+fn title_cell(b: &BookRow, grouped: bool, theme: Theme) -> Cell<'static> {
+    if grouped {
+        let idx = b
+            .series_index
+            .map(|i| format!("#{} ", fmt_idx(i)))
+            .unwrap_or_default();
+        return Cell::from(Line::from(vec![
+            Span::styled(format!("   {idx}"), Style::default().fg(theme.muted)),
+            Span::styled(b.title.clone(), Style::default().fg(theme.fg)),
+        ]));
+    }
     let mut spans = vec![Span::styled(b.title.clone(), Style::default().fg(theme.fg))];
     let suffix = series_suffix(b);
     if !suffix.is_empty() {
@@ -424,9 +481,13 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
                 if app.lib_sort_desc { "↓" } else { "↑" }
             )
         };
+        let pos = if app.lib_books.is_empty() {
+            String::new()
+        } else {
+            format!("{}/{} · ", app.lib_sel.min(app.lib_books.len() - 1) + 1, app.lib_books.len())
+        };
         format!(
-            " {} books · {} · {}h{}m read{sort}",
-            app.lib_books.len(),
+            " {pos}{} · {}h{}m read{sort}",
             app.lib_view.label(),
             read / 3600,
             (read % 3600) / 60,
