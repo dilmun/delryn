@@ -762,12 +762,19 @@ impl Reader {
         self.sidebar_h = height.max(1);
         let len = self.outline_visible().len();
         let max_off = len.saturating_sub(self.sidebar_h);
+        // While reading, keep the active entry in view by scrolling minimally
+        // (not re-centering), so the TOC stays stable and clicks land where
+        // they're shown. Only act when the position actually moves.
         if self.focus == Focus::Content {
             let active = self.active_outline_row();
             if active != self.last_active {
                 self.last_active = active;
                 if let Some(a) = active {
-                    self.sidebar_offset = a.saturating_sub(self.sidebar_h / 2).min(max_off);
+                    if a < self.sidebar_offset {
+                        self.sidebar_offset = a;
+                    } else if a >= self.sidebar_offset + self.sidebar_h {
+                        self.sidebar_offset = a + 1 - self.sidebar_h;
+                    }
                 }
             }
         }
