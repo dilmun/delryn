@@ -119,7 +119,6 @@ fn render_details(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Co
             theme,
             bg,
         ));
-        lines.push(Line::raw(""));
     }
     f.render_widget(Paragraph::new(lines), area);
 }
@@ -374,8 +373,9 @@ fn query_line(
     )
 }
 
-/// The value portion of a field: an underlined "input line" when focused, with a
-/// block cursor while editing.
+/// The value rendered as a filled, recessed "input box" (background fill gives
+/// depth). A one-cell inset on each side; a block cursor marks the caret while
+/// editing; the focused box is brightened.
 #[allow(clippy::too_many_arguments)]
 fn input_spans(
     value: &str,
@@ -385,26 +385,26 @@ fn input_spans(
     width: usize,
     invalid: bool,
     theme: Theme,
-    bg: Color,
+    _bg: Color,
 ) -> Vec<Span<'static>> {
+    // status_bg is a defined "other shade" — use it as the recessed field fill.
+    let field_bg = theme.status_bg;
     let fg = if invalid {
         Color::Red
     } else if focused {
         theme.heading
     } else {
-        theme.muted
+        theme.fg
     };
-    let mut base = Style::default().fg(fg);
+    let mut base = Style::default().fg(fg).bg(field_bg);
     if focused {
-        base = base.add_modifier(Modifier::UNDERLINED);
+        base = base.add_modifier(Modifier::BOLD);
     }
-    if !focused {
-        return vec![Span::styled(super::truncate(value, width), base)];
-    }
+    let inner = width.saturating_sub(2).max(1); // 1-cell inset each side
     let chars: Vec<char> = value.chars().collect();
-    let cur = cursor.min(chars.len());
-    let mut spans = Vec::new();
+    let mut spans = vec![Span::styled(" ".to_string(), base)];
     if editing {
+        let cur = cursor.min(chars.len());
         let before: String = chars[..cur].iter().collect();
         let at = if cur < chars.len() {
             chars[cur].to_string()
@@ -417,17 +417,16 @@ fn input_spans(
             String::new()
         };
         spans.push(Span::styled(before, base));
-        spans.push(Span::styled(at, Style::default().fg(bg).bg(theme.accent)));
+        spans.push(Span::styled(at, Style::default().fg(field_bg).bg(theme.accent)));
         spans.push(Span::styled(after, base));
         let used = chars.len().max(cur + 1);
-        if width > used {
-            spans.push(Span::styled(" ".repeat(width - used), base));
-        }
+        let fill = (inner + 1).saturating_sub(used + 1);
+        spans.push(Span::styled(" ".repeat(fill + 1), base));
     } else {
-        spans.push(Span::styled(chars.iter().collect::<String>(), base));
-        if width > chars.len() {
-            spans.push(Span::styled(" ".repeat(width - chars.len()), base));
-        }
+        let shown = super::truncate(value, inner);
+        let fill = width.saturating_sub(shown.chars().count() + 1);
+        spans.push(Span::styled(shown, base));
+        spans.push(Span::styled(" ".repeat(fill), base));
     }
     spans
 }
