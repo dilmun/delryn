@@ -11,11 +11,12 @@ use crate::app::App;
 use crate::store::LibrarySection;
 use crate::theme::Theme;
 
-const SECTIONS: [LibrarySection; 4] = [
+const SECTIONS: [LibrarySection; 5] = [
     LibrarySection::Recent,
     LibrarySection::All,
     LibrarySection::Favorites,
     LibrarySection::Reading,
+    LibrarySection::Duplicates,
 ];
 
 pub fn render(f: &mut Frame, app: &mut App) {

@@ -1094,7 +1094,8 @@ impl App {
             LibrarySection::Recent => LibrarySection::All,
             LibrarySection::All => LibrarySection::Favorites,
             LibrarySection::Favorites => LibrarySection::Reading,
-            LibrarySection::Reading => LibrarySection::Recent,
+            LibrarySection::Reading => LibrarySection::Duplicates,
+            LibrarySection::Duplicates => LibrarySection::Recent,
         };
         self.lib_sel = 0;
         self.refresh_library();
