@@ -4,6 +4,7 @@
 //! one knows which format is open. See `DESIGN.md` §3.
 
 pub mod epub;
+pub mod epub_write;
 pub mod html;
 
 use anyhow::Result;

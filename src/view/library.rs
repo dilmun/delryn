@@ -493,7 +493,9 @@ fn title_cell(b: &BookRow, grouped: bool, theme: Theme) -> Cell<'static> {
 }
 
 fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let left = if app.lib_filtering || !app.lib_filter.is_empty() {
+    let left = if let Some(flash) = &app.lib_flash {
+        format!(" {flash}")
+    } else if app.lib_filtering || !app.lib_filter.is_empty() {
         format!(" /{}", app.lib_filter)
     } else {
         let read = app.total_read_seconds();
