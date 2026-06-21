@@ -1,7 +1,6 @@
 //! EPUB implementation of [`Document`], backed by the `epub` crate and
 //! `html2text` for XHTML → text extraction.
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Component, Path, PathBuf};
@@ -10,14 +9,8 @@ use anyhow::{Context, Result};
 use epub::doc::{EpubDoc, NavPoint};
 
 use super::{
-    Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry, normalize_label,
+    Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry,
 };
-
-/// A heading found in a section's XHTML.
-struct Heading {
-    level: u8,
-    text: String,
-}
 
 /// Width handed to html2text so paragraphs come back essentially unwrapped; our
 /// own layout pass re-wraps them to the actual pane width.
@@ -41,12 +34,23 @@ impl EpubDocument {
         let metadata = extract_metadata(&mut doc, size);
         let toc: Vec<TocEntry> = doc.toc.iter().map(|np| convert_navpoint(np, &doc)).collect();
 
-        // Curated section labels from the book's TOC, plus in-document headings
-        // for every section; merged into one flat, navigable outline.
-        let mut labels = HashMap::new();
-        collect_labels(&toc, &mut labels);
-        let headings = collect_headings(&mut doc);
-        let outline = build_outline(doc.get_num_chapters(), &labels, &headings);
+        // The navigable outline mirrors the book's own table of contents,
+        // preserving its hierarchy (e.g. Part → Chapter → section). Works for
+        // both multi-file books and single-file books (where every entry points
+        // into one section at a different anchor).
+        let mut outline = Vec::new();
+        build_outline(&toc, 0, 0, &mut outline);
+        if outline.is_empty() {
+            // No usable TOC: fall back to one entry per spine section.
+            outline = (0..doc.get_num_chapters())
+                .map(|s| OutlineItem {
+                    label: format!("Section {}", s + 1),
+                    depth: 0,
+                    section: s,
+                    locator: None,
+                })
+                .collect();
+        }
 
         Ok(Self {
             doc,
@@ -278,114 +282,27 @@ fn resolve_section(content: &Path, doc: &EpubDoc<BufReader<File>>) -> Option<usi
     })
 }
 
-/// First (shallowest) TOC label for each section it resolves to.
-fn collect_labels(entries: &[TocEntry], out: &mut HashMap<usize, String>) {
-    for e in entries {
-        if let Some(s) = e.section {
-            out.entry(s).or_insert_with(|| e.label.clone());
-        }
-        collect_labels(&e.children, out);
-    }
-}
-
-/// Cheap heading scan for every section, in spine order.
-fn collect_headings(doc: &mut EpubDoc<BufReader<File>>) -> Vec<Vec<Heading>> {
-    let n = doc.get_num_chapters();
-    let mut all = Vec::with_capacity(n);
-    for i in 0..n {
-        let headings = if doc.set_current_chapter(i) {
-            doc.get_current_str()
-                .map(|(xhtml, _)| scan_headings(&xhtml))
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        all.push(headings);
-    }
-    all
-}
-
-/// Find `<h1>…<h6>` elements and their (cleaned) text in document order.
-fn scan_headings(xhtml: &str) -> Vec<Heading> {
-    let lower = xhtml.to_ascii_lowercase();
-    let lb = lower.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0usize;
-    while let Some(rel) = lower[i..].find("<h") {
-        let p = i + rel;
-        let level = lb.get(p + 2).copied().unwrap_or(0);
-        let after = lb.get(p + 3).copied().unwrap_or(b' ');
-        let is_heading = (b'1'..=b'6').contains(&level)
-            && matches!(after, b'>' | b' ' | b'\t' | b'\n' | b'\r' | b'/');
-        if is_heading {
-            if let Some(gt) = lower[p..].find('>') {
-                let content_start = p + gt + 1;
-                let close = format!("</h{}", level as char);
-                if let Some(crel) = lower[content_start..].find(&close) {
-                    let text = heading_text(&xhtml[content_start..content_start + crel]);
-                    if !text.is_empty() {
-                        out.push(Heading {
-                            level: level - b'0',
-                            text,
-                        });
-                    }
-                    i = content_start + crel;
-                    continue;
-                }
-            }
-        }
-        i = p + 2;
-    }
-    out
-}
-
-/// Strip tags / decode entities from a heading's inner HTML via html2text.
-fn heading_text(inner: &str) -> String {
-    html2text::from_read(inner.as_bytes(), EXTRACT_WIDTH)
-        .unwrap_or_default()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// One flat outline: each section as a top-level row (labeled from the TOC,
-/// else its first heading, else "Section N"), with its headings nested beneath
-/// by relative level. Jumping to a heading locates its text in the page.
+/// Flatten the book's TOC tree into a depth-tagged outline, preserving its
+/// hierarchy. Each entry carries the label as a locator so the reader can scroll
+/// to the matching heading within the (possibly shared) section; entries with no
+/// resolved section inherit their parent's.
 fn build_outline(
-    section_count: usize,
-    labels: &HashMap<usize, String>,
-    headings: &[Vec<Heading>],
-) -> Vec<OutlineItem> {
-    let mut out = Vec::new();
-    for s in 0..section_count {
-        let section_headings = headings.get(s).map(Vec::as_slice).unwrap_or(&[]);
-        let label = labels
-            .get(&s)
-            .cloned()
-            .or_else(|| section_headings.first().map(|h| h.text.clone()))
-            .unwrap_or_else(|| format!("Section {}", s + 1));
-
+    entries: &[TocEntry],
+    depth: usize,
+    parent_section: usize,
+    out: &mut Vec<OutlineItem>,
+) {
+    for e in entries {
+        let section = e.section.unwrap_or(parent_section);
         out.push(OutlineItem {
-            label: label.clone(),
-            depth: 0,
-            section: s,
-            locator: None,
+            label: e.label.clone(),
+            depth,
+            section,
+            // Locate the entry's heading text within its section (handles
+            // single-file books where many entries share one section). Falls
+            // back to the section top when the text isn't found.
+            locator: Some(e.label.clone()),
         });
-
-        let norm_label = normalize_label(&label);
-        let min_level = section_headings.iter().map(|h| h.level).min().unwrap_or(1);
-        for h in section_headings {
-            // Skip a heading that just repeats the section title.
-            if normalize_label(&h.text) == norm_label {
-                continue;
-            }
-            out.push(OutlineItem {
-                label: h.text.clone(),
-                depth: 1 + (h.level.saturating_sub(min_level)) as usize,
-                section: s,
-                locator: Some(h.text.clone()),
-            });
-        }
+        build_outline(&e.children, depth + 1, section, out);
     }
-    out
 }
