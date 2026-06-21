@@ -18,7 +18,7 @@ use ratatui::layout::Rect;
 
 use crate::config::Config;
 use crate::document::epub::EpubDocument;
-use crate::document::{Block, Document, OutlineItem, normalize_label};
+use crate::document::{Block, Document, OutlineItem};
 use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, WrapOpts, wrap_blocks};
 use crate::library;
@@ -788,7 +788,9 @@ impl Reader {
     pub fn active_outline(&self) -> Option<usize> {
         let mut best: Option<(usize, usize)> = None; // (line, outline index)
         for &(oi, line) in &self.heading_lines {
-            if line <= self.scroll && best.is_none_or(|(bl, _)| line >= bl) {
+            // Greatest line at/above the viewport top; on ties keep the earlier
+            // entry (strictly greater to replace).
+            if line <= self.scroll && best.is_none_or(|(bl, _)| line > bl) {
                 best = Some((line, oi));
             }
         }
@@ -1096,17 +1098,37 @@ impl Reader {
 /// that *is* the heading before falling back to a substring match, so a short
 /// heading like "Linux" lands on the header rather than an earlier mention.
 fn find_line(lines: &[DisplayLine], needle: &str) -> Option<usize> {
-    let n = normalize_label(needle);
+    let n = loose_key(needle);
     if n.is_empty() {
         return None;
     }
-    if let Some(i) = lines.iter().position(|l| normalize_label(&l.text()) == n) {
+    if let Some(i) = lines.iter().position(|l| loose_key(&l.text()) == n) {
         return Some(i);
     }
     lines.iter().position(|l| {
-        let line = normalize_label(&l.text());
+        let line = loose_key(&l.text());
         !line.is_empty() && (line.contains(&n) || (n.len() >= 8 && n.contains(&line)))
     })
+}
+
+/// Lowercase, drop punctuation, collapse whitespace — a tolerant key so TOC
+/// labels match body headings that differ only in punctuation (e.g. a stray
+/// comma) or spacing.
+fn loose_key(s: &str) -> String {
+    let mut out = String::new();
+    let mut pending_space = false;
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            if pending_space && !out.is_empty() {
+                out.push(' ');
+            }
+            pending_space = false;
+            out.extend(c.to_lowercase());
+        } else {
+            pending_space = true;
+        }
+    }
+    out
 }
 
 pub struct App {
