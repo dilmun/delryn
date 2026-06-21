@@ -8,7 +8,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, TableState, Wrap,
+    Block, BorderType, Borders, Cell, List, ListItem, Paragraph, Row, Table, TableState, Wrap,
 };
 use ratatui_image::{Resize, StatefulImage};
 
@@ -128,12 +128,30 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
         let label = Rect { x, y: y + cover_h, width: cover_w, height: LABEL_H };
         let selected = *i == sel;
 
-        // Card frame — accent when selected, else a quiet border.
+        // Card frame — rounded, accent border when selected, else quiet. The
+        // file format sits as a tag in the top-left of the border (─PDF─, ─EPUB─).
         let border = if selected { theme.accent } else { theme.muted };
-        let frame = Block::default()
+        let ext = std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_uppercase)
+            .unwrap_or_default();
+        let mut frame = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border))
             .style(base(theme));
+        if !ext.is_empty() {
+            frame = frame.title(Line::from(vec![
+                Span::styled("─", Style::default().fg(border)),
+                Span::styled(
+                    ext,
+                    Style::default()
+                        .fg(if selected { theme.accent } else { theme.fg })
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
         let inner = frame.inner(card);
         f.render_widget(frame, card);
 

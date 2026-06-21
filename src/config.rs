@@ -124,6 +124,7 @@ pub enum GridSize {
     Small,
     Medium,
     Large,
+    XLarge,
 }
 
 impl GridSize {
@@ -131,7 +132,8 @@ impl GridSize {
         match self {
             GridSize::Small => GridSize::Medium,
             GridSize::Medium => GridSize::Large,
-            GridSize::Large => GridSize::Large,
+            GridSize::Large => GridSize::XLarge,
+            GridSize::XLarge => GridSize::XLarge,
         }
     }
 
@@ -140,6 +142,7 @@ impl GridSize {
             GridSize::Small => GridSize::Small,
             GridSize::Medium => GridSize::Small,
             GridSize::Large => GridSize::Medium,
+            GridSize::XLarge => GridSize::Large,
         }
     }
 
@@ -148,6 +151,7 @@ impl GridSize {
             GridSize::Small => "small",
             GridSize::Medium => "medium",
             GridSize::Large => "large",
+            GridSize::XLarge => "xlarge",
         }
     }
 
@@ -155,6 +159,7 @@ impl GridSize {
         match s {
             "small" => GridSize::Small,
             "large" => GridSize::Large,
+            "xlarge" => GridSize::XLarge,
             _ => GridSize::Medium,
         }
     }
@@ -165,6 +170,7 @@ impl GridSize {
             GridSize::Small => (12, 9),
             GridSize::Medium => (16, 12),
             GridSize::Large => (22, 16),
+            GridSize::XLarge => (30, 22),
         }
     }
 }
