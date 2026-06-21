@@ -185,9 +185,9 @@ fn render_collections(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
 
 /// A bordered search bar showing the query, with a block cursor when editing.
 fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Color) {
-    let focused = ed.online_editing;
+    let focused = ed.search().editing;
     let border = if focused { theme.accent } else { theme.muted };
-    let title = if ed.fetching { " Search · searching… " } else { " Search " };
+    let title = if ed.search().fetching { " Search · searching… " } else { " Search " };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border))
@@ -199,23 +199,24 @@ fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Color)
     let inner = block.inner(area);
     f.render_widget(block, area);
     let w = inner.width as usize;
-    let spans = input_spans(&ed.q, focused, focused, ed.cursor, w, false, theme, bg);
+    let spans = input_spans(&ed.search().q, focused, focused, ed.cursor, w, false, theme, bg);
     f.render_widget(Paragraph::new(Line::from(spans)), inner);
 }
 
 /// Results as a list; `cover` shows a cover availability mark, else year/series.
 fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Color, cover: bool) {
     let mut lines: Vec<Line> = Vec::new();
-    if ed.results.is_empty() {
-        let msg = if ed.fetching {
+    let search = ed.search();
+    if search.results.is_empty() {
+        let msg = if search.fetching {
             "  searching…"
         } else {
             "  Press / (or just type) to search."
         };
         lines.push(Line::styled(msg, Style::default().fg(theme.muted)));
     }
-    for (i, c) in ed.results.iter().enumerate().take(area.height as usize) {
-        let selected = i == ed.online_row && !ed.online_editing;
+    for (i, c) in search.results.iter().enumerate().take(area.height as usize) {
+        let selected = i == search.row && !search.editing;
         let marker = if selected { "▸ " } else { "  " };
         let tail = if cover {
             if c.cover_url().is_some() { "  ✓" } else { "  ✗" }.to_string()
@@ -454,7 +455,7 @@ fn input_spans(
 }
 
 fn hint(ed: &MetaEdit) -> &'static str {
-    if ed.online_editing {
+    if ed.search().editing {
         return "type to search   ←→ move   ^U clear   ⏎ run   Esc done";
     }
     if ed.mode == EditMode::Edit || ed.new_shelf.is_some() {

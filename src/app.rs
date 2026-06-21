@@ -228,6 +228,22 @@ pub enum OnlineMsg {
     Preview(String, Option<Vec<u8>>),
 }
 
+/// One search bar's state — query, edit flag, results, selection. The Online and
+/// Cover tabs each own an independent instance so typing in one never disturbs
+/// the other.
+#[derive(Default)]
+pub struct Search {
+    /// Free-text query (the search bar).
+    pub q: String,
+    /// Editing the query (vs. browsing results).
+    pub editing: bool,
+    /// Selected result index.
+    pub row: usize,
+    pub results: Vec<Candidate>,
+    /// A search is in flight.
+    pub fetching: bool,
+}
+
 /// Open metadata-edit form: a tabbed, scalable editor over one book.
 pub struct MetaEdit {
     pub path: String,
@@ -254,16 +270,11 @@ pub struct MetaEdit {
     /// Buffer while typing a new collection name (`None` otherwise).
     pub new_shelf: Option<String>,
 
-    // Online / Cover tabs (shared search) --------------------------------
-    /// Free-text search query (the search bar).
-    pub q: String,
-    /// Editing the query (vs. browsing results).
-    pub online_editing: bool,
-    /// Selected result index.
-    pub online_row: usize,
-    pub results: Vec<Candidate>,
-    /// A search is in flight.
-    pub fetching: bool,
+    // Online / Cover tabs — independent search state per tab --------------
+    /// Online (metadata) tab search.
+    pub online: Search,
+    /// Cover tab search.
+    pub cover_search: Search,
     /// A cover download is in flight.
     pub cover_pending: bool,
     /// Cover bytes to persist on save (the chosen / previewed cover).
@@ -286,6 +297,22 @@ pub struct MetaEdit {
 }
 
 impl MetaEdit {
+    /// The active tab's search state (Cover has its own; everything else uses
+    /// the Online search).
+    pub fn search(&self) -> &Search {
+        match self.tab {
+            EditTab::Cover => &self.cover_search,
+            _ => &self.online,
+        }
+    }
+
+    fn search_mut(&mut self) -> &mut Search {
+        match self.tab {
+            EditTab::Cover => &mut self.cover_search,
+            _ => &mut self.online,
+        }
+    }
+
     /// Char length of the focused Details field's value.
     fn field_len(&self) -> usize {
         self.values.get(self.row).map_or(0, |s| s.chars().count())
@@ -294,7 +321,7 @@ impl MetaEdit {
     /// Char length of whichever field is currently being typed into.
     fn cur_field_len(&self) -> usize {
         match self.tab {
-            EditTab::Online | EditTab::Cover => self.q.chars().count(),
+            EditTab::Online | EditTab::Cover => self.search().q.chars().count(),
             EditTab::File => match self.file_row {
                 FILE_TEMPLATE => self.rename_template.chars().count(),
                 FILE_NAME => self.rename_name.chars().count(),
@@ -309,7 +336,7 @@ impl MetaEdit {
     fn edit_target(&mut self) -> Option<&mut String> {
         match self.tab {
             EditTab::Details => self.values.get_mut(self.row),
-            EditTab::Online | EditTab::Cover => Some(&mut self.q),
+            EditTab::Online | EditTab::Cover => Some(&mut self.search_mut().q),
             EditTab::File => match self.file_row {
                 FILE_TEMPLATE => Some(&mut self.rename_template),
                 FILE_NAME => Some(&mut self.rename_name),
@@ -2097,11 +2124,14 @@ impl App {
             shelves,
             shelf_sel: 0,
             new_shelf: None,
-            q,
-            online_editing: false,
-            online_row: 0,
-            results: Vec::new(),
-            fetching: false,
+            online: Search {
+                q: q.clone(),
+                ..Search::default()
+            },
+            cover_search: Search {
+                q,
+                ..Search::default()
+            },
             cover_pending: false,
             cover: None,
             preview_cover: None,
@@ -2126,7 +2156,7 @@ impl App {
         }
         // Editing the search bar (Online/Cover tabs).
         let editing_query = matches!(tab, EditTab::Online | EditTab::Cover)
-            && self.meta_edit.as_ref().is_some_and(|e| e.online_editing);
+            && self.meta_edit.as_ref().is_some_and(|e| e.search().editing);
         if editing_query {
             self.online_query_key(key);
             return;
@@ -2345,19 +2375,21 @@ impl App {
     /// previewed cover on Cover).
     fn online_nav_key(&mut self, key: KeyEvent) {
         let (results, tab) = match &self.meta_edit {
-            Some(e) => (e.results.len(), e.tab),
+            Some(e) => (e.search().results.len(), e.tab),
             None => return,
         };
         let last = results.saturating_sub(1);
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if let Some(e) = self.meta_edit.as_mut() {
-                    e.online_row = e.online_row.saturating_sub(1);
+                    let s = e.search_mut();
+                    s.row = s.row.saturating_sub(1);
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if let Some(e) = self.meta_edit.as_mut() {
-                    e.online_row = (e.online_row + 1).min(last);
+                    let s = e.search_mut();
+                    s.row = (s.row + 1).min(last);
                 }
             }
             // Open the search bar: `/`, or start typing the query directly.
@@ -2371,7 +2403,7 @@ impl App {
                 } else if tab == EditTab::Cover {
                     self.stage_preview_cover();
                 } else {
-                    let idx = self.meta_edit.as_ref().map_or(0, |e| e.online_row);
+                    let idx = self.meta_edit.as_ref().map_or(0, |e| e.search().row);
                     self.apply_candidate(idx);
                 }
             }
@@ -2384,12 +2416,13 @@ impl App {
         let Some(ed) = self.meta_edit.as_mut() else {
             return;
         };
-        ed.online_editing = true;
+        ed.search_mut().editing = true;
         if let Some(c) = first {
-            ed.q.clear();
-            ed.q.push(c);
+            let s = ed.search_mut();
+            s.q.clear();
+            s.q.push(c);
         }
-        ed.cursor = ed.q.chars().count();
+        ed.cursor = ed.search().q.chars().count();
     }
 
     /// Search-bar editing: type the query; Enter runs the search, Esc exits.
@@ -2398,12 +2431,12 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 if let Some(e) = self.meta_edit.as_mut() {
-                    e.online_editing = false;
+                    e.search_mut().editing = false;
                 }
             }
             KeyCode::Enter => {
                 if let Some(e) = self.meta_edit.as_mut() {
-                    e.online_editing = false;
+                    e.search_mut().editing = false;
                 }
                 self.online_search();
             }
@@ -2414,19 +2447,19 @@ impl App {
             }
             KeyCode::Right => {
                 if let Some(e) = self.meta_edit.as_mut() {
-                    e.cursor = (e.cursor + 1).min(e.q.chars().count());
+                    e.cursor = (e.cursor + 1).min(e.search().q.chars().count());
                 }
             }
             KeyCode::Char('u') if ctrl => {
                 if let Some(e) = self.meta_edit.as_mut() {
-                    e.q.clear();
+                    e.search_mut().q.clear();
                     e.cursor = 0;
                 }
             }
             KeyCode::Backspace => {
                 if let Some(e) = self.meta_edit.as_mut() {
                     let cur = e.cursor;
-                    if str_delete_before(&mut e.q, cur) {
+                    if str_delete_before(&mut e.search_mut().q, cur) {
                         e.cursor -= 1;
                     }
                 }
@@ -2434,7 +2467,7 @@ impl App {
             KeyCode::Char(c) => {
                 if let Some(e) = self.meta_edit.as_mut() {
                     let cur = e.cursor;
-                    str_insert(&mut e.q, cur, c);
+                    str_insert(&mut e.search_mut().q, cur, c);
                     e.cursor += 1;
                 }
             }
@@ -2554,14 +2587,20 @@ impl App {
             let Some(ed) = self.meta_edit.as_mut() else {
                 return;
             };
-            if ed.q.trim().is_empty() {
+            if ed.search().q.trim().is_empty() {
                 return;
             }
-            ed.fetching = true;
-            ed.results.clear();
-            ed.online_row = 0;
+            // Cancel any other tab's in-flight search (its result is abandoned
+            // when we replace online_rx below), then mark this one fetching.
+            ed.online.fetching = false;
+            ed.cover_search.fetching = false;
+            let s = ed.search_mut();
+            s.fetching = true;
+            s.results.clear();
+            s.row = 0;
+            let q = s.q.clone();
             ed.status = Some("searching…".into());
-            ed.q.clone()
+            q
         };
         let (tx, rx) = std::sync::mpsc::channel();
         thread::spawn(move || {
@@ -2576,7 +2615,7 @@ impl App {
             let Some(ed) = self.meta_edit.as_mut() else {
                 return;
             };
-            let Some(c) = ed.results.get(idx).cloned() else {
+            let Some(c) = ed.search().results.get(idx).cloned() else {
                 return;
             };
             ed.values[0] = c.title.clone();
@@ -2628,14 +2667,20 @@ impl App {
         };
         match msg {
             OnlineMsg::Results(cands) => {
-                ed.fetching = false;
                 ed.status = Some(if cands.is_empty() {
                     "no matches".into()
                 } else {
                     format!("{} match(es) — ↑↓ to browse", cands.len())
                 });
-                ed.online_row = 0;
-                ed.results = cands;
+                // Route to whichever tab's search is in flight (only one is).
+                let s = if ed.cover_search.fetching {
+                    &mut ed.cover_search
+                } else {
+                    &mut ed.online
+                };
+                s.fetching = false;
+                s.row = 0;
+                s.results = cands;
             }
             OnlineMsg::Cover(bytes) => {
                 ed.cover_pending = false;
@@ -2663,7 +2708,9 @@ impl App {
 
     /// Is an Open Library request in flight (keeps the loop polling)?
     pub fn online_active(&self) -> bool {
-        self.meta_edit.as_ref().is_some_and(|e| e.fetching || e.cover_pending)
+        self.meta_edit
+            .as_ref()
+            .is_some_and(|e| e.online.fetching || e.cover_search.fetching || e.cover_pending)
     }
 
     /// Cover-tab preview: the cover URL of the highlighted result (or empty).
@@ -2674,8 +2721,9 @@ impl App {
         if ed.tab != EditTab::Cover {
             return self.edit_cover_url.clone();
         }
-        ed.results
-            .get(ed.online_row)
+        ed.search()
+            .results
+            .get(ed.search().row)
             .and_then(|c| c.cover_url())
             .unwrap_or_default()
     }
@@ -4088,17 +4136,59 @@ mod tests {
         // Typing a letter opens the query (clearing the prefill) and appends.
         app.on_key(key('z'));
         let ed = app.meta_edit.as_ref().unwrap();
-        assert!(ed.online_editing);
-        assert_eq!(ed.q, "z");
+        assert!(ed.search().editing);
+        assert_eq!(ed.search().q, "z");
         app.on_key(key('x'));
-        assert_eq!(app.meta_edit.as_ref().unwrap().q, "zx");
+        assert_eq!(app.meta_edit.as_ref().unwrap().search().q, "zx");
         // Esc stops editing; / reopens without clearing.
         app.on_key(code(KeyCode::Esc));
-        assert!(!app.meta_edit.as_ref().unwrap().online_editing);
+        assert!(!app.meta_edit.as_ref().unwrap().search().editing);
         app.on_key(key('/'));
         let ed = app.meta_edit.as_ref().unwrap();
-        assert!(ed.online_editing);
-        assert_eq!(ed.q, "zx");
+        assert!(ed.search().editing);
+        assert_eq!(ed.search().q, "zx");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // The Cover and Online tabs keep independent search queries (#4): typing in
+    // one must not change the other.
+    #[test]
+    fn cover_and_online_queries_are_independent() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_q2_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                .unwrap();
+        }
+
+        let mut app = App::library();
+        app.on_key(key('e'));
+        // Details → Cover.
+        app.on_key(code(KeyCode::Tab));
+        assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Cover);
+        app.on_key(key('a'));
+        app.on_key(key('b'));
+        app.on_key(code(KeyCode::Esc)); // leave the cover query
+        assert_eq!(app.meta_edit.as_ref().unwrap().cover_search.q, "ab");
+        let online_prefill = app.meta_edit.as_ref().unwrap().online.q.clone();
+
+        // Cover → Collections → Online: the online query is untouched.
+        app.on_key(code(KeyCode::Tab));
+        app.on_key(code(KeyCode::Tab));
+        assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Online);
+        assert_eq!(app.meta_edit.as_ref().unwrap().online.q, online_prefill);
+        assert!(!app.meta_edit.as_ref().unwrap().online.editing);
+
+        // Typing here changes only the online query; cover keeps "ab".
+        app.on_key(key('c'));
+        let ed = app.meta_edit.as_ref().unwrap();
+        assert_eq!(ed.online.q, "c");
+        assert_eq!(ed.cover_search.q, "ab");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
