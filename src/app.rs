@@ -132,10 +132,10 @@ pub struct Reader {
     wrap_para_spacing: u8,
     /// Built inline-image protocols for the current section, by image index.
     pub images: HashMap<usize, ImagePlan>,
-    /// (section, avail-cols) the image plans were built for.
-    images_key: (usize, u16),
+    /// (section, avail-cols, max-rows) the image plans were built for.
+    images_key: (usize, u16, u16),
     /// images_key the current `lines` were wrapped against.
-    wrap_images_key: (usize, u16),
+    wrap_images_key: (usize, u16, u16),
     /// Index of the top visible line within `lines`.
     pub scroll: usize,
     /// Requested but not-yet-applied line movement; eased a few lines per frame
@@ -207,8 +207,8 @@ impl Reader {
             wrap_line_spacing: 0,
             wrap_para_spacing: 1,
             images: HashMap::new(),
-            images_key: (usize::MAX, 0),
-            wrap_images_key: (usize::MAX, 0),
+            images_key: (usize::MAX, 0, 0),
+            wrap_images_key: (usize::MAX, 0, 0),
             scroll: 0,
             scroll_pending: 0,
             focus: Focus::Content,
@@ -337,7 +337,7 @@ impl Reader {
     /// Build/refresh the image protocols for the current section, fitting each
     /// within `avail_cols`×`max_rows`. No-op if already built for this size.
     pub fn ensure_images(&mut self, picker: &Picker, avail_cols: u16, max_rows: u16) {
-        let key = (self.section, avail_cols);
+        let key = (self.section, avail_cols, max_rows);
         if self.images_key == key {
             return;
         }

@@ -16,10 +16,6 @@ use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
 use crate::theme::Theme;
 
-/// Image height cap (rows) and width cap (cols) for inline figures, so a single
-/// image never dwarfs the page on a large window.
-const MAX_IMAGE_COLS: u16 = 100;
-
 const GAUGE_WIDTH: usize = 16;
 
 pub fn render(f: &mut Frame, app: &mut App) {
@@ -153,17 +149,9 @@ fn render_content(
     .style(base(theme));
     f.render_widget(header, header_area);
 
-    // Build image plans against the content pane (so figures scale with the
-    // window, not the narrower text measure) before wrapping reserves rows.
-    if let Some(picker) = picker {
-        let avail = body.width.saturating_sub(2).min(MAX_IMAGE_COLS);
-        let max_rows = body.height.saturating_sub(1).max(1);
-        reader.ensure_images(picker, avail, max_rows);
-    }
-
     match config.view_mode {
-        ViewMode::Center => render_column(f, body, reader, true, config.measure_width, theme, picker.is_some()),
-        ViewMode::Fill => render_column(f, body, reader, false, config.measure_width, theme, picker.is_some()),
+        ViewMode::Center => render_column(f, body, reader, true, config.measure_width, theme, picker),
+        ViewMode::Fill => render_column(f, body, reader, false, config.measure_width, theme, picker),
         // Inline images aren't drawn in two-page mode yet; rows reserve as gaps.
         ViewMode::TwoPage => render_two_page(f, body, reader, config.measure_width, theme),
     }
@@ -178,7 +166,7 @@ fn render_column(
     centered: bool,
     measure_cfg: u16,
     theme: Theme,
-    draw_images: bool,
+    picker: Option<&Picker>,
 ) {
     let measure = if centered {
         measure_cfg.min(body.width.saturating_sub(2)).max(1)
@@ -197,6 +185,13 @@ fn render_column(
     reader.viewport_lines = text_area.height as usize;
     reader.page_lines = reader.viewport_lines;
     reader.last_measure = measure as usize;
+
+    // Fit images to the text column so figures align with the text and scale
+    // with the measure/window. Must run before wrapping reserves their rows.
+    if let Some(picker) = picker {
+        reader.ensure_images(picker, text_area.width, text_area.height.max(1));
+    }
+
     reader.ensure_wrapped(measure as usize);
     reader.resolve_pending();
     reader.clamp_scroll();
@@ -204,18 +199,16 @@ fn render_column(
     let lines = visible_lines(reader, reader.scroll, reader.viewport_lines, theme);
     f.render_widget(Paragraph::new(Text::from(lines)).style(base(theme)), text_area);
 
-    if draw_images {
-        // Vertical position follows the text rows; horizontal extent uses the
-        // full pane so figures can be wider than the text measure.
-        draw_inline_images(f, body, text_area.y, reader);
+    if picker.is_some() {
+        draw_inline_images(f, text_area, reader);
     }
 }
 
 /// Draw figure images over their reserved (blank) rows, using each image's
 /// pre-built protocol and exact cell size. An image is drawn only when its top
 /// row is within the viewport; it clips at the bottom edge while scrolling
-/// (terminal protocols can't clip from the top). Centered in `pane`.
-fn draw_inline_images(f: &mut Frame, pane: Rect, top_y: u16, reader: &Reader) {
+/// (terminal protocols can't clip from the top). Centered in the text column.
+fn draw_inline_images(f: &mut Frame, text_area: Rect, reader: &Reader) {
     let scroll = reader.scroll;
     let view_end = scroll + reader.viewport_lines;
     let lines = &reader.lines;
@@ -239,13 +232,12 @@ fn draw_inline_images(f: &mut Frame, pane: Rect, top_y: u16, reader: &Reader) {
             continue;
         };
 
-        let screen_y = top_y + (start - scroll) as u16;
-        let avail = (view_end - start).min(reserved) as u16;
+        let height = plan.rows.min((view_end - start).min(reserved) as u16);
         let rect = Rect {
-            x: pane.x + pane.width.saturating_sub(plan.cols) / 2,
-            y: screen_y,
+            x: text_area.x + text_area.width.saturating_sub(plan.cols) / 2,
+            y: text_area.y + (start - scroll) as u16,
             width: plan.cols,
-            height: plan.rows.min(avail),
+            height,
         };
         f.render_widget(ImageWidget::new(&plan.proto).allow_clipping(true), rect);
     }
