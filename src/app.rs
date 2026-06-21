@@ -144,8 +144,9 @@ pub struct AnnotState {
 
 /// Editable book-metadata fields, in display order. `Year` and `Series #`
 /// hold numeric text, validated on save.
-pub const META_FIELDS: [&str; 6] =
-    ["Title", "Author", "Year", "Series", "Series #", "Publisher"];
+pub const META_FIELDS: [&str; 9] = [
+    "Title", "Author", "Year", "Series", "Series #", "Publisher", "Subtitle", "ISBN", "Language",
+];
 /// Field index of the Year field (validated as an integer).
 const F_YEAR: usize = 2;
 /// Field index of the Series-position field (validated as a float).
@@ -1643,6 +1644,9 @@ fn meta_fields_from(m: &Metadata) -> Vec<String> {
         m.series.clone().unwrap_or_default(),
         m.series_index.map(fmt_series_index).unwrap_or_default(),
         m.publisher.clone().unwrap_or_default(),
+        m.subtitle.clone().unwrap_or_default(),
+        m.identifier.clone().unwrap_or_default(),
+        m.language.clone().unwrap_or_default(),
     ]
 }
 
@@ -1976,6 +1980,9 @@ impl App {
             b.series.clone(),
             b.series_index.map(fmt_series_index).unwrap_or_default(),
             b.publisher.clone(),
+            b.subtitle.clone(),
+            b.isbn.clone(),
+            b.language.clone(),
         ];
         // The EPUB's declared metadata, for per-field reset (best-effort).
         let original = epub::read_metadata(&path)
@@ -2435,6 +2442,9 @@ impl App {
             if let Some(p) = &c.publisher {
                 ed.values[5] = p.clone();
             }
+            if let Some(isbn) = &c.isbn {
+                ed.values[7] = isbn.clone();
+            }
             ed.tab = EditTab::Details;
             ed.mode = EditMode::Nav;
             ed.row = 0;
@@ -2510,7 +2520,9 @@ impl App {
         let year = v(2).parse::<i32>().ok();
         let series_index = v(4).parse::<f32>().ok();
         if let Some(store) = &self.store {
-            store.update_book_meta(&ed.path, v(0), v(1), year, v(3), series_index, v(5));
+            store.update_book_meta(
+                &ed.path, v(0), v(1), year, v(3), series_index, v(5), v(6), v(7), v(8),
+            );
         }
         if let Some(bytes) = &ed.cover {
             let _ = online::save_cover(&ed.path, bytes);
@@ -3444,7 +3456,7 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "")
+                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
                 .unwrap();
         }
 
@@ -3484,7 +3496,7 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/n.epub", "N", "Auth", None, 1, 1, 1, "", None, "")
+                .upsert_book("/n.epub", "N", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
                 .unwrap();
         }
 
@@ -3530,7 +3542,7 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/k.epub", "K", "Auth", Some(1999), 1, 1, 1, "", None, "")
+                .upsert_book("/k.epub", "K", "Auth", Some(1999), 1, 1, 1, "", None, "", "", "", "")
                 .unwrap();
         }
 
@@ -3590,9 +3602,9 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         {
             let store = Store::open_default().unwrap();
-            store.upsert_book("/a.epub", "A", "x", Some(2010), 1, 1, 1, "", None, "").unwrap();
-            store.upsert_book("/b.epub", "B", "x", Some(1999), 1, 1, 1, "", None, "").unwrap();
-            store.upsert_book("/c.epub", "C", "x", Some(2001), 1, 1, 1, "", None, "").unwrap();
+            store.upsert_book("/a.epub", "A", "x", Some(2010), 1, 1, 1, "", None, "", "", "", "").unwrap();
+            store.upsert_book("/b.epub", "B", "x", Some(1999), 1, 1, 1, "", None, "", "", "", "").unwrap();
+            store.upsert_book("/c.epub", "C", "x", Some(2001), 1, 1, 1, "", None, "", "", "", "").unwrap();
         }
 
         let mut app = App::library();
@@ -3624,7 +3636,7 @@ mod tests {
             let store = Store::open_default().unwrap();
             for t in ["A", "B", "C", "D", "E", "F"] {
                 store
-                    .upsert_book(&format!("/{t}.epub"), t, "x", None, 1, 1, 1, "", None, "")
+                    .upsert_book(&format!("/{t}.epub"), t, "x", None, 1, 1, 1, "", None, "", "", "", "")
                     .unwrap();
             }
         }
@@ -3686,7 +3698,7 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book(&old_str, "Clean Title", "Auth", Some(2001), 1, 1, 1, "", None, "")
+                .upsert_book(&old_str, "Clean Title", "Auth", Some(2001), 1, 1, 1, "", None, "", "", "", "")
                 .unwrap();
             store.set_favorite(&old_str, true);
         }
@@ -3757,7 +3769,7 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "")
+                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
                 .unwrap();
         }
 

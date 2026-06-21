@@ -174,15 +174,18 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
         return;
     };
     let title = b.title.clone();
+    let subtitle = b.subtitle.clone();
     let author = b.author.clone();
     let series = series_suffix(b).trim_start().to_string();
     let year = b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
     let publisher = b.publisher.clone();
+    let isbn = b.isbn.clone();
+    let language = b.language.clone();
     let size = fmt_size(b.size);
     let pct = b.pct;
     let fav = b.favorite;
 
-    let parts = Layout::vertical([Constraint::Min(3), Constraint::Length(10)]).split(inner);
+    let parts = Layout::vertical([Constraint::Min(2), Constraint::Length(13)]).split(inner);
 
     // Cover (or a fallback box when there's none / no graphics protocol).
     if let Some(proto) = app.lib_cover.as_mut() {
@@ -205,14 +208,26 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
             Span::styled(title, Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
         ]),
         Line::styled(author, Style::default().fg(theme.muted)),
-        Line::raw(""),
     ];
+    if !subtitle.is_empty() {
+        lines.push(Line::styled(
+            subtitle,
+            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+        ));
+    }
+    lines.push(Line::raw(""));
     if !series.is_empty() {
         lines.push(meta_kv("Series", &series, theme));
     }
     lines.push(meta_kv("Year", &year, theme));
     if !publisher.is_empty() {
         lines.push(meta_kv("Publisher", &publisher, theme));
+    }
+    if !language.is_empty() {
+        lines.push(meta_kv("Language", &language, theme));
+    }
+    if !isbn.is_empty() {
+        lines.push(meta_kv("ISBN", &isbn, theme));
     }
     lines.push(meta_kv("Size", &size, theme));
     lines.push(meta_kv("Progress", &format!("{pct}%"), theme));

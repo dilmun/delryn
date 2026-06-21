@@ -229,9 +229,16 @@ fn extract_metadata(doc: &mut EpubDoc<BufReader<File>>, size: u64) -> Metadata {
     let year = doc.mdata("date").and_then(|m| parse_year(&m.value));
     let publisher = doc.mdata("publisher").map(|m| m.value.trim().to_string());
     let (series, series_index) = extract_series(doc);
+    // EPUB has no standard subtitle; Calibre stores one as a refined title.
+    let subtitle = doc
+        .metadata
+        .iter()
+        .find(|m| m.property == "title" && m.refinement("title-type").is_some_and(|r| r.value == "subtitle"))
+        .map(|m| m.value.trim().to_string());
     let cover = doc.get_cover();
     Metadata {
         title,
+        subtitle,
         authors,
         year,
         language,
