@@ -62,6 +62,42 @@ impl LibView {
     }
 }
 
+/// How the book list is sorted. `Default` keeps each section's natural order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKey {
+    Default,
+    Title,
+    Author,
+    Year,
+    Progress,
+    Size,
+}
+
+impl SortKey {
+    pub fn label(self) -> &'static str {
+        match self {
+            SortKey::Default => "default",
+            SortKey::Title => "title",
+            SortKey::Author => "author",
+            SortKey::Year => "year",
+            SortKey::Progress => "progress",
+            SortKey::Size => "size",
+        }
+    }
+
+    /// Cycle to the next sort key (wraps through `Default`).
+    pub fn next(self) -> SortKey {
+        match self {
+            SortKey::Default => SortKey::Title,
+            SortKey::Title => SortKey::Author,
+            SortKey::Author => SortKey::Year,
+            SortKey::Year => SortKey::Progress,
+            SortKey::Progress => SortKey::Size,
+            SortKey::Size => SortKey::Default,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Content,
@@ -1362,6 +1398,9 @@ pub struct App {
     pub lib_shelves: Vec<(String, usize)>,
     pub lib_books: Vec<BookRow>,
     pub lib_sel: usize,
+    /// Active sort key and direction for the book list.
+    pub lib_sort: SortKey,
+    pub lib_sort_desc: bool,
     pub lib_filter: String,
     pub lib_filtering: bool,
     /// Open add-to-collection picker, if any.
@@ -1470,6 +1509,8 @@ impl App {
             lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
+            lib_sort: SortKey::Default,
+            lib_sort_desc: false,
             lib_filter: String::new(),
             lib_filtering: false,
             shelf_picker: None,
@@ -1505,6 +1546,8 @@ impl App {
             lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
+            lib_sort: SortKey::Default,
+            lib_sort_desc: false,
             lib_filter: String::new(),
             lib_filtering: false,
             shelf_picker: None,
@@ -1555,9 +1598,43 @@ impl App {
         self.lib_shelves = shelves;
         self.lib_view = view;
         self.lib_books = books;
+        self.sort_books();
         if self.lib_sel >= self.lib_books.len() {
             self.lib_sel = self.lib_books.len().saturating_sub(1);
         }
+    }
+
+    /// Apply the active sort key/direction to the loaded book list. `Default`
+    /// keeps the section's own order.
+    fn sort_books(&mut self) {
+        if self.lib_sort == SortKey::Default {
+            return;
+        }
+        let key = self.lib_sort;
+        let desc = self.lib_sort_desc;
+        self.lib_books.sort_by(|a, b| {
+            let ord = match key {
+                SortKey::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+                SortKey::Author => a.author.to_lowercase().cmp(&b.author.to_lowercase()),
+                SortKey::Year => a.year.cmp(&b.year),
+                SortKey::Progress => a.pct.cmp(&b.pct),
+                SortKey::Size => a.size.cmp(&b.size),
+                SortKey::Default => std::cmp::Ordering::Equal,
+            };
+            if desc { ord.reverse() } else { ord }
+        });
+    }
+
+    /// Cycle the sort key (`s`) keeping the selected book in view.
+    fn cycle_sort(&mut self) {
+        self.lib_sort = self.lib_sort.next();
+        self.refresh_library();
+    }
+
+    /// Flip the sort direction (`S`).
+    fn toggle_sort_dir(&mut self) {
+        self.lib_sort_desc = !self.lib_sort_desc;
+        self.refresh_library();
     }
 
     fn lib_move(&mut self, delta: isize) {
@@ -2506,6 +2583,8 @@ impl App {
                 self.config.library_compact = !self.config.library_compact;
                 self.config.save();
             }
+            KeyCode::Char('s') => self.cycle_sort(),
+            KeyCode::Char('S') => self.toggle_sort_dir(),
             KeyCode::Char('/') => self.lib_filtering = true,
             _ => {}
         }
@@ -3018,6 +3097,38 @@ mod tests {
         let b = &app.lib_books[0];
         assert_eq!(b.title, "XK");
         assert_eq!(b.year, Some(2001));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // 's' cycles the sort key; 'S' flips direction; the list reorders.
+    #[test]
+    fn library_sort_keys() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_sort_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            store.upsert_book("/a.epub", "A", "x", Some(2010), 1, 1, 1, "", None, "").unwrap();
+            store.upsert_book("/b.epub", "B", "x", Some(1999), 1, 1, 1, "", None, "").unwrap();
+            store.upsert_book("/c.epub", "C", "x", Some(2001), 1, 1, 1, "", None, "").unwrap();
+        }
+
+        let mut app = App::library();
+        let titles = |a: &App| a.lib_books.iter().map(|b| b.title.clone()).collect::<Vec<_>>();
+        assert_eq!(titles(&app), ["A", "B", "C"], "All section sorts by title");
+
+        // Default → Title → Author → Year.
+        app.on_key(key('s'));
+        app.on_key(key('s'));
+        app.on_key(key('s'));
+        assert_eq!(app.lib_sort, SortKey::Year);
+        assert_eq!(titles(&app), ["B", "C", "A"], "year ascending");
+
+        app.on_key(key('S'));
+        assert!(app.lib_sort_desc);
+        assert_eq!(titles(&app), ["A", "C", "B"], "year descending");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
