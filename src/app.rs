@@ -32,6 +32,10 @@ use crate::store::{Annotation, BookRow, LibrarySection, Store};
 use crate::theme;
 use ratatui_image::picker::Picker;
 
+/// How long the library selection must hold still before the detail-pane cover
+/// is (re)built, so holding j/k stays smooth.
+const COVER_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(110);
+
 /// Number of decoded sections kept in memory (current ± neighbours).
 const CACHE_CAP: usize = 9;
 /// Number of built image protocols kept in memory / GPU-resident in the
@@ -1559,10 +1563,14 @@ pub struct App {
     pub online_rx: Option<Receiver<OnlineMsg>>,
     /// Show the right-hand detail pane (cover + metadata).
     pub lib_detail: bool,
-    /// Cover image protocol for the detail pane, rebuilt on selection change.
+    /// Cover image protocol for the detail pane, rebuilt when the selection
+    /// settles (debounced so holding j/k stays smooth).
     pub lib_cover: Option<StatefulProtocol>,
     /// Book path the current `lib_cover` was built for (avoids rebuilds).
     pub lib_cover_path: String,
+    /// Path the cover wants to settle on, and when it last changed (debounce).
+    lib_cover_target: String,
+    lib_cover_at: Instant,
     /// Grid view: number of columns from the last render (for 2D navigation).
     pub lib_grid_cols: usize,
     /// Grid view: lazily-built cover protocols, keyed by book path
@@ -1757,6 +1765,8 @@ impl App {
             lib_detail: true,
             lib_cover: None,
             lib_cover_path: String::new(),
+            lib_cover_target: String::new(),
+            lib_cover_at: Instant::now(),
             lib_grid_cols: 1,
             lib_grid_covers: HashMap::new(),
             lib_grid_pending: false,
@@ -1803,6 +1813,8 @@ impl App {
             lib_detail: true,
             lib_cover: None,
             lib_cover_path: String::new(),
+            lib_cover_target: String::new(),
+            lib_cover_at: Instant::now(),
             lib_grid_cols: 1,
             lib_grid_covers: HashMap::new(),
             lib_grid_pending: false,
@@ -1906,25 +1918,51 @@ impl App {
         self.refresh_library();
     }
 
-    /// Rebuild the detail-pane cover protocol when the selected book changes.
-    /// Cheap no-op when the selection is unchanged. Called from the view before
-    /// the detail pane renders.
-    pub fn update_lib_cover(&mut self) {
-        let path = self
-            .lib_books
+    /// The book path the detail cover should show (empty when no cover pane is
+    /// relevant, so we treat it as "nothing to do").
+    fn cover_target_path(&self) -> String {
+        if self.mode != Mode::Library
+            || !self.lib_detail
+            || self.config.library_layout == LibLayout::Grid
+        {
+            return self.lib_cover_path.clone();
+        }
+        self.lib_books
             .get(self.lib_sel)
             .map(|b| b.path.clone())
-            .unwrap_or_default();
-        if path == self.lib_cover_path {
-            return;
+            .unwrap_or_default()
+    }
+
+    /// Is the detail cover stale (wants rebuilding)? Keeps the loop ticking.
+    pub fn cover_pending(&self) -> bool {
+        self.cover_target_path() != self.lib_cover_path
+    }
+
+    /// Debounced detail-cover build: only (re)decode once the selection has held
+    /// still briefly, so holding j/k never pays the per-book zip-read + decode.
+    /// Returns whether the cover changed (the loop should redraw).
+    pub fn tick_cover(&mut self) -> bool {
+        let target = self.cover_target_path();
+        if target == self.lib_cover_path {
+            return false;
         }
-        self.lib_cover_path = path.clone();
-        self.lib_cover = match (&self.picker, load_cover_bytes(&path)) {
+        if target != self.lib_cover_target {
+            // Selection moved — restart the settle timer, build nothing yet.
+            self.lib_cover_target = target;
+            self.lib_cover_at = Instant::now();
+            return false;
+        }
+        if self.lib_cover_at.elapsed() < COVER_DEBOUNCE {
+            return false;
+        }
+        self.lib_cover_path = target.clone();
+        self.lib_cover = match (&self.picker, load_cover_bytes(&target)) {
             (Some(picker), Some(bytes)) => {
                 media::decode(&bytes).map(|img| picker.new_resize_protocol(img))
             }
             _ => None,
         };
+        true
     }
 
     /// Build cover protocols for the visible grid `paths`, up to `limit` per
@@ -3141,6 +3179,10 @@ impl App {
             }
             KeyCode::Char('s') => self.cycle_sort(),
             KeyCode::Char('S') => self.toggle_sort_dir(),
+            KeyCode::Char('t') => {
+                self.config.theme = self.config.theme.next();
+                self.config.save();
+            }
             KeyCode::Char('/') => self.lib_filtering = true,
             _ => {}
         }
