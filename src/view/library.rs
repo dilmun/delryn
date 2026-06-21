@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, LibView};
+use crate::app::{App, Focus, LibView};
 use crate::store::LibrarySection;
 use crate::theme::Theme;
 
@@ -35,25 +35,38 @@ fn base(theme: Theme) -> Style {
     }
 }
 
-/// One sidebar row (a fixed section or a collection), highlighted when active.
-fn section_item(label: &str, here: bool, theme: Theme) -> ListItem<'static> {
-    let mut style = Style::default().fg(if here { theme.accent } else { theme.fg });
-    if let Some(bg) = theme.bg {
-        style = style.bg(bg);
-    }
-    if here {
-        style = style.add_modifier(Modifier::BOLD);
-    }
+/// One sidebar row (a fixed section or a collection). The active entry gets a
+/// solid cursor highlight when the sidebar is focused, else just a marker.
+fn section_item(label: &str, here: bool, focused: bool, theme: Theme) -> ListItem<'static> {
+    let style = if here && focused {
+        Style::default()
+            .fg(theme.bg.unwrap_or(Color::Black))
+            .bg(theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else if here {
+        let mut s = Style::default().fg(theme.accent).add_modifier(Modifier::BOLD);
+        if let Some(bg) = theme.bg {
+            s = s.bg(bg);
+        }
+        s
+    } else {
+        let mut s = Style::default().fg(theme.fg);
+        if let Some(bg) = theme.bg {
+            s = s.bg(bg);
+        }
+        s
+    };
     let marker = if here { "▸ " } else { "  " };
     ListItem::new(Line::from(Span::styled(format!("{marker}{label}"), style)))
 }
 
 fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
+    let focused = app.lib_focus == Focus::Sidebar;
     let mut items: Vec<ListItem> = LibrarySection::ALL
         .iter()
         .map(|s| {
             let here = matches!(&app.lib_view, LibView::Section(cur) if cur == s);
-            section_item(s.label(), here, theme)
+            section_item(s.label(), here, focused, theme)
         })
         .collect();
 
@@ -66,13 +79,15 @@ fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         items.push(ListItem::new(Line::from(Span::styled("  Collections", header))));
         for (name, count) in &app.lib_shelves {
             let here = matches!(&app.lib_view, LibView::Shelf(cur) if cur == name);
-            items.push(section_item(&format!("{name}  ({count})"), here, theme));
+            items.push(section_item(&format!("{name}  ({count})"), here, focused, theme));
         }
     }
 
+    // The focused pane gets an accent border to show where the keyboard is.
+    let border = if focused { theme.accent } else { theme.muted };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.muted))
+        .border_style(Style::default().fg(border))
         .title(Span::styled(
             "Library",
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
@@ -107,9 +122,15 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         })
         .collect();
 
-    let highlight = Style::default()
-        .fg(theme.bg.unwrap_or(Color::Black))
-        .bg(theme.accent);
+    // Solid highlight bar when the list is focused; a quieter accent-text
+    // selection when the keyboard is over in the sidebar.
+    let highlight = if app.lib_focus == Focus::Content {
+        Style::default()
+            .fg(theme.bg.unwrap_or(Color::Black))
+            .bg(theme.accent)
+    } else {
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+    };
     let list = List::new(items)
         .block(Block::default().style(base(theme)))
         .highlight_style(highlight);
@@ -179,7 +200,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
             (read % 3600) / 60,
         )
     };
-    let right = "Tab view  / filter  f fav  e edit  c shelf  v dense  ⏎ open  q quit ";
+    let right = "Tab focus  j/k move  ⏎ open  / filter  f fav  e edit  c shelf  v dense  q quit ";
     let width = area.width as usize;
     let pad = width.saturating_sub(left.chars().count() + right.chars().count());
     let line = format!("{left}{}{right}", " ".repeat(pad));

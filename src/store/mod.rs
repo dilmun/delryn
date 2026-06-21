@@ -59,7 +59,7 @@ pub struct Annotation {
 }
 
 /// Which slice of the library to show.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibrarySection {
     Recent,
     All,

@@ -43,7 +43,7 @@ pub enum Mode {
 
 /// The active library view: one of the fixed smart sections, or a user
 /// collection (shelf). Tab cycles through the sections then the collections.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LibView {
     Section(LibrarySection),
     Shelf(String),
@@ -59,7 +59,7 @@ impl LibView {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Content,
     Sidebar,
@@ -1213,6 +1213,9 @@ pub struct App {
     book_path: String,
     // Library view state.
     pub lib_view: LibView,
+    /// Which pane has the keyboard: the book list (Content) or the sections /
+    /// collections sidebar. Tab toggles it.
+    pub lib_focus: Focus,
     /// Cached (collection name, book count), refreshed with the book list.
     pub lib_shelves: Vec<(String, usize)>,
     pub lib_books: Vec<BookRow>,
@@ -1280,6 +1283,7 @@ impl App {
             store,
             book_path,
             lib_view: LibView::Section(LibrarySection::All),
+            lib_focus: Focus::Content,
             lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
@@ -1313,6 +1317,7 @@ impl App {
             store,
             book_path: String::new(),
             lib_view: LibView::Section(LibrarySection::All),
+            lib_focus: Focus::Content,
             lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
@@ -1445,16 +1450,34 @@ impl App {
         self.refresh_library();
     }
 
-    /// Tab through the fixed sections, then each collection, wrapping around.
-    fn cycle_view(&mut self) {
-        let total = LibrarySection::ALL.len() + self.lib_shelves.len();
+    /// Toggle the keyboard focus between the book list and the sidebar.
+    fn lib_toggle_focus(&mut self) {
+        self.lib_focus = match self.lib_focus {
+            Focus::Content => Focus::Sidebar,
+            Focus::Sidebar => Focus::Content,
+        };
+    }
+
+    /// Total entries in the sidebar (fixed sections + collections).
+    fn lib_view_count(&self) -> usize {
+        LibrarySection::ALL.len() + self.lib_shelves.len()
+    }
+
+    /// Select the sidebar entry at ring index `i` (clamped) and load its books.
+    fn lib_set_view_index(&mut self, i: usize) {
+        let total = self.lib_view_count();
         if total == 0 {
             return;
         }
-        let next = (self.lib_view_index() + 1) % total;
-        self.lib_view = self.lib_view_at(next);
+        self.lib_view = self.lib_view_at(i.min(total - 1));
         self.lib_sel = 0;
         self.refresh_library();
+    }
+
+    /// Move the sidebar cursor by `delta` (clamped), switching the view live.
+    fn lib_side_move(&mut self, delta: isize) {
+        let next = (self.lib_view_index() as isize + delta).max(0) as usize;
+        self.lib_set_view_index(next);
     }
 
     /// Position of the active view within the section+collection ring.
@@ -1864,6 +1887,7 @@ impl App {
             }
             return;
         }
+        let sidebar = self.lib_focus == Focus::Sidebar;
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Esc => {
@@ -1874,9 +1898,48 @@ impl App {
                     self.refresh_library();
                 }
             }
-            KeyCode::Char('j') | KeyCode::Down => self.lib_move(1),
-            KeyCode::Char('k') | KeyCode::Up => self.lib_move(-1),
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Char('o') => self.open_selected(),
+            // Tab toggles which pane has the keyboard; h/l cross between them.
+            KeyCode::Tab | KeyCode::BackTab => self.lib_toggle_focus(),
+            KeyCode::Char('h') | KeyCode::Left => self.lib_focus = Focus::Sidebar,
+            // Up/down: move the sidebar cursor when it's focused, else the list.
+            KeyCode::Char('j') | KeyCode::Down => {
+                if sidebar {
+                    self.lib_side_move(1)
+                } else {
+                    self.lib_move(1)
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if sidebar {
+                    self.lib_side_move(-1)
+                } else {
+                    self.lib_move(-1)
+                }
+            }
+            KeyCode::Char('g') => {
+                if sidebar {
+                    self.lib_set_view_index(0)
+                } else {
+                    self.lib_sel = 0
+                }
+            }
+            KeyCode::Char('G') => {
+                if sidebar {
+                    self.lib_set_view_index(self.lib_view_count().saturating_sub(1))
+                } else {
+                    self.lib_sel = self.lib_books.len().saturating_sub(1)
+                }
+            }
+            // Enter/l: from the sidebar, step into the list; in the list, open.
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                if sidebar {
+                    self.lib_focus = Focus::Content;
+                } else {
+                    self.open_selected();
+                }
+            }
+            KeyCode::Char('o') => self.open_selected(),
+            // Book actions operate on the selected book regardless of focus.
             KeyCode::Char('f') => self.lib_favorite(),
             KeyCode::Char('e') => self.open_meta_edit(),
             KeyCode::Char('c') => self.open_shelf_picker(),
@@ -1886,9 +1949,6 @@ impl App {
                 self.config.save();
             }
             KeyCode::Char('/') => self.lib_filtering = true,
-            KeyCode::Tab => self.cycle_view(),
-            KeyCode::Char('g') => self.lib_sel = 0,
-            KeyCode::Char('G') => self.lib_sel = self.lib_books.len().saturating_sub(1),
             _ => {}
         }
     }
@@ -2301,6 +2361,48 @@ mod tests {
         // c opens the add-to-collection picker.
         app.on_key(key('c'));
         assert!(app.shelf_picker.is_some(), "c opens the collection picker");
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // Tab focuses the sidebar; j/k then navigate sections (not the book list).
+    #[test]
+    fn library_sidebar_focus_nav() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_focus_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book("/n.epub", "N", "Auth", None, 1, 1, 1, "", None, "")
+                .unwrap();
+        }
+
+        let mut app = App::library();
+        assert_eq!(app.lib_focus, Focus::Content, "starts in the list");
+        assert_eq!(app.lib_view, LibView::Section(LibrarySection::All));
+
+        // Tab moves the keyboard into the sidebar.
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.lib_focus, Focus::Sidebar);
+
+        // j/k now walk the sections (All → Favorites → All), not the book list.
+        app.on_key(key('j'));
+        assert_eq!(app.lib_view, LibView::Section(LibrarySection::Favorites));
+        app.on_key(key('k'));
+        assert_eq!(app.lib_view, LibView::Section(LibrarySection::All));
+
+        // g jumps to the first section; k there is clamped (no wrap).
+        app.on_key(key('g'));
+        assert_eq!(app.lib_view, LibView::Section(LibrarySection::Recent));
+        app.on_key(key('k'));
+        assert_eq!(app.lib_view, LibView::Section(LibrarySection::Recent), "clamped at top");
+
+        // Enter steps into the list.
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.lib_focus, Focus::Content);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
