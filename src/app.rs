@@ -5,9 +5,12 @@
 //! `DESIGN.md` §4, §6.
 
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use std::time::Instant;
+
+use lru::LruCache;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
@@ -19,13 +22,17 @@ use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, wrap_blocks};
 use crate::library;
-use crate::media::{self, ImageBuilder, ImagePlan, ImageView};
+use crate::media::{self, ImageBuilder, ImagePlan, ImageView, ImgKey};
 use crate::store::{Annotation, BookRow, LibrarySection, Store};
 use crate::theme;
 use ratatui_image::picker::Picker;
 
 /// Number of decoded sections kept in memory (current ± neighbours).
 const CACHE_CAP: usize = 9;
+/// Number of built image protocols kept in memory / GPU-resident in the
+/// terminal. Reused across section revisits; LRU-evicted (and deleted from the
+/// terminal) beyond this.
+const IMAGE_CACHE_CAP: usize = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -138,19 +145,23 @@ pub struct Reader {
     pub paragraph_spacing: u8,
     wrap_line_spacing: u8,
     wrap_para_spacing: u8,
-    /// Built inline-image protocols for the current section, by image index
-    /// (filled asynchronously by the image builder).
-    pub images: HashMap<usize, ImagePlan>,
+    /// Built image protocols, reused across sections (revisiting a section
+    /// reuses the already-uploaded image instead of re-transmitting). LRU.
+    image_cache: LruCache<ImgKey, ImagePlan>,
+    /// Current section's image index → cache key.
+    section_images: HashMap<usize, ImgKey>,
     /// Reserved rows per image index, estimated up front so reflow doesn't wait
     /// on the background build.
     image_rows_estimate: Vec<u16>,
-    /// (section, avail-cols, max-rows, max-px) the current estimates/plans are for.
+    /// (section, avail-cols, max-rows, max-px) the current estimates are for.
     images_key: (usize, u16, u16, u16),
-    /// Image indices the builder has finished (built or failed), so we know
-    /// when nothing is pending and can stop forcing redraws.
-    img_done: HashSet<usize>,
-    /// Token tagging in-flight builds, so stale results are discarded.
-    img_token: u64,
+    /// Image builds currently in flight (avoid dispatching duplicates).
+    img_requested: HashSet<ImgKey>,
+    /// Image builds that failed (so we stop waiting / re-requesting).
+    img_failed: HashSet<ImgKey>,
+    /// Terminal image ids evicted from the cache, to be deleted from the
+    /// terminal by the main loop.
+    pending_deletes: Vec<u32>,
     /// images_key the current `lines` were wrapped against.
     wrap_images_key: (usize, u16, u16, u16),
     /// Index of the top visible line within `lines`.
@@ -223,11 +234,13 @@ impl Reader {
             paragraph_spacing: 1,
             wrap_line_spacing: 0,
             wrap_para_spacing: 1,
-            images: HashMap::new(),
+            image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
+            section_images: HashMap::new(),
             image_rows_estimate: Vec::new(),
             images_key: (usize::MAX, 0, 0, 0),
-            img_done: HashSet::new(),
-            img_token: 0,
+            img_requested: HashSet::new(),
+            img_failed: HashSet::new(),
+            pending_deletes: Vec::new(),
             wrap_images_key: (usize::MAX, 0, 0, 0),
             scroll: 0,
             scroll_pending: 0,
@@ -350,32 +363,73 @@ impl Reader {
         max_rows: u16,
         max_px: u16,
     ) {
+        // Tell the worker where we are so it can drop builds for far-away
+        // sections (avoids a fast-scroll backlog delaying the current one).
+        builder.set_current(self.section);
+
+        // 1. Move finished builds into the cache; evictions free the terminal image.
         for done in builder.poll() {
-            if done.token == self.img_token {
-                self.img_done.insert(done.idx);
-                if let Some(plan) = done.plan {
-                    self.images.insert(done.idx, plan);
+            self.img_requested.remove(&done.key);
+            if done.stale {
+                continue; // skipped as far-away; re-requested if it's needed again
+            }
+            match done.plan {
+                Some(plan) => {
+                    if let Some((_, evicted)) = self.image_cache.push(done.key, plan) {
+                        if let Some(id) = evicted.image_id() {
+                            self.pending_deletes.push(id);
+                        }
+                    }
+                }
+                None => {
+                    self.img_failed.insert(done.key);
                 }
             }
         }
 
+        // 2. On section/size change, remap the current section and dispatch any
+        //    builds it still needs.
         let key = (self.section, avail, max_rows, max_px);
-        if self.images_key == key {
-            return;
+        if self.images_key != key {
+            self.images_key = key;
+            self.remap_section_images(builder, picker, avail, max_rows, max_px);
         }
-        self.images_key = key;
-        self.img_token = self.img_token.wrapping_add(1);
-        self.images.clear();
-        self.img_done.clear();
 
+        // 3. Keep the visible section's images most-recently-used so they aren't
+        //    evicted while on screen.
+        let keys: Vec<ImgKey> = self.section_images.values().copied().collect();
+        for k in keys {
+            self.image_cache.get(&k);
+        }
+
+        // 4. Pre-build neighbouring sections' images once the current one is ready.
+        if !self.images_pending() {
+            self.prefetch_neighbor_images(builder, avail, max_rows, max_px);
+        }
+    }
+
+    /// Map the current section's images to cache keys, estimate their rows for
+    /// reflow, and request builds for any not already cached/in-flight/failed.
+    fn remap_section_images(
+        &mut self,
+        builder: &ImageBuilder,
+        picker: &Picker,
+        avail: u16,
+        max_rows: u16,
+        max_px: u16,
+    ) {
         let fs = picker.font_size();
         let (fw, fh) = (fs.width, fs.height);
+        let mut section_images = HashMap::new();
         let mut estimates = Vec::new();
-        let mut requests: Vec<(usize, Vec<u8>)> = Vec::new();
+        let mut requests: Vec<(ImgKey, Vec<u8>)> = Vec::new();
         let mut idx = 0;
         for block in &self.blocks {
             if let Block::Image { data, .. } = block {
-                let rows = if data.is_empty() {
+                let key = ImgKey { section: self.section, idx, avail, max_rows, max_px };
+                let rows = if let Some(plan) = self.image_cache.peek(&key) {
+                    plan.rows
+                } else if data.is_empty() {
                     0
                 } else {
                     media::image_dimensions(data)
@@ -383,16 +437,75 @@ impl Reader {
                         .unwrap_or(0)
                 };
                 estimates.push(rows);
-                if rows > 0 {
-                    requests.push((idx, data.clone()));
+                section_images.insert(idx, key);
+                if rows > 0
+                    && !self.image_cache.contains(&key)
+                    && !self.img_requested.contains(&key)
+                    && !self.img_failed.contains(&key)
+                {
+                    requests.push((key, data.clone()));
                 }
                 idx += 1;
             }
         }
+        self.section_images = section_images;
         self.image_rows_estimate = estimates;
-        for (i, bytes) in requests {
-            builder.request(self.img_token, i, bytes, avail, max_rows, max_px);
+        for (k, bytes) in requests {
+            self.img_requested.insert(k);
+            builder.request(k, bytes);
         }
+    }
+
+    /// Build the adjacent sections' images ahead of time (from already-prefetched
+    /// blocks) so crossing a chapter boundary is instant. Never forces a load.
+    fn prefetch_neighbor_images(
+        &mut self,
+        builder: &ImageBuilder,
+        avail: u16,
+        max_rows: u16,
+        max_px: u16,
+    ) {
+        let n = self.doc.section_count();
+        let neighbors = [self.section + 1, self.section.wrapping_sub(1)];
+        let mut requests: Vec<(ImgKey, Vec<u8>)> = Vec::new();
+        for &sec in &neighbors {
+            if sec >= n || sec == self.section {
+                continue;
+            }
+            let Some(blocks) = self.cache.get(&sec) else {
+                continue;
+            };
+            let mut idx = 0;
+            for block in blocks {
+                if let Block::Image { data, .. } = block {
+                    if !data.is_empty() {
+                        let key = ImgKey { section: sec, idx, avail, max_rows, max_px };
+                        if !self.image_cache.contains(&key)
+                            && !self.img_requested.contains(&key)
+                            && !self.img_failed.contains(&key)
+                        {
+                            requests.push((key, data.clone()));
+                        }
+                    }
+                    idx += 1;
+                }
+            }
+        }
+        for (k, bytes) in requests {
+            self.img_requested.insert(k);
+            builder.request(k, bytes);
+        }
+    }
+
+    /// Look up a built plan for the current section's image `idx`.
+    pub fn image_plan(&self, idx: usize) -> Option<&ImagePlan> {
+        let key = self.section_images.get(&idx)?;
+        self.image_cache.peek(key)
+    }
+
+    /// Drain terminal image ids that should be deleted (evicted from cache).
+    pub fn take_image_deletes(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.pending_deletes)
     }
 
     /// Whether a smooth scroll is currently in progress (so heavy image
@@ -401,13 +514,16 @@ impl Reader {
         self.scroll_pending != 0
     }
 
-    /// Are any inline images still building (so the loop should keep redrawing
-    /// until they pop in)?
+    /// Are any of the current section's images still building (so the loop
+    /// should keep redrawing until they pop in)?
     pub fn images_pending(&self) -> bool {
-        self.image_rows_estimate
-            .iter()
-            .enumerate()
-            .any(|(i, &rows)| rows > 0 && !self.img_done.contains(&i))
+        self.image_rows_estimate.iter().enumerate().any(|(i, &rows)| {
+            rows > 0
+                && self
+                    .section_images
+                    .get(&i)
+                    .is_some_and(|k| !self.image_cache.contains(k) && !self.img_failed.contains(k))
+        })
     }
 
     pub fn max_scroll(&self) -> usize {
@@ -986,6 +1102,14 @@ impl App {
 
     pub fn total_read_seconds(&self) -> i64 {
         self.store.as_ref().map(|s| s.total_read_seconds()).unwrap_or(0)
+    }
+
+    /// Terminal image ids to delete (evicted from the reader's cache).
+    pub fn take_image_deletes(&mut self) -> Vec<u32> {
+        self.reader
+            .as_mut()
+            .map(|r| r.take_image_deletes())
+            .unwrap_or_default()
     }
 
     /// Is a smooth scroll in progress, or are inline images still building (so

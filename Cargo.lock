@@ -815,6 +815,7 @@ dependencies = [
  "epub",
  "html2text",
  "image",
+ "lru",
  "ratatui",
  "ratatui-image",
  "rusqlite",
