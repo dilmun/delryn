@@ -363,9 +363,16 @@ impl Reader {
         max_rows: u16,
         max_px: u16,
     ) {
+        // Tell the worker where we are so it can drop builds for far-away
+        // sections (avoids a fast-scroll backlog delaying the current one).
+        builder.set_current(self.section);
+
         // 1. Move finished builds into the cache; evictions free the terminal image.
         for done in builder.poll() {
             self.img_requested.remove(&done.key);
+            if done.stale {
+                continue; // skipped as far-away; re-requested if it's needed again
+            }
             match done.plan {
                 Some(plan) => {
                     if let Some((_, evicted)) = self.image_cache.push(done.key, plan) {

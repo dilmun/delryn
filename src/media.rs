@@ -2,6 +2,8 @@
 //! `ratatui-image` so the rest of the app doesn't depend on it directly.
 //! See `DESIGN.md` §0 (graphics protocols).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
@@ -130,36 +132,59 @@ struct BuildReq {
     bytes: Vec<u8>,
 }
 
-/// A completed image build. `plan` is `None` if the image failed to build, so
-/// the reader can stop waiting on it.
+/// A completed image build. `plan` is `None` if the image failed to build (so
+/// the reader stops waiting); `stale` means it was skipped because the reader
+/// had scrolled far away by the time the worker reached it (re-request later).
 pub struct BuiltImage {
     pub key: ImgKey,
     pub plan: Option<ImagePlan>,
+    pub stale: bool,
 }
+
+/// Sections farther than this from the current one are skipped by the worker, so
+/// a fast-scroll backlog of flown-past sections doesn't delay the current one.
+const KEEP_RADIUS: usize = 3;
 
 /// Builds image protocols on a background thread so decoding/encoding never
 /// stalls scrolling. Send requests with [`request`], collect ready ones with
-/// [`poll`].
+/// [`poll`]. Keep the worker informed of the viewport via [`set_current`] so it
+/// can drop stale work.
 pub struct ImageBuilder {
     req_tx: Sender<BuildReq>,
     res_rx: Receiver<BuiltImage>,
+    current: Arc<AtomicUsize>,
 }
 
 impl ImageBuilder {
     pub fn new(picker: Picker) -> ImageBuilder {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<BuildReq>();
         let (res_tx, res_rx) = std::sync::mpsc::channel::<BuiltImage>();
+        let current = Arc::new(AtomicUsize::new(0));
+        let worker_current = Arc::clone(&current);
         thread::spawn(move || {
             while let Ok(req) = req_rx.recv() {
                 let k = req.key;
-                // Always reply (even on failure) so the reader stops waiting.
+                // Skip builds for sections the reader has already scrolled away
+                // from — they only delay the section now in view.
+                let cur = worker_current.load(Ordering::Relaxed);
+                if k.section.abs_diff(cur) > KEEP_RADIUS {
+                    if res_tx.send(BuiltImage { key: k, plan: None, stale: true }).is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 let plan = build_plan(&picker, &req.bytes, k.avail, k.max_rows, k.max_px);
-                if res_tx.send(BuiltImage { key: k, plan }).is_err() {
+                if res_tx.send(BuiltImage { key: k, plan, stale: false }).is_err() {
                     break;
                 }
             }
         });
-        ImageBuilder { req_tx, res_rx }
+        ImageBuilder { req_tx, res_rx, current }
+    }
+
+    /// Tell the worker which section is in view, so it can drop stale builds.
+    pub fn set_current(&self, section: usize) {
+        self.current.store(section, Ordering::Relaxed);
     }
 
     pub fn request(&self, key: ImgKey, bytes: Vec<u8>) {
