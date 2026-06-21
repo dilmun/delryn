@@ -19,7 +19,7 @@ use crate::document::{Block, Document, OutlineItem, normalize_label};
 use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, wrap_blocks};
 use crate::library;
-use crate::media::{ImagePlan, ImageView};
+use crate::media::{self, ImageBuilder, ImagePlan, ImageView};
 use crate::store::{Annotation, BookRow, LibrarySection, Store};
 use crate::theme;
 use ratatui_image::picker::Picker;
@@ -130,10 +130,19 @@ pub struct Reader {
     pub paragraph_spacing: u8,
     wrap_line_spacing: u8,
     wrap_para_spacing: u8,
-    /// Built inline-image protocols for the current section, by image index.
+    /// Built inline-image protocols for the current section, by image index
+    /// (filled asynchronously by the image builder).
     pub images: HashMap<usize, ImagePlan>,
-    /// (section, avail-cols, max-rows) the image plans were built for.
+    /// Reserved rows per image index, estimated up front so reflow doesn't wait
+    /// on the background build.
+    image_rows_estimate: Vec<u16>,
+    /// (section, avail-cols, max-rows) the current estimates/plans are for.
     images_key: (usize, u16, u16),
+    /// Image indices the builder has finished (built or failed), so we know
+    /// when nothing is pending and can stop forcing redraws.
+    img_done: HashSet<usize>,
+    /// Token tagging in-flight builds, so stale results are discarded.
+    img_token: u64,
     /// images_key the current `lines` were wrapped against.
     wrap_images_key: (usize, u16, u16),
     /// Index of the top visible line within `lines`.
@@ -207,7 +216,10 @@ impl Reader {
             wrap_line_spacing: 0,
             wrap_para_spacing: 1,
             images: HashMap::new(),
+            image_rows_estimate: Vec::new(),
             images_key: (usize::MAX, 0, 0),
+            img_done: HashSet::new(),
+            img_token: 0,
             wrap_images_key: (usize::MAX, 0, 0),
             scroll: 0,
             scroll_pending: 0,
@@ -309,7 +321,7 @@ impl Reader {
                 &self.code_theme,
                 self.line_spacing,
                 self.paragraph_spacing,
-                &self.image_rows(),
+                &self.image_rows_estimate,
             );
             self.wrap_width = width;
             self.wrap_theme = self.code_theme.clone();
@@ -319,40 +331,62 @@ impl Reader {
         }
     }
 
-    /// Number of image blocks in the current section.
-    fn image_count(&self) -> usize {
-        self.blocks
-            .iter()
-            .filter(|b| matches!(b, Block::Image { .. }))
-            .count()
-    }
+    /// Collect any finished background image builds, and — when the section or
+    /// size changes — estimate each image's rows (cheaply, for reflow) and
+    /// dispatch the protocol builds to the worker. Never blocks on encoding.
+    pub fn sync_images(&mut self, builder: &ImageBuilder, picker: &Picker, avail: u16, max_rows: u16) {
+        for done in builder.poll() {
+            if done.token == self.img_token {
+                self.img_done.insert(done.idx);
+                if let Some(plan) = done.plan {
+                    self.images.insert(done.idx, plan);
+                }
+            }
+        }
 
-    /// Rows each image occupies (0 if it has no built plan), by image index.
-    fn image_rows(&self) -> Vec<u16> {
-        (0..self.image_count())
-            .map(|i| self.images.get(&i).map(|p| p.rows).unwrap_or(0))
-            .collect()
-    }
-
-    /// Build/refresh the image protocols for the current section, fitting each
-    /// within `avail_cols`×`max_rows`. No-op if already built for this size.
-    pub fn ensure_images(&mut self, picker: &Picker, avail_cols: u16, max_rows: u16) {
-        let key = (self.section, avail_cols, max_rows);
+        let key = (self.section, avail, max_rows);
         if self.images_key == key {
             return;
         }
-        let datas: Vec<(usize, &[u8])> = self
-            .blocks
-            .iter()
-            .filter_map(|b| match b {
-                Block::Image { data, .. } => Some(data.as_slice()),
-                _ => None,
-            })
-            .enumerate()
-            .filter(|(_, d)| !d.is_empty())
-            .collect();
-        self.images = crate::media::plan_images(picker, datas.into_iter(), avail_cols, max_rows);
         self.images_key = key;
+        self.img_token = self.img_token.wrapping_add(1);
+        self.images.clear();
+        self.img_done.clear();
+
+        let fs = picker.font_size();
+        let (fw, fh) = (fs.width, fs.height);
+        let mut estimates = Vec::new();
+        let mut requests: Vec<(usize, Vec<u8>)> = Vec::new();
+        let mut idx = 0;
+        for block in &self.blocks {
+            if let Block::Image { data, .. } = block {
+                let rows = if data.is_empty() {
+                    0
+                } else {
+                    media::image_dimensions(data)
+                        .map(|(w, h)| media::fit_rows(w, h, fw, fh, avail, max_rows))
+                        .unwrap_or(0)
+                };
+                estimates.push(rows);
+                if rows > 0 {
+                    requests.push((idx, data.clone()));
+                }
+                idx += 1;
+            }
+        }
+        self.image_rows_estimate = estimates;
+        for (i, bytes) in requests {
+            builder.request(self.img_token, i, bytes, avail, max_rows);
+        }
+    }
+
+    /// Are any inline images still building (so the loop should keep redrawing
+    /// until they pop in)?
+    pub fn images_pending(&self) -> bool {
+        self.image_rows_estimate
+            .iter()
+            .enumerate()
+            .any(|(i, &rows)| rows > 0 && !self.img_done.contains(&i))
     }
 
     pub fn max_scroll(&self) -> usize {
@@ -726,6 +760,8 @@ pub struct App {
     pub image_view: Option<ImageView>,
     /// Detected terminal image protocol (None if unsupported / headless).
     pub picker: Option<Picker>,
+    /// Background builder for inline-image protocols.
+    pub image_builder: Option<ImageBuilder>,
     /// Start of the current reading session, for time tracking.
     session_start: Option<Instant>,
     store: Option<Store>,
@@ -780,6 +816,7 @@ impl App {
             note_input: None,
             image_view: None,
             picker: None,
+            image_builder: None,
             session_start: Some(Instant::now()),
             store,
             book_path,
@@ -809,6 +846,7 @@ impl App {
             note_input: None,
             image_view: None,
             picker: None,
+            image_builder: None,
             session_start: None,
             store,
             book_path: String::new(),
@@ -929,9 +967,13 @@ impl App {
         self.store.as_ref().map(|s| s.total_read_seconds()).unwrap_or(0)
     }
 
-    /// Is a smooth scroll in progress (so the loop should keep drawing)?
+    /// Is a smooth scroll in progress, or are inline images still building (so
+    /// the loop should keep drawing until things settle)?
     pub fn animating(&self) -> bool {
-        self.reader.as_ref().is_some_and(|r| r.scroll_pending != 0)
+        let Some(r) = self.reader.as_ref() else {
+            return false;
+        };
+        r.scroll_pending != 0 || (self.mode == Mode::Reader && r.images_pending())
     }
 
     /// Advance one frame of smooth scrolling; returns whether anything moved.

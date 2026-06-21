@@ -64,6 +64,8 @@ fn main() -> Result<()> {
         Some(path) => App::open_book(path)?,
         None => App::library(),
     };
+    // Spawn the background image builder from the detected protocol.
+    app.image_builder = picker.clone().map(delryn::media::ImageBuilder::new);
     app.picker = picker;
 
     // Synchronized output (DEC 2026) can be toggled off for terminals that
@@ -116,6 +118,11 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
 
         // Ease pending scroll a few lines toward its target this frame.
         if app.step_scroll() {
+            dirty = true;
+        }
+        // Keep drawing while a scroll eases or inline images are still building,
+        // so finished images pop in without needing a keypress.
+        if app.animating() {
             dirty = true;
         }
 

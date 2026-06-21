@@ -12,6 +12,7 @@ use ratatui_image::Image as ImageWidget;
 use ratatui_image::picker::Picker;
 
 use crate::app::{App, Focus, Reader};
+use crate::media::ImageBuilder;
 use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
 use crate::theme::Theme;
@@ -24,11 +25,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
         reader,
         last_layout,
         picker,
+        image_builder,
         ..
     } = app;
     let Some(reader) = reader.as_mut() else {
         return;
     };
+    // Images need both the protocol picker and the background builder.
+    let images = picker.as_ref().zip(image_builder.as_ref());
     let theme = config.theme;
     reader.code_theme = theme.syntect.to_string();
     reader.line_spacing = config.line_spacing;
@@ -63,7 +67,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if let Some(sb) = sidebar_area {
         render_sidebar(f, sb, reader, theme);
     }
-    render_content(f, content_area, reader, config, theme, picker.as_ref());
+    render_content(f, content_area, reader, config, theme, images);
     if reader.searching {
         let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
         let prompt = format!("/{}", reader.search_input);
@@ -133,7 +137,7 @@ fn render_content(
     reader: &mut Reader,
     config: &Config,
     theme: Theme,
-    picker: Option<&Picker>,
+    images: Images,
 ) {
     let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
     let header_area = rows[0];
@@ -150,13 +154,16 @@ fn render_content(
     f.render_widget(header, header_area);
 
     match config.view_mode {
-        ViewMode::Center => render_column(f, body, reader, config.side_padding, theme, picker),
-        // Fill: edge-to-edge text (a single column of cells of margin).
-        ViewMode::Fill => render_column(f, body, reader, 0, theme, picker),
-        // Inline images aren't drawn in two-page mode yet; rows reserve as gaps.
-        ViewMode::TwoPage => render_two_page(f, body, reader, theme),
+        ViewMode::Center => render_column(f, body, reader, config.side_padding, theme, images),
+        // Fill: edge-to-edge text (zero side margin).
+        ViewMode::Fill => render_column(f, body, reader, 0, theme, images),
+        ViewMode::TwoPage => render_two_page(f, body, reader, theme, images),
     }
 }
+
+/// The picker + background builder, present only when the terminal supports
+/// images. Bundled so the render functions take one argument instead of two.
+type Images<'a> = Option<(&'a Picker, &'a ImageBuilder)>;
 
 /// The reading column width for a given pane width and per-side padding percent.
 fn measure_for(pane_width: u16, side_padding: u16) -> u16 {
@@ -166,15 +173,14 @@ fn measure_for(pane_width: u16, side_padding: u16) -> u16 {
         .max(crate::config::MIN_TEXT_COLS.min(pane_width).max(1))
 }
 
-/// One text column. `centered` caps to the measure and centers it; otherwise
-/// the text fills the pane (minus a thin gutter).
+/// A single reading column padded by `side_padding` percent on each side.
 fn render_column(
     f: &mut Frame,
     body: Rect,
     reader: &mut Reader,
     side_padding: u16,
     theme: Theme,
-    picker: Option<&Picker>,
+    images: Images,
 ) {
     let measure = measure_for(body.width, side_padding);
     let left_pad = body.width.saturating_sub(measure) / 2;
@@ -190,11 +196,10 @@ fn render_column(
     reader.page_lines = reader.viewport_lines;
     reader.last_measure = measure as usize;
 
-    // Images align to the text column: same width, same edges. Since the
-    // measure scales with the window, figures scale with it too. Must run
-    // before wrapping reserves their rows.
-    if let Some(picker) = picker {
-        reader.ensure_images(picker, text_area.width, text_area.height.max(1));
+    // Images align to the text column and scale with it. Sync (which estimates
+    // rows + dispatches background builds) must run before wrapping.
+    if let Some((picker, builder)) = images {
+        reader.sync_images(builder, picker, text_area.width, text_area.height.max(1));
     }
 
     reader.ensure_wrapped(measure as usize);
@@ -204,18 +209,17 @@ fn render_column(
     let lines = visible_lines(reader, reader.scroll, reader.viewport_lines, theme);
     f.render_widget(Paragraph::new(Text::from(lines)).style(base(theme)), text_area);
 
-    if picker.is_some() {
-        draw_inline_images(f, text_area, reader);
+    if images.is_some() {
+        draw_images_in(f, text_area, reader, reader.scroll);
     }
 }
 
-/// Draw figure images over their reserved (blank) rows, using each image's
-/// pre-built protocol and exact cell size. An image is drawn only when its top
-/// row is within the viewport; it clips at the bottom edge while scrolling
-/// (terminal protocols can't clip from the top). Centered in `pane`.
-fn draw_inline_images(f: &mut Frame, text_area: Rect, reader: &Reader) {
-    let scroll = reader.scroll;
-    let view_end = scroll + reader.viewport_lines;
+/// Draw the ready figure images whose reserved rows fall in `[top, top+height)`
+/// of the line flow, into `area` (centered, vertically positioned by row). An
+/// image is drawn only when its top row is visible; it clips at the bottom edge
+/// while scrolling (terminal protocols can't clip from the top).
+fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize) {
+    let view_end = top + area.height as usize;
     let lines = &reader.lines;
     let mut i = 0;
     while i < lines.len() {
@@ -229,8 +233,7 @@ fn draw_inline_images(f: &mut Frame, text_area: Rect, reader: &Reader) {
         }
         let reserved = i - start;
 
-        // Only draw when the image's top row is on screen.
-        if start < scroll || start >= view_end {
+        if start < top || start >= view_end {
             continue;
         }
         let Some(plan) = reader.images.get(&idx) else {
@@ -239,8 +242,8 @@ fn draw_inline_images(f: &mut Frame, text_area: Rect, reader: &Reader) {
 
         let height = plan.rows.min((view_end - start).min(reserved) as u16);
         let rect = Rect {
-            x: text_area.x + text_area.width.saturating_sub(plan.cols) / 2,
-            y: text_area.y + (start - scroll) as u16,
+            x: area.x + area.width.saturating_sub(plan.cols) / 2,
+            y: area.y + (start - top) as u16,
             width: plan.cols,
             height,
         };
@@ -250,7 +253,7 @@ fn draw_inline_images(f: &mut Frame, text_area: Rect, reader: &Reader) {
 
 /// Two side-by-side columns forming a spread; the right column continues from
 /// the left, so scrolling flows left-to-right.
-fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, theme: Theme) {
+fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, theme: Theme, images: Images) {
     const GAP: u16 = 3;
     // Each column takes half the pane (minus the gap); a thin outer margin.
     let usable = body.width.saturating_sub(GAP + 4).max(2);
@@ -271,6 +274,11 @@ fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, theme: Theme)
     reader.viewport_lines = h;
     reader.page_lines = h * 2;
     reader.last_measure = col_w as usize;
+
+    if let Some((picker, builder)) = images {
+        reader.sync_images(builder, picker, col_w, h.max(1) as u16);
+    }
+
     reader.ensure_wrapped(col_w as usize);
     reader.resolve_pending();
     reader.clamp_scroll();
@@ -279,6 +287,12 @@ fn render_two_page(f: &mut Frame, body: Rect, reader: &mut Reader, theme: Theme)
     let right = visible_lines(reader, reader.scroll + h, h, theme);
     f.render_widget(Paragraph::new(Text::from(left)).style(base(theme)), left_area);
     f.render_widget(Paragraph::new(Text::from(right)).style(base(theme)), right_area);
+
+    // Images: left column shows the first `h` rows, right column the next `h`.
+    if images.is_some() {
+        draw_images_in(f, left_area, reader, reader.scroll);
+        draw_images_in(f, right_area, reader, reader.scroll + h);
+    }
 }
 
 fn visible_lines(reader: &Reader, start: usize, count: usize, theme: Theme) -> Vec<Line<'static>> {
