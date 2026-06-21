@@ -20,6 +20,7 @@ use ratatui::layout::Rect;
 
 use crate::config::{Config, LibLayout};
 use crate::document::epub::{self, EpubDocument};
+use crate::document::epub_write;
 use crate::document::{Block, Document, Metadata, OutlineItem};
 use crate::input::{self, Action, Pending};
 use crate::layout::{DisplayLine, WrapOpts, wrap_blocks};
@@ -1553,6 +1554,9 @@ pub struct App {
     pub lib_sort_desc: bool,
     pub lib_filter: String,
     pub lib_filtering: bool,
+    /// Transient message shown in the library status bar (e.g. cover embedded);
+    /// cleared on the next keypress.
+    pub lib_flash: Option<String>,
     /// Open add-to-collection picker, if any.
     pub shelf_picker: Option<ShelfPicker>,
     /// Receiver for async Open Library results (search / cover), if a request
@@ -1664,6 +1668,22 @@ fn sanitize_filename(s: &str) -> String {
     out.trim().to_string()
 }
 
+/// Write a staged cover into the book file itself (EPUB only), returning a status
+/// line for the library flash. Non-EPUB files are left untouched — the cover is
+/// still cached for delryn's own display by the caller.
+fn embed_cover_into_file(path: &str, bytes: &[u8]) -> String {
+    let is_epub = std::path::Path::new(path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("epub"));
+    if !is_epub {
+        return "cover saved (file is not an EPUB — not embedded)".into();
+    }
+    match epub_write::embed_cover(std::path::Path::new(path), bytes) {
+        Ok(_) => "✓ cover embedded into EPUB".into(),
+        Err(e) => format!("cover cached, but embed failed: {e}"),
+    }
+}
+
 /// The six editable metadata fields, in [`META_FIELDS`] order, from a document's
 /// [`Metadata`]. Shared by the editor's prefill and reset-to-source.
 fn meta_fields_from(m: &Metadata) -> Vec<String> {
@@ -1763,6 +1783,7 @@ impl App {
             lib_sort_desc: false,
             lib_filter: String::new(),
             lib_filtering: false,
+            lib_flash: None,
             shelf_picker: None,
             online_rx: None,
             lib_detail: true,
@@ -1815,6 +1836,7 @@ impl App {
             lib_sort_desc: false,
             lib_filter: String::new(),
             lib_filtering: false,
+            lib_flash: None,
             shelf_picker: None,
             online_rx: None,
             lib_detail: true,
@@ -2715,6 +2737,7 @@ impl App {
         }
         if let Some(bytes) = &ed.cover {
             let _ = online::save_cover(&ed.path, bytes);
+            self.lib_flash = Some(embed_cover_into_file(&ed.path, bytes));
         }
         self.refresh_library();
     }
@@ -2961,7 +2984,11 @@ impl App {
                     self.refresh_library();
                 }
             }
-            Mode::Library => self.library_key(key),
+            Mode::Library => {
+                // Clear any transient flash (e.g. cover-embed result) on input.
+                self.lib_flash = None;
+                self.library_key(key);
+            }
         }
     }
 
