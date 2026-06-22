@@ -1,0 +1,9 @@
+[package]
+name = "delryn-store"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+delryn-infra = { workspace = true }
+anyhow.workspace = true
+rusqlite.workspace = true

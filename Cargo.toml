@@ -32,6 +32,7 @@ zip = { version = "3", default-features = false, features = ["deflate"] }
 # Internal crates (added as the workspace is carved up).
 delryn-model = { path = "crates/delryn-model" }
 delryn-infra = { path = "crates/delryn-infra" }
+delryn-store = { path = "crates/delryn-store" }
 
 # Vendored ratatui-image patched to transmit Kitty images as PNG (f=100) rather
 # than raw RGBA (f=32), so large figures don't stall the terminal. See

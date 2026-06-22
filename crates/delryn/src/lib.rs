@@ -15,19 +15,9 @@ pub mod math;
 pub mod media;
 pub mod online;
 pub mod search;
-pub mod store;
 pub mod view;
 
-// Cross-cutting plumbing now lives in delryn-infra; re-exported so existing
-// `crate::{config, theme, paths}` paths keep resolving.
-pub use delryn_infra::{config, paths, theme};
-
-/// Serializes tests that mutate the process-global `XDG_CONFIG_HOME` (which the
-/// store reads to locate its database). Without this, the parallel test runner
-/// lets two such tests clobber each other's config dir. Poison-tolerant: a
-/// panic in one test must not wedge the rest.
-#[cfg(test)]
-pub fn test_env_guard() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
+// Extracted layers, re-exported so existing `crate::{store, config, …}` paths
+// keep resolving.
+pub use delryn_infra::{config, paths, test_env_guard, theme};
+pub use delryn_store as store;
