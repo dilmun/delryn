@@ -108,9 +108,12 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
     let x0 = area.x + (area.width - block_w) / 2;
     let y0 = area.y + (area.height - block_h) / 2;
 
-    // Scroll so the selected row stays visible.
+    // Keep the selected row centered in the viewport (clamped at the ends),
+    // like the sidebar — rather than pinning it to the bottom edge.
     let sel_row = sel / cols;
-    let top_row = sel_row.saturating_sub(rows_screen.saturating_sub(1));
+    let total_rows = len.div_ceil(cols);
+    let max_top = total_rows.saturating_sub(rows_screen);
+    let top_row = sel_row.saturating_sub(rows_screen / 2).min(max_top);
     let start = top_row * cols;
     let end = ((top_row + rows_screen) * cols).min(len);
 
@@ -135,7 +138,9 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
         let x = x0 + c * cell_w;
         let y = y0 + r * cell_h;
         let card = Rect { x, y, width: cover_w, height: cover_h };
-        let label = Rect { x, y: y + cover_h, width: cover_w, height: LABEL_H };
+        // Title sits on a single row so the selection highlight covers only the
+        // text, not the blank gutter row below it; LABEL_H still spaces the cells.
+        let label = Rect { x, y: y + cover_h, width: cover_w, height: 1 };
         // Whole cell (cover + title) is the click target for this book.
         book_hits.push((*i, Rect { x, y, width: cover_w, height: cover_h + LABEL_H }));
         let selected = *i == sel;
@@ -437,6 +442,13 @@ fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused:
         Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
     };
 
+    // Center the selected row in the viewport (clamped at the ends), like the
+    // sidebar — instead of letting it stick to whichever edge we scroll toward.
+    let header_h: u16 = if compact { 0 } else { 1 };
+    let view_rows = (area.height as usize).saturating_sub(header_h as usize).max(1);
+    let max_off = rows.len().saturating_sub(view_rows);
+    let centered_off = sel_row.saturating_sub(view_rows / 2).min(max_off);
+
     let mut table = Table::new(rows, widths)
         .column_spacing(1)
         .row_highlight_style(highlight)
@@ -444,13 +456,14 @@ fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused:
     if !compact {
         table = table.header(header_row(app, theme));
     }
-    let mut state = TableState::new().with_selected(Some(sel_row));
+    let mut state = TableState::new()
+        .with_offset(centered_off)
+        .with_selected(Some(sel_row));
     f.render_stateful_widget(table, area, &mut state);
 
     // Map each on-screen book row to its index for click hit-testing, using the
     // scroll offset the table settled on and the header line (non-compact only).
     let offset = state.offset();
-    let header_h: u16 = if compact { 0 } else { 1 };
     let mut hits: Vec<(usize, Rect)> = Vec::with_capacity(row_meta.len());
     for (idx, pos) in row_meta {
         if pos < offset {
@@ -562,10 +575,11 @@ fn title_cell(b: &BookRow, grouped: bool, theme: Theme) -> Cell<'static> {
 
 fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let marked = app.lib_marked.len();
+    let visual = app.lib_visual.is_some();
     let state = if let Some(flash) = &app.lib_flash {
         flash.clone()
-    } else if marked > 0 {
-        format!("{marked} selected")
+    } else if visual {
+        format!("VISUAL · {marked} selected")
     } else if app.lib_filtering || !app.lib_filter.is_empty() {
         format!("/{}", app.lib_filter)
     } else {
@@ -596,13 +610,13 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
             (read % 3600) / 60,
         )
     };
-    // Selection mode gets bulk keys; grid (no side panes) gets cover-size keys.
-    let keys = if marked > 0 {
-        "space select · A all · e rename · f favorite · Esc clear"
+    // Visual mode gets range + bulk keys; grid (no side panes) gets size keys.
+    let keys = if visual {
+        "j/k extend · e rename · f favorite · V/Esc cancel"
     } else if app.is_grid() {
-        "Tab pane · hjkl move · ⏎ open · space select · e edit · c shelf · s sort · v view · +/- size · q"
+        "Tab pane · hjkl move · ⏎ open · V select · e edit · c shelf · s sort · v view · +/- size · q"
     } else {
-        "Tab pane · hjkl move · ⏎ open · space select · e edit · c shelf · s sort · v view · [] size · q"
+        "Tab pane · hjkl move · ⏎ open · V select · e edit · c shelf · s sort · v view · [] size · q"
     };
     super::status::bar(f, area, theme, &state, keys);
 }

@@ -1630,7 +1630,11 @@ pub struct App {
     pub lib_books: Vec<BookRow>,
     pub lib_sel: usize,
     /// Multi-selection for bulk actions, keyed by book path (stable across sort).
+    /// Populated by the vim-style visual mode below.
     pub lib_marked: HashSet<String>,
+    /// Visual-select anchor (book index) while in visual mode; `None` otherwise.
+    /// The selection is the contiguous range between the anchor and `lib_sel`.
+    pub lib_visual: Option<usize>,
     /// Active sort key and direction for the book list.
     pub lib_sort: SortKey,
     pub lib_sort_desc: bool,
@@ -1864,6 +1868,7 @@ impl App {
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_marked: HashSet::new(),
+            lib_visual: None,
             lib_sort: SortKey::Default,
             lib_sort_desc: false,
             lib_filter: String::new(),
@@ -1920,6 +1925,7 @@ impl App {
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_marked: HashSet::new(),
+            lib_visual: None,
             lib_sort: SortKey::Default,
             lib_sort_desc: false,
             lib_filter: String::new(),
@@ -2014,12 +2020,14 @@ impl App {
 
     /// Cycle the sort key (`s`) keeping the selected book in view.
     fn cycle_sort(&mut self) {
+        self.lib_exit_visual();
         self.lib_sort = self.lib_sort.next();
         self.refresh_library();
     }
 
     /// Flip the sort direction (`S`).
     fn toggle_sort_dir(&mut self) {
+        self.lib_exit_visual();
         self.lib_sort_desc = !self.lib_sort_desc;
         self.refresh_library();
     }
@@ -2655,24 +2663,38 @@ impl App {
         }
     }
 
-    /// Toggle the current book's membership in the multi-selection, then advance
-    /// (so Space-Space-Space selects a run, file-manager style).
-    fn toggle_mark(&mut self) {
-        if let Some(b) = self.lib_books.get(self.lib_sel) {
-            let path = b.path.clone();
-            if !self.lib_marked.remove(&path) {
-                self.lib_marked.insert(path);
-            }
+    /// Toggle vim-style visual select: enter with the anchor at the cursor, or
+    /// exit and clear the selection.
+    fn lib_toggle_visual(&mut self) {
+        if self.lib_visual.is_some() {
+            self.lib_exit_visual();
+        } else {
+            self.lib_visual = Some(self.lib_sel);
+            self.lib_visual_sync();
         }
-        // Advance to the next book so a run can be selected with repeated Space.
-        self.lib_move(1);
     }
 
-    /// Mark every book in the current list.
-    fn mark_all(&mut self) {
-        for b in &self.lib_books {
-            self.lib_marked.insert(b.path.clone());
+    /// Leave visual mode and clear the selection.
+    fn lib_exit_visual(&mut self) {
+        self.lib_visual = None;
+        self.lib_marked.clear();
+    }
+
+    /// Recompute the marked set as the contiguous range between the visual anchor
+    /// and the cursor. A no-op outside visual mode; called after cursor movement.
+    fn lib_visual_sync(&mut self) {
+        let Some(anchor) = self.lib_visual else {
+            return;
+        };
+        if self.lib_books.is_empty() {
+            self.lib_marked.clear();
+            return;
         }
+        let last = self.lib_books.len() - 1;
+        let a = anchor.min(last);
+        let s = self.lib_sel.min(last);
+        let (lo, hi) = (a.min(s), a.max(s));
+        self.lib_marked = self.lib_books[lo..=hi].iter().map(|b| b.path.clone()).collect();
     }
 
     /// Favorite all marked books (or unfavorite them if all are already
@@ -2699,7 +2721,7 @@ impl App {
             }
         }
         let n = marked.len();
-        self.lib_marked.clear();
+        self.lib_exit_visual();
         self.refresh_library();
         self.lib_flash = Some(format!(
             "{} {n} book{}",
@@ -2767,7 +2789,7 @@ impl App {
                 RenameOutcome::Skipped(_) => skipped += 1,
             }
         }
-        self.lib_marked.clear();
+        self.lib_exit_visual();
         self.refresh_library();
         self.lib_flash = Some(if skipped == 0 {
             format!("renamed {renamed} book{}", if renamed == 1 { "" } else { "s" })
@@ -3086,6 +3108,7 @@ impl App {
         if total == 0 {
             return;
         }
+        self.lib_exit_visual();
         self.lib_view = self.lib_view_at(i.min(total - 1));
         self.lib_sel = 0;
         self.refresh_library();
@@ -3541,8 +3564,8 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Esc => {
-                if !self.lib_marked.is_empty() {
-                    self.lib_marked.clear();
+                if self.lib_visual.is_some() {
+                    self.lib_exit_visual();
                 } else if self.lib_filter.is_empty() {
                     self.should_quit = true;
                 } else {
@@ -3550,9 +3573,8 @@ impl App {
                     self.refresh_library();
                 }
             }
-            // Multi-select for bulk actions.
-            KeyCode::Char(' ') => self.toggle_mark(),
-            KeyCode::Char('A') => self.mark_all(),
+            // Vim-style visual select: V starts/stops; movement extends the range.
+            KeyCode::Char('V') => self.lib_toggle_visual(),
             // Tab cycles focus through the visible panes.
             KeyCode::Tab => self.lib_cycle_pane(1),
             KeyCode::BackTab => self.lib_cycle_pane(-1),
@@ -3650,9 +3672,14 @@ impl App {
                 self.config.theme = self.config.theme.next();
                 self.config.save();
             }
-            KeyCode::Char('/') => self.lib_filtering = true,
+            KeyCode::Char('/') => {
+                self.lib_exit_visual();
+                self.lib_filtering = true;
+            }
             _ => {}
         }
+        // After any movement, extend the visual-mode range to the new cursor.
+        self.lib_visual_sync();
     }
 
     /// Open the add-to-collection picker for the selected book, pre-ticking the
@@ -4436,7 +4463,8 @@ mod tests {
 
         let mut app = App::library();
         assert_eq!(app.lib_books.len(), 2);
-        app.on_key(key('A')); // mark all
+        app.on_key(key('V')); // visual select from book 0
+        app.on_key(key('j')); // extend to book 1
         assert_eq!(app.lib_marked.len(), 2);
         app.on_key(key('e')); // marks present → bulk rename, not the editor
         assert!(app.bulk_rename.is_some());
