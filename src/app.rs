@@ -1691,6 +1691,63 @@ fn load_cover_bytes(path: &str) -> Option<Vec<u8>> {
 /// order) and the file `ext`. Placeholders: `%T` title, `%A` author, `%Y` year,
 /// `%S` series, `%I` series index, `%P` publisher, `%E` extension; `%%` → `%`.
 /// The result is sanitized for use as a filename.
+/// The filename-friendly main title: the title with a trailing subtitle removed.
+///
+/// EPUBs (even legitimate publisher ones) often bake the subtitle into `dc:title`
+/// as "Main Title: The Subtitle" *and* store it separately in a subtitle field.
+/// For filenames we want just the main title. Two signals, most reliable first:
+///
+/// 1. If the metadata `subtitle` is known and the title ends with it after a
+///    conventional divider (`": "`, `" — "`, `" – "`, `" - "`, `"; "`), drop
+///    exactly that trailing run (compared case-insensitively).
+/// 2. Otherwise, if the title carries a `": "` divider, keep the part before it.
+///
+/// The title is returned unchanged when neither applies (e.g. a clean title whose
+/// subtitle only ever lived in the separate field).
+pub fn filename_title(title: &str, subtitle: &str) -> String {
+    let title = title.trim();
+    let subtitle = subtitle.trim();
+    // Longest dividers first so " — " is preferred over a bare "-".
+    const SEPS: [&str; 5] = [": ", " — ", " – ", " - ", "; "];
+
+    if !subtitle.is_empty() {
+        for sep in SEPS {
+            if let Some(head) = strip_trailing(title, sep, subtitle) {
+                return head;
+            }
+        }
+    }
+    // Fall back to the text before the first ": " divider (requires the space so
+    // "Re:Zero" and "C++:foo" aren't split mid-token).
+    if let Some((main, _)) = title.split_once(": ") {
+        let main = main.trim();
+        if !main.is_empty() {
+            return main.to_string();
+        }
+    }
+    title.to_string()
+}
+
+/// If `title` ends with `<sep><subtitle>` (the subtitle matched case-insensitively),
+/// return its leading main-title part, trimmed; else `None`.
+fn strip_trailing(title: &str, sep: &str, subtitle: &str) -> Option<String> {
+    let chars: Vec<char> = title.chars().collect();
+    let suffix_len = sep.chars().count() + subtitle.chars().count();
+    if chars.len() <= suffix_len {
+        return None;
+    }
+    let head_len = chars.len() - suffix_len;
+    let tail: String = chars[head_len..].iter().collect();
+    if tail.eq_ignore_ascii_case(&format!("{sep}{subtitle}")) {
+        let head: String = chars[..head_len].iter().collect();
+        let head = head.trim();
+        if !head.is_empty() {
+            return Some(head.to_string());
+        }
+    }
+    None
+}
+
 pub fn fill_template(template: &str, values: &[String], ext: &str) -> String {
     let get = |i: usize| values.get(i).map(String::as_str).unwrap_or("").trim();
     let mut out = String::new();
@@ -2624,7 +2681,9 @@ impl App {
                 BulkTarget {
                     path: b.path.clone(),
                     values: vec![
-                        b.title.clone(),
+                        // %T is the main title with any subtitle stripped, so the
+                        // default "%T.%E" never bakes the subtitle into the file.
+                        filename_title(&b.title, &b.subtitle),
                         b.author.clone(),
                         b.year.map(|y| y.to_string()).unwrap_or_default(),
                         b.series.clone(),
@@ -4528,6 +4587,33 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(fill_template("%T.%E", &bad, "epub"), "A B C.epub");
+    }
+
+    #[test]
+    fn filename_title_strips_subtitle() {
+        // Known subtitle baked into the title after a divider → dropped.
+        assert_eq!(filename_title("Main Title: The Subtitle", "The Subtitle"), "Main Title");
+        assert_eq!(filename_title("Main Title - The Subtitle", "The Subtitle"), "Main Title");
+        assert_eq!(filename_title("Main Title — The Subtitle", "The Subtitle"), "Main Title");
+        // Case-insensitive match on the subtitle.
+        assert_eq!(filename_title("Main: SUBTITLE", "subtitle"), "Main");
+        // No separate subtitle field: fall back to the text before ": ".
+        assert_eq!(filename_title("Applied NLP: Implementing ML", ""), "Applied NLP");
+        // Subtitle filled but its wording differs from the title's tail — the
+        // ": " fallback still trims to the main title.
+        assert_eq!(
+            filename_title("Applied NLP with Python: Implementing ML", "A Different Subtitle Wording"),
+            "Applied NLP with Python"
+        );
+        // Already-clean title whose subtitle only lives in the separate field.
+        assert_eq!(
+            filename_title("Applied Natural Language Processing with Python", "Implementing ML and DL"),
+            "Applied Natural Language Processing with Python"
+        );
+        // No divider and no matching subtitle → unchanged.
+        assert_eq!(filename_title("Plain Title", ""), "Plain Title");
+        // "Re:Zero" has no space after the colon → not split.
+        assert_eq!(filename_title("Re:Zero Starting Life", ""), "Re:Zero Starting Life");
     }
 
     // Renaming a book moves the file and repoints the DB; the list reflects it.
