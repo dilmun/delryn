@@ -376,6 +376,21 @@ impl Store {
         }
     }
 
+    /// Forget a book entirely — its row plus all path-keyed data (progress,
+    /// annotations, shelf membership, full-text). Used to prune entries whose
+    /// file no longer exists.
+    pub fn remove_book(&self, path: &str) {
+        for sql in [
+            "DELETE FROM books WHERE path = ?1",
+            "DELETE FROM progress WHERE path = ?1",
+            "DELETE FROM annotations WHERE path = ?1",
+            "DELETE FROM shelves WHERE path = ?1",
+            "DELETE FROM fts WHERE path = ?1",
+        ] {
+            let _ = self.conn.execute(sql, params![path]);
+        }
+    }
+
     pub fn set_favorite(&self, path: &str, favorite: bool) {
         let _ = self.conn.execute(
             "UPDATE books SET favorite = ?2 WHERE path = ?1",

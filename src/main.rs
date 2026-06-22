@@ -37,7 +37,8 @@ fn main() -> Result<()> {
         match Store::open_default() {
             Ok(store) => {
                 let n = library::rescan(&config.library_paths, &store);
-                println!("Re-indexed {n} book(s).");
+                let gone = library::prune_missing(&config.library_paths, &store);
+                println!("Re-indexed {n} book(s); pruned {gone} missing.");
             }
             Err(e) => eprintln!("could not open library database: {e}"),
         }
@@ -77,7 +78,14 @@ fn main() -> Result<()> {
 
     let mut app = match args.first() {
         Some(path) => App::open_book(path)?,
-        None => App::library(),
+        None => {
+            // Clean out dead entries (deleted/moved files) so the library has no
+            // un-openable duplicates. Cheap stat per book; skips offline roots.
+            if let Ok(store) = Store::open_default() {
+                library::prune_missing(&Config::load().library_paths, &store);
+            }
+            App::library()
+        }
     };
     // Spawn the background image builder from the detected protocol.
     app.image_builder = picker.clone().map(delryn::media::ImageBuilder::new);
