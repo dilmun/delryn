@@ -181,7 +181,7 @@ fn footer_line(ed: &MetaEdit, theme: Theme) -> Line<'static> {
         );
     }
     let hint = match ed.tab {
-        EditTab::Online => "  edit Title / Author / Year, then ⏎ to search",
+        EditTab::Online => "  edit Title / Author, then ⏎ to search",
         EditTab::Cover => "  type or / to search for a cover",
         EditTab::Details => "",
     };
@@ -357,7 +357,7 @@ fn render_online(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     f.render_widget(Paragraph::new(query_line), rows[0]);
 
     // Editable seed fields (reuse the Details form-field renderer).
-    const LABELS: [&str; LOOKUP_FIELDS] = ["Title", "Author", "Year"];
+    const LABELS: [&str; LOOKUP_FIELDS] = ["Title", "Author"];
     let value_w = (rows[2].width as usize).saturating_sub(LABEL_W + 6).max(8);
     let fields: Vec<Line> = (0..LOOKUP_FIELDS)
         .map(|i| {
