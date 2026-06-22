@@ -75,6 +75,106 @@ impl ViewMode {
     }
 }
 
+/// How the library lists books: a metadata table, a dense table, or a cover grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibLayout {
+    List,
+    Compact,
+    Grid,
+}
+
+impl LibLayout {
+    pub fn next(self) -> Self {
+        match self {
+            LibLayout::List => LibLayout::Compact,
+            LibLayout::Compact => LibLayout::Grid,
+            LibLayout::Grid => LibLayout::List,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            LibLayout::List => LibLayout::Grid,
+            LibLayout::Compact => LibLayout::List,
+            LibLayout::Grid => LibLayout::Compact,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LibLayout::List => "list",
+            LibLayout::Compact => "compact",
+            LibLayout::Grid => "grid",
+        }
+    }
+
+    pub fn from_label(s: &str) -> LibLayout {
+        match s {
+            "compact" => LibLayout::Compact,
+            "grid" => LibLayout::Grid,
+            _ => LibLayout::List,
+        }
+    }
+}
+
+/// Cover-card size for the library grid view. Card dimensions are in terminal
+/// cells, sized ~4:3 (cols:rows) so a typical 2:3 portrait cover fills the card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridSize {
+    Small,
+    Medium,
+    Large,
+    XLarge,
+}
+
+impl GridSize {
+    pub fn next(self) -> Self {
+        match self {
+            GridSize::Small => GridSize::Medium,
+            GridSize::Medium => GridSize::Large,
+            GridSize::Large => GridSize::XLarge,
+            GridSize::XLarge => GridSize::XLarge,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            GridSize::Small => GridSize::Small,
+            GridSize::Medium => GridSize::Small,
+            GridSize::Large => GridSize::Medium,
+            GridSize::XLarge => GridSize::Large,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GridSize::Small => "small",
+            GridSize::Medium => "medium",
+            GridSize::Large => "large",
+            GridSize::XLarge => "xlarge",
+        }
+    }
+
+    pub fn from_label(s: &str) -> GridSize {
+        match s {
+            "small" => GridSize::Small,
+            "large" => GridSize::Large,
+            "xlarge" => GridSize::XLarge,
+            _ => GridSize::Medium,
+        }
+    }
+
+    /// Cover-card width × height in cells (excludes the gutter and title rows).
+    pub fn card(self) -> (u16, u16) {
+        match self {
+            GridSize::Small => (12, 9),
+            GridSize::Medium => (16, 12),
+            GridSize::Large => (22, 16),
+            GridSize::XLarge => (30, 22),
+        }
+    }
+}
+
 /// Bounds for the per-side text padding (percent of the content pane width).
 pub const MAX_SIDE_PADDING: u16 = 40;
 /// Smallest text column we'll ever wrap to, so heavy padding on a narrow
@@ -115,6 +215,10 @@ pub struct Config {
     pub image_max_px: u16,
     /// Directories scanned for the library.
     pub library_paths: Vec<String>,
+    /// How the library lists books (table / dense table / cover grid).
+    pub library_layout: LibLayout,
+    /// Cover-card size for the grid view.
+    pub library_grid_size: GridSize,
 }
 
 impl Default for Config {
@@ -134,6 +238,8 @@ impl Default for Config {
             status: StatusFields::default(),
             image_max_px: 0, // no cap by default — images fill the text column
             library_paths: Vec::new(),
+            library_layout: LibLayout::List,
+            library_grid_size: GridSize::Medium,
         }
     }
 }
@@ -155,6 +261,8 @@ struct ConfigFile {
     status: StatusFields,
     image_max_px: u16,
     library_paths: Vec<String>,
+    library_layout: String,
+    library_grid_size: String,
 }
 
 impl Default for ConfigFile {
@@ -174,6 +282,8 @@ impl Default for ConfigFile {
             status: c.status,
             image_max_px: c.image_max_px,
             library_paths: c.library_paths,
+            library_layout: c.library_layout.label().to_string(),
+            library_grid_size: c.library_grid_size.label().to_string(),
         }
     }
 }
@@ -207,6 +317,8 @@ impl Config {
         c.status = cf.status;
         c.image_max_px = cf.image_max_px.min(MAX_IMAGE_PX);
         c.library_paths = cf.library_paths;
+        c.library_layout = LibLayout::from_label(&cf.library_layout);
+        c.library_grid_size = GridSize::from_label(&cf.library_grid_size);
         c
     }
 
@@ -226,6 +338,8 @@ impl Config {
             status: self.status,
             image_max_px: self.image_max_px,
             library_paths: self.library_paths.clone(),
+            library_layout: self.library_layout.label().to_string(),
+            library_grid_size: self.library_grid_size.label().to_string(),
         };
         let path = config_path();
         if let Some(dir) = path.parent() {

@@ -18,8 +18,11 @@ regex = "1.12.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 scraper = "0.27.0"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 toml = "1.1.2"
+ureq = { version = "3", features = ["json"] }
+zip = { version = "3", default-features = false, features = ["deflate"] }
 
 # Vendored ratatui-image patched to transmit Kitty images as PNG (f=100) rather
 # than raw RGBA (f=32), so large figures don't stall the terminal. See

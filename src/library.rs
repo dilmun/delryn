@@ -13,7 +13,18 @@ use crate::store::Store;
 pub fn scan(paths: &[String], store: &Store) -> usize {
     let mut indexed = 0;
     for root in paths {
-        indexed += scan_dir(Path::new(root), store);
+        indexed += scan_dir(Path::new(root), store, false);
+    }
+    indexed
+}
+
+/// Like [`scan`], but re-reads every EPUB regardless of the change-detection
+/// cache. Use to backfill metadata for already-indexed books after a schema
+/// change (e.g. series/publisher). Hand-edited rows keep their values.
+pub fn rescan(paths: &[String], store: &Store) -> usize {
+    let mut indexed = 0;
+    for root in paths {
+        indexed += scan_dir(Path::new(root), store, true);
     }
     indexed
 }
@@ -33,7 +44,7 @@ pub fn index_fulltext(store: &Store) -> usize {
     n
 }
 
-fn scan_dir(dir: &Path, store: &Store) -> usize {
+fn scan_dir(dir: &Path, store: &Store, force: bool) -> usize {
     let mut indexed = 0;
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
@@ -41,9 +52,9 @@ fn scan_dir(dir: &Path, store: &Store) -> usize {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            indexed += scan_dir(&path, store);
+            indexed += scan_dir(&path, store, force);
         } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub")) {
-            if index_book(&path, store) {
+            if index_book(&path, store, force) {
                 indexed += 1;
             }
         }
@@ -51,7 +62,7 @@ fn scan_dir(dir: &Path, store: &Store) -> usize {
     indexed
 }
 
-fn index_book(path: &Path, store: &Store) -> bool {
+fn index_book(path: &Path, store: &Store, force: bool) -> bool {
     let Some(path_str) = path.to_str() else {
         return false;
     };
@@ -66,7 +77,7 @@ fn index_book(path: &Path, store: &Store) -> bool {
         .unwrap_or(0);
     let size = meta.len();
 
-    if !store.needs_scan(path_str, mtime, size) {
+    if !force && !store.needs_scan(path_str, mtime, size) {
         return false;
     }
     let Ok((book, sections)) = epub::read_metadata(path) else {
@@ -81,6 +92,12 @@ fn index_book(path: &Path, store: &Store) -> bool {
         size,
         sections,
         mtime,
+        book.series.as_deref().unwrap_or(""),
+        book.series_index,
+        book.publisher.as_deref().unwrap_or(""),
+        book.subtitle.as_deref().unwrap_or(""),
+        book.identifier.as_deref().unwrap_or(""),
+        book.language.as_deref().unwrap_or(""),
     );
     true
 }
