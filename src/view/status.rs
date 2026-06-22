@@ -90,13 +90,12 @@ fn editor_legend(ed: &MetaEdit) -> (String, String) {
     let state = format!("Edit · {}", ed.tab.label());
     let keys = if ed.search().editing {
         "type to search · ←→ move · ^U clear · ⏎ run · Esc done"
-    } else if ed.mode == EditMode::Edit || ed.new_shelf.is_some() {
+    } else if ed.mode == EditMode::Edit {
         "type to edit · ←→ move · ^U clear · ⏎/Esc done"
     } else {
         match ed.tab {
             EditTab::Details => "Tab tab · j/k move · ⏎ edit · r/R reset · ^S save · Esc",
             EditTab::Cover => "Tab tab · / search · j/k pick · ⏎ use cover · ^S save · Esc",
-            EditTab::Collections => "Tab tab · j/k move · ⏎ toggle/new · ^S save · Esc",
             EditTab::Online => "Tab tab · / search · j/k pick · ⏎ apply · ^S save · Esc",
             EditTab::File => "Tab tab · j/k move · ⏎ edit · ^S rename + save · Esc",
         }

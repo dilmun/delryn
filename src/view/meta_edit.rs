@@ -77,9 +77,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let body = rows[2];
     match app.meta_edit.as_ref().unwrap().tab {
         EditTab::Details => render_details(f, body, app.meta_edit.as_ref().unwrap(), theme),
-        EditTab::Collections => {
-            render_collections(f, body, app.meta_edit.as_ref().unwrap(), theme)
-        }
         EditTab::Online => render_online(f, body, app.meta_edit.as_ref().unwrap(), theme),
         EditTab::File => render_file(f, body, app.meta_edit.as_ref().unwrap(), theme),
         EditTab::Cover => render_cover(f, body, app, theme),
@@ -156,7 +153,6 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
                 results.push((i as usize, Rect { x: body.x, y, width: rw, height: 1 }));
             }
         }
-        EditTab::Collections => {}
     }
     app.mouse.edit_fields = fields;
     app.mouse.edit_results = results;
@@ -199,46 +195,6 @@ fn render_details(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
             value_w,
             theme,
         ));
-    }
-    f.render_widget(Paragraph::new(lines), area);
-}
-
-fn render_collections(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
-    let mut lines: Vec<Line> = Vec::new();
-    if ed.shelves.is_empty() && ed.new_shelf.is_none() {
-        lines.push(Line::styled(
-            "  No collections yet — pick “New collection”.",
-            Style::default().fg(theme.muted),
-        ));
-    }
-    for (i, (name, member)) in ed.shelves.iter().enumerate() {
-        let selected = i == ed.shelf_sel && ed.new_shelf.is_none();
-        let marker = if selected { "▸ " } else { "  " };
-        let check = if *member { "[✓] " } else { "[ ] " };
-        let style = if selected {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-        } else if *member {
-            Style::default().fg(theme.fg)
-        } else {
-            Style::default().fg(theme.muted)
-        };
-        lines.push(Line::from(Span::styled(format!("{marker}{check}{name}"), style)));
-    }
-    if let Some(buf) = &ed.new_shelf {
-        lines.push(Line::from(vec![
-            Span::styled("▸ ＋ ", Style::default().fg(theme.accent)),
-            Span::styled(buf.clone(), Style::default().fg(theme.heading)),
-            Span::styled("█", Style::default().fg(theme.accent)),
-        ]));
-    } else {
-        let selected = ed.shelf_sel == ed.new_shelf_row();
-        let marker = if selected { "▸ " } else { "  " };
-        let style = if selected {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.muted)
-        };
-        lines.push(Line::from(Span::styled(format!("{marker}＋ New collection…"), style)));
     }
     f.render_widget(Paragraph::new(lines), area);
 }
