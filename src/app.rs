@@ -1794,16 +1794,30 @@ pub fn filename_title(title: &str, subtitle: &str) -> String {
     title.to_string()
 }
 
-/// Reduce a bare filename stem to a search-friendly title guess: keep the text
-/// before the first common naming separator (`-`, `:`, `;`, `_`-runs, brackets…),
-/// turn underscores/dots into spaces, and collapse whitespace. Used only when a
-/// book has no real title metadata, so a filename never poisons a metadata search.
-pub fn clean_filename_query(stem: &str) -> String {
-    const SEPS: &[char] =
-        &['-', '–', '—', ':', ';', '/', '\\', '|', '~', '(', '[', '{', ',', '+'];
-    let head = stem.split(|c| SEPS.contains(&c)).next().unwrap_or(stem);
-    let spaced: String = head.chars().map(|c| if c == '_' || c == '.' { ' ' } else { c }).collect();
-    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+/// Reduce a raw title (from metadata *or* a filename) to a clean main title for
+/// searching: cut at the first subtitle/edition divider, turn underscores/dots
+/// into spaces, and collapse whitespace. Dividers are colons, semicolons,
+/// brackets, slashes/pipes, and *spaced* dashes (` - `) — so hyphenated words
+/// ("Well-Grounded") and programming chars ("C++") are preserved.
+pub fn main_title(raw: &str) -> String {
+    let t = raw.trim();
+    let mut cut = t.len();
+    // The first single-char divider (cut anywhere it appears).
+    for (i, c) in t.char_indices() {
+        if matches!(c, ':' | ';' | '/' | '\\' | '|' | '(' | '[' | '{') {
+            cut = i;
+            break;
+        }
+    }
+    // …or an earlier spaced dash separating title from subtitle/author.
+    for pat in [" - ", " – ", " — "] {
+        if let Some(i) = t.find(pat) {
+            cut = cut.min(i);
+        }
+    }
+    let head: String =
+        t[..cut].chars().map(|c| if c == '_' || c == '.' { ' ' } else { c }).collect();
+    head.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The first author from a possibly multi-author string — a single author is far
@@ -2326,9 +2340,10 @@ impl App {
             .unwrap_or_else(|_| vec![String::new(); META_FIELDS.len()]);
 
         // Seed the Lookup form, worst-input-last so a filename never drives the
-        // search when real metadata exists. Name: the DB title if it's a real
-        // title (not just the filename stem), else the EPUB's declared title,
-        // else a cleaned-up filename. Author: just the first author.
+        // search when real metadata exists: the DB title if it's a real title
+        // (not just the filename stem), else the EPUB's declared title, else the
+        // filename. Whichever it is, `main_title` strips any subtitle/edition
+        // after a separator, and `first_author` keeps a single author.
         let stem = std::path::Path::new(&path)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -2336,15 +2351,15 @@ impl App {
             .trim();
         let db_title = b.title.trim();
         let epub_title = original.first().map(String::as_str).unwrap_or("").trim();
-        let name = if !db_title.is_empty() && db_title != stem {
-            db_title.to_string()
+        let base = if !db_title.is_empty() && db_title != stem {
+            db_title
         } else if !epub_title.is_empty() {
-            epub_title.to_string()
+            epub_title
         } else {
-            clean_filename_query(stem)
+            stem
         };
         let lookup = LookupForm {
-            name,
+            name: main_title(base),
             author: first_author(&b.author),
             ..LookupForm::default()
         };
@@ -5231,12 +5246,15 @@ mod tests {
         // Useful punctuation (C++, #) survives.
         let g = LookupForm { name: "C++ Primer".into(), ..LookupForm::default() };
         assert_eq!(g.query(), "C++ Primer");
-        // Filename cleanup: keep text before the first naming separator, spaces
-        // for underscores/dots, collapse whitespace.
-        assert_eq!(clean_filename_query("Some Book - Author - 2020"), "Some Book");
-        assert_eq!(clean_filename_query("some_book_title.v2"), "some book title v2");
-        assert_eq!(clean_filename_query("Title (1st ed)"), "Title");
-        assert_eq!(clean_filename_query("503392068"), "503392068");
+        // main_title cuts at subtitle/edition separators (metadata or filename),
+        // keeps hyphenated words and C++, normalises underscores/dots.
+        assert_eq!(main_title("Deep Learning With Python : A Crash Course"), "Deep Learning With Python");
+        assert_eq!(main_title("Some Book - Author - 2020"), "Some Book");
+        assert_eq!(main_title("some_book_title.v2"), "some book title v2");
+        assert_eq!(main_title("Title (1st ed)"), "Title");
+        assert_eq!(main_title("C++ Primer"), "C++ Primer"); // not split on +
+        assert_eq!(main_title("Well-Grounded Rubyist"), "Well-Grounded Rubyist"); // bare - kept
+        assert_eq!(main_title("503392068"), "503392068");
     }
 
 }
