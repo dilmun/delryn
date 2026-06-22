@@ -208,10 +208,12 @@ pub struct Search {
     pub fetching: bool,
 }
 
-/// Number of editable seed fields on the Lookup tab (Title, Author, Year).
-pub const LOOKUP_FIELDS: usize = 3;
+/// Number of editable seed fields on the Lookup tab (Title, Author). Year is
+/// deliberately excluded — it's free-text noise to the metadata APIs, not a
+/// real publication-year filter, and a stale year can hide the right edition.
+pub const LOOKUP_FIELDS: usize = 2;
 
-/// The Lookup (Online) tab's structured search form: editable Title/Author/Year
+/// The Lookup (Online) tab's structured search form: editable Title/Author
 /// fields from which a read-only query is composed, plus the combined keyboard
 /// focus that flows from the fields into the results list. Seeded from the book's
 /// metadata with a filename fallback (see [`App::open_meta_edit`]).
@@ -219,9 +221,7 @@ pub const LOOKUP_FIELDS: usize = 3;
 pub struct LookupForm {
     pub name: String,
     pub author: String,
-    pub year: String,
-    /// Combined focus: 0=Title, 1=Author, 2=Year, then `LOOKUP_FIELDS + i` for
-    /// result row `i`.
+    /// Combined focus: 0=Title, 1=Author, then `LOOKUP_FIELDS + i` for result row `i`.
     pub focus: usize,
     /// Editing the focused field (vs. browsing fields/results).
     pub editing: bool,
@@ -230,11 +230,11 @@ pub struct LookupForm {
 }
 
 impl LookupForm {
-    /// The composed, read-only query — `name author year` with punctuation noise
+    /// The composed, read-only query — `name author` with punctuation noise
     /// (commas, colons, slashes…) flattened to spaces and collapsed, so messy
     /// metadata like a stray ", Kissinger" can't break the metadata search.
     pub fn query(&self) -> String {
-        let raw = [self.name.trim(), self.author.trim(), self.year.trim()]
+        let raw = [self.name.trim(), self.author.trim()]
             .into_iter()
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
@@ -253,16 +253,14 @@ impl LookupForm {
     pub fn field(&self, i: usize) -> &str {
         match i {
             0 => &self.name,
-            1 => &self.author,
-            _ => &self.year,
+            _ => &self.author,
         }
     }
 
     fn field_mut(&mut self, i: usize) -> &mut String {
         match i {
             0 => &mut self.name,
-            1 => &mut self.author,
-            _ => &mut self.year,
+            _ => &mut self.author,
         }
     }
 
@@ -2348,7 +2346,6 @@ impl App {
         let lookup = LookupForm {
             name,
             author: first_author(&b.author),
-            year: b.year.map(|y| y.to_string()).unwrap_or_default(),
             ..LookupForm::default()
         };
         // The Cover tab still searches with a free-text bar, seeded from the
@@ -5148,11 +5145,10 @@ mod tests {
         }
         let ed = app.meta_edit.as_ref().unwrap();
         assert_eq!(ed.tab, EditTab::Online);
-        // Seeded from metadata: name=title, author=first author, year.
+        // Seeded from metadata: name=title, author=first author (year excluded).
         assert_eq!(ed.lookup.name, "K");
         assert_eq!(ed.lookup.author, "Auth");
-        assert_eq!(ed.lookup.year, "2010");
-        assert_eq!(ed.lookup.query(), "K Auth 2010");
+        assert_eq!(ed.lookup.query(), "K Auth");
         assert_eq!(ed.lookup.focus, 0); // Title focused
 
         // Typing edits the focused field (Title), entering edit mode.
@@ -5170,7 +5166,7 @@ mod tests {
         app.on_key(key('x'));
         let ed = app.meta_edit.as_ref().unwrap();
         assert_eq!(ed.lookup.author, "Authx");
-        assert_eq!(ed.lookup.query(), "K! Authx 2010");
+        assert_eq!(ed.lookup.query(), "K! Authx");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
