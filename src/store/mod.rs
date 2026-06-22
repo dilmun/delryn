@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS books (
     edited       INTEGER NOT NULL DEFAULT 0,
     subtitle     TEXT NOT NULL DEFAULT '',
     isbn         TEXT NOT NULL DEFAULT '',
-    language     TEXT NOT NULL DEFAULT ''
+    language     TEXT NOT NULL DEFAULT '',
+    converted    INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS annotations (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,6 +118,9 @@ pub struct BookRow {
     pub isbn: String,
     /// Language, empty if none.
     pub language: String,
+    /// True when the EPUB looks converted/repackaged (e.g. by calibre) rather
+    /// than an original publisher file.
+    pub converted: bool,
 }
 
 /// Saved reading position for a book.
@@ -173,6 +177,12 @@ impl Store {
                 [],
             );
         }
+        // Whether the EPUB looks converted/repackaged vs an original publisher
+        // file (a file fact, refreshed every index — not subject to `edited`).
+        let _ = conn.execute(
+            "ALTER TABLE books ADD COLUMN converted INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         // Full-text index (graceful: skipped if FTS5 isn't compiled in).
         let _ = conn.execute_batch(
             "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(path UNINDEXED, body);",
@@ -306,6 +316,15 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Record whether a book's EPUB looks converted. A derived file fact, so it's
+    /// set on every index (independent of the `edited` hand-edit guard).
+    pub fn set_converted(&self, path: &str, converted: bool) {
+        let _ = self.conn.execute(
+            "UPDATE books SET converted = ?2 WHERE path = ?1",
+            params![path, converted as i64],
+        );
     }
 
     /// Overwrite a book's descriptive metadata with hand-edited values and mark
@@ -593,7 +612,7 @@ impl Store {
         let sql = format!(
             "SELECT b.path, b.title, b.author, b.year, b.size, b.favorite, b.sections, \
              p.section, p.frac, b.series, b.series_index, b.publisher, \
-             b.subtitle, b.isbn, b.language \
+             b.subtitle, b.isbn, b.language, b.converted \
              FROM books b LEFT JOIN progress p ON p.path = b.path {join} \
              WHERE {where_clause} ORDER BY {order}"
         );
@@ -627,6 +646,7 @@ impl Store {
                 subtitle: r.get(12)?,
                 isbn: r.get(13)?,
                 language: r.get(14)?,
+                converted: r.get::<_, i64>(15)? != 0,
             })
         });
         if let Ok(rows) = rows {
