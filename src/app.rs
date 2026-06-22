@@ -230,13 +230,23 @@ pub struct LookupForm {
 }
 
 impl LookupForm {
-    /// The composed, read-only query — `name author year`, space-collapsed.
+    /// The composed, read-only query — `name author year` with punctuation noise
+    /// (commas, colons, slashes…) flattened to spaces and collapsed, so messy
+    /// metadata like a stray ", Kissinger" can't break the metadata search.
     pub fn query(&self) -> String {
-        [self.name.trim(), self.author.trim(), self.year.trim()]
+        let raw = [self.name.trim(), self.author.trim(), self.year.trim()]
             .into_iter()
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(" ");
+        let flattened: String = raw
+            .chars()
+            .map(|c| match c {
+                ',' | ';' | ':' | '/' | '\\' | '|' | '"' => ' ',
+                c => c,
+            })
+            .collect();
+        flattened.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     /// Read a seed field by index (clamped to the last field).
@@ -1800,15 +1810,16 @@ pub fn clean_filename_query(stem: &str) -> String {
 
 /// The first author from a possibly multi-author string — a single author is far
 /// cleaner for a metadata search than the full byline. Splits on the usual
-/// separators (`,`, `;`, ` and `, ` & `) and keeps the first name.
+/// separators (`,`, `;`, ` and `, ` & `) and keeps the first *non-empty* name, so
+/// a malformed byline like ", Kissinger" yields "Kissinger", not leading junk.
 pub fn first_author(authors: &str) -> String {
     let mut a = authors.trim();
     for sep in [",", ";", " and ", " & "] {
-        if let Some((first, _)) = a.split_once(sep) {
-            a = first.trim();
+        if let Some(piece) = a.split(sep).map(str::trim).find(|p| !p.is_empty()) {
+            a = piece;
         }
     }
-    a.to_string()
+    a.trim_matches(|c: char| matches!(c, ',' | ';' | '&') || c.is_whitespace()).to_string()
 }
 
 /// If `title` ends with `<sep><subtitle>` (the subtitle matched case-insensitively),
@@ -5211,6 +5222,19 @@ mod tests {
         assert_eq!(first_author("A. Author, B. Other; C"), "A. Author");
         assert_eq!(first_author("Jane Doe and John Roe"), "Jane Doe");
         assert_eq!(first_author("Solo Writer"), "Solo Writer");
+        // Malformed bylines with leading/stray separators don't yield junk.
+        assert_eq!(first_author(", Kissinger"), "Kissinger");
+        assert_eq!(first_author(" , Smith , Jones"), "Smith");
+        // The composed query flattens punctuation noise into clean words.
+        let f = LookupForm {
+            name: "Deep Learning With Python".into(),
+            author: ", Kissinger".into(),
+            ..LookupForm::default()
+        };
+        assert_eq!(f.query(), "Deep Learning With Python Kissinger");
+        // Useful punctuation (C++, #) survives.
+        let g = LookupForm { name: "C++ Primer".into(), ..LookupForm::default() };
+        assert_eq!(g.query(), "C++ Primer");
         // Filename cleanup: keep text before the first naming separator, spaces
         // for underscores/dots, collapse whitespace.
         assert_eq!(clean_filename_query("Some Book - Author - 2020"), "Some Book");
