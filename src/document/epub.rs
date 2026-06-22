@@ -216,6 +216,97 @@ pub fn read_fulltext(path: impl AsRef<Path>) -> Result<String> {
     Ok(out)
 }
 
+/// Best-effort title (and subtitle) guessed from the book's *content* — for
+/// converted files whose metadata title and filename are both opaque IDs. Reads
+/// the first few content sections and picks the most prominent real heading; a
+/// `.subtitle`-classed line or a following sub-heading becomes the subtitle.
+pub fn extract_content_title(path: impl AsRef<Path>) -> Option<(String, Option<String>)> {
+    let mut doc = EpubDoc::new(path.as_ref()).ok()?;
+    let n = doc.get_num_chapters().min(6);
+    for i in 0..n {
+        if !doc.set_current_chapter(i) {
+            continue;
+        }
+        let Some((xhtml, _)) = doc.get_current_str() else {
+            continue;
+        };
+        if let Some(found) = title_from_html(&xhtml) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Pull a title (+ optional subtitle) out of one XHTML section: the first real
+/// heading, with a `.subtitle` line or a deeper following heading as subtitle;
+/// falling back to a non-generic `<title>` element.
+fn title_from_html(xhtml: &str) -> Option<(String, Option<String>)> {
+    use scraper::{Html, Selector};
+    let doc = Html::parse_document(xhtml);
+    let collapse = |e: scraper::ElementRef| {
+        e.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+
+    let sub_class = Selector::parse(".subtitle, .Subtitle, .sub-title, .book-subtitle")
+        .ok()
+        .and_then(|sel| doc.select(&sel).map(collapse).find(|s| !s.is_empty()));
+
+    let h_sel = Selector::parse("h1, h2, h3").ok()?;
+    let headings: Vec<(u8, String)> = doc
+        .select(&h_sel)
+        .filter_map(|e| {
+            let level = e.value().name().as_bytes().get(1).map(|b| b - b'0').unwrap_or(9);
+            let text = collapse(e);
+            (!text.is_empty()).then_some((level, text))
+        })
+        .collect();
+
+    if let Some(idx) = headings.iter().position(|(_, t)| is_title_candidate(t)) {
+        let (lvl, title) = headings[idx].clone();
+        let subtitle = sub_class.or_else(|| {
+            headings
+                .get(idx + 1)
+                .filter(|(l, t)| *l > lvl && is_title_candidate(t))
+                .map(|(_, t)| t.clone())
+        });
+        return Some((title, subtitle));
+    }
+
+    let head_title = doc
+        .select(&Selector::parse("title").ok()?)
+        .map(collapse)
+        .find(|s| is_title_candidate(s))?;
+    Some((head_title, sub_class))
+}
+
+/// Is `t` a plausible book title rather than an opaque ID or generic front-matter
+/// label (Cover / Contents / Copyright …)?
+fn is_title_candidate(t: &str) -> bool {
+    let t = t.trim();
+    // Needs a few real letters — rejects bare numbers / IDs.
+    if t.chars().filter(|c| c.is_alphabetic()).count() < 3 {
+        return false;
+    }
+    const GENERIC: [&str; 14] = [
+        "cover",
+        "title page",
+        "title",
+        "contents",
+        "table of contents",
+        "copyright",
+        "copyright page",
+        "dedication",
+        "acknowledgments",
+        "acknowledgements",
+        "index",
+        "preface",
+        "foreword",
+        "about the author",
+    ];
+    let low = t.to_lowercase();
+    !GENERIC.contains(&low.as_str())
+}
+
 fn extract_metadata(doc: &mut EpubDoc<BufReader<File>>, size: u64) -> Metadata {
     let title = doc.get_title().unwrap_or_else(|| "Untitled".to_string());
     let authors = doc
@@ -408,7 +499,38 @@ fn build_outline(
 
 #[cfg(test)]
 mod tests {
-    use super::converted_from;
+    use super::{converted_from, title_from_html};
+
+    #[test]
+    fn content_title_from_headings() {
+        // h1 title + h2 subtitle.
+        let html = "<html><body><h1>Building Chatbots with Python</h1>\
+            <h2>Using NLP and Machine Learning</h2><p>…</p></body></html>";
+        assert_eq!(
+            title_from_html(html),
+            Some(("Building Chatbots with Python".into(), Some("Using NLP and Machine Learning".into())))
+        );
+
+        // A leading generic heading (Cover) is skipped; .subtitle class is used.
+        let html = "<html><body><h1>Cover</h1><h1>Deep Learning for Data Architects</h1>\
+            <p class=\"subtitle\">Unleash the power of Python</p></body></html>";
+        assert_eq!(
+            title_from_html(html),
+            Some((
+                "Deep Learning for Data Architects".into(),
+                Some("Unleash the power of Python".into())
+            ))
+        );
+
+        // No real heading → fall back to a non-generic <title>.
+        let html =
+            "<html><head><title>A Real Book Title</title></head><body><p>x</p></body></html>";
+        assert_eq!(title_from_html(html), Some(("A Real Book Title".into(), None)));
+
+        // Nothing usable (only an ID-ish/generic heading) → None.
+        assert_eq!(title_from_html("<html><body><h1>503392068</h1></body></html>"), None);
+        assert_eq!(title_from_html("<html><body><p>no headings here</p></body></html>"), None);
+    }
 
     #[test]
     fn flags_calibre_and_conversion_tools() {

@@ -2379,8 +2379,17 @@ impl App {
         } else {
             stem
         };
+        let mut name = main_title(base);
+        // Last resort: both metadata and filename are opaque IDs — read a title
+        // out of the book's own content.
+        if looks_like_id(&name) {
+            let content = epub::extract_content_title(&path);
+            if let Some((t, _)) = content {
+                name = main_title(&t);
+            }
+        }
         let lookup = LookupForm {
-            name: main_title(base),
+            name,
             author: first_author(&b.author),
             ..LookupForm::default()
         };
@@ -2597,6 +2606,11 @@ impl App {
 
     /// Details tab, navigate mode: move between fields; Enter edits.
     fn details_nav_key(&mut self, key: KeyEvent) {
+        // `t` pulls a title/subtitle out of the book's content (own borrow).
+        if matches!(key.code, KeyCode::Char('t')) {
+            self.details_title_from_content();
+            return;
+        }
         let Some(ed) = self.meta_edit.as_mut() else {
             return;
         };
@@ -2618,6 +2632,29 @@ impl App {
             }
             KeyCode::Char('R') => ed.values = ed.original.clone(),
             _ => {}
+        }
+    }
+
+    /// Fill the Title (and Subtitle) fields from the book's own content — for
+    /// converted files with no usable title metadata. The user reviews, then ^S.
+    fn details_title_from_content(&mut self) {
+        let Some(path) = self.meta_edit.as_ref().map(|e| e.path.clone()) else {
+            return;
+        };
+        let found = epub::extract_content_title(&path);
+        let Some(ed) = self.meta_edit.as_mut() else {
+            return;
+        };
+        match found {
+            Some((title, subtitle)) => {
+                ed.values[0] = title;
+                if let Some(sub) = subtitle {
+                    ed.values[F_SUBTITLE] = sub;
+                }
+                ed.row = 0;
+                ed.status = Some("title from content ✓ — review, then ^S".into());
+            }
+            None => ed.status = Some("no title found in the book's content".into()),
         }
     }
 
