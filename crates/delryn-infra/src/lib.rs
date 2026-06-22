@@ -7,3 +7,13 @@
 pub mod config;
 pub mod paths;
 pub mod theme;
+
+/// Serializes tests across the workspace that mutate the process-global
+/// `XDG_CONFIG_HOME` (which [`paths::config_dir`] reads). Without it the parallel
+/// test runner lets two such tests clobber each other's data dir. Poison-
+/// tolerant. Lives in normal (not `#[cfg(test)]`) code so dependent crates' tests
+/// can share the one lock — a dependency's test-only items aren't visible.
+pub fn test_env_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}

@@ -907,13 +907,13 @@ dependencies = [
  "epub",
  "delryn-infra",
  "delryn-model",
+ "delryn-store",
  "html2text",
  "image",
  "lru",
  "ratatui",
  "ratatui-image",
  "regex",
- "rusqlite",
  "scraper",
  "serde",
  "serde_json",
@@ -935,6 +935,15 @@ dependencies = [
 [[package]]
 name = "delryn-model"
 version = "0.1.0"
+
+[[package]]
+name = "delryn-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "delryn-infra",
+ "rusqlite",
+]
 
 [[package]]
 name = "form_urlencoded"

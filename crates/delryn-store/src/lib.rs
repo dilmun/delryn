@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::config::ViewMode;
+use delryn_infra::config::ViewMode;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS progress (
@@ -142,7 +142,7 @@ pub struct Store {
 impl Store {
     /// Open (creating if needed) the database under the config directory.
     pub fn open_default() -> Result<Store> {
-        let dir = crate::paths::config_dir();
+        let dir = delryn_infra::paths::config_dir();
         std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join("delryn.db"))?;
         conn.execute_batch(SCHEMA)?;
@@ -739,7 +739,7 @@ mod tests {
     fn progress_roundtrip() {
         let tmp = std::env::temp_dir().join(format!("delryn_test_{}", std::process::id()));
         // SAFETY: single-threaded test; sets the config dir for this process.
-        let _env = crate::test_env_guard();
+        let _env = delryn_infra::test_env_guard();
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
 
         let store = Store::open_default().unwrap();
@@ -784,7 +784,7 @@ mod tests {
     #[test]
     fn duplicates_section_groups_same_title() {
         let tmp = std::env::temp_dir().join(format!("delryn_dup_{}", std::process::id()));
-        let _env = crate::test_env_guard();
+        let _env = delryn_infra::test_env_guard();
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         let store = Store::open_default().unwrap();
 
@@ -802,7 +802,7 @@ mod tests {
     #[test]
     fn series_section_sorts_by_series_then_index() {
         let tmp = std::env::temp_dir().join(format!("delryn_series_{}", std::process::id()));
-        let _env = crate::test_env_guard();
+        let _env = delryn_infra::test_env_guard();
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         let store = Store::open_default().unwrap();
 
@@ -829,7 +829,7 @@ mod tests {
     #[test]
     fn shelves_membership_and_listing() {
         let tmp = std::env::temp_dir().join(format!("delryn_shelf_{}", std::process::id()));
-        let _env = crate::test_env_guard();
+        let _env = delryn_infra::test_env_guard();
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         let store = Store::open_default().unwrap();
 
@@ -875,7 +875,7 @@ mod tests {
     #[test]
     fn manual_edit_survives_rescan() {
         let tmp = std::env::temp_dir().join(format!("delryn_edit_{}", std::process::id()));
-        let _env = crate::test_env_guard();
+        let _env = delryn_infra::test_env_guard();
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         let store = Store::open_default().unwrap();
 
