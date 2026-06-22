@@ -98,6 +98,69 @@ pub fn render(f: &mut Frame, app: &mut App) {
         )),
         rows[3],
     );
+
+    record_hits(app, rows[0], body);
+}
+
+/// Capture the editor's clickable regions for mouse hit-testing, mirroring the
+/// tab strip / body layouts above (kept here so the geometry stays in one file).
+fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
+    let (tab, results_len) = match app.meta_edit.as_ref() {
+        Some(e) => (e.tab, e.search().results.len()),
+        None => return,
+    };
+
+    // Tab strip: " label " cells separated by a single space (see render_tabs).
+    let mut tabs = Vec::new();
+    let mut tx = tab_strip.x;
+    for (i, t) in EditTab::ALL.iter().enumerate() {
+        if i > 0 {
+            tx += 1;
+        }
+        let w = t.label().chars().count() as u16 + 2;
+        tabs.push((*t, Rect { x: tx, y: tab_strip.y, width: w, height: 1 }));
+        tx += w;
+    }
+    app.mouse.edit_tabs = tabs;
+
+    let row = |i: u16| Rect { x: body.x, y: body.y + i, width: body.width, height: 1 };
+    let in_body = |y: u16| y < body.y + body.height;
+    let value_start = body.x + 3 + LABEL_W as u16; // marker (3) + label column
+    let mut fields = Vec::new();
+    let mut results = Vec::new();
+    let mut search = None;
+    match tab {
+        EditTab::Details => {
+            for i in 0..META_FIELDS.len() as u16 {
+                if in_body(body.y + i) {
+                    fields.push((i as usize, value_start, row(i)));
+                }
+            }
+        }
+        EditTab::File => {
+            fields.push((FILE_TEMPLATE, value_start, row(0)));
+            fields.push((FILE_NAME, value_start, row(1)));
+        }
+        EditTab::Online | EditTab::Cover => {
+            search = Some(row(0)); // search bar occupies the first body row
+            let rw = if tab == EditTab::Cover {
+                body.width.saturating_sub(24) // results sit left of the preview
+            } else {
+                body.width
+            };
+            for i in 0..results_len as u16 {
+                let y = body.y + 2 + i; // one search row + one blank
+                if !in_body(y) {
+                    break;
+                }
+                results.push((i as usize, Rect { x: body.x, y, width: rw, height: 1 }));
+            }
+        }
+        EditTab::Collections => {}
+    }
+    app.mouse.edit_fields = fields;
+    app.mouse.edit_results = results;
+    app.mouse.edit_search = search;
 }
 
 fn render_tabs(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Color) {
