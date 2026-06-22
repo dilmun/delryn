@@ -389,32 +389,13 @@ impl ShelfPicker {
     }
 }
 
-/// Text input within the collections manager: creating a new collection, or
-/// renaming an existing one.
+/// Inline collection editing in the sidebar: typing a name to create a new
+/// collection, or renaming an existing one (clearing the name deletes it).
 pub struct CollInput {
     pub buf: String,
     pub cursor: usize,
     /// `Some(old)` while renaming that collection; `None` while creating one.
     pub rename_from: Option<String>,
-}
-
-/// Manage-collections popup (`C`): create / rename / delete collections.
-pub struct CollManager {
-    /// (name, book count) snapshot, refreshed after each change.
-    pub items: Vec<(String, usize)>,
-    /// Focused row; `items.len()` selects the "＋ New collection" row.
-    pub sel: usize,
-    /// Active create/rename text input, if any.
-    pub input: Option<CollInput>,
-    /// Whether a delete of the focused collection is awaiting confirmation.
-    pub confirm_delete: bool,
-}
-
-impl CollManager {
-    /// The "new collection" row index (one past the existing collections).
-    pub fn new_row(&self) -> usize {
-        self.items.len()
-    }
 }
 
 /// One adjustable setting (identity, not position — so section headers can be
@@ -1612,8 +1593,8 @@ pub struct App {
     pub meta_edit: Option<MetaEdit>,
     /// Open bulk-rename popup (template applied to the marked books), if any.
     pub bulk_rename: Option<BulkRename>,
-    /// Open manage-collections popup, if any.
-    pub coll_manager: Option<CollManager>,
+    /// Inline sidebar collection editor (create / rename), if active.
+    pub lib_coll_edit: Option<CollInput>,
     /// Open image viewer overlay, if any.
     pub image_view: Option<ImageView>,
     /// Detected terminal image protocol (None if unsupported / headless).
@@ -1864,7 +1845,7 @@ impl App {
             note_input: None,
             meta_edit: None,
             bulk_rename: None,
-            coll_manager: None,
+            lib_coll_edit: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -1923,7 +1904,7 @@ impl App {
             note_input: None,
             meta_edit: None,
             bulk_rename: None,
-            coll_manager: None,
+            lib_coll_edit: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -3212,8 +3193,8 @@ impl App {
             self.bulk_rename_key(key);
             return;
         }
-        if self.coll_manager.is_some() {
-            self.coll_manager_key(key);
+        if self.lib_coll_edit.is_some() {
+            self.lib_coll_edit_key(key);
             return;
         }
         if self.shelf_picker.is_some() {
@@ -3572,8 +3553,7 @@ impl App {
             KeyCode::Enter => {
                 if pane == LibPane::Sidebar {
                     if self.lib_side_new {
-                        self.open_coll_manager();
-                        self.coll_begin_new();
+                        self.lib_coll_begin_new();
                     } else {
                         self.lib_pane = LibPane::List;
                     }
@@ -3619,7 +3599,14 @@ impl App {
                 }
             }
             KeyCode::Char('c') => self.open_shelf_picker(),
-            KeyCode::Char('C') => self.open_coll_manager(),
+            // Rename the focused collection in place (sidebar, on a collection).
+            KeyCode::Char('r')
+                if pane == LibPane::Sidebar
+                    && !self.lib_side_new
+                    && matches!(self.lib_view, LibView::Shelf(_)) =>
+            {
+                self.lib_coll_begin_rename()
+            }
             KeyCode::Char('x') => self.remove_from_current_shelf(),
             KeyCode::Char('v') => {
                 self.config.library_layout = self.config.library_layout.next();
@@ -3651,179 +3638,90 @@ impl App {
         self.lib_visual_sync();
     }
 
-    // --- Manage-collections popup (`C`) ---------------------------------
+    // --- Inline sidebar collection editing ------------------------------
 
-    /// Open the manage-collections popup (create / rename / delete).
-    fn open_coll_manager(&mut self) {
-        let items = self.store.as_ref().map(|s| s.all_shelves()).unwrap_or_default();
-        self.coll_manager = Some(CollManager {
-            items,
-            sel: 0,
-            input: None,
-            confirm_delete: false,
-        });
+    fn lib_coll_input_mut(&mut self) -> Option<&mut CollInput> {
+        self.lib_coll_edit.as_mut()
     }
 
-    /// Refresh the manager snapshot + the library sidebar after a change.
-    fn coll_manager_refresh(&mut self) {
-        let items = self.store.as_ref().map(|s| s.all_shelves()).unwrap_or_default();
-        if let Some(m) = self.coll_manager.as_mut() {
-            m.sel = m.sel.min(items.len());
-            m.items = items;
-            m.confirm_delete = false;
+    /// Begin creating a new collection (inline at the "＋ New" sidebar row).
+    fn lib_coll_begin_new(&mut self) {
+        self.lib_coll_edit = Some(CollInput { buf: String::new(), cursor: 0, rename_from: None });
+    }
+
+    /// Begin renaming the focused sidebar collection in place.
+    fn lib_coll_begin_rename(&mut self) {
+        if let LibView::Shelf(name) = &self.lib_view {
+            let name = name.clone();
+            self.lib_coll_edit = Some(CollInput {
+                cursor: name.chars().count(),
+                buf: name.clone(),
+                rename_from: Some(name),
+            });
+        }
+    }
+
+    /// Commit the inline edit: rename, create, or (on an emptied name) delete.
+    fn lib_coll_commit(&mut self) {
+        let Some(input) = self.lib_coll_edit.take() else {
+            return;
+        };
+        let name = input.buf.trim().to_string();
+        if let Some(store) = &self.store {
+            match (&input.rename_from, name.is_empty()) {
+                (Some(old), true) => store.delete_shelf(old), // cleared name ⇒ delete
+                (Some(old), false) => store.rename_shelf(old, &name),
+                (None, false) => store.create_collection(&name),
+                (None, true) => {} // empty new ⇒ no-op
+            }
+        }
+        // Follow the result: view the created/renamed collection.
+        if !name.is_empty() {
+            self.lib_side_new = false;
+            self.lib_view = LibView::Shelf(name);
+            self.lib_sel = 0;
         }
         self.refresh_library();
     }
 
-    fn coll_input_mut(&mut self) -> Option<&mut CollInput> {
-        self.coll_manager.as_mut().and_then(|m| m.input.as_mut())
-    }
-
-    fn coll_begin_new(&mut self) {
-        if let Some(m) = self.coll_manager.as_mut() {
-            m.input = Some(CollInput { buf: String::new(), cursor: 0, rename_from: None });
-        }
-    }
-
-    fn coll_begin_rename(&mut self) {
-        let Some(m) = self.coll_manager.as_mut() else {
-            return;
-        };
-        let name = match m.items.get(m.sel) {
-            Some((n, _)) => n.clone(),
-            None => return,
-        };
-        m.input = Some(CollInput {
-            cursor: name.chars().count(),
-            buf: name.clone(),
-            rename_from: Some(name),
-        });
-    }
-
-    /// Commit the create/rename input to the store, then refresh.
-    fn coll_commit_input(&mut self) {
-        let Some(input) = self.coll_manager.as_ref().and_then(|m| m.input.as_ref()) else {
-            return;
-        };
-        let name = input.buf.trim().to_string();
-        let rename_from = input.rename_from.clone();
-        if let Some(store) = self.store.as_ref().filter(|_| !name.is_empty()) {
-            match &rename_from {
-                Some(old) => store.rename_shelf(old, &name),
-                None => store.create_collection(&name),
-            }
-        }
-        if let Some(m) = self.coll_manager.as_mut() {
-            m.input = None;
-        }
-        self.coll_manager_refresh();
-    }
-
-    fn coll_delete(&mut self) {
-        let name = self
-            .coll_manager
-            .as_ref()
-            .and_then(|m| m.items.get(m.sel))
-            .map(|(n, _)| n.clone());
-        if let (Some(store), Some(name)) = (&self.store, name) {
-            store.delete_shelf(&name);
-        }
-        self.coll_manager_refresh();
-    }
-
-    /// Manage-collections keys: list nav + create/rename/delete, or text input.
-    fn coll_manager_key(&mut self, key: KeyEvent) {
+    /// Keys while the inline collection editor is active.
+    fn lib_coll_edit_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        // Typing a collection name (create or rename) takes precedence.
-        if self.coll_manager.as_ref().is_some_and(|m| m.input.is_some()) {
-            match key.code {
-                KeyCode::Esc => {
-                    if let Some(m) = self.coll_manager.as_mut() {
-                        m.input = None;
-                    }
-                }
-                KeyCode::Enter => self.coll_commit_input(),
-                KeyCode::Left => {
-                    if let Some(i) = self.coll_input_mut() {
-                        i.cursor = i.cursor.saturating_sub(1);
-                    }
-                }
-                KeyCode::Right => {
-                    if let Some(i) = self.coll_input_mut() {
-                        i.cursor = (i.cursor + 1).min(i.buf.chars().count());
-                    }
-                }
-                KeyCode::Char('u') if ctrl => {
-                    if let Some(i) = self.coll_input_mut() {
-                        i.buf.clear();
-                        i.cursor = 0;
-                    }
-                }
-                KeyCode::Backspace => {
-                    if let Some(i) = self.coll_input_mut() {
-                        let c = i.cursor;
-                        if str_delete_before(&mut i.buf, c) {
-                            i.cursor -= 1;
-                        }
-                    }
-                }
-                KeyCode::Char(c) if !ctrl => {
-                    if let Some(i) = self.coll_input_mut() {
-                        let cur = i.cursor;
-                        str_insert(&mut i.buf, cur, c);
-                        i.cursor += 1;
-                    }
-                }
-                _ => {}
-            }
-            return;
-        }
-        let (sel, new_row, count) = match &self.coll_manager {
-            Some(m) => (m.sel, m.new_row(), m.items.len()),
-            None => return,
-        };
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('C') => self.coll_manager = None,
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(m) = self.coll_manager.as_mut() {
-                    m.sel = m.sel.saturating_sub(1);
-                    m.confirm_delete = false;
+            KeyCode::Esc => self.lib_coll_edit = None,
+            KeyCode::Enter => self.lib_coll_commit(),
+            KeyCode::Left => {
+                if let Some(i) = self.lib_coll_input_mut() {
+                    i.cursor = i.cursor.saturating_sub(1);
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(m) = self.coll_manager.as_mut() {
-                    m.sel = (m.sel + 1).min(new_row);
-                    m.confirm_delete = false;
+            KeyCode::Right => {
+                if let Some(i) = self.lib_coll_input_mut() {
+                    i.cursor = (i.cursor + 1).min(i.buf.chars().count());
                 }
             }
-            KeyCode::Char('n') => self.coll_begin_new(),
-            KeyCode::Enter => {
-                if sel == new_row {
-                    self.coll_begin_new();
-                } else if let Some(name) =
-                    self.coll_manager.as_ref().and_then(|m| m.items.get(sel)).map(|(n, _)| n.clone())
-                {
-                    // Open the collection in the library.
-                    self.coll_manager = None;
-                    self.lib_side_new = false;
-                    self.lib_view = LibView::Shelf(name);
-                    self.lib_sel = 0;
-                    self.refresh_library();
+            KeyCode::Char('u') if ctrl => {
+                if let Some(i) = self.lib_coll_input_mut() {
+                    i.buf.clear();
+                    i.cursor = 0;
                 }
             }
-            KeyCode::Char('r') if sel < count => self.coll_begin_rename(),
-            KeyCode::Char('d') if sel < count => {
-                if self.coll_manager.as_ref().is_some_and(|m| m.confirm_delete) {
-                    self.coll_delete();
-                } else if let Some(m) = self.coll_manager.as_mut() {
-                    m.confirm_delete = true;
+            KeyCode::Backspace => {
+                if let Some(i) = self.lib_coll_input_mut() {
+                    let c = i.cursor;
+                    if str_delete_before(&mut i.buf, c) {
+                        i.cursor -= 1;
+                    }
                 }
             }
-            _ => {
-                if let Some(m) = self.coll_manager.as_mut() {
-                    m.confirm_delete = false;
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(i) = self.lib_coll_input_mut() {
+                    let cur = i.cursor;
+                    str_insert(&mut i.buf, cur, c);
+                    i.cursor += 1;
                 }
             }
+            _ => {}
         }
     }
 
@@ -4680,9 +4578,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    // Manage-collections popup: create → rename → delete via keys.
+    // Inline sidebar collection editing: create → rename → delete (clear name).
     #[test]
-    fn collections_manager_create_rename_delete() {
+    fn collections_inline_create_rename_delete() {
         let _env = crate::test_env_guard();
         let tmp = std::env::temp_dir().join(format!("delryn_cm_{}", std::process::id()));
         // SAFETY: serialized by `_env`; scopes the config dir to this process.
@@ -4693,31 +4591,32 @@ mod tests {
                 .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
                 .unwrap();
         }
-
-        let mut app = App::library();
-        app.on_key(key('C')); // open manager
-        assert!(app.coll_manager.is_some());
-        app.on_key(key('n')); // new
-        for c in "Sci".chars() {
-            app.on_key(key(c));
-        }
-        app.on_key(code(KeyCode::Enter)); // create
         let names = |a: &App| {
             a.store.as_ref().unwrap().all_shelves().into_iter().map(|(n, _)| n).collect::<Vec<_>>()
         };
-        assert_eq!(names(&app), vec!["Sci"]);
 
-        // Rename Sci → SciFi.
-        app.on_key(key('r'));
+        let mut app = App::library();
+        // Create (the "＋ New collection" inline field).
+        app.lib_coll_begin_new();
+        for c in "Sci".chars() {
+            app.on_key(key(c)); // routed to the inline editor
+        }
+        app.on_key(code(KeyCode::Enter));
+        assert_eq!(names(&app), vec!["Sci"]);
+        assert!(matches!(app.lib_view, LibView::Shelf(ref n) if n == "Sci"));
+
+        // Rename in place: Sci → SciFi.
+        app.lib_coll_begin_rename();
         for c in "Fi".chars() {
             app.on_key(key(c));
         }
         app.on_key(code(KeyCode::Enter));
         assert_eq!(names(&app), vec!["SciFi"]);
 
-        // Delete (needs confirm: d, d).
-        app.on_key(key('d'));
-        app.on_key(key('d'));
+        // Delete by clearing the name and committing.
+        app.lib_coll_begin_rename();
+        app.on_key(ctrl('u'));
+        app.on_key(code(KeyCode::Enter));
         assert!(names(&app).is_empty());
 
         let _ = std::fs::remove_dir_all(&tmp);

@@ -3,7 +3,6 @@
 
 pub mod annotations;
 pub mod bulk_rename;
-pub mod collections;
 pub mod image;
 pub mod library;
 pub mod meta_edit;
@@ -88,9 +87,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     if app.bulk_rename.is_some() {
         bulk_rename::render(f, app);
-    }
-    if app.coll_manager.is_some() {
-        collections::render(f, app);
     }
     // An open overlay shows its shortcuts on the shared bottom status row,
     // drawn last so it sits above the popup (which never reaches that row).
