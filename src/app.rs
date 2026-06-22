@@ -2372,22 +2372,25 @@ impl App {
         let epub_title = original.first().map(String::as_str).unwrap_or("").trim();
         // An ID-like "title" (a bare number / UUID) is worse than the filename,
         // which for these converted files usually carries the real title.
-        let base = if !db_title.is_empty() && db_title != stem && !looks_like_id(db_title) {
-            db_title
+        let real_meta = if !db_title.is_empty() && db_title != stem && !looks_like_id(db_title) {
+            Some(db_title)
         } else if !epub_title.is_empty() && !looks_like_id(epub_title) {
-            epub_title
+            Some(epub_title)
         } else {
-            stem
+            None
         };
-        let mut name = main_title(base);
-        // Last resort: both metadata and filename are opaque IDs — read a title
-        // out of the book's own content.
-        if looks_like_id(&name) {
-            let content = epub::extract_content_title(&path);
-            if let Some((t, _)) = content {
-                name = main_title(&t);
+        let name = match real_meta {
+            Some(t) => main_title(t),
+            None => {
+                // Junk metadata: the book's content keeps title and subtitle in
+                // separate blocks, so it splits them better than the filename
+                // (which often merges them). Try content first, then the filename.
+                epub::extract_content_title(&path)
+                    .map(|(t, _)| main_title(&t))
+                    .filter(|n| !n.is_empty() && !looks_like_id(n))
+                    .unwrap_or_else(|| main_title(stem))
             }
-        }
+        };
         let lookup = LookupForm {
             name,
             author: first_author(&b.author),
