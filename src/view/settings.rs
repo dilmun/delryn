@@ -1,5 +1,6 @@
-//! Mode-scoped settings popup (`;`): tabbed General / Reading / Library,
-//! navigable, edits the live config. See `DESIGN.md` §7.
+//! Settings popup (`;`), scoped to the current mode — Reading settings in the
+//! reader, Library settings in the library — so the two never mix. Navigable,
+//! edits the live config. See `DESIGN.md` §7.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
@@ -7,30 +8,27 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::{App, SettingRow, SettingsTab, settings_rows};
-
-const TABS: [SettingsTab; 3] = [
-    SettingsTab::General,
-    SettingsTab::Reading,
-    SettingsTab::Library,
-];
+use crate::app::{App, Mode, SettingRow, settings_rows};
 
 pub fn render(f: &mut Frame, app: &App) {
     let Some(state) = &app.settings else {
         return;
     };
     let theme = app.config.theme;
-    // Tall enough for the grouped Reading tab (sections + items), clamped to fit.
     let area = super::centered(f.area(), 64, 28);
 
     f.render_widget(Clear, area);
 
     let bg = theme.bg.unwrap_or(ratatui::style::Color::Black);
+    let scope = match state.scope {
+        Mode::Reader => "Reading",
+        Mode::Library => "Library",
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
-            " Settings ",
+            format!(" {scope} Settings "),
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().fg(theme.fg).bg(bg));
@@ -38,31 +36,14 @@ pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(block, area);
 
     let rows = Layout::vertical([
-        Constraint::Length(1), // tabs
         Constraint::Length(1), // spacer
         Constraint::Min(0),    // body
     ])
     .split(inner);
 
-    // Tab strip.
-    let mut tab_spans = Vec::new();
-    for (i, t) in TABS.iter().enumerate() {
-        if i > 0 {
-            tab_spans.push(Span::raw("  "));
-        }
-        let active = *t == state.tab;
-        let style = if active {
-            Style::default().fg(bg).bg(theme.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.muted)
-        };
-        tab_spans.push(Span::styled(format!(" {} ", t.label()), style));
-    }
-    f.render_widget(Paragraph::new(Line::from(tab_spans)), rows[0]);
-
     // Rows: section headers (non-selectable) interleaved with settings.
     let mut lines: Vec<Line> = Vec::new();
-    for (i, row) in settings_rows(state.tab).iter().enumerate() {
+    for (i, row) in settings_rows(state.scope).iter().enumerate() {
         match row {
             SettingRow::Section(title) => {
                 if i > 0 {
@@ -91,6 +72,6 @@ pub fn render(f: &mut Frame, app: &App) {
             }
         }
     }
-    f.render_widget(Paragraph::new(lines), rows[2]);
+    f.render_widget(Paragraph::new(lines), rows[1]);
     // Shortcuts live in the bottom status bar (see view::status).
 }

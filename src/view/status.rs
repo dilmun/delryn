@@ -54,10 +54,7 @@ pub fn overlay(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
 /// to lowest precedence matches how `on_key` routes input.
 fn legend(app: &App) -> Option<(String, String)> {
     if app.settings.is_some() {
-        return Some((
-            "Settings".into(),
-            "↑↓ move · ←→ change · Tab section · Esc close".into(),
-        ));
+        return Some(("Settings".into(), "↑↓ move · ←→ change · Esc close".into()));
     }
     if let Some(p) = &app.shelf_picker {
         let keys = if p.new_name.is_some() {
