@@ -241,46 +241,154 @@ pub fn extract_content_title(path: impl AsRef<Path>) -> Option<(String, Option<S
 /// rather than a chapter (so chapter body text is never mistaken for a title).
 const TITLE_PAGE_MAX_BLOCKS: usize = 14;
 
-/// Pull a title (+ optional subtitle) out of one XHTML section. A title page
-/// keeps the title, subtitle and author in *separate* block elements — headings
-/// in clean files, plain `<div>`/`<p>` lines in converted (calibre) ones. Take
-/// the first real line as the title and the next as the subtitle, stopping at a
-/// separator line (`—`, `by`, …) so the author isn't captured. Falls back to a
-/// non-generic `<title>` element.
-fn title_from_html(xhtml: &str) -> Option<(String, Option<String>)> {
-    use scraper::{Html, Selector};
-    let doc = Html::parse_document(xhtml);
-    let collapse = |e: scraper::ElementRef| {
-        e.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+/// All metadata delryn can recover from the book's *own content* — for converted
+/// files whose OPF metadata is junk and that aren't findable online. Every field
+/// is best-effort and meant to be reviewed before saving.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct ExtractedMeta {
+    pub title: Option<String>,
+    pub subtitle: Option<String>,
+    pub author: Option<String>,
+    pub year: Option<i32>,
+    pub publisher: Option<String>,
+    pub isbn: Option<String>,
+}
+
+/// Scan the book's front matter for as much metadata as possible: the title page
+/// gives title/subtitle/author; the copyright/imprint page gives year, publisher
+/// and ISBN. Reads only the first few sections.
+pub fn extract_book_metadata(path: impl AsRef<Path>) -> ExtractedMeta {
+    let mut out = ExtractedMeta::default();
+    let Ok(mut doc) = EpubDoc::new(path.as_ref()) else {
+        return out;
     };
-
-    // Leaf block lines in document order (a block with no block descendant), so
-    // a wrapping <div> doesn't swallow every line into one.
-    let block_sel = Selector::parse("h1,h2,h3,h4,h5,h6,p,div,li").ok()?;
-    let lines: Vec<String> = doc
-        .select(&block_sel)
-        .filter(|e| e.select(&block_sel).next().is_none())
-        .map(collapse)
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    // Only treat a short section as a title page; a long one is a chapter.
-    if !lines.is_empty() && lines.len() <= TITLE_PAGE_MAX_BLOCKS {
-        // Everything up to the first separator line is the title/subtitle block.
-        let end = lines.iter().position(|l| is_separator_line(l)).unwrap_or(lines.len());
-        let area = &lines[..end];
-        if let Some(ti) = area.iter().position(|l| is_title_candidate(l)) {
-            let title = area[ti].clone();
-            let subtitle = area.get(ti + 1).filter(|l| is_title_candidate(l)).cloned();
-            return Some((title, subtitle));
+    let n = doc.get_num_chapters().min(8);
+    for i in 0..n {
+        if !doc.set_current_chapter(i) {
+            continue;
+        }
+        let Some((xhtml, _)) = doc.get_current_str() else {
+            continue;
+        };
+        if out.title.is_none() {
+            let page = parse_title_page(&xhtml);
+            if let Some((t, s, a)) = page {
+                out.title = Some(t);
+                out.subtitle = s;
+                out.author = a;
+            }
+        }
+        if out.year.is_none() || out.publisher.is_none() || out.isbn.is_none() {
+            let text = html2text::from_read(xhtml.as_bytes(), EXTRACT_WIDTH).unwrap_or_default();
+            out.isbn = out.isbn.or_else(|| find_isbn(&text));
+            out.year = out.year.or_else(|| find_year(&text));
+            out.publisher = out.publisher.or_else(|| find_publisher(&text));
+        }
+        if out.title.is_some() && out.isbn.is_some() && out.year.is_some() {
+            break;
         }
     }
+    out
+}
 
+/// Leaf block-element lines of a section in document order — a block with no
+/// block descendant, so a wrapping `<div>` doesn't swallow every line into one.
+fn leaf_block_lines(xhtml: &str) -> Vec<String> {
+    use scraper::{Html, Selector};
+    let doc = Html::parse_document(xhtml);
+    let Ok(sel) = Selector::parse("h1,h2,h3,h4,h5,h6,p,div,li") else {
+        return Vec::new();
+    };
+    doc.select(&sel)
+        .filter(|e| e.select(&sel).next().is_none())
+        .map(|e| e.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Parse a title-page-like section into (title, subtitle, author). A title page
+/// keeps each in a *separate* block — headings in clean files, plain `<div>`/`<p>`
+/// lines in converted (calibre) ones. The first real line is the title and the
+/// next the subtitle; a separator line (`—`, `by`, …) ends the title block, and
+/// the first real line after it is the author.
+fn parse_title_page(xhtml: &str) -> Option<(String, Option<String>, Option<String>)> {
+    let lines = leaf_block_lines(xhtml);
+    // Only a short section is a title page; a long one is a chapter.
+    if lines.is_empty() || lines.len() > TITLE_PAGE_MAX_BLOCKS {
+        return None;
+    }
+    let sep = lines.iter().position(|l| is_separator_line(l));
+    let area = &lines[..sep.unwrap_or(lines.len())];
+    let ti = area.iter().position(|l| is_title_candidate(l))?;
+    let title = area[ti].clone();
+    let subtitle = area.get(ti + 1).filter(|l| is_title_candidate(l)).cloned();
+    let author = sep.and_then(|s| lines[s + 1..].iter().find(|l| is_title_candidate(l)).cloned());
+    Some((title, subtitle, author))
+}
+
+/// Pull a title (+ optional subtitle) out of one XHTML section: the title page if
+/// there is one, else a non-generic `<title>` element.
+fn title_from_html(xhtml: &str) -> Option<(String, Option<String>)> {
+    use scraper::{Html, Selector};
+    if let Some((title, subtitle, _)) = parse_title_page(xhtml) {
+        return Some((title, subtitle));
+    }
+    let doc = Html::parse_document(xhtml);
     let head_title = doc
         .select(&Selector::parse("title").ok()?)
-        .map(collapse)
+        .map(|e| e.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
         .find(|s| is_title_candidate(s))?;
     Some((head_title, None))
+}
+
+/// First labelled ISBN in `text`, normalized to a bare ISBN-10/13. Tolerates the
+/// usual clutter between the label and the number (`ISBN-13 (pbk): 978-…`).
+fn find_isbn(text: &str) -> Option<String> {
+    let re = regex::Regex::new(r"(?i)ISBN.{0,30}?([0-9][0-9\- ]{8,18}[0-9Xx])").ok()?;
+    re.captures_iter(text).find_map(|c| crate::online::normalize_isbn(&c[1]))
+}
+
+/// A publication year near a copyright / "published" marker.
+fn find_year(text: &str) -> Option<i32> {
+    let re = regex::Regex::new(
+        r"(?i)(?:copyright|©|\(c\)|first published|published)\D{0,24}((?:19|20)\d{2})",
+    )
+    .ok()?;
+    re.captures(text).and_then(|c| c[1].parse().ok())
+}
+
+/// The publisher named on the imprint page. A well-known publisher mentioned in
+/// the front matter wins (most reliable); else an explicit "Published by X" line
+/// — but only when it reads like a name (Title-Case, no sentence verbs), so the
+/// boilerplate "Neither the publisher … can accept responsibility" is ignored.
+fn find_publisher(text: &str) -> Option<String> {
+    const PUBS: [&str; 12] = [
+        "Apress",
+        "O'Reilly Media",
+        "O'Reilly",
+        "Springer",
+        "Packt Publishing",
+        "Packt",
+        "Manning",
+        "No Starch Press",
+        "BPB",
+        "Wiley",
+        "Pearson",
+        "Addison-Wesley",
+    ];
+    let low = text.to_lowercase();
+    if let Some(p) = PUBS.iter().find(|p| low.contains(&p.to_lowercase())) {
+        return Some(p.to_string());
+    }
+    let labelled = regex::Regex::new(r"(?i)published by\s+([^\n\r.,;]{2,50})")
+        .ok()
+        .and_then(|re| re.captures(text).map(|c| c[1].to_string()))?;
+    let p = labelled.trim().to_string();
+    // Reject sentence fragments (a publisher name has no lowercase sentence words).
+    let looks_like_name = !p.is_empty()
+        && p.split_whitespace().count() <= 6
+        && !p.split_whitespace().any(|w| matches!(w, "can" | "the" | "and" | "any" | "for" | "nor" | "of"));
+    looks_like_name.then_some(p)
 }
 
 /// A line that divides the title block from the author (`—`, `-`, `·`, `by`).
@@ -509,7 +617,26 @@ fn build_outline(
 
 #[cfg(test)]
 mod tests {
-    use super::{converted_from, title_from_html};
+    use super::{converted_from, find_isbn, find_publisher, find_year, title_from_html};
+
+    #[test]
+    fn content_metadata_scanners() {
+        // ISBN: tolerate label clutter, normalize to bare digits.
+        assert_eq!(find_isbn("ISBN-13 (pbk): 978-1-4842-4096-0"), Some("9781484240960".into()));
+        assert_eq!(find_isbn("eISBN: 9789355515391"), Some("9789355515391".into()));
+        assert_eq!(find_isbn("no number here"), None);
+        // Year: only near a copyright / publication marker.
+        assert_eq!(find_year("Copyright © 2019 by Sumit Raj"), Some(2019));
+        assert_eq!(find_year("First published 2024 by BPB"), Some(2024));
+        assert_eq!(find_year("see you in 2030 maybe"), None);
+        // Publisher: known names win; sentence boilerplate is rejected.
+        assert_eq!(find_publisher("© 2019 Apress Media LLC"), Some("Apress".into()));
+        assert_eq!(find_publisher("Published by Acme Press, London"), Some("Acme Press".into()));
+        assert_eq!(
+            find_publisher("Neither the publisher nor the author can accept responsibility"),
+            None
+        );
+    }
 
     #[test]
     fn content_title_from_headings() {

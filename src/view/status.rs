@@ -122,7 +122,7 @@ fn editor_legend(ed: &MetaEdit) -> (String, String) {
         "type to edit · ←→ move · ^U clear · ⏎/Esc done"
     } else {
         match ed.tab {
-            EditTab::Details => "1-3 tab · j/k · ⏎ edit · t title-from-content · r/R reset · ^S · Esc",
+            EditTab::Details => "1-3 tab · j/k · ⏎ edit · x extract-from-book · r/R reset · ^S · Esc",
             EditTab::Cover => "1-3 tab · / search · j/k pick · ⏎ use cover · ^S save · Esc",
             EditTab::Online => "", // handled above
         }

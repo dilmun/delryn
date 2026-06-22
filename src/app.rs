@@ -2609,9 +2609,9 @@ impl App {
 
     /// Details tab, navigate mode: move between fields; Enter edits.
     fn details_nav_key(&mut self, key: KeyEvent) {
-        // `t` pulls a title/subtitle out of the book's content (own borrow).
-        if matches!(key.code, KeyCode::Char('t')) {
-            self.details_title_from_content();
+        // `x` extracts metadata from the book's own content (own borrow).
+        if matches!(key.code, KeyCode::Char('x')) {
+            self.details_extract_from_content();
             return;
         }
         let Some(ed) = self.meta_edit.as_mut() else {
@@ -2638,27 +2638,48 @@ impl App {
         }
     }
 
-    /// Fill the Title (and Subtitle) fields from the book's own content — for
-    /// converted files with no usable title metadata. The user reviews, then ^S.
-    fn details_title_from_content(&mut self) {
+    /// Fill the Details fields from the book's own content (title, subtitle,
+    /// author, year, publisher, ISBN) — for converted files with junk metadata
+    /// that aren't findable online. Best-effort; the user reviews, then ^S.
+    fn details_extract_from_content(&mut self) {
         let Some(path) = self.meta_edit.as_ref().map(|e| e.path.clone()) else {
             return;
         };
-        let found = epub::extract_content_title(&path);
+        let m = epub::extract_book_metadata(&path);
         let Some(ed) = self.meta_edit.as_mut() else {
             return;
         };
-        match found {
-            Some((title, subtitle)) => {
-                ed.values[0] = title;
-                if let Some(sub) = subtitle {
-                    ed.values[F_SUBTITLE] = sub;
-                }
-                ed.row = 0;
-                ed.status = Some("title from content ✓ — review, then ^S".into());
-            }
-            None => ed.status = Some("no title found in the book's content".into()),
+        let mut filled = Vec::new();
+        if let Some(t) = m.title {
+            ed.values[0] = t;
+            filled.push("title");
         }
+        if let Some(a) = m.author {
+            ed.values[1] = a;
+            filled.push("author");
+        }
+        if let Some(y) = m.year {
+            ed.values[F_YEAR] = y.to_string();
+            filled.push("year");
+        }
+        if let Some(p) = m.publisher {
+            ed.values[5] = p;
+            filled.push("publisher");
+        }
+        if let Some(s) = m.subtitle {
+            ed.values[F_SUBTITLE] = s;
+            filled.push("subtitle");
+        }
+        if let Some(i) = m.isbn {
+            ed.values[7] = i;
+            filled.push("ISBN");
+        }
+        ed.row = 0;
+        ed.status = Some(if filled.is_empty() {
+            "nothing found in the book's content".into()
+        } else {
+            format!("extracted {} — review, then ^S", filled.join(", "))
+        });
     }
 
     /// Edit mode: type into the focused field (Details or Online query).
