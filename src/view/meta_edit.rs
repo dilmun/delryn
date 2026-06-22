@@ -1,7 +1,8 @@
-//! Tabbed metadata editor (`e`): Details · Cover · Collections · Online · File.
-//! A scalable, form-style popup with navigate/edit two-mode fields, an Open
-//! Library lookup, cover search, and template-driven file renaming. See
-//! `DESIGN.md` §5.
+//! Tabbed metadata editor (`e`): Details · Cover · Lookup. A scalable, form-style
+//! popup with navigate/edit two-mode fields (which scroll horizontally to keep
+//! the caret visible), an Open Library metadata lookup, and a cover search. Every
+//! transient line (search progress, results, hints) is collapsed into one footer
+//! row. See `DESIGN.md` §5.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -79,19 +80,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         EditTab::Cover => render_cover(f, body, app, theme),
     }
 
-    // Transient feedback only — the shortcut legend lives in the bottom status
-    // bar (see view::status), not in the popup.
-    let status = {
-        let ed = app.meta_edit.as_ref().unwrap();
-        ed.status.clone().unwrap_or_default()
-    };
-    f.render_widget(
-        Paragraph::new(Line::styled(
-            format!("  {status}"),
-            Style::default().fg(theme.heading).add_modifier(Modifier::ITALIC),
-        )),
-        rows[3],
-    );
+    // One transient line at the foot: search progress / results / errors, else a
+    // quiet hint for the lookup tabs. The shortcut legend lives in the app status
+    // bar (see view::status), not here.
+    let footer = footer_line(app.meta_edit.as_ref().unwrap(), theme);
+    f.render_widget(Paragraph::new(footer), rows[3]);
 
     record_hits(app, rows[0], body);
 }
@@ -162,6 +155,24 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
     app.mouse.edit_search = search;
 }
 
+/// The single foot-of-popup line: a transient status message (search progress,
+/// result counts, errors) when present, otherwise a quiet search hint on the
+/// lookup tabs. This is where every "searching…" / help string now lives.
+fn footer_line(ed: &MetaEdit, theme: Theme) -> Line<'static> {
+    if let Some(status) = &ed.status {
+        return Line::styled(
+            format!("  {status}"),
+            Style::default().fg(theme.heading).add_modifier(Modifier::ITALIC),
+        );
+    }
+    let hint = match ed.tab {
+        EditTab::Online => "  type or / to search by title",
+        EditTab::Cover => "  type or / to search for a cover",
+        EditTab::Details => "",
+    };
+    Line::styled(hint, Style::default().fg(theme.muted).add_modifier(Modifier::DIM))
+}
+
 fn render_tabs(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Color) {
     // Numbered pills (1–4 jump to a tab): active is an accent block, inactive
     // shows its number in accent as a shortcut hint.
@@ -224,25 +235,24 @@ fn render_details(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
 }
 
 /// A flat search row: ` search   <query/cursor>`, distinguished by a shaded
-/// label rather than a box. A block cursor shows while editing.
+/// label rather than a box. A block cursor shows while editing; the value scrolls
+/// horizontally so the caret stays visible. Progress/results live in the popup
+/// footer, not here.
 fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     let s = ed.search();
     let focused = s.editing;
     let lab = if focused { theme.accent } else { theme.muted };
+    let w = area.width.saturating_sub(10) as usize;
     let mut spans = vec![Span::styled(
         " search   ",
         Style::default().fg(lab).add_modifier(Modifier::BOLD),
     )];
     if focused {
-        let w = area.width.saturating_sub(10) as usize;
-        spans.extend(field_cursor_spans(&s.q, ed.cursor, w, theme));
+        spans.extend(super::field_spans(&s.q, ed.cursor, w, theme));
     } else if s.q.is_empty() {
         spans.push(Span::styled("type to search…", Style::default().fg(theme.muted)));
     } else {
-        spans.push(Span::styled(s.q.clone(), Style::default().fg(theme.fg)));
-    }
-    if !focused && s.fetching {
-        spans.push(Span::styled("   · searching…", Style::default().fg(theme.muted)));
+        spans.push(Span::styled(super::truncate(&s.q, w), Style::default().fg(theme.fg)));
     }
     let line = Rect { height: 1, ..area };
     f.render_widget(Paragraph::new(Line::from(spans)), line);
@@ -254,14 +264,6 @@ fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     let bg = theme.bg.unwrap_or(Color::Black);
     let mut lines: Vec<Line> = Vec::new();
     let search = ed.search();
-    if search.results.is_empty() {
-        let msg = if search.fetching {
-            "  searching…"
-        } else {
-            "  Press / (or just type) to search."
-        };
-        lines.push(Line::styled(msg, Style::default().fg(theme.muted)));
-    }
     for (i, c) in search.results.iter().enumerate().take(area.height as usize) {
         let selected = i == search.row && !search.editing;
         let marker = if selected { "▸ " } else { "  " };
@@ -291,14 +293,6 @@ fn cover_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     let bg = theme.bg.unwrap_or(Color::Black);
     let s = &ed.cover_search;
     let mut lines: Vec<Line> = Vec::new();
-    if ed.cover_hits.is_empty() {
-        let msg = if s.fetching {
-            "  searching…"
-        } else {
-            "  No covers — / to search by title."
-        };
-        lines.push(Line::styled(msg, Style::default().fg(theme.muted)));
-    }
     for (i, h) in ed.cover_hits.iter().enumerate().take(area.height as usize) {
         let selected = i == s.row && !s.editing;
         let marker = if selected { "▸ " } else { "  " };
@@ -358,36 +352,6 @@ fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     }
 }
 
-/// A value with a block cursor at `caret`, windowed to `valw` cells so the caret
-/// stays visible (a leading … marks scrolled-off text). No background fill — the
-/// field is distinguished by label shading, not a recessed box.
-fn field_cursor_spans(val: &str, caret: usize, valw: usize, theme: Theme) -> Vec<Span<'static>> {
-    let chars: Vec<char> = val.chars().collect();
-    let len = chars.len();
-    let caret = caret.min(len);
-    let win = valw.max(2);
-    let start = (caret + 1).saturating_sub(win);
-    let text = Style::default().fg(theme.heading).add_modifier(Modifier::BOLD);
-    let cursor = Style::default()
-        .fg(theme.bg.unwrap_or(Color::Black))
-        .bg(theme.accent)
-        .add_modifier(Modifier::BOLD);
-
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    if start > 0 {
-        spans.push(Span::styled("…", Style::default().fg(theme.muted)));
-    }
-    let end = (start + win).min(len);
-    for (idx, ch) in chars.iter().enumerate().take(end).skip(start) {
-        let st = if idx == caret { cursor } else { text };
-        spans.push(Span::styled(ch.to_string(), st));
-    }
-    if caret >= len {
-        spans.push(Span::styled(" ".to_string(), cursor)); // caret past the last char
-    }
-    spans
-}
-
 /// A labelled form row: ` ▸ Label        value ↵`. The field is distinguished by
 /// shading the **label** (bold; accent when focused, dim otherwise), not by a
 /// background box. A leading marker flags focus (▸) or an unsaved change (•);
@@ -423,7 +387,7 @@ fn form_field(
         Span::styled(format!("{label:<LABEL_W$}"), label_style),
     ];
     if editing {
-        spans.extend(field_cursor_spans(value, cursor, value_w, theme));
+        spans.extend(super::field_spans(value, cursor, value_w, theme));
     } else {
         let c = if invalid { Color::Red } else { theme.fg };
         let shown = super::truncate(value, value_w);

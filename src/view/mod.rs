@@ -111,3 +111,45 @@ pub fn truncate(s: &str, max: usize) -> String {
         t
     }
 }
+
+/// Render an editable text value windowed to `width` cells with a block cursor
+/// at `caret`, so the caret stays visible no matter how long the value is
+/// (a leading `…` marks text scrolled off the left). The single horizontal-
+/// scroll primitive shared by every inline text field — editor fields, the
+/// search bar, the rename template, and the collection name editor.
+pub fn field_spans(
+    val: &str,
+    caret: usize,
+    width: usize,
+    theme: crate::theme::Theme,
+) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::Span;
+
+    let chars: Vec<char> = val.chars().collect();
+    let len = chars.len();
+    let caret = caret.min(len);
+    let win = width.max(2);
+    // Anchor the window so the caret sits at its right edge — guarantees the
+    // caret (and the text being typed) is always on screen.
+    let start = (caret + 1).saturating_sub(win);
+    let text = Style::default().fg(theme.heading).add_modifier(Modifier::BOLD);
+    let cursor = Style::default()
+        .fg(theme.bg.unwrap_or(Color::Black))
+        .bg(theme.accent)
+        .add_modifier(Modifier::BOLD);
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if start > 0 {
+        spans.push(Span::styled("…", Style::default().fg(theme.muted)));
+    }
+    let end = (start + win).min(len);
+    for (idx, ch) in chars.iter().enumerate().take(end).skip(start) {
+        let st = if idx == caret { cursor } else { text };
+        spans.push(Span::styled(ch.to_string(), st));
+    }
+    if caret >= len {
+        spans.push(Span::styled(" ".to_string(), cursor)); // caret past the last char
+    }
+    spans
+}

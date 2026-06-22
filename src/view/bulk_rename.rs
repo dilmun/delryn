@@ -50,21 +50,14 @@ pub fn render(f: &mut Frame, app: &App) {
     ])
     .split(inner);
 
-    // Template field — flat, label-shaded, with a block cursor.
+    // Template field — flat, label-shaded, with a block cursor that scrolls
+    // horizontally so the caret stays visible for long templates.
     let mut spans = vec![Span::styled(
         " template   ",
         Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
     )];
-    let chars: Vec<char> = br.template.chars().collect();
-    let cur = br.cursor.min(chars.len());
-    let text = Style::default().fg(theme.heading).add_modifier(Modifier::BOLD);
-    let cursor = Style::default().fg(bg).bg(theme.accent).add_modifier(Modifier::BOLD);
-    spans.push(Span::styled(chars[..cur].iter().collect::<String>(), text));
-    let at = chars.get(cur).map(|c| c.to_string()).unwrap_or_else(|| " ".into());
-    spans.push(Span::styled(at, cursor));
-    if cur < chars.len() {
-        spans.push(Span::styled(chars[cur + 1..].iter().collect::<String>(), text));
-    }
+    let w = rows[0].width.saturating_sub(12) as usize; // " template   " = 12 cells
+    spans.extend(super::field_spans(&br.template, br.cursor, w, theme));
     f.render_widget(Paragraph::new(Line::from(spans)), rows[0]);
 
     f.render_widget(
