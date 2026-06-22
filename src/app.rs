@@ -338,6 +338,9 @@ pub struct MetaEdit {
 
     /// Transient one-line status (search progress, results, errors).
     pub status: Option<String>,
+    /// Which tab `status` belongs to — it's only shown there, so a Cover/Lookup
+    /// "searching…" never leaks onto Details.
+    pub status_tab: Option<EditTab>,
     /// The Details (title, author) the Lookup/Cover searches were last seeded
     /// from. When the Details change (e.g. via `x` extract or a manual edit),
     /// entering those tabs re-seeds; while unchanged, manual search edits stick.
@@ -345,6 +348,12 @@ pub struct MetaEdit {
 }
 
 impl MetaEdit {
+    /// Set the footer status and the tab it belongs to (so it shows only there).
+    fn status_on(&mut self, tab: EditTab, msg: impl Into<String>) {
+        self.status = Some(msg.into());
+        self.status_tab = Some(tab);
+    }
+
     /// The active tab's search state (Cover has its own; everything else uses
     /// the Online search).
     pub fn search(&self) -> &Search {
@@ -2452,6 +2461,7 @@ impl App {
             preview_cover: None,
             preview_url: String::new(),
             status: None,
+            status_tab: None,
             seed_from,
         });
     }
@@ -2482,6 +2492,8 @@ impl App {
         ed.online.fetching = false;
         ed.cover_hits.clear();
         ed.cover_search.fetching = false;
+        ed.status = None;
+        ed.status_tab = None;
         ed.seed_from = (title, author);
     }
 
@@ -2777,11 +2789,12 @@ impl App {
             filled.push("ISBN");
         }
         ed.row = 0;
-        ed.status = Some(if filled.is_empty() {
-            "nothing found in the book's content".into()
+        let msg = if filled.is_empty() {
+            "nothing found in the book's content".to_string()
         } else {
             format!("extracted {} — review, then ^S", filled.join(", "))
-        });
+        };
+        ed.status_on(EditTab::Details, msg);
     }
 
     /// Edit mode: type into the focused field (Details or Online query).
@@ -2953,9 +2966,9 @@ impl App {
         match ed.preview_cover.clone() {
             Some(bytes) => {
                 ed.cover = Some(bytes);
-                ed.status = Some("cover staged ✓ — ^S to save".into());
+                ed.status_on(EditTab::Cover, "cover staged ✓ — ^S to save");
             }
-            None => ed.status = Some("no cover to use here".into()),
+            None => ed.status_on(EditTab::Cover, "no cover to use here"),
         }
     }
 
@@ -3247,7 +3260,7 @@ impl App {
             s.results.clear();
             s.row = 0;
             s.q = query.clone();
-            ed.status = Some("searching…".into());
+            ed.status_on(tab, "searching…");
             (query, tab, isbn)
         };
         let (tx, rx) = std::sync::mpsc::channel();
@@ -3294,7 +3307,7 @@ impl App {
             ed.tab = EditTab::Details;
             ed.mode = EditMode::Nav;
             ed.row = 0;
-            ed.status = Some("applied — review, then ^S to save".into());
+            ed.status_on(EditTab::Details, "applied — review, then ^S to save");
             let url = c.cover_url();
             ed.cover_pending = url.is_some();
             url
@@ -3323,39 +3336,36 @@ impl App {
         };
         match msg {
             OnlineMsg::Results(cands) => {
-                ed.status = Some(if cands.is_empty() {
-                    "no matches".into()
+                let msg = if cands.is_empty() {
+                    "no matches".to_string()
                 } else {
                     format!("{} match(es) — ↑↓ to browse", cands.len())
-                });
-                // Route to whichever tab's search is in flight (only one is).
-                let s = if ed.cover_search.fetching {
-                    &mut ed.cover_search
-                } else {
-                    &mut ed.online
                 };
-                s.fetching = false;
-                s.row = 0;
-                s.results = cands;
+                ed.status_on(EditTab::Online, msg);
+                ed.online.fetching = false;
+                ed.online.row = 0;
+                ed.online.results = cands;
             }
             OnlineMsg::Covers(hits) => {
                 ed.cover_search.fetching = false;
                 ed.cover_search.row = 0;
-                ed.status = Some(if hits.is_empty() {
-                    "no covers found".into()
+                let msg = if hits.is_empty() {
+                    "no covers found".to_string()
                 } else {
                     format!("{} cover(s) — ↑↓ to browse", hits.len())
-                });
+                };
+                ed.status_on(EditTab::Cover, msg);
                 ed.cover_hits = hits;
             }
             OnlineMsg::Cover(bytes) => {
+                // The applied candidate's cover — the user is on Details now.
                 ed.cover_pending = false;
                 match bytes {
                     Some(b) => {
-                        ed.status = Some("cover fetched ✓ — ^S to save".into());
+                        ed.status_on(EditTab::Details, "cover fetched ✓ — ^S to save");
                         ed.cover = Some(b);
                     }
-                    None => ed.status = Some("no cover found".into()),
+                    None => ed.status_on(EditTab::Details, "no cover found"),
                 }
             }
             OnlineMsg::Preview(url, bytes) => {
