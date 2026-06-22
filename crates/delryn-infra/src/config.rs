@@ -289,7 +289,7 @@ impl Default for ConfigFile {
 }
 
 fn config_path() -> std::path::PathBuf {
-    crate::store::config_dir().join("config.toml")
+    crate::paths::config_dir().join("config.toml")
 }
 
 impl Config {

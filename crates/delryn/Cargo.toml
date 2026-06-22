@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 delryn-model = { workspace = true }
+delryn-infra = { workspace = true }
 anyhow.workspace = true
 arboard.workspace = true
 crossterm.workspace = true
