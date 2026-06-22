@@ -236,6 +236,7 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused
     let size = fmt_size(b.size);
     let pct = b.pct;
     let fav = b.favorite;
+    let converted = b.converted;
 
     let parts = Layout::vertical([Constraint::Min(2), Constraint::Length(13)]).split(inner);
 
@@ -284,6 +285,13 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused
         lines.push(meta_kv("ISBN", &isbn, theme));
     }
     lines.push(meta_kv("Size", &size, theme));
+    lines.push(Line::from(vec![
+        Span::styled("Source: ", Style::default().fg(theme.muted)),
+        Span::styled(
+            if converted { "Converted EPUB" } else { "Original EPUB" },
+            Style::default().fg(if converted { theme.marker } else { theme.fg }),
+        ),
+    ]));
     lines.push(meta_kv("Progress", &format!("{pct}%"), theme));
     f.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: true }).style(base(theme)),
@@ -427,6 +435,7 @@ fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused:
             Constraint::Min(10),    // title (+ series)
             Constraint::Length(20), // author
             Constraint::Length(4),  // year
+            Constraint::Length(9),  // source (Original / Converted)
             Constraint::Length(4),  // %
             Constraint::Length(7),  // size
         ]
@@ -511,11 +520,18 @@ fn header_row(app: &App, theme: Theme) -> Row<'static> {
         let line = Line::from(Span::styled(label, style));
         Cell::from(if right { line.alignment(Alignment::Right) } else { line })
     };
+    let plain = |text: &str| {
+        Cell::from(Line::from(Span::styled(
+            text.to_string(),
+            Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
+        )))
+    };
     Row::new(vec![
         Cell::from(""),
         cell(SortKey::Title, "Title", false),
         cell(SortKey::Author, "Author", false),
         cell(SortKey::Year, "Year", true),
+        plain("Source"),
         cell(SortKey::Progress, "%", true),
         cell(SortKey::Size, "Size", true),
     ])
@@ -546,10 +562,22 @@ fn book_row(b: &BookRow, compact: bool, grouped: bool, marked: bool, theme: Them
             title,
             author,
             year,
+            source_cell(b.converted, theme),
             num(format!("{}%", b.pct)),
             num(fmt_size(b.size)),
         ])
     }
+}
+
+/// The Source cell: "Original" (publisher file) vs "Converted" (repackaged, e.g.
+/// by calibre). Converted is flagged in the marker colour so it stands out.
+fn source_cell(converted: bool, theme: Theme) -> Cell<'static> {
+    let (label, color) = if converted {
+        ("Converted", theme.marker)
+    } else {
+        ("Original", theme.muted)
+    };
+    Cell::from(Span::styled(label, Style::default().fg(color)))
 }
 
 /// Title cell. Normally `Title  Series #n` (dimmed suffix); in a grouped Series

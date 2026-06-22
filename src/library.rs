@@ -99,5 +99,7 @@ fn index_book(path: &Path, store: &Store, force: bool) -> bool {
         book.identifier.as_deref().unwrap_or(""),
         book.language.as_deref().unwrap_or(""),
     );
+    // A derived file fact — always refreshed, even on a hand-edited book.
+    store.set_converted(path_str, book.converted);
     true
 }
