@@ -43,7 +43,7 @@ const CACHE_CAP: usize = 9;
 /// terminal) beyond this.
 const IMAGE_CACHE_CAP: usize = 32;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Library,
     Reader,
@@ -124,34 +124,11 @@ pub enum Focus {
     Sidebar,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingsTab {
-    General,
-    Reading,
-    Library,
-}
-
-impl SettingsTab {
-    pub fn label(self) -> &'static str {
-        match self {
-            SettingsTab::General => "General",
-            SettingsTab::Reading => "Reading",
-            SettingsTab::Library => "Library",
-        }
-    }
-
-    pub fn next(self) -> Self {
-        match self {
-            SettingsTab::General => SettingsTab::Reading,
-            SettingsTab::Reading => SettingsTab::Library,
-            SettingsTab::Library => SettingsTab::General,
-        }
-    }
-}
-
-/// Open settings popup state.
+/// Open settings popup state. Settings are scoped to the mode they were opened
+/// from — Reading settings in the reader, Library settings in the library — so
+/// the two never mix.
 pub struct Settings {
-    pub tab: SettingsTab,
+    pub scope: Mode,
     pub row: usize,
 }
 
@@ -449,6 +426,7 @@ pub enum SettingItem {
     ChapterLock,
     Mouse,
     LibLayout,
+    GridSize,
 }
 
 impl SettingItem {
@@ -471,6 +449,7 @@ impl SettingItem {
             SettingItem::ChapterLock => "Chapter lock",
             SettingItem::Mouse => "Mouse",
             SettingItem::LibLayout => "Layout",
+            SettingItem::GridSize => "Cover size",
         }
     }
 
@@ -501,6 +480,7 @@ impl SettingItem {
             SettingItem::ChapterLock => onoff(c.chapter_lock),
             SettingItem::Mouse => onoff(c.mouse_enabled),
             SettingItem::LibLayout => c.library_layout.label().to_string(),
+            SettingItem::GridSize => c.library_grid_size.label().to_string(),
         }
     }
 }
@@ -511,12 +491,14 @@ pub enum SettingRow {
     Item(SettingItem),
 }
 
-/// The grouped rows for a settings tab (section headers + items).
-pub fn settings_rows(tab: SettingsTab) -> Vec<SettingRow> {
+/// The grouped rows for a settings scope (section headers + items). Each scope
+/// is self-contained: the reader shows only reading settings, the library only
+/// library settings (global toggles like Theme/Mouse appear in both).
+pub fn settings_rows(scope: Mode) -> Vec<SettingRow> {
     use SettingItem::*;
     use SettingRow::{Item as I, Section as S};
-    match tab {
-        SettingsTab::Reading => vec![
+    match scope {
+        Mode::Reader => vec![
             S("Typography"),
             I(Theme),
             I(ViewMode),
@@ -536,15 +518,24 @@ pub fn settings_rows(tab: SettingsTab) -> Vec<SettingRow> {
             I(ImageMaxPx),
             I(CodeWrap),
             I(ChapterLock),
+            S("Input"),
+            I(Mouse),
         ],
-        SettingsTab::General => vec![S("Input"), I(Mouse)],
-        SettingsTab::Library => vec![S("View"), I(LibLayout)],
+        Mode::Library => vec![
+            S("View"),
+            I(LibLayout),
+            I(GridSize),
+            S("Appearance"),
+            I(Theme),
+            S("Input"),
+            I(Mouse),
+        ],
     }
 }
 
-/// Index of the first selectable item in a tab (skips a leading section header).
-pub fn first_setting_row(tab: SettingsTab) -> usize {
-    settings_rows(tab)
+/// Index of the first selectable item in a scope (skips a leading section header).
+pub fn first_setting_row(scope: Mode) -> usize {
+    settings_rows(scope)
         .iter()
         .position(|r| matches!(r, SettingRow::Item(_)))
         .unwrap_or(0)
@@ -3313,13 +3304,10 @@ impl App {
             return;
         }
         if key.code == KeyCode::Char(';') {
-            let tab = match self.mode {
-                Mode::Reader => SettingsTab::Reading,
-                Mode::Library => SettingsTab::Library,
-            };
+            let scope = self.mode;
             self.settings = Some(Settings {
-                tab,
-                row: first_setting_row(tab),
+                scope,
+                row: first_setting_row(scope),
             });
             return;
         }
@@ -3476,20 +3464,13 @@ impl App {
     }
 
     fn settings_key(&mut self, key: KeyEvent) {
-        let Some(s) = self.settings.as_ref() else {
+        if self.settings.is_none() {
             return;
-        };
-        let tab = s.tab;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char(';') | KeyCode::Char('q') => {
                 self.settings = None;
                 self.config.save();
-            }
-            KeyCode::Tab => {
-                if let Some(s) = self.settings.as_mut() {
-                    s.tab = tab.next();
-                    s.row = first_setting_row(s.tab);
-                }
             }
             KeyCode::Char('j') | KeyCode::Down => self.settings_move(1),
             KeyCode::Char('k') | KeyCode::Up => self.settings_move(-1),
@@ -3504,7 +3485,7 @@ impl App {
         let Some(s) = self.settings.as_ref() else {
             return;
         };
-        let rows = settings_rows(s.tab);
+        let rows = settings_rows(s.scope);
         let items: Vec<usize> = rows
             .iter()
             .enumerate()
@@ -3527,7 +3508,7 @@ impl App {
             return;
         };
         // Resolve the focused row to a setting identity.
-        let Some(SettingRow::Item(item)) = settings_rows(s.tab).into_iter().nth(s.row) else {
+        let Some(SettingRow::Item(item)) = settings_rows(s.scope).into_iter().nth(s.row) else {
             return;
         };
         let c = &mut self.config;
@@ -3574,6 +3555,13 @@ impl App {
                     c.library_layout.next()
                 } else {
                     c.library_layout.prev()
+                }
+            }
+            SettingItem::GridSize => {
+                c.library_grid_size = if delta > 0 {
+                    c.library_grid_size.next()
+                } else {
+                    c.library_grid_size.prev()
                 }
             }
         }
@@ -4562,12 +4550,10 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
 
         let mut app = App::library();
-        app.on_key(key(';')); // opens settings on the Library tab
-        app.on_key(code(KeyCode::Tab)); // General
-        app.on_key(code(KeyCode::Tab)); // Reading
-        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Reading);
+        app.on_key(key(';')); // opens settings scoped to the library
+        assert_eq!(app.settings.as_ref().unwrap().scope, Mode::Library);
 
-        let rows = settings_rows(SettingsTab::Reading);
+        let rows = settings_rows(Mode::Library);
         assert!(matches!(rows[0], SettingRow::Section(_)), "first row is a header");
         for _ in 0..25 {
             let row = app.settings.as_ref().unwrap().row;
