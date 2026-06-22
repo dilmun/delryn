@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use ratatui_image::{Resize, StatefulImage};
 
@@ -137,7 +137,7 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
         EditTab::Online | EditTab::Cover => {
             search = Some(row(0)); // search bar occupies the first body row
             let rw = if tab == EditTab::Cover {
-                body.width.saturating_sub(24) // results sit left of the preview
+                body.width.saturating_sub(38) // results sit left of the preview
             } else {
                 body.width
             };
@@ -316,39 +316,66 @@ fn render_online(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     results_list(f, rows[1], ed, theme);
 }
 
-/// Cover tab: search bar on top, results list on the left, and a big preview of
+/// Cover tab: search bar on top, results list on the left, and a wide preview of
 /// the highlighted result's cover on the right. Takes `&mut App` to render the
 /// preview image protocol.
 fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
-    let cols = Layout::horizontal([Constraint::Min(20), Constraint::Length(24)]).split(rows[1]);
+    // Wider preview column (the list keeps the rest) so the cover renders large.
+    let cols = Layout::horizontal([Constraint::Min(20), Constraint::Length(38)]).split(rows[1]);
     {
         let ed = app.meta_edit.as_ref().unwrap();
         search_bar(f, rows[0], ed, theme);
         cover_list(f, cols[0], ed, theme);
     }
-    // Preview pane (mutable: the image protocol updates on render).
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.muted))
-        .title(Span::styled("Preview", Style::default().fg(theme.muted)))
-        .style(base(theme));
-    let pinner = block.inner(cols[1]);
-    f.render_widget(block, cols[1]);
+    let pane = cols[1];
     let font = super::image_font(app);
+    let border = Style::default().fg(theme.muted);
     if let Some(cover) = app.edit_cover.as_mut() {
-        let rect = super::cover_image_rect(pinner, font, cover.dims);
-        f.render_stateful_widget(StatefulImage::default().resize(Resize::Scale(None)), rect, &mut cover.proto);
+        // Fit the cover into the pane (less a 1-cell border), then draw a rounded
+        // box that hugs exactly that image — no letterbox, no empty slack.
+        let inner_max = Rect {
+            x: pane.x + 1,
+            y: pane.y + 1,
+            width: pane.width.saturating_sub(2),
+            height: pane.height.saturating_sub(2),
+        };
+        let img = super::cover_image_rect(inner_max, font, cover.dims);
+        let frame = Rect {
+            x: img.x.saturating_sub(1),
+            y: img.y.saturating_sub(1),
+            width: img.width + 2,
+            height: img.height + 2,
+        };
+        f.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(border)
+                .style(base(theme)),
+            frame,
+        );
+        f.render_stateful_widget(
+            StatefulImage::default().resize(Resize::Scale(None)),
+            img,
+            &mut cover.proto,
+        );
     } else {
+        // No cover yet: a rounded placeholder box with a status line.
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(border)
+            .title(Span::styled("Preview", Style::default().fg(theme.muted)))
+            .style(base(theme));
+        let pinner = block.inner(pane);
+        f.render_widget(block, pane);
         let msg = if app.preview_pending() {
             "\n  loading…"
         } else {
             "\n  no cover"
         };
-        f.render_widget(
-            Paragraph::new(msg).style(Style::default().fg(theme.muted)),
-            pinner,
-        );
+        f.render_widget(Paragraph::new(msg).style(Style::default().fg(theme.muted)), pinner);
     }
 }
 
