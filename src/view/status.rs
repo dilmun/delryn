@@ -1,10 +1,10 @@
 //! The unified bottom status bar.
 //!
-//! One row, two zones: the **state** (active context / options) on the left and
-//! the **keys** (shortcut legend) on the right, dimmed so the two read as
-//! distinct. Popups and overlays no longer draw their own in-window footers —
-//! they contribute their context + shortcuts here via [`legend`], which the main
-//! render overlays on the bottom row whenever one is open.
+//! One row, two zones: the **keys** (shortcut legend) on the left, dimmed, and
+//! the **state** (active context / options) on the right, emphasised — so the
+//! two read as distinct. Popups and overlays no longer draw their own in-window
+//! footers — they contribute their context + shortcuts here via [`legend`],
+//! which the main render overlays on the bottom row whenever one is open.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -15,7 +15,7 @@ use ratatui::widgets::Paragraph;
 use crate::app::{App, EditMode, EditTab, MetaEdit};
 use crate::theme::Theme;
 
-/// Render `state` (left, emphasised) and `keys` (right, dimmed legend) into a
+/// Render `keys` (left, dimmed legend) and `state` (right, emphasised) into a
 /// one-row status bar. The shared renderer for the library bar and popup bars.
 pub fn bar(f: &mut Frame, area: Rect, theme: Theme, state: &str, keys: &str) {
     let width = area.width as usize;
@@ -24,13 +24,13 @@ pub fn bar(f: &mut Frame, area: Rect, theme: Theme, state: &str, keys: &str) {
     let pad = width.saturating_sub(state_w + keys_w + 2);
     let line = Line::from(vec![
         Span::styled(
-            format!(" {state}"),
-            Style::default().fg(theme.status_fg).add_modifier(Modifier::BOLD),
+            format!(" {keys}"),
+            Style::default().fg(theme.status_fg).add_modifier(Modifier::DIM),
         ),
         Span::raw(" ".repeat(pad + 1)),
         Span::styled(
-            format!("{keys} "),
-            Style::default().fg(theme.status_fg).add_modifier(Modifier::DIM),
+            format!("{state} "),
+            Style::default().fg(theme.status_fg).add_modifier(Modifier::BOLD),
         ),
     ]);
     f.render_widget(
@@ -53,6 +53,10 @@ pub fn overlay(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
 /// The (context label, shortcut legend) for the active overlay, if any. Highest
 /// to lowest precedence matches how `on_key` routes input.
 fn legend(app: &App) -> Option<(String, String)> {
+    // A pending yes/no confirmation is modal — it owns the bar above everything.
+    if let Some(c) = &app.pending_confirm {
+        return Some((c.question.clone(), "y/⏎ confirm · n/Esc cancel".into()));
+    }
     if app.settings.is_some() {
         return Some(("Settings".into(), "↑↓ move · ←→ change · Esc close".into()));
     }
@@ -78,8 +82,9 @@ fn legend(app: &App) -> Option<(String, String)> {
     }
     if let Some(br) = &app.bulk_rename {
         let n = br.targets.len();
+        let books = format!("book{}", if n == 1 { "" } else { "s" });
         return Some((
-            format!("Rename · {n} book{}", if n == 1 { "" } else { "s" }),
+            format!("Rename · {n} {books}"),
             "type template · ^F full screen · ^U clear · ^S rename · Esc cancel".into(),
         ));
     }
