@@ -29,6 +29,9 @@ pub struct Metadata {
     pub cover: Option<(Vec<u8>, String)>,
     /// Source file size in bytes.
     pub size: u64,
+    /// True when the EPUB looks converted/repackaged (e.g. by calibre) rather
+    /// than an original publisher file. Heuristic; see `epub::detect_converted`.
+    pub converted: bool,
 }
 
 impl Metadata {

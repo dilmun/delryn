@@ -236,6 +236,7 @@ fn extract_metadata(doc: &mut EpubDoc<BufReader<File>>, size: u64) -> Metadata {
         .find(|m| m.property == "title" && m.refinement("title-type").is_some_and(|r| r.value == "subtitle"))
         .map(|m| m.value.trim().to_string());
     let cover = doc.get_cover();
+    let converted = detect_converted(doc);
     Metadata {
         title,
         subtitle,
@@ -248,7 +249,65 @@ fn extract_metadata(doc: &mut EpubDoc<BufReader<File>>, size: u64) -> Metadata {
         publisher,
         cover,
         size,
+        converted,
     }
+}
+
+/// Heuristic: does this EPUB look converted/repackaged rather than an original
+/// publisher file? Signals (from OPF metadata): a calibre fingerprint (any
+/// `calibre:*` meta, or calibre named as the book producer), another conversion
+/// tool named in `generator`/`contributor`, or an Amazon `asin` identifier
+/// (the file was made from a Kindle edition). A clean publisher EPUB — including
+/// ones authored in InDesign/Sigil or with no generator tag — is not flagged.
+fn detect_converted(doc: &EpubDoc<BufReader<File>>) -> bool {
+    let calibre_ns = doc.metadata.iter().any(|m| m.property.starts_with("calibre:"));
+    converted_from(
+        calibre_ns,
+        doc.mdata("generator").map(|m| m.value.as_str()),
+        doc.mdata("contributor").map(|m| m.value.as_str()),
+        doc.mdata("identifier").map(|m| m.value.as_str()),
+    )
+}
+
+/// Substrings that name a format-conversion / repackaging tool.
+const CONVERTERS: [&str; 11] = [
+    "calibre",
+    "pandoc",
+    "ebook-convert",
+    "aspose",
+    "kindlegen",
+    "mobi",
+    "abbyy",
+    "able2extract",
+    "ghostscript",
+    "wkhtmltopdf",
+    "pdftoepub",
+];
+
+/// The pure decision behind [`detect_converted`], from the few OPF fields that
+/// carry a provenance signal. `calibre_ns` is whether any `calibre:*` metadata
+/// is present.
+fn converted_from(
+    calibre_ns: bool,
+    generator: Option<&str>,
+    contributor: Option<&str>,
+    identifier: Option<&str>,
+) -> bool {
+    if calibre_ns {
+        return true;
+    }
+    let names_tool = |s: Option<&str>| {
+        s.map(|v| {
+            let v = v.to_lowercase();
+            CONVERTERS.iter().any(|t| v.contains(t))
+        })
+        .unwrap_or(false)
+    };
+    if names_tool(generator) || names_tool(contributor) {
+        return true;
+    }
+    // An Amazon ASIN identifier ⇒ the EPUB was made from a Kindle edition.
+    identifier.map(|v| v.to_lowercase().contains("asin")).unwrap_or(false)
 }
 
 /// Series name + position, from either Calibre's legacy `<meta name="calibre:series">`
@@ -339,5 +398,38 @@ fn build_outline(
             locator: Some(e.label.clone()),
         });
         build_outline(&e.children, depth + 1, section, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::converted_from;
+
+    #[test]
+    fn flags_calibre_and_conversion_tools() {
+        // calibre namespace present → converted.
+        assert!(converted_from(true, None, None, None));
+        // calibre named as the book producer (contributor bkp).
+        assert!(converted_from(
+            false,
+            None,
+            Some("calibre (3.3.0) [https://calibre-ebook.com]"),
+            None
+        ));
+        // other conversion tools in the generator.
+        assert!(converted_from(false, Some("Aspose.Words for .NET"), None, None));
+        assert!(converted_from(false, Some("pandoc"), None, None));
+        // an Amazon ASIN identifier ⇒ made from a Kindle edition.
+        assert!(converted_from(false, None, None, Some("urn:asin:B0CRR19Z5D")));
+    }
+
+    #[test]
+    fn leaves_publisher_files_unflagged() {
+        // Adobe InDesign / Sigil are authoring tools, not conversions.
+        assert!(!converted_from(false, Some("Adobe InDesign 19.5.1"), None, None));
+        assert!(!converted_from(false, None, Some("Sigil 2.2.1"), None));
+        // No generator tag at all (typical academic/publisher EPUB) + a real ISBN.
+        assert!(!converted_from(false, None, None, Some("urn:isbn:978-3-031-61037-0")));
+        assert!(!converted_from(false, None, None, None));
     }
 }
