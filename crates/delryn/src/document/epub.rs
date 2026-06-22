@@ -472,7 +472,7 @@ fn title_from_html(xhtml: &str) -> Option<(String, Option<String>)> {
 /// usual clutter between the label and the number (`ISBN-13 (pbk): 978-…`).
 fn find_isbn(text: &str) -> Option<String> {
     let re = regex::Regex::new(r"(?i)ISBN.{0,30}?([0-9][0-9\- ]{8,18}[0-9Xx])").ok()?;
-    re.captures_iter(text).find_map(|c| crate::online::normalize_isbn(&c[1]))
+    re.captures_iter(text).find_map(|c| delryn_model::naming::normalize_isbn(&c[1]))
 }
 
 /// The author named in an "About the Author" section, e.g. "Shekhar Khandelwal
