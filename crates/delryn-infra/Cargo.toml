@@ -1,0 +1,10 @@
+[package]
+name = "delryn-infra"
+version.workspace = true
+edition.workspace = true
+
+# Cross-cutting plumbing: data paths, config, theme (later: tasks, cache, export).
+[dependencies]
+ratatui.workspace = true
+serde.workspace = true
+toml.workspace = true

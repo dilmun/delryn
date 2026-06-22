@@ -6,7 +6,6 @@
 
 pub mod app;
 pub mod clipboard;
-pub mod config;
 pub mod document;
 pub mod highlight;
 pub mod input;
@@ -17,8 +16,11 @@ pub mod media;
 pub mod online;
 pub mod search;
 pub mod store;
-pub mod theme;
 pub mod view;
+
+// Cross-cutting plumbing now lives in delryn-infra; re-exported so existing
+// `crate::{config, theme, paths}` paths keep resolving.
+pub use delryn_infra::{config, paths, theme};
 
 /// Serializes tests that mutate the process-global `XDG_CONFIG_HOME` (which the
 /// store reads to locate its database). Without this, the parallel test runner

@@ -2,7 +2,6 @@
 //! later). For now it holds per-book reading progress; the library index and
 //! annotations land in the same database in later phases. See `DESIGN.md` §8.
 
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -143,7 +142,7 @@ pub struct Store {
 impl Store {
     /// Open (creating if needed) the database under the config directory.
     pub fn open_default() -> Result<Store> {
-        let dir = config_dir();
+        let dir = crate::paths::config_dir();
         std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join("delryn.db"))?;
         conn.execute_batch(SCHEMA)?;
@@ -723,23 +722,6 @@ impl Store {
         }
         out
     }
-}
-
-/// The delryn config/data directory: `$XDG_CONFIG_HOME/delryn` or `~/.config/delryn`
-/// (per the project's single-dir decision), with a Windows fallback.
-pub fn config_dir() -> PathBuf {
-    if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
-        if !x.is_empty() {
-            return PathBuf::from(x).join("delryn");
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".config").join("delryn");
-    }
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        return PathBuf::from(appdata).join("delryn");
-    }
-    PathBuf::from(".delryn")
 }
 
 fn now_secs() -> i64 {
