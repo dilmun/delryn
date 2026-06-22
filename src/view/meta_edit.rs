@@ -269,7 +269,8 @@ fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
 }
 
 /// Results as a list; `cover` shows a cover availability mark, else year/series.
-fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, cover: bool) {
+/// Online tab: the metadata-candidate list (title — author, year · series).
+fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     let bg = theme.bg.unwrap_or(Color::Black);
     let mut lines: Vec<Line> = Vec::new();
     let search = ed.search();
@@ -284,16 +285,12 @@ fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, cover: b
     for (i, c) in search.results.iter().enumerate().take(area.height as usize) {
         let selected = i == search.row && !search.editing;
         let marker = if selected { "▸ " } else { "  " };
-        let tail = if cover {
-            if c.cover_url().is_some() { "  ✓" } else { "  ✗" }.to_string()
-        } else {
-            let series = match (&c.series, c.series_index) {
-                (Some(s), Some(n)) => format!("  · {s} #{n}"),
-                (Some(s), None) => format!("  · {s}"),
-                _ => String::new(),
-            };
-            format!("{}{series}", c.year.map(|y| format!(" ({y})")).unwrap_or_default())
+        let series = match (&c.series, c.series_index) {
+            (Some(s), Some(n)) => format!("  · {s} #{n}"),
+            (Some(s), None) => format!("  · {s}"),
+            _ => String::new(),
         };
+        let tail = format!("{}{series}", c.year.map(|y| format!(" ({y})")).unwrap_or_default());
         let text = format!("{} — {}{tail}", c.title, c.author_line());
         let style = if selected {
             Style::default().fg(bg).bg(theme.accent).add_modifier(Modifier::BOLD)
@@ -308,11 +305,41 @@ fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, cover: b
     f.render_widget(Paragraph::new(lines), area);
 }
 
+/// Cover tab: the source-labelled cover-candidate list (Google Books, Open
+/// Library, etc.). The highlighted row drives the live preview.
+fn cover_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
+    let bg = theme.bg.unwrap_or(Color::Black);
+    let s = &ed.cover_search;
+    let mut lines: Vec<Line> = Vec::new();
+    if ed.cover_hits.is_empty() {
+        let msg = if s.fetching {
+            "  searching…"
+        } else {
+            "  No covers — / to search by title."
+        };
+        lines.push(Line::styled(msg, Style::default().fg(theme.muted)));
+    }
+    for (i, h) in ed.cover_hits.iter().enumerate().take(area.height as usize) {
+        let selected = i == s.row && !s.editing;
+        let marker = if selected { "▸ " } else { "  " };
+        let style = if selected {
+            Style::default().fg(bg).bg(theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{}", super::truncate(&h.source, area.width.saturating_sub(3) as usize)),
+            style,
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), area);
+}
+
 /// Online tab: search bar + a results list; Enter applies the metadata.
 fn render_online(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
     search_bar(f, rows[0], ed, theme);
-    results_list(f, rows[1], ed, theme, false);
+    results_list(f, rows[1], ed, theme);
 }
 
 /// Cover tab: search bar on top, results list on the left, and a big preview of
@@ -324,7 +351,7 @@ fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     {
         let ed = app.meta_edit.as_ref().unwrap();
         search_bar(f, rows[0], ed, theme);
-        results_list(f, cols[0], ed, theme, true);
+        cover_list(f, cols[0], ed, theme);
     }
     // Preview pane (mutable: the image protocol updates on render).
     let block = Block::default()

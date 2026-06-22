@@ -61,6 +61,76 @@ pub fn search(query: &str, limit: usize) -> Vec<Candidate> {
     }
 }
 
+/// One candidate cover image from some source, for the cover picker. Carries a
+/// human label (shown in the list) and the image URL (fetched on preview).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoverHit {
+    pub source: String,
+    pub url: String,
+}
+
+/// Extract a clean ISBN-10/13 from a messy `dc:identifier` (which may be a UUID,
+/// calibre id, ASIN, or an ISBN wrapped in `isbn:` / `urn:isbn:` with hyphens).
+/// Returns `None` when it isn't a plausible ISBN.
+pub fn normalize_isbn(raw: &str) -> Option<String> {
+    if raw.to_lowercase().contains("asin") {
+        return None; // Amazon id, not an ISBN
+    }
+    let digits: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_digit() || c.eq_ignore_ascii_case(&'X'))
+        .collect();
+    match digits.len() {
+        13 if digits.starts_with("978") || digits.starts_with("979") => Some(digits),
+        10 => Some(digits.to_uppercase()),
+        _ => None,
+    }
+}
+
+/// Google Books cover-by-ISBN image (no API key, unlike the JSON API which is
+/// rate-limited anonymously). `zoom` 1 is a reliable small thumbnail; higher
+/// zooms are HD when the book has them, else a generic placeholder.
+fn gb_cover_url(isbn: &str, zoom: u8) -> String {
+    format!(
+        "https://books.google.com/books/content?vid=ISBN{isbn}&printsec=frontcover&img=1&zoom={zoom}"
+    )
+}
+
+/// Candidate covers for a book, gathered from several key-less sources. The
+/// book's own ISBN (best for technical/academic titles, which Open Library has
+/// no cover for) comes first, then covers from an Open Library title/author
+/// search. Does one network call (the OL search); the cover URLs are fetched
+/// later, on preview. Deduplicated by URL.
+pub fn cover_candidates(query: &str, isbn_raw: &str, limit: usize) -> Vec<CoverHit> {
+    let mut hits = Vec::new();
+    if let Some(isbn) = normalize_isbn(isbn_raw) {
+        hits.push(CoverHit { source: "Google Books".into(), url: gb_cover_url(&isbn, 1) });
+        hits.push(CoverHit { source: "Google Books HD".into(), url: gb_cover_url(&isbn, 3) });
+        hits.push(CoverHit {
+            source: "Open Library".into(),
+            url: format!("https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false"),
+        });
+    }
+    if !query.trim().is_empty() {
+        for c in search(query, limit) {
+            if let Some(id) = c.cover_id {
+                hits.push(CoverHit {
+                    source: format!("OL · {}", c.title),
+                    url: format!("https://covers.openlibrary.org/b/id/{id}-L.jpg?default=false"),
+                });
+            } else if let Some(isbn) = c.isbn.as_deref().and_then(normalize_isbn) {
+                hits.push(CoverHit {
+                    source: format!("GB · {}", c.title),
+                    url: gb_cover_url(&isbn, 1),
+                });
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    hits.retain(|h| seen.insert(h.url.clone()));
+    hits
+}
+
 /// Download cover image bytes. `None` on error or an implausibly small body
 /// (a stray placeholder).
 pub fn fetch_cover(url: &str) -> Option<Vec<u8>> {
@@ -195,6 +265,30 @@ mod tests {
         // Sparse doc: missing fields degrade to None/empty, no cover.
         assert_eq!(cands[1].year, None);
         assert!(cands[1].cover_url().is_none());
+    }
+
+    #[test]
+    fn normalizes_messy_identifiers() {
+        assert_eq!(normalize_isbn("isbn:9789819753338").as_deref(), Some("9789819753338"));
+        assert_eq!(normalize_isbn("urn:isbn:978-3-031-61037-0").as_deref(), Some("9783031610370"));
+        assert_eq!(normalize_isbn("9781492094524").as_deref(), Some("9781492094524"));
+        assert_eq!(normalize_isbn("0441013597").as_deref(), Some("0441013597"));
+        // Not ISBNs: a UUID, a calibre id, an ASIN.
+        assert_eq!(normalize_isbn("5cdd9eaf-3ede-43dc-9509-845585947b3d"), None);
+        assert_eq!(normalize_isbn("calibre:255"), None);
+        assert_eq!(normalize_isbn("urn:asin:B0CRR19Z5D"), None);
+    }
+
+    #[test]
+    fn isbn_yields_keyless_cover_sources() {
+        // Empty query ⇒ no network; only the ISBN-direct sources.
+        let hits = cover_candidates("", "urn:isbn:978-3-031-61037-0", 5);
+        let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
+        assert!(urls.iter().any(|u| u.contains("books.google.com") && u.contains("zoom=1")));
+        assert!(urls.iter().any(|u| u.contains("books.google.com") && u.contains("zoom=3")));
+        assert!(urls.iter().any(|u| u.contains("covers.openlibrary.org/b/isbn/9783031610370")));
+        // A non-ISBN identifier and empty query ⇒ nothing (no covers to offer).
+        assert!(cover_candidates("", "calibre:255", 5).is_empty());
     }
 
     #[test]

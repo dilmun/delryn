@@ -221,6 +221,8 @@ pub enum EditMode {
 /// A message from a background Open Library worker.
 pub enum OnlineMsg {
     Results(Vec<Candidate>),
+    /// Cover-tab candidates from the multi-source cover search.
+    Covers(Vec<online::CoverHit>),
     Cover(Option<Vec<u8>>),
     /// Cover-tab preview: (cover URL, bytes) for the highlighted result.
     Preview(String, Option<Vec<u8>>),
@@ -298,6 +300,8 @@ pub struct MetaEdit {
     pub online: Search,
     /// Cover tab search.
     pub cover_search: Search,
+    /// Cover-tab candidates (multi-source cover URLs), shown in the Cover list.
+    pub cover_hits: Vec<online::CoverHit>,
     /// A cover download is in flight.
     pub cover_pending: bool,
     /// Cover bytes to persist on save (the chosen / previewed cover).
@@ -2197,6 +2201,7 @@ impl App {
                 q,
                 ..Search::default()
             },
+            cover_hits: Vec::new(),
             cover_pending: false,
             cover: None,
             preview_cover: None,
@@ -2262,9 +2267,17 @@ impl App {
         let n = EditTab::ALL.len() as isize;
         ed.tab = EditTab::ALL[(i + delta).rem_euclid(n) as usize];
         ed.mode = EditMode::Nav;
+        let tab = ed.tab;
         // Entering the File tab refreshes the previewed name from the template.
-        if ed.tab == EditTab::File {
+        if tab == EditTab::File {
             self.recompute_rename();
+        }
+        // Entering the Cover tab runs the cover search once, so candidates appear
+        // without a manual search (uses the book's ISBN + the seeded query).
+        if tab == EditTab::Cover
+            && self.meta_edit.as_ref().is_some_and(|e| e.cover_hits.is_empty() && !e.cover_search.fetching)
+        {
+            self.online_search();
         }
     }
 
@@ -2447,7 +2460,14 @@ impl App {
     /// previewed cover on Cover).
     fn online_nav_key(&mut self, key: KeyEvent) {
         let (results, tab) = match &self.meta_edit {
-            Some(e) => (e.search().results.len(), e.tab),
+            Some(e) => {
+                let n = if e.tab == EditTab::Cover {
+                    e.cover_hits.len()
+                } else {
+                    e.search().results.len()
+                };
+                (n, e.tab)
+            }
             None => return,
         };
         let last = results.saturating_sub(1);
@@ -2839,30 +2859,42 @@ impl App {
         }
     }
 
-    /// Kick off a background Open Library search from the query bar.
+    /// Kick off a background search from the query bar: Open Library metadata on
+    /// the Online tab, or a multi-source cover search on the Cover tab (which can
+    /// run with an empty query, using just the book's ISBN).
     fn online_search(&mut self) {
-        let query = {
+        let (query, tab, isbn) = {
             let Some(ed) = self.meta_edit.as_mut() else {
                 return;
             };
-            if ed.search().q.trim().is_empty() {
+            let tab = ed.tab;
+            if ed.search().q.trim().is_empty() && tab != EditTab::Cover {
                 return;
             }
             // Cancel any other tab's in-flight search (its result is abandoned
             // when we replace online_rx below), then mark this one fetching.
             ed.online.fetching = false;
             ed.cover_search.fetching = false;
+            let isbn = ed.values.get(7).cloned().unwrap_or_default();
+            if tab == EditTab::Cover {
+                ed.cover_hits.clear();
+            }
             let s = ed.search_mut();
             s.fetching = true;
             s.results.clear();
             s.row = 0;
             let q = s.q.clone();
             ed.status = Some("searching…".into());
-            q
+            (q, tab, isbn)
         };
         let (tx, rx) = std::sync::mpsc::channel();
         thread::spawn(move || {
-            let _ = tx.send(OnlineMsg::Results(online::search(&query, ONLINE_LIMIT)));
+            let msg = if tab == EditTab::Cover {
+                OnlineMsg::Covers(online::cover_candidates(&query, &isbn, ONLINE_LIMIT))
+            } else {
+                OnlineMsg::Results(online::search(&query, ONLINE_LIMIT))
+            };
+            let _ = tx.send(msg);
         });
         self.online_rx = Some(rx);
     }
@@ -2940,6 +2972,16 @@ impl App {
                 s.row = 0;
                 s.results = cands;
             }
+            OnlineMsg::Covers(hits) => {
+                ed.cover_search.fetching = false;
+                ed.cover_search.row = 0;
+                ed.status = Some(if hits.is_empty() {
+                    "no covers found".into()
+                } else {
+                    format!("{} cover(s) — ↑↓ to browse", hits.len())
+                });
+                ed.cover_hits = hits;
+            }
             OnlineMsg::Cover(bytes) => {
                 ed.cover_pending = false;
                 match bytes {
@@ -2979,10 +3021,9 @@ impl App {
         if ed.tab != EditTab::Cover {
             return self.edit_cover_url.clone();
         }
-        ed.search()
-            .results
-            .get(ed.search().row)
-            .and_then(|c| c.cover_url())
+        ed.cover_hits
+            .get(ed.cover_search.row)
+            .map(|h| h.url.clone())
             .unwrap_or_default()
     }
 
