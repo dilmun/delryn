@@ -107,15 +107,24 @@ fn legend(app: &App) -> Option<(String, String)> {
 /// Context + shortcuts for the metadata editor, varying by tab and edit mode.
 fn editor_legend(ed: &MetaEdit) -> (String, String) {
     let state = format!("Edit · {}", ed.tab.label());
-    let keys = if ed.search().editing {
+    // The Lookup tab drives a structured seed form, with its own edit state.
+    if ed.tab == EditTab::Online {
+        let keys = if ed.lookup.editing {
+            "type · ←→ move · ^U clear · ⏎ search · Esc done"
+        } else {
+            "1-3 tab · j/k move · ⏎ edit/apply · / search · ^S save · Esc"
+        };
+        return (state, keys.to_string());
+    }
+    let keys = if ed.cover_search.editing {
         "type to search · ←→ move · ^U clear · ⏎ run · Esc done"
     } else if ed.mode == EditMode::Edit {
         "type to edit · ←→ move · ^U clear · ⏎/Esc done"
     } else {
         match ed.tab {
-            EditTab::Details => "1-3 tab · j/k move · ⏎ edit · r/R reset · ^S save · Esc",
+            EditTab::Details => "1-3 tab · j/k · ⏎ edit · x extract-from-book · r/R reset · ^S · Esc",
             EditTab::Cover => "1-3 tab · / search · j/k pick · ⏎ use cover · ^S save · Esc",
-            EditTab::Online => "1-3 tab · / search · j/k pick · ⏎ apply · ^S save · Esc",
+            EditTab::Online => "", // handled above
         }
     };
     (state, keys.to_string())
