@@ -2,6 +2,7 @@
 //! sees the `Document` model and app state. See `DESIGN.md` §2.
 
 pub mod annotations;
+pub mod bulk_rename;
 pub mod image;
 pub mod library;
 pub mod meta_edit;
@@ -81,6 +82,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     if app.shelf_picker.is_some() {
         shelf_picker::render(f, app);
+    }
+    if app.bulk_rename.is_some() {
+        bulk_rename::render(f, app);
     }
     // An open overlay shows its shortcuts on the shared bottom status row,
     // drawn last so it sits above the popup (which never reaches that row).

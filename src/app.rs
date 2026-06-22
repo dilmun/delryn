@@ -242,6 +242,31 @@ pub struct Search {
     pub fetching: bool,
 }
 
+/// One book queued for a bulk rename: its path, the metadata values used to fill
+/// the template (in [`META_FIELDS`] order), its extension, and its current name
+/// (for the preview).
+pub struct BulkTarget {
+    pub path: String,
+    pub values: Vec<String>,
+    pub ext: String,
+    pub old_name: String,
+}
+
+/// Bulk-rename popup: one editable template applied to every marked book.
+pub struct BulkRename {
+    pub template: String,
+    pub cursor: usize,
+    pub targets: Vec<BulkTarget>,
+}
+
+/// Outcome of renaming a single book file.
+enum RenameOutcome {
+    Renamed,
+    Unchanged,
+    /// Skipped, with a short reason (name empty / clashes / move failed).
+    Skipped(&'static str),
+}
+
 /// Open metadata-edit form: a tabbed, scalable editor over one book.
 pub struct MetaEdit {
     pub path: String,
@@ -1550,6 +1575,8 @@ pub struct App {
     pub note_input: Option<String>,
     /// Open metadata-edit form (library), if any.
     pub meta_edit: Option<MetaEdit>,
+    /// Open bulk-rename popup (template applied to the marked books), if any.
+    pub bulk_rename: Option<BulkRename>,
     /// Open image viewer overlay, if any.
     pub image_view: Option<ImageView>,
     /// Detected terminal image protocol (None if unsupported / headless).
@@ -1574,6 +1601,8 @@ pub struct App {
     pub lib_shelves: Vec<(String, usize)>,
     pub lib_books: Vec<BookRow>,
     pub lib_sel: usize,
+    /// Multi-selection for bulk actions, keyed by book path (stable across sort).
+    pub lib_marked: HashSet<String>,
     /// Active sort key and direction for the book list.
     pub lib_sort: SortKey,
     pub lib_sort_desc: bool,
@@ -1639,7 +1668,7 @@ fn load_cover_bytes(path: &str) -> Option<Vec<u8>> {
 /// order) and the file `ext`. Placeholders: `%T` title, `%A` author, `%Y` year,
 /// `%S` series, `%I` series index, `%P` publisher, `%E` extension; `%%` → `%`.
 /// The result is sanitized for use as a filename.
-fn fill_template(template: &str, values: &[String], ext: &str) -> String {
+pub fn fill_template(template: &str, values: &[String], ext: &str) -> String {
     let get = |i: usize| values.get(i).map(String::as_str).unwrap_or("").trim();
     let mut out = String::new();
     let mut chars = template.chars().peekable();
@@ -1790,6 +1819,7 @@ impl App {
             annot: None,
             note_input: None,
             meta_edit: None,
+            bulk_rename: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -1804,6 +1834,7 @@ impl App {
             lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
+            lib_marked: HashSet::new(),
             lib_sort: SortKey::Default,
             lib_sort_desc: false,
             lib_filter: String::new(),
@@ -1843,6 +1874,7 @@ impl App {
             annot: None,
             note_input: None,
             meta_edit: None,
+            bulk_rename: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -1857,6 +1889,7 @@ impl App {
             lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
+            lib_marked: HashSet::new(),
             lib_sort: SortKey::Default,
             lib_sort_desc: false,
             lib_filter: String::new(),
@@ -2530,54 +2563,228 @@ impl App {
         ed.rename_name = fill_template(&ed.rename_template, &ed.values, ext);
     }
 
-    /// Perform the rename: move the file, then repoint the database + cover.
-    /// Returns `true` when it's safe to proceed with saving (renamed, or the name
-    /// was unchanged); `false` on a hard error (empty / target exists / move
-    /// failed), leaving the editor open with the reason in its status line.
-    fn apply_rename(&mut self) -> bool {
-        let Some(ed) = self.meta_edit.as_ref() else {
-            return false;
-        };
-        let name = sanitize_filename(ed.rename_name.trim());
-        let old = ed.path.clone();
+    /// Move one book file to `new_name` (in its own directory), repointing the
+    /// database row and cached cover. Pure mechanism — no UI/state side effects
+    /// beyond persistence, so both the editor and bulk rename share it.
+    fn rename_book_file(&self, old: &str, new_name: &str) -> RenameOutcome {
+        let name = sanitize_filename(new_name.trim());
         if name.is_empty() {
-            if let Some(e) = self.meta_edit.as_mut() {
-                e.status = Some("name is empty".into());
-            }
-            return false;
+            return RenameOutcome::Skipped("name is empty");
         }
-        let old_path = std::path::Path::new(&old);
+        let old_path = std::path::Path::new(old);
         let new_path = match old_path.parent() {
             Some(dir) => dir.join(&name),
             None => std::path::PathBuf::from(&name),
         };
         let new = new_path.to_string_lossy().into_owned();
         if new == old {
-            return true; // nothing to rename — let the save proceed
+            return RenameOutcome::Unchanged;
         }
         if new_path.exists() {
-            if let Some(e) = self.meta_edit.as_mut() {
-                e.status = Some("a file with that name already exists".into());
-            }
-            return false;
+            return RenameOutcome::Skipped("a file with that name already exists");
         }
-        if std::fs::rename(&old, &new_path).is_err() {
-            if let Some(e) = self.meta_edit.as_mut() {
-                e.status = Some("rename failed".into());
-            }
-            return false;
+        if std::fs::rename(old, &new_path).is_err() {
+            return RenameOutcome::Skipped("rename failed");
         }
         // Repoint persistence + move the cached cover to the new key.
         if let Some(store) = &self.store {
-            store.rename_book_path(&old, &new);
+            store.rename_book_path(old, &new);
         }
-        let _ = std::fs::rename(online::cover_cache_path(&old), online::cover_cache_path(&new));
-        if let Some(e) = self.meta_edit.as_mut() {
-            e.path = new;
-            e.status = Some(format!("renamed to {name}"));
+        let _ = std::fs::rename(online::cover_cache_path(old), online::cover_cache_path(&new));
+        RenameOutcome::Renamed
+    }
+
+    /// Editor File-tab rename. Returns `true` when it's safe to proceed with
+    /// saving (renamed, or the name was unchanged); `false` on a hard error,
+    /// leaving the editor open with the reason in its status line.
+    fn apply_rename(&mut self) -> bool {
+        let (old, name) = match self.meta_edit.as_ref() {
+            Some(ed) => (ed.path.clone(), ed.rename_name.clone()),
+            None => return false,
+        };
+        match self.rename_book_file(&old, &name) {
+            RenameOutcome::Renamed => {
+                let new = std::path::Path::new(&old)
+                    .with_file_name(sanitize_filename(name.trim()))
+                    .to_string_lossy()
+                    .into_owned();
+                if let Some(e) = self.meta_edit.as_mut() {
+                    e.status = Some(format!("renamed to {}", sanitize_filename(name.trim())));
+                    e.path = new;
+                }
+                self.refresh_library();
+                true
+            }
+            RenameOutcome::Unchanged => true,
+            RenameOutcome::Skipped(reason) => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    e.status = Some(reason.into());
+                }
+                false
+            }
         }
+    }
+
+    /// Toggle the current book's membership in the multi-selection, then advance
+    /// (so Space-Space-Space selects a run, file-manager style).
+    fn toggle_mark(&mut self) {
+        if let Some(b) = self.lib_books.get(self.lib_sel) {
+            let path = b.path.clone();
+            if !self.lib_marked.remove(&path) {
+                self.lib_marked.insert(path);
+            }
+        }
+        // Advance to the next book so a run can be selected with repeated Space.
+        self.lib_move(1);
+    }
+
+    /// Mark every book in the current list.
+    fn mark_all(&mut self) {
+        for b in &self.lib_books {
+            self.lib_marked.insert(b.path.clone());
+        }
+    }
+
+    /// Favorite all marked books (or unfavorite them if all are already
+    /// favorites), then clear the selection.
+    fn bulk_favorite(&mut self) {
+        let marked: Vec<String> = self
+            .lib_books
+            .iter()
+            .filter(|b| self.lib_marked.contains(&b.path))
+            .map(|b| b.path.clone())
+            .collect();
+        if marked.is_empty() {
+            return;
+        }
+        let all_fav = self
+            .lib_books
+            .iter()
+            .filter(|b| self.lib_marked.contains(&b.path))
+            .all(|b| b.favorite);
+        let target = !all_fav;
+        if let Some(store) = &self.store {
+            for p in &marked {
+                store.set_favorite(p, target);
+            }
+        }
+        let n = marked.len();
+        self.lib_marked.clear();
         self.refresh_library();
-        true
+        self.lib_flash = Some(format!(
+            "{} {n} book{}",
+            if target { "favorited" } else { "unfavorited" },
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+
+    /// Open the bulk-rename popup over the marked books (snapshotting the data
+    /// the template needs from each).
+    fn open_bulk_rename(&mut self) {
+        let targets: Vec<BulkTarget> = self
+            .lib_books
+            .iter()
+            .filter(|b| self.lib_marked.contains(&b.path))
+            .map(|b| {
+                let ext = std::path::Path::new(&b.path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("epub")
+                    .to_string();
+                let old_name = std::path::Path::new(&b.path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                BulkTarget {
+                    path: b.path.clone(),
+                    values: vec![
+                        b.title.clone(),
+                        b.author.clone(),
+                        b.year.map(|y| y.to_string()).unwrap_or_default(),
+                        b.series.clone(),
+                        b.series_index.map(fmt_series_index).unwrap_or_default(),
+                        b.publisher.clone(),
+                    ],
+                    ext,
+                    old_name,
+                }
+            })
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        let template = DEFAULT_RENAME_TEMPLATE.to_string();
+        self.bulk_rename = Some(BulkRename {
+            cursor: template.chars().count(),
+            template,
+            targets,
+        });
+    }
+
+    /// Apply the bulk-rename template to every target, then close + report.
+    fn apply_bulk_rename(&mut self) {
+        let Some(br) = self.bulk_rename.take() else {
+            return;
+        };
+        let mut renamed = 0usize;
+        let mut skipped = 0usize;
+        for t in &br.targets {
+            let new_name = fill_template(&br.template, &t.values, &t.ext);
+            match self.rename_book_file(&t.path, &new_name) {
+                RenameOutcome::Renamed => renamed += 1,
+                RenameOutcome::Unchanged => {}
+                RenameOutcome::Skipped(_) => skipped += 1,
+            }
+        }
+        self.lib_marked.clear();
+        self.refresh_library();
+        self.lib_flash = Some(if skipped == 0 {
+            format!("renamed {renamed} book{}", if renamed == 1 { "" } else { "s" })
+        } else {
+            format!("renamed {renamed}, skipped {skipped}")
+        });
+    }
+
+    /// Bulk-rename popup keys: type to edit the template, ^S apply, Esc cancel.
+    fn bulk_rename_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => self.bulk_rename = None,
+            KeyCode::Char('s') if ctrl => self.apply_bulk_rename(),
+            KeyCode::Left => {
+                if let Some(b) = self.bulk_rename.as_mut() {
+                    b.cursor = b.cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Right => {
+                if let Some(b) = self.bulk_rename.as_mut() {
+                    b.cursor = (b.cursor + 1).min(b.template.chars().count());
+                }
+            }
+            KeyCode::Char('u') if ctrl => {
+                if let Some(b) = self.bulk_rename.as_mut() {
+                    b.template.clear();
+                    b.cursor = 0;
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(b) = self.bulk_rename.as_mut() {
+                    let cur = b.cursor;
+                    if str_delete_before(&mut b.template, cur) {
+                        b.cursor -= 1;
+                    }
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(b) = self.bulk_rename.as_mut() {
+                    let cur = b.cursor;
+                    str_insert(&mut b.template, cur, c);
+                    b.cursor += 1;
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Kick off a background Open Library search from the query bar.
@@ -2987,6 +3194,10 @@ impl App {
             self.meta_edit_key(key);
             return;
         }
+        if self.bulk_rename.is_some() {
+            self.bulk_rename_key(key);
+            return;
+        }
         if self.shelf_picker.is_some() {
             self.shelf_picker_key(key);
             return;
@@ -3300,13 +3511,18 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Esc => {
-                if self.lib_filter.is_empty() {
+                if !self.lib_marked.is_empty() {
+                    self.lib_marked.clear();
+                } else if self.lib_filter.is_empty() {
                     self.should_quit = true;
                 } else {
                     self.lib_filter.clear();
                     self.refresh_library();
                 }
             }
+            // Multi-select for bulk actions.
+            KeyCode::Char(' ') => self.toggle_mark(),
+            KeyCode::Char('A') => self.mark_all(),
             // Tab cycles focus through the visible panes.
             KeyCode::Tab => self.lib_cycle_pane(1),
             KeyCode::BackTab => self.lib_cycle_pane(-1),
@@ -3368,8 +3584,20 @@ impl App {
                 self.lib_ensure_pane_visible();
             }
             // Book actions operate on the selected book regardless of focus.
-            KeyCode::Char('f') => self.lib_favorite(),
-            KeyCode::Char('e') => self.open_meta_edit(),
+            KeyCode::Char('f') => {
+                if self.lib_marked.is_empty() {
+                    self.lib_favorite()
+                } else {
+                    self.bulk_favorite()
+                }
+            }
+            KeyCode::Char('e') => {
+                if self.lib_marked.is_empty() {
+                    self.open_meta_edit()
+                } else {
+                    self.open_bulk_rename()
+                }
+            }
             KeyCode::Char('c') => self.open_shelf_picker(),
             KeyCode::Char('x') => self.remove_from_current_shelf(),
             KeyCode::Char('v') => {
@@ -4085,6 +4313,42 @@ mod tests {
             "DB path repointed and reloaded"
         );
         assert!(app.lib_books[0].favorite, "favorite preserved across rename");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // Multi-select + bulk rename: mark all, open the popup, apply the template.
+    #[test]
+    fn bulk_rename_renames_marked_books() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_bulk_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let books = tmp.join("books");
+        std::fs::create_dir_all(&books).unwrap();
+        for (file, title) in [("a old.epub", "Alpha"), ("b old.epub", "Beta")] {
+            let p = books.join(file);
+            std::fs::write(&p, b"x").unwrap();
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book(&p.to_string_lossy(), title, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                .unwrap();
+        }
+
+        let mut app = App::library();
+        assert_eq!(app.lib_books.len(), 2);
+        app.on_key(key('A')); // mark all
+        assert_eq!(app.lib_marked.len(), 2);
+        app.on_key(key('e')); // marks present → bulk rename, not the editor
+        assert!(app.bulk_rename.is_some());
+        assert!(app.meta_edit.is_none());
+        app.on_key(ctrl('s')); // apply default "%T.%E"
+
+        assert!(books.join("Alpha.epub").exists(), "Alpha renamed");
+        assert!(books.join("Beta.epub").exists(), "Beta renamed");
+        assert!(!books.join("a old.epub").exists(), "old file gone");
+        assert!(app.bulk_rename.is_none(), "popup closed after apply");
+        assert!(app.lib_marked.is_empty(), "selection cleared after apply");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

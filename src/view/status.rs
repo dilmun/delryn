@@ -79,6 +79,12 @@ fn legend(app: &App) -> Option<(String, String)> {
     if let Some(ed) = &app.meta_edit {
         return Some(editor_legend(ed));
     }
+    if let Some(br) = &app.bulk_rename {
+        return Some((
+            format!("Bulk rename · {} books", br.targets.len()),
+            "type template · ←→ move · ^U clear · ^S rename all · Esc cancel".into(),
+        ));
+    }
     None
 }
 
