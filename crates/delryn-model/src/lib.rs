@@ -5,6 +5,7 @@
 
 pub mod content;
 pub mod metadata;
+pub mod naming;
 pub mod toc;
 
 pub use content::{Block, Inline, Section, Span};
