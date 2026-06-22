@@ -77,9 +77,10 @@ fn legend(app: &App) -> Option<(String, String)> {
         return Some(editor_legend(ed));
     }
     if let Some(br) = &app.bulk_rename {
+        let n = br.targets.len();
         return Some((
-            format!("Bulk rename · {} books", br.targets.len()),
-            "type template · ^F full screen · ^U clear · ^S rename all · Esc cancel".into(),
+            format!("Rename · {n} book{}", if n == 1 { "" } else { "s" }),
+            "type template · ^F full screen · ^U clear · ^S rename · Esc cancel".into(),
         ));
     }
     if let Some(e) = &app.lib_coll_edit {

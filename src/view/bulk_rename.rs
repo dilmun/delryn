@@ -24,10 +24,12 @@ pub fn render(f: &mut Frame, app: &App) {
     };
     f.render_widget(Clear, area);
 
+    let n = br.targets.len();
+    let books = if n == 1 { "book" } else { "books" };
     let title = if br.full {
-        format!(" Bulk rename · {} books  (^F exit full screen) ", br.targets.len())
+        format!(" Rename · {n} {books}  (^F exit full screen) ")
     } else {
-        format!(" Bulk rename · {} books ", br.targets.len())
+        format!(" Rename · {n} {books} ")
     };
     let block = Block::default()
         .borders(Borders::ALL)
