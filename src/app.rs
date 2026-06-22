@@ -179,8 +179,8 @@ impl EditTab {
         match self {
             EditTab::Details => "Details",
             EditTab::Cover => "Cover",
-            EditTab::Online => "Online",
-            EditTab::File => "File",
+            EditTab::Online => "Lookup",
+            EditTab::File => "Rename",
         }
     }
 }
@@ -2240,6 +2240,11 @@ impl App {
             }
             KeyCode::Tab => self.meta_edit_switch_tab(1),
             KeyCode::BackTab => self.meta_edit_switch_tab(-1),
+            // Jump straight to a tab by number (1–4).
+            KeyCode::Char(c @ '1'..='4') => {
+                let i = c as usize - '1' as usize;
+                self.meta_edit_goto_tab(EditTab::ALL[i]);
+            }
             _ => match tab {
                 EditTab::Details => self.details_nav_key(key),
                 EditTab::Online | EditTab::Cover => self.online_nav_key(key),
@@ -2249,14 +2254,21 @@ impl App {
     }
 
     fn meta_edit_switch_tab(&mut self, delta: isize) {
-        let Some(ed) = self.meta_edit.as_mut() else {
+        let Some(ed) = self.meta_edit.as_ref() else {
             return;
         };
         let i = EditTab::ALL.iter().position(|t| *t == ed.tab).unwrap_or(0) as isize;
         let n = EditTab::ALL.len() as isize;
-        ed.tab = EditTab::ALL[(i + delta).rem_euclid(n) as usize];
-        ed.mode = EditMode::Nav;
-        let tab = ed.tab;
+        self.meta_edit_goto_tab(EditTab::ALL[(i + delta).rem_euclid(n) as usize]);
+    }
+
+    /// Switch to `tab` (shared by Tab/Shift-Tab and the 1–4 number keys),
+    /// running the per-tab on-enter work.
+    fn meta_edit_goto_tab(&mut self, tab: EditTab) {
+        if let Some(ed) = self.meta_edit.as_mut() {
+            ed.tab = tab;
+            ed.mode = EditMode::Nav;
+        }
         // Entering the File tab refreshes the previewed name from the template.
         if tab == EditTab::File {
             self.recompute_rename();
@@ -2607,6 +2619,13 @@ impl App {
         }
         self.lib_marked = self.lib_marked_base.clone();
         self.lib_move(1);
+    }
+
+    /// Select every book in the current list (for bulk actions over the library).
+    fn lib_mark_all(&mut self) {
+        self.lib_visual = None;
+        self.lib_marked_base = self.lib_books.iter().map(|b| b.path.clone()).collect();
+        self.lib_marked = self.lib_marked_base.clone();
     }
 
     /// Leave visual mode and clear the whole selection (individual + range).
@@ -3540,9 +3559,11 @@ impl App {
                     self.refresh_library();
                 }
             }
-            // Select: Space toggles individual books; V is a vim-style range.
+            // Select: Space toggles individual books; V is a vim-style range;
+            // A selects all (e.g. to bulk-rename/sanitize the whole library).
             KeyCode::Char(' ') => self.lib_toggle_mark(),
             KeyCode::Char('V') => self.lib_toggle_visual(),
+            KeyCode::Char('A') => self.lib_mark_all(),
             // Tab cycles focus through the visible panes.
             KeyCode::Tab => self.lib_cycle_pane(1),
             KeyCode::BackTab => self.lib_cycle_pane(-1),
