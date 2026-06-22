@@ -644,6 +644,8 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         flash.clone()
     } else if visual {
         format!("VISUAL · {marked} selected")
+    } else if marked > 0 {
+        format!("{marked} selected")
     } else if app.lib_filtering || !app.lib_filter.is_empty() {
         format!("/{}", app.lib_filter)
     } else {
@@ -674,13 +676,16 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
             (read % 3600) / 60,
         )
     };
-    // Visual mode gets range + bulk keys; grid (no side panes) gets size keys.
+    // Selection (visual range or individual picks) gets bulk keys; grid (no
+    // side panes) gets size keys, else the panes get </> resize.
     let keys = if visual {
-        "j/k extend · e rename · f favorite · V/Esc cancel"
+        "j/k extend · space pick · e rename · f favorite · V/Esc cancel"
+    } else if marked > 0 {
+        "space pick · e rename · f favorite · c shelf · Esc clear"
     } else if app.is_grid() {
-        "Tab pane · hjkl move · ⏎ open · V select · e edit · c shelf · s sort · v view · +/- size · q"
+        "Tab pane · hjkl move · ⏎ open · space/V select · e edit · c shelf · s sort · v view · +/- size · q"
     } else {
-        "Tab pane · hjkl move · ⏎ open · V select · e edit · c shelf · s sort · v view · [] size · q"
+        "Tab pane · hjkl move · ⏎ open · space/V select · e edit · c shelf · s sort · v view · </> size · q"
     };
     super::status::bar(f, area, theme, &state, keys);
 }
