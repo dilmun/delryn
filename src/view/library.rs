@@ -356,26 +356,29 @@ fn section_item(label: &str, here: bool, focused: bool, theme: Theme) -> ListIte
 }
 
 fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: bool) {
+    // The "＋ New" row parks the cursor without changing the active view, so a
+    // section/collection isn't "here" while it's selected.
+    let on_new = app.lib_side_new;
     let mut items: Vec<ListItem> = LibrarySection::ALL
         .iter()
         .map(|s| {
-            let here = matches!(&app.lib_view, LibView::Section(cur) if cur == s);
+            let here = !on_new && matches!(&app.lib_view, LibView::Section(cur) if cur == s);
             section_item(s.label(), here, focused, theme)
         })
         .collect();
 
-    // User collections, below a divider, each with its book count.
-    if !app.lib_shelves.is_empty() {
-        let mut header = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
-        if let Some(bg) = theme.bg {
-            header = header.bg(bg);
-        }
-        items.push(ListItem::new(Line::from(Span::styled("  Collections", header))));
-        for (name, count) in &app.lib_shelves {
-            let here = matches!(&app.lib_view, LibView::Shelf(cur) if cur == name);
-            items.push(section_item(&format!("{name}  ({count})"), here, focused, theme));
-        }
+    // Collections, below a divider, each with its book count — always shown so
+    // "＋ New collection" is reachable even before any collection exists.
+    let mut header = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
+    if let Some(bg) = theme.bg {
+        header = header.bg(bg);
     }
+    items.push(ListItem::new(Line::from(Span::styled("  Collections", header))));
+    for (name, count) in &app.lib_shelves {
+        let here = !on_new && matches!(&app.lib_view, LibView::Shelf(cur) if cur == name);
+        items.push(section_item(&format!("{name}  ({count})"), here, focused, theme));
+    }
+    items.push(section_item("＋ New collection", on_new, focused, theme));
 
     f.render_widget(List::new(items).block(pane_block("Library", focused, theme)), area);
 }

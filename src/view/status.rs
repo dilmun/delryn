@@ -82,6 +82,14 @@ fn legend(app: &App) -> Option<(String, String)> {
             "type template · ←→ move · ^U clear · ^S rename all · Esc cancel".into(),
         ));
     }
+    if let Some(m) = &app.coll_manager {
+        let keys = if m.input.is_some() {
+            "type a name · ←→ move · ^U clear · ⏎ save · Esc cancel"
+        } else {
+            "↑↓ move · ⏎ open · n new · r rename · d delete · Esc close"
+        };
+        return Some(("Collections".into(), keys.into()));
+    }
     None
 }
 
