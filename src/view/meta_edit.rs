@@ -40,8 +40,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let title = {
         let ed = app.meta_edit.as_ref().unwrap();
         format!(
-            " Edit · {} ",
-            super::truncate(&ed.book_title, area.width.saturating_sub(12) as usize)
+            " ✎ Edit · {} ",
+            super::truncate(&ed.book_title, area.width.saturating_sub(14) as usize)
         )
     };
     let block = Block::default()
@@ -107,14 +107,14 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
         None => return,
     };
 
-    // Tab strip: " label " cells separated by a single space (see render_tabs).
+    // Tab strip: " N label " cells separated by a single space (see render_tabs).
     let mut tabs = Vec::new();
     let mut tx = tab_strip.x;
     for (i, t) in EditTab::ALL.iter().enumerate() {
         if i > 0 {
             tx += 1;
         }
-        let w = t.label().chars().count() as u16 + 2;
+        let w = t.label().chars().count() as u16 + 4; // " N label "
         tabs.push((*t, Rect { x: tx, y: tab_strip.y, width: w, height: 1 }));
         tx += w;
     }
@@ -128,9 +128,19 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
     let mut search = None;
     match tab {
         EditTab::Details => {
-            for i in 0..META_FIELDS.len() as u16 {
-                if in_body(body.y + i) {
-                    fields.push((i as usize, value_start, row(i)));
+            // Mirror render_details: a section header (+ a gap before later
+            // groups) precedes each group's fields, shifting their rows down.
+            let mut line = 0u16;
+            for (gi, (_, group)) in DETAILS_GROUPS.iter().enumerate() {
+                if gi > 0 {
+                    line += 1; // blank between groups
+                }
+                line += 1; // section header
+                for &fi in *group {
+                    if in_body(body.y + line) {
+                        fields.push((fi, value_start, row(line)));
+                    }
+                    line += 1;
                 }
             }
         }
@@ -160,41 +170,62 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
 }
 
 fn render_tabs(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Color) {
+    // Numbered pills (1–4 jump to a tab): active is an accent block, inactive
+    // shows its number in accent as a shortcut hint.
     let mut spans = Vec::new();
     for (i, t) in EditTab::ALL.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw(" "));
         }
-        let active = *t == ed.tab;
-        let style = if active {
-            Style::default().fg(bg).bg(theme.accent).add_modifier(Modifier::BOLD)
+        let num = i + 1;
+        if *t == ed.tab {
+            spans.push(Span::styled(
+                format!(" {num} {} ", t.label()),
+                Style::default().fg(bg).bg(theme.accent).add_modifier(Modifier::BOLD),
+            ));
         } else {
-            Style::default().fg(theme.muted)
-        };
-        spans.push(Span::styled(format!(" {} ", t.label()), style));
+            spans.push(Span::styled(format!(" {num} "), Style::default().fg(theme.accent)));
+            spans.push(Span::styled(format!("{} ", t.label()), Style::default().fg(theme.muted)));
+        }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
+
+/// Details fields grouped into labelled sections (the field indices keep their
+/// `META_FIELDS` order, so navigation by `ed.row` still runs top-to-bottom).
+const DETAILS_GROUPS: &[(&str, &[usize])] = &[
+    ("Book", &[0, 1, 2, 3, 4]),    // Title, Author, Year, Series, Series #
+    ("Publishing", &[5, 6, 7, 8]), // Publisher, Subtitle, ISBN, Language
+];
 
 fn render_details(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     // marker (3) + label (LABEL_W) + value + the " ↵" hint (3).
     let value_w = (area.width as usize).saturating_sub(LABEL_W + 6).max(8);
     let mut lines: Vec<Line> = Vec::new();
-    for (i, label) in META_FIELDS.iter().enumerate() {
-        let focused = i == ed.row;
-        let editing = focused && ed.mode == EditMode::Edit;
-        let value = ed.values.get(i).map(String::as_str).unwrap_or("");
-        lines.push(form_field(
-            label,
-            value,
-            focused,
-            editing,
-            ed.cursor,
-            ed.field_invalid(i),
-            ed.changed(i),
-            value_w,
-            theme,
+    for (gi, (section, fields)) in DETAILS_GROUPS.iter().enumerate() {
+        if gi > 0 {
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::styled(
+            format!(" {section}"),
+            Style::default().fg(theme.muted).add_modifier(Modifier::BOLD | Modifier::DIM),
         ));
+        for &i in *fields {
+            let focused = i == ed.row;
+            let editing = focused && ed.mode == EditMode::Edit;
+            let value = ed.values.get(i).map(String::as_str).unwrap_or("");
+            lines.push(form_field(
+                META_FIELDS[i],
+                value,
+                focused,
+                editing,
+                ed.cursor,
+                ed.field_invalid(i),
+                ed.changed(i),
+                value_w,
+                theme,
+            ));
+        }
     }
     f.render_widget(Paragraph::new(lines), area);
 }

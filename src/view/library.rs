@@ -681,11 +681,11 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let keys = if visual {
         "j/k extend · space pick · e rename · f favorite · V/Esc cancel"
     } else if marked > 0 {
-        "space pick · e rename · f favorite · c shelf · Esc clear"
+        "space/A pick · e rename · f favorite · c shelf · Esc clear"
     } else if app.is_grid() {
-        "Tab pane · hjkl move · ⏎ open · space/V select · e edit · c shelf · s sort · v view · +/- size · q"
+        "Tab pane · hjkl move · ⏎ open · space/V/A select · e edit · c shelf · s sort · v view · +/- size · q"
     } else {
-        "Tab pane · hjkl move · ⏎ open · space/V select · e edit · c shelf · s sort · v view · </> size · q"
+        "Tab pane · hjkl move · ⏎ open · space/V/A select · e edit · c shelf · s sort · v view · </> size · q"
     };
     super::status::bar(f, area, theme, &state, keys);
 }
