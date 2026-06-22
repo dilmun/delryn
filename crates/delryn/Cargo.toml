@@ -1,0 +1,25 @@
+[package]
+name = "delryn"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+arboard.workspace = true
+crossterm.workspace = true
+ego-tree.workspace = true
+epub.workspace = true
+html2text.workspace = true
+image.workspace = true
+lru.workspace = true
+ratatui.workspace = true
+ratatui-image.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+scraper.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+syntect.workspace = true
+toml.workspace = true
+ureq.workspace = true
+zip.workspace = true
