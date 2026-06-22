@@ -147,6 +147,8 @@ pub const META_FIELDS: [&str; 9] = [
 const F_YEAR: usize = 2;
 /// Field index of the Series-position field (validated as a float).
 const F_INDEX: usize = 4;
+/// Field index of the Subtitle field.
+const F_SUBTITLE: usize = 6;
 
 /// Most online matches to fetch (a short list to pick from).
 pub const ONLINE_LIMIT: usize = 5;
@@ -1794,6 +1796,23 @@ pub fn filename_title(title: &str, subtitle: &str) -> String {
     title.to_string()
 }
 
+/// Does a title look like an opaque ID rather than a real title — a bare number
+/// ("503392068") or a UUID-ish hex/dash string? Such "titles" are useless for
+/// display and search, so the filename is a better source.
+pub fn looks_like_id(title: &str) -> bool {
+    let t = title.trim();
+    if t.is_empty() {
+        return true;
+    }
+    // All digits (ignoring spaces).
+    if t.chars().all(|c| c.is_ascii_digit() || c.is_whitespace()) {
+        return true;
+    }
+    // UUID-ish: only hex digits and dashes, with a dash and a long hex run.
+    let hex = t.chars().filter(|c| c.is_ascii_hexdigit()).count();
+    t.chars().all(|c| c.is_ascii_hexdigit() || c == '-') && t.contains('-') && hex >= 8
+}
+
 /// Reduce a raw title (from metadata *or* a filename) to a clean main title for
 /// searching: cut at the first subtitle/edition divider, turn underscores/dots
 /// into spaces, and collapse whitespace. Dividers are colons, semicolons,
@@ -2351,9 +2370,11 @@ impl App {
             .trim();
         let db_title = b.title.trim();
         let epub_title = original.first().map(String::as_str).unwrap_or("").trim();
-        let base = if !db_title.is_empty() && db_title != stem {
+        // An ID-like "title" (a bare number / UUID) is worse than the filename,
+        // which for these converted files usually carries the real title.
+        let base = if !db_title.is_empty() && db_title != stem && !looks_like_id(db_title) {
             db_title
-        } else if !epub_title.is_empty() {
+        } else if !epub_title.is_empty() && !looks_like_id(epub_title) {
             epub_title
         } else {
             stem
@@ -3089,6 +3110,9 @@ impl App {
             };
             ed.values[0] = c.title.clone();
             ed.values[1] = c.author_line();
+            if let Some(sub) = &c.subtitle {
+                ed.values[F_SUBTITLE] = sub.clone();
+            }
             if let Some(y) = c.year {
                 ed.values[2] = y.to_string();
             }
@@ -5255,6 +5279,42 @@ mod tests {
         assert_eq!(main_title("C++ Primer"), "C++ Primer"); // not split on +
         assert_eq!(main_title("Well-Grounded Rubyist"), "Well-Grounded Rubyist"); // bare - kept
         assert_eq!(main_title("503392068"), "503392068");
+        // ID-like titles are recognised as junk.
+        assert!(looks_like_id("503392068"));
+        assert!(looks_like_id("3a2629db-9413-44cf-a547-0b7791b3d987"));
+        assert!(looks_like_id("  "));
+        assert!(!looks_like_id("Deep Learning"));
+        assert!(!looks_like_id("Catch-22"));
+    }
+
+    // A numeric/ID metadata title falls back to the (real) filename for the
+    // Lookup seed, so these converted books become searchable.
+    #[test]
+    fn lookup_seed_falls_back_to_filename_for_id_titles() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_idseed_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let books = tmp.join("books");
+        std::fs::create_dir_all(&books).unwrap();
+        let file = books.join("Building Chatbots with Python.epub");
+        std::fs::write(&file, b"x").unwrap();
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book(&file.to_string_lossy(), "503392068", "Unknown", None, 1, 1, 1, "", None, "", "", "", "")
+                .unwrap();
+        }
+
+        let mut app = App::library();
+        app.on_key(key('e'));
+        for _ in 0..2 {
+            app.on_key(code(KeyCode::Tab)); // → Lookup
+        }
+        let ed = app.meta_edit.as_ref().unwrap();
+        assert_eq!(ed.lookup.name, "Building Chatbots with Python");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
 }
