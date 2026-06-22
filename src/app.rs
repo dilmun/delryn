@@ -208,6 +208,60 @@ pub struct Search {
     pub fetching: bool,
 }
 
+/// Number of editable seed fields on the Lookup tab (Title, Author, Year).
+pub const LOOKUP_FIELDS: usize = 3;
+
+/// The Lookup (Online) tab's structured search form: editable Title/Author/Year
+/// fields from which a read-only query is composed, plus the combined keyboard
+/// focus that flows from the fields into the results list. Seeded from the book's
+/// metadata with a filename fallback (see [`App::open_meta_edit`]).
+#[derive(Default)]
+pub struct LookupForm {
+    pub name: String,
+    pub author: String,
+    pub year: String,
+    /// Combined focus: 0=Title, 1=Author, 2=Year, then `LOOKUP_FIELDS + i` for
+    /// result row `i`.
+    pub focus: usize,
+    /// Editing the focused field (vs. browsing fields/results).
+    pub editing: bool,
+    /// Caret within the field being edited.
+    pub cursor: usize,
+}
+
+impl LookupForm {
+    /// The composed, read-only query — `name author year`, space-collapsed.
+    pub fn query(&self) -> String {
+        [self.name.trim(), self.author.trim(), self.year.trim()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Read a seed field by index (clamped to the last field).
+    pub fn field(&self, i: usize) -> &str {
+        match i {
+            0 => &self.name,
+            1 => &self.author,
+            _ => &self.year,
+        }
+    }
+
+    fn field_mut(&mut self, i: usize) -> &mut String {
+        match i {
+            0 => &mut self.name,
+            1 => &mut self.author,
+            _ => &mut self.year,
+        }
+    }
+
+    /// Char length of the currently focused seed field.
+    fn focused_len(&self) -> usize {
+        self.field(self.focus.min(LOOKUP_FIELDS - 1)).chars().count()
+    }
+}
+
 /// One book queued for a bulk rename: its path, the metadata values used to fill
 /// the template (in [`META_FIELDS`] order), its extension, and its current name
 /// (for the preview).
@@ -255,7 +309,9 @@ pub struct MetaEdit {
     pub cursor: usize,
 
     // Online / Cover tabs — independent search state per tab --------------
-    /// Online (metadata) tab search.
+    /// Lookup (Online) tab: structured Title/Author/Year seed form.
+    pub lookup: LookupForm,
+    /// Online (metadata) tab search results (the query comes from `lookup`).
     pub online: Search,
     /// Cover tab search.
     pub cover_search: Search,
@@ -299,16 +355,18 @@ impl MetaEdit {
     /// Char length of whichever field is currently being typed into.
     fn cur_field_len(&self) -> usize {
         match self.tab {
-            EditTab::Online | EditTab::Cover => self.search().q.chars().count(),
-            _ => self.field_len(),
+            EditTab::Cover => self.cover_search.q.chars().count(),
+            EditTab::Online => self.lookup.focused_len(),
+            EditTab::Details => self.field_len(),
         }
     }
 
-    /// The string currently being typed into (a Details field or the search query).
+    /// The string currently being typed into (a Details field or the cover query).
     fn edit_target(&mut self) -> Option<&mut String> {
         match self.tab {
             EditTab::Details => self.values.get_mut(self.row),
-            EditTab::Online | EditTab::Cover => Some(&mut self.search_mut().q),
+            EditTab::Cover => Some(&mut self.cover_search.q),
+            EditTab::Online => Some(self.lookup.field_mut(self.lookup.focus.min(LOOKUP_FIELDS - 1))),
         }
     }
 
@@ -1728,6 +1786,31 @@ pub fn filename_title(title: &str, subtitle: &str) -> String {
     title.to_string()
 }
 
+/// Reduce a bare filename stem to a search-friendly title guess: keep the text
+/// before the first common naming separator (`-`, `:`, `;`, `_`-runs, brackets…),
+/// turn underscores/dots into spaces, and collapse whitespace. Used only when a
+/// book has no real title metadata, so a filename never poisons a metadata search.
+pub fn clean_filename_query(stem: &str) -> String {
+    const SEPS: &[char] =
+        &['-', '–', '—', ':', ';', '/', '\\', '|', '~', '(', '[', '{', ',', '+'];
+    let head = stem.split(|c| SEPS.contains(&c)).next().unwrap_or(stem);
+    let spaced: String = head.chars().map(|c| if c == '_' || c == '.' { ' ' } else { c }).collect();
+    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The first author from a possibly multi-author string — a single author is far
+/// cleaner for a metadata search than the full byline. Splits on the usual
+/// separators (`,`, `;`, ` and `, ` & `) and keeps the first name.
+pub fn first_author(authors: &str) -> String {
+    let mut a = authors.trim();
+    for sep in [",", ";", " and ", " & "] {
+        if let Some((first, _)) = a.split_once(sep) {
+            a = first.trim();
+        }
+    }
+    a.to_string()
+}
+
 /// If `title` ends with `<sep><subtitle>` (the subtitle matched case-insensitively),
 /// return its leading main-title part, trimmed; else `None`.
 fn strip_trailing(title: &str, sep: &str, subtitle: &str) -> Option<String> {
@@ -2217,7 +2300,6 @@ impl App {
         };
         let path = b.path.clone();
         let book_title = b.title.clone();
-        let q = format!("{} {}", b.title, b.author).trim().to_string();
         let values = vec![
             b.title.clone(),
             b.author.clone(),
@@ -2233,6 +2315,34 @@ impl App {
         let original = epub::read_metadata(&path)
             .map(|(m, _)| meta_fields_from(&m))
             .unwrap_or_else(|_| vec![String::new(); META_FIELDS.len()]);
+
+        // Seed the Lookup form, worst-input-last so a filename never drives the
+        // search when real metadata exists. Name: the DB title if it's a real
+        // title (not just the filename stem), else the EPUB's declared title,
+        // else a cleaned-up filename. Author: just the first author.
+        let stem = std::path::Path::new(&path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .trim();
+        let db_title = b.title.trim();
+        let epub_title = original.first().map(String::as_str).unwrap_or("").trim();
+        let name = if !db_title.is_empty() && db_title != stem {
+            db_title.to_string()
+        } else if !epub_title.is_empty() {
+            epub_title.to_string()
+        } else {
+            clean_filename_query(stem)
+        };
+        let lookup = LookupForm {
+            name,
+            author: first_author(&b.author),
+            year: b.year.map(|y| y.to_string()).unwrap_or_default(),
+            ..LookupForm::default()
+        };
+        // The Cover tab still searches with a free-text bar, seeded from the
+        // book's title + author.
+        let cover_q = format!("{} {}", b.title, b.author).trim().to_string();
         let cursor = values[0].chars().count();
         self.meta_edit = Some(MetaEdit {
             path,
@@ -2243,12 +2353,10 @@ impl App {
             original,
             row: 0,
             cursor,
-            online: Search {
-                q: q.clone(),
-                ..Search::default()
-            },
+            lookup,
+            online: Search::default(),
             cover_search: Search {
-                q,
+                q: cover_q,
                 ..Search::default()
             },
             cover_hits: Vec::new(),
@@ -2265,14 +2373,17 @@ impl App {
             Some(e) => (e.mode, e.tab),
             None => return,
         };
-        // Editing the search bar (Online/Cover tabs).
-        let editing_query = matches!(tab, EditTab::Online | EditTab::Cover)
-            && self.meta_edit.as_ref().is_some_and(|e| e.search().editing);
-        if editing_query {
+        // Lookup tab: editing one of its seed fields takes all keystrokes.
+        if tab == EditTab::Online && self.meta_edit.as_ref().is_some_and(|e| e.lookup.editing) {
+            self.lookup_edit_key(key);
+            return;
+        }
+        // Cover tab: editing the free-text search bar.
+        if tab == EditTab::Cover && self.meta_edit.as_ref().is_some_and(|e| e.cover_search.editing) {
             self.online_query_key(key);
             return;
         }
-        // Edit mode: keystrokes go into the focused field.
+        // Details edit mode: keystrokes go into the focused field.
         if mode == EditMode::Edit {
             self.meta_edit_typing(key);
             return;
@@ -2298,7 +2409,8 @@ impl App {
             }
             _ => match tab {
                 EditTab::Details => self.details_nav_key(key),
-                EditTab::Online | EditTab::Cover => self.online_nav_key(key),
+                EditTab::Online => self.lookup_nav_key(key),
+                EditTab::Cover => self.online_nav_key(key),
             },
         }
     }
@@ -2325,6 +2437,117 @@ impl App {
             && self.meta_edit.as_ref().is_some_and(|e| e.cover_hits.is_empty() && !e.cover_search.fetching)
         {
             self.online_search();
+        }
+        // Likewise the Lookup tab auto-searches once from its seeded fields.
+        if tab == EditTab::Online
+            && self.meta_edit.as_ref().is_some_and(|e| e.online.results.is_empty() && !e.online.fetching)
+        {
+            self.online_search();
+        }
+    }
+
+    /// Lookup tab, navigate mode: `j/k` flow through the three seed fields and
+    /// then the results; Enter edits a field or applies a result; `/` re-runs the
+    /// search; typing on a field starts editing it.
+    fn lookup_nav_key(&mut self, key: KeyEvent) {
+        let (focus, results) = match &self.meta_edit {
+            Some(e) => (e.lookup.focus, e.online.results.len()),
+            None => return,
+        };
+        let max_focus = LOOKUP_FIELDS - 1 + results; // last field, or last result
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.lookup_set_focus(focus.saturating_sub(1)),
+            KeyCode::Down | KeyCode::Char('j') => self.lookup_set_focus((focus + 1).min(max_focus)),
+            // Re-run the search from the current fields.
+            KeyCode::Char('/') => self.online_search(),
+            KeyCode::Enter => {
+                if focus < LOOKUP_FIELDS {
+                    self.lookup_begin_edit(None);
+                } else {
+                    self.apply_candidate(focus - LOOKUP_FIELDS);
+                }
+            }
+            // Typing on a field starts editing it (seeded with the first char).
+            KeyCode::Char(c) if !ctrl && focus < LOOKUP_FIELDS => self.lookup_begin_edit(Some(c)),
+            _ => {}
+        }
+    }
+
+    /// Move the Lookup focus and keep the results' selected row in sync.
+    fn lookup_set_focus(&mut self, focus: usize) {
+        if let Some(e) = self.meta_edit.as_mut() {
+            e.lookup.focus = focus;
+            e.online.row = focus.saturating_sub(LOOKUP_FIELDS);
+        }
+    }
+
+    /// Enter edit mode on the focused seed field, optionally appending a first char.
+    fn lookup_begin_edit(&mut self, first: Option<char>) {
+        let Some(e) = self.meta_edit.as_mut() else {
+            return;
+        };
+        if e.lookup.focus >= LOOKUP_FIELDS {
+            return;
+        }
+        e.lookup.editing = true;
+        if let Some(c) = first {
+            let i = e.lookup.focus;
+            let cur = e.lookup.field(i).chars().count();
+            str_insert(e.lookup.field_mut(i), cur, c);
+        }
+        e.lookup.cursor = e.lookup.focused_len();
+    }
+
+    /// Lookup field editing: type into the focused field; Enter runs the search,
+    /// Esc just leaves edit mode.
+    fn lookup_edit_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    e.lookup.editing = false;
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    e.lookup.editing = false;
+                }
+                self.online_search();
+            }
+            KeyCode::Left => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    e.lookup.cursor = e.lookup.cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Right => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    e.lookup.cursor = (e.lookup.cursor + 1).min(e.lookup.focused_len());
+                }
+            }
+            KeyCode::Char('u') if ctrl => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    let i = e.lookup.focus.min(LOOKUP_FIELDS - 1);
+                    e.lookup.field_mut(i).clear();
+                    e.lookup.cursor = 0;
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    let (i, cur) = (e.lookup.focus.min(LOOKUP_FIELDS - 1), e.lookup.cursor);
+                    if str_delete_before(e.lookup.field_mut(i), cur) {
+                        e.lookup.cursor -= 1;
+                    }
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    let (i, cur) = (e.lookup.focus.min(LOOKUP_FIELDS - 1), e.lookup.cursor);
+                    str_insert(e.lookup.field_mut(i), cur, c);
+                    e.lookup.cursor += 1;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2794,7 +3017,14 @@ impl App {
                 return;
             };
             let tab = ed.tab;
-            if ed.search().q.trim().is_empty() && tab != EditTab::Cover {
+            // The Lookup query is composed from its seed fields; the Cover tab
+            // uses its free-text bar (and may run with an empty query via ISBN).
+            let query = if tab == EditTab::Cover {
+                ed.cover_search.q.clone()
+            } else {
+                ed.lookup.query()
+            };
+            if query.trim().is_empty() && tab != EditTab::Cover {
                 return;
             }
             // Cancel any other tab's in-flight search (its result is abandoned
@@ -2809,9 +3039,9 @@ impl App {
             s.fetching = true;
             s.results.clear();
             s.row = 0;
-            let q = s.q.clone();
+            s.q = query.clone();
             ed.status = Some("searching…".into());
-            (q, tab, isbn)
+            (query, tab, isbn)
         };
         let (tx, rx) = std::sync::mpsc::channel();
         thread::spawn(move || {
@@ -4202,12 +4432,21 @@ impl App {
         }
         if let Some(&(idx, vstart, _)) = self.mouse.edit_fields.iter().find(|(_, _, r)| r.contains(pt)) {
             if let Some(e) = self.meta_edit.as_mut() {
-                if e.tab == EditTab::Details {
-                    e.row = idx;
+                match e.tab {
+                    EditTab::Online => {
+                        // A Lookup seed field: focus + edit it, caret at the click.
+                        e.lookup.focus = idx.min(LOOKUP_FIELDS - 1);
+                        e.lookup.editing = true;
+                        let len = e.lookup.focused_len();
+                        e.lookup.cursor = (col.saturating_sub(vstart) as usize).min(len);
+                    }
+                    _ => {
+                        e.row = idx;
+                        e.mode = EditMode::Edit;
+                        let len = e.cur_field_len();
+                        e.cursor = (col.saturating_sub(vstart) as usize).min(len);
+                    }
                 }
-                e.mode = EditMode::Edit;
-                let len = e.cur_field_len();
-                e.cursor = (col.saturating_sub(vstart) as usize).min(len);
             }
             return;
         }
@@ -4218,7 +4457,14 @@ impl App {
             .find(|(_, r)| r.contains(pt))
             .map(|&(idx, _)| idx);
         if let (Some(idx), Some(e)) = (hit, self.meta_edit.as_mut()) {
-            e.search_mut().row = idx;
+            if e.tab == EditTab::Online {
+                // Move the combined focus onto the clicked result row.
+                e.lookup.editing = false;
+                e.lookup.focus = LOOKUP_FIELDS + idx;
+                e.online.row = idx;
+            } else {
+                e.search_mut().row = idx;
+            }
         }
     }
 
@@ -4868,9 +5114,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    // Online/Cover tab: typing opens the search bar and appends; / reopens it.
+    // Lookup tab: seed fields are pre-filled, j/k moves focus, typing edits the
+    // focused field, and the read-only query is composed from them.
     #[test]
-    fn online_search_bar_typing() {
+    fn lookup_form_seeds_and_edits() {
         let _env = crate::test_env_guard();
         let tmp = std::env::temp_dir().join(format!("delryn_srch_{}", std::process::id()));
         // SAFETY: serialized by `_env`; scopes the config dir to this process.
@@ -4878,40 +5125,49 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book("/k.epub", "K", "Auth", Some(2010), 1, 1, 1, "", None, "", "", "", "")
                 .unwrap();
         }
 
         let mut app = App::library();
         app.on_key(key('e'));
-        // Details → Cover → Online.
+        // Details → Cover → Lookup.
         for _ in 0..2 {
             app.on_key(code(KeyCode::Tab));
         }
-        assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Online);
+        let ed = app.meta_edit.as_ref().unwrap();
+        assert_eq!(ed.tab, EditTab::Online);
+        // Seeded from metadata: name=title, author=first author, year.
+        assert_eq!(ed.lookup.name, "K");
+        assert_eq!(ed.lookup.author, "Auth");
+        assert_eq!(ed.lookup.year, "2010");
+        assert_eq!(ed.lookup.query(), "K Auth 2010");
+        assert_eq!(ed.lookup.focus, 0); // Title focused
 
-        // Typing a letter opens the query (clearing the prefill) and appends.
-        app.on_key(key('z'));
+        // Typing edits the focused field (Title), entering edit mode.
+        app.on_key(key('!'));
         let ed = app.meta_edit.as_ref().unwrap();
-        assert!(ed.search().editing);
-        assert_eq!(ed.search().q, "z");
-        app.on_key(key('x'));
-        assert_eq!(app.meta_edit.as_ref().unwrap().search().q, "zx");
-        // Esc stops editing; / reopens without clearing.
+        assert!(ed.lookup.editing);
+        assert_eq!(ed.lookup.name, "K!");
         app.on_key(code(KeyCode::Esc));
-        assert!(!app.meta_edit.as_ref().unwrap().search().editing);
-        app.on_key(key('/'));
+        assert!(!app.meta_edit.as_ref().unwrap().lookup.editing);
+
+        // j moves focus to Author; editing it changes only that field.
+        app.on_key(key('j'));
+        assert_eq!(app.meta_edit.as_ref().unwrap().lookup.focus, 1);
+        app.on_key(code(KeyCode::Enter)); // edit Author
+        app.on_key(key('x'));
         let ed = app.meta_edit.as_ref().unwrap();
-        assert!(ed.search().editing);
-        assert_eq!(ed.search().q, "zx");
+        assert_eq!(ed.lookup.author, "Authx");
+        assert_eq!(ed.lookup.query(), "K! Authx 2010");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    // The Cover and Online tabs keep independent search queries (#4): typing in
-    // one must not change the other.
+    // The Cover free-text query and the Lookup seed fields are independent (#4):
+    // typing in one must not change the other.
     #[test]
-    fn cover_and_online_queries_are_independent() {
+    fn cover_and_lookup_queries_are_independent() {
         let _env = crate::test_env_guard();
         let tmp = std::env::temp_dir().join(format!("delryn_q2_{}", std::process::id()));
         // SAFETY: serialized by `_env`; scopes the config dir to this process.
@@ -4932,21 +5188,35 @@ mod tests {
         app.on_key(key('b'));
         app.on_key(code(KeyCode::Esc)); // leave the cover query
         assert_eq!(app.meta_edit.as_ref().unwrap().cover_search.q, "ab");
-        let online_prefill = app.meta_edit.as_ref().unwrap().online.q.clone();
 
-        // Cover → Online: the online query is untouched.
+        // Cover → Lookup: the seeded Title field is untouched, not in edit mode.
         app.on_key(code(KeyCode::Tab));
-        assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Online);
-        assert_eq!(app.meta_edit.as_ref().unwrap().online.q, online_prefill);
-        assert!(!app.meta_edit.as_ref().unwrap().online.editing);
+        let ed = app.meta_edit.as_ref().unwrap();
+        assert_eq!(ed.tab, EditTab::Online);
+        assert_eq!(ed.lookup.name, "K");
+        assert!(!ed.lookup.editing);
 
-        // Typing here changes only the online query; cover keeps "ab".
+        // Typing here edits the Title field; the cover query keeps "ab".
         app.on_key(key('c'));
         let ed = app.meta_edit.as_ref().unwrap();
-        assert_eq!(ed.online.q, "c");
+        assert_eq!(ed.lookup.name, "Kc");
         assert_eq!(ed.cover_search.q, "ab");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn lookup_seed_helpers() {
+        // First author only, across the usual separators.
+        assert_eq!(first_author("A. Author, B. Other; C"), "A. Author");
+        assert_eq!(first_author("Jane Doe and John Roe"), "Jane Doe");
+        assert_eq!(first_author("Solo Writer"), "Solo Writer");
+        // Filename cleanup: keep text before the first naming separator, spaces
+        // for underscores/dots, collapse whitespace.
+        assert_eq!(clean_filename_query("Some Book - Author - 2020"), "Some Book");
+        assert_eq!(clean_filename_query("some_book_title.v2"), "some book title v2");
+        assert_eq!(clean_filename_query("Title (1st ed)"), "Title");
+        assert_eq!(clean_filename_query("503392068"), "503392068");
     }
 
 }
