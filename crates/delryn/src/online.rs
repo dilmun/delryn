@@ -70,23 +70,8 @@ pub struct CoverHit {
     pub url: String,
 }
 
-/// Extract a clean ISBN-10/13 from a messy `dc:identifier` (which may be a UUID,
-/// calibre id, ASIN, or an ISBN wrapped in `isbn:` / `urn:isbn:` with hyphens).
-/// Returns `None` when it isn't a plausible ISBN.
-pub fn normalize_isbn(raw: &str) -> Option<String> {
-    if raw.to_lowercase().contains("asin") {
-        return None; // Amazon id, not an ISBN
-    }
-    let digits: String = raw
-        .chars()
-        .filter(|c| c.is_ascii_digit() || c.eq_ignore_ascii_case(&'X'))
-        .collect();
-    match digits.len() {
-        13 if digits.starts_with("978") || digits.starts_with("979") => Some(digits),
-        10 => Some(digits.to_uppercase()),
-        _ => None,
-    }
-}
+// ISBN normalization is a pure heuristic shared with the format/extract layers.
+pub use delryn_model::naming::normalize_isbn;
 
 /// Google Books cover-by-ISBN image (no API key, unlike the JSON API which is
 /// rate-limited anonymously). `zoom` 1 is a reliable small thumbnail; higher
@@ -270,18 +255,6 @@ mod tests {
         // Sparse doc: missing fields degrade to None/empty, no cover.
         assert_eq!(cands[1].year, None);
         assert!(cands[1].cover_url().is_none());
-    }
-
-    #[test]
-    fn normalizes_messy_identifiers() {
-        assert_eq!(normalize_isbn("isbn:9789819753338").as_deref(), Some("9789819753338"));
-        assert_eq!(normalize_isbn("urn:isbn:978-3-031-61037-0").as_deref(), Some("9783031610370"));
-        assert_eq!(normalize_isbn("9781492094524").as_deref(), Some("9781492094524"));
-        assert_eq!(normalize_isbn("0441013597").as_deref(), Some("0441013597"));
-        // Not ISBNs: a UUID, a calibre id, an ASIN.
-        assert_eq!(normalize_isbn("5cdd9eaf-3ede-43dc-9509-845585947b3d"), None);
-        assert_eq!(normalize_isbn("calibre:255"), None);
-        assert_eq!(normalize_isbn("urn:asin:B0CRR19Z5D"), None);
     }
 
     #[test]
