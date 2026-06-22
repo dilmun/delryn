@@ -907,6 +907,7 @@ dependencies = [
  "epub",
  "delryn-infra",
  "delryn-model",
+ "delryn-online",
  "delryn-store",
  "html2text",
  "image",
@@ -915,11 +916,7 @@ dependencies = [
  "ratatui-image",
  "regex",
  "scraper",
- "serde",
- "serde_json",
  "syntect",
- "toml",
- "ureq",
  "zip",
 ]
 
@@ -935,6 +932,17 @@ dependencies = [
 [[package]]
 name = "delryn-model"
 version = "0.1.0"
+
+[[package]]
+name = "delryn-online"
+version = "0.1.0"
+dependencies = [
+ "delryn-infra",
+ "delryn-model",
+ "serde",
+ "serde_json",
+ "ureq",
+]
 
 [[package]]
 name = "delryn-store"

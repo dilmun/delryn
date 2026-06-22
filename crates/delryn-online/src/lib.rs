@@ -130,7 +130,7 @@ pub fn fetch_cover(url: &str) -> Option<Vec<u8>> {
 pub fn cover_cache_path(book_path: &str) -> PathBuf {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     book_path.hash(&mut h);
-    crate::paths::config_dir()
+    delryn_infra::paths::config_dir()
         .join("covers")
         .join(format!("{:016x}.jpg", h.finish()))
 }
