@@ -115,19 +115,20 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
     let end = ((top_row + rows_screen) * cols).min(len);
 
     // Snapshot the visible cells (ends the immutable borrow before building).
-    let visible: Vec<(usize, String, String, bool)> = (start..end)
+    let visible: Vec<(usize, String, String, bool, bool)> = (start..end)
         .map(|i| {
             let b = &app.lib_books[i];
-            (i, b.path.clone(), b.title.clone(), b.favorite)
+            let marked = app.lib_marked.contains(&b.path);
+            (i, b.path.clone(), b.title.clone(), b.favorite, marked)
         })
         .collect();
-    let paths: Vec<String> = visible.iter().map(|(_, p, _, _)| p.clone()).collect();
+    let paths: Vec<String> = visible.iter().map(|(_, p, _, _, _)| p.clone()).collect();
 
     app.lib_grid_cols = cols;
     app.ensure_grid_covers(&paths, GRID_BUILD_PER_FRAME);
     let font = super::image_font(app);
 
-    for (i, path, title, fav) in &visible {
+    for (i, path, title, fav, marked) in &visible {
         let pos = i - start;
         let (r, c) = ((pos / cols) as u16, (pos % cols) as u16);
         let x = x0 + c * cell_w;
@@ -136,9 +137,15 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
         let label = Rect { x, y: y + cover_h, width: cover_w, height: LABEL_H };
         let selected = *i == sel;
 
-        // Card frame — rounded, accent border when selected, else quiet. The
-        // file format sits as a tag in the top-left of the border (─PDF─, ─EPUB─).
-        let border = if selected { theme.accent } else { theme.muted };
+        // Card frame — rounded; accent border for the cursor, marker colour for a
+        // multi-select mark, else quiet. The file format sits in the top-left.
+        let border = if selected {
+            theme.accent
+        } else if *marked {
+            theme.marker
+        } else {
+            theme.muted
+        };
         let ext = std::path::Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
@@ -185,10 +192,14 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
         } else {
             Style::default().fg(theme.fg)
         };
+        let check = if *marked { "✓ " } else { "" };
         let star = if *fav { "★ " } else { "" };
         f.render_widget(
-            Paragraph::new(super::truncate(&format!("{star}{title}"), cover_w as usize))
-                .style(style),
+            Paragraph::new(super::truncate(
+                &format!("{check}{star}{title}"),
+                cover_w as usize,
+            ))
+            .style(style),
             label,
         );
     }
@@ -392,7 +403,8 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: boo
         if i == sel {
             sel_row = rows.len();
         }
-        rows.push(book_row(b, compact, grouped, theme));
+        let marked = app.lib_marked.contains(&b.path);
+        rows.push(book_row(b, compact, grouped, marked, theme));
     }
 
     let widths: Vec<Constraint> = if compact {
@@ -474,8 +486,11 @@ fn header_row(app: &App, theme: Theme) -> Row<'static> {
 
 /// A book row: rich (all columns) or compact (star · title · %). In `grouped`
 /// (Series) view the title is indented under its header and prefixed with #idx.
-fn book_row(b: &BookRow, compact: bool, grouped: bool, theme: Theme) -> Row<'static> {
-    let star = if b.favorite {
+fn book_row(b: &BookRow, compact: bool, grouped: bool, marked: bool, theme: Theme) -> Row<'static> {
+    // The 1-cell lead column shows a multi-select check, else the favorite star.
+    let star = if marked {
+        Cell::from(Span::styled("✓", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)))
+    } else if b.favorite {
         Cell::from(Span::styled("★", Style::default().fg(theme.marker)))
     } else {
         Cell::from(" ")
@@ -522,8 +537,11 @@ fn title_cell(b: &BookRow, grouped: bool, theme: Theme) -> Cell<'static> {
 }
 
 fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
+    let marked = app.lib_marked.len();
     let state = if let Some(flash) = &app.lib_flash {
         flash.clone()
+    } else if marked > 0 {
+        format!("{marked} selected")
     } else if app.lib_filtering || !app.lib_filter.is_empty() {
         format!("/{}", app.lib_filter)
     } else {
@@ -554,11 +572,13 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
             (read % 3600) / 60,
         )
     };
-    // Grid has no side panes / resize; it gets cover-size keys instead.
-    let keys = if app.is_grid() {
-        "Tab pane · hjkl move · ⏎ open · e edit · c shelf · s sort · v view · +/- size · q"
+    // Selection mode gets bulk keys; grid (no side panes) gets cover-size keys.
+    let keys = if marked > 0 {
+        "space select · A all · e rename · f favorite · Esc clear"
+    } else if app.is_grid() {
+        "Tab pane · hjkl move · ⏎ open · space select · e edit · c shelf · s sort · v view · +/- size · q"
     } else {
-        "Tab pane · hjkl move · ⏎ open · e edit · c shelf · s sort · v view · b/d panes · [] size · q"
+        "Tab pane · hjkl move · ⏎ open · space select · e edit · c shelf · s sort · v view · [] size · q"
     };
     super::status::bar(f, area, theme, &state, keys);
 }
