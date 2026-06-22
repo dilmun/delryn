@@ -905,6 +905,7 @@ dependencies = [
  "crossterm",
  "ego-tree",
  "epub",
+ "delryn-model",
  "html2text",
  "image",
  "lru",
@@ -920,6 +921,10 @@ dependencies = [
  "ureq",
  "zip",
 ]
+
+[[package]]
+name = "delryn-model"
+version = "0.1.0"
 
 [[package]]
 name = "form_urlencoded"
