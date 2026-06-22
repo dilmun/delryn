@@ -338,6 +338,10 @@ pub struct MetaEdit {
 
     /// Transient one-line status (search progress, results, errors).
     pub status: Option<String>,
+    /// The Details (title, author) the Lookup/Cover searches were last seeded
+    /// from. When the Details change (e.g. via `x` extract or a manual edit),
+    /// entering those tabs re-seeds; while unchanged, manual search edits stick.
+    pub seed_from: (String, String),
 }
 
 impl MetaEdit {
@@ -2423,6 +2427,9 @@ impl App {
         let cover_q =
             format!("{name} {author}").split_whitespace().collect::<Vec<_>>().join(" ");
         let lookup = LookupForm { name, author, ..LookupForm::default() };
+        // Snapshot the Details the searches were seeded from (the raw values, so a
+        // later change — extract or manual edit — is detected on tab entry).
+        let seed_from = (values[0].clone(), values.get(1).cloned().unwrap_or_default());
         let cursor = values[0].chars().count();
         self.meta_edit = Some(MetaEdit {
             path,
@@ -2445,7 +2452,37 @@ impl App {
             preview_cover: None,
             preview_url: String::new(),
             status: None,
+            seed_from,
         });
+    }
+
+    /// Re-seed the Lookup and Cover searches from the *current* Details title and
+    /// author when they've changed since the last seed (e.g. after `x` extract or
+    /// a manual edit). A no-op when unchanged, so manual search edits are kept.
+    fn reseed_search_from_details(&mut self) {
+        let Some(ed) = self.meta_edit.as_mut() else {
+            return;
+        };
+        let title = ed.values.first().cloned().unwrap_or_default();
+        let author = ed.values.get(1).cloned().unwrap_or_default();
+        if ed.seed_from == (title.clone(), author.clone()) {
+            return;
+        }
+        let name = main_title(&title);
+        let author1 = first_author(&author);
+        ed.cover_search.q =
+            format!("{name} {author1}").split_whitespace().collect::<Vec<_>>().join(" ");
+        ed.lookup.name = name;
+        ed.lookup.author = author1;
+        ed.lookup.focus = 0;
+        ed.lookup.editing = false;
+        // Drop stale results so the tab re-searches the new seed on entry.
+        ed.online.results.clear();
+        ed.online.row = 0;
+        ed.online.fetching = false;
+        ed.cover_hits.clear();
+        ed.cover_search.fetching = false;
+        ed.seed_from = (title, author);
     }
 
     /// Begin editing a multi-selection one book at a time: open the editor on the
@@ -2547,6 +2584,10 @@ impl App {
         if let Some(ed) = self.meta_edit.as_mut() {
             ed.tab = tab;
             ed.mode = EditMode::Nav;
+        }
+        // Entering a search tab picks up any Details changes (e.g. after `x`).
+        if matches!(tab, EditTab::Online | EditTab::Cover) {
+            self.reseed_search_from_details();
         }
         // Entering the Cover tab runs the cover search once, so candidates appear
         // without a manual search (uses the book's ISBN + the seeded query).
@@ -5450,6 +5491,38 @@ mod tests {
         assert_eq!(ed.lookup.name, "Building Chatbots with Python");
         assert_eq!(ed.lookup.author, "");
         assert_eq!(ed.cover_search.q, "Building Chatbots with Python");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // The Lookup/Cover searches re-seed from the current Details title/author
+    // when those change (e.g. after `x` extract), not the stale open-time seed.
+    #[test]
+    fn search_reseeds_from_edited_details() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_reseed_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book("/k.epub", "503392068", "Unknown", None, 1, 1, 1, "", None, "", "", "", "")
+                .unwrap();
+        }
+
+        let mut app = App::library();
+        app.on_key(key('e'));
+        // Simulate `x` filling the Details with real values.
+        {
+            let ed = app.meta_edit.as_mut().unwrap();
+            ed.values[0] = "Building Chatbots with Python".into();
+            ed.values[1] = "Sumit Raj".into();
+        }
+        app.on_key(key('2')); // → Cover: re-seeds from the new Details
+        let ed = app.meta_edit.as_ref().unwrap();
+        assert_eq!(ed.cover_search.q, "Building Chatbots with Python Sumit Raj");
+        assert_eq!(ed.lookup.name, "Building Chatbots with Python");
+        assert_eq!(ed.lookup.author, "Sumit Raj");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
