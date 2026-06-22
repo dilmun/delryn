@@ -2566,13 +2566,20 @@ impl App {
         ));
     }
 
-    /// Open the bulk-rename popup over the marked books (snapshotting the data
-    /// the template needs from each).
+    /// Open the rename popup over the marked books, or — when nothing is marked —
+    /// the current book. Snapshots the data the template needs from each.
     fn open_bulk_rename(&mut self) {
+        let current = self.lib_books.get(self.lib_sel).map(|b| b.path.clone());
         let targets: Vec<BulkTarget> = self
             .lib_books
             .iter()
-            .filter(|b| self.lib_marked.contains(&b.path))
+            .filter(|b| {
+                if self.lib_marked.is_empty() {
+                    Some(&b.path) == current.as_ref()
+                } else {
+                    self.lib_marked.contains(&b.path)
+                }
+            })
             .map(|b| {
                 let ext = std::path::Path::new(&b.path)
                     .extension()
@@ -3526,15 +3533,10 @@ impl App {
                     self.bulk_favorite()
                 }
             }
-            KeyCode::Char('e') => {
-                if self.lib_marked.is_empty() {
-                    self.open_meta_edit()
-                } else {
-                    self.open_bulk_rename()
-                }
-            }
+            KeyCode::Char('e') => self.open_meta_edit(),
             KeyCode::Char('c') => self.open_shelf_picker(),
-            // Rename the focused collection in place (sidebar, on a collection).
+            // `r` renames: the focused collection in place (sidebar), else the
+            // selected book(s) — the current one when nothing is marked.
             KeyCode::Char('r')
                 if pane == LibPane::Sidebar
                     && !self.lib_side_new
@@ -3542,6 +3544,7 @@ impl App {
             {
                 self.lib_coll_begin_rename()
             }
+            KeyCode::Char('r') => self.open_bulk_rename(),
             KeyCode::Char('x') => self.remove_from_current_shelf(),
             KeyCode::Char('v') => {
                 self.config.library_layout = self.config.library_layout.next();
@@ -4412,9 +4415,8 @@ mod tests {
 
         let mut app = App::library();
         assert_eq!(app.lib_books.len(), 1);
-        // Select the book and bulk-rename it (the per-book Rename tab is gone).
-        app.on_key(key(' ')); // select
-        app.on_key(key('e')); // bulk rename popup (default "%T.%E")
+        // `r` renames the current book (no need to mark it) via the popup.
+        app.on_key(key('r')); // rename popup (default "%T.%E")
         assert!(app.bulk_rename.is_some());
         app.on_key(ctrl('s')); // apply
 
@@ -4454,7 +4456,7 @@ mod tests {
         app.on_key(key('V')); // visual select from book 0
         app.on_key(key('j')); // extend to book 1
         assert_eq!(app.lib_marked.len(), 2);
-        app.on_key(key('e')); // marks present → bulk rename, not the editor
+        app.on_key(key('r')); // rename the selection (not the editor)
         assert!(app.bulk_rename.is_some());
         assert!(app.meta_edit.is_none());
         app.on_key(ctrl('s')); // apply default "%T.%E"
