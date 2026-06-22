@@ -1619,9 +1619,12 @@ pub struct App {
     pub lib_shelves: Vec<(String, usize)>,
     pub lib_books: Vec<BookRow>,
     pub lib_sel: usize,
-    /// Multi-selection for bulk actions, keyed by book path (stable across sort).
-    /// Populated by the vim-style visual mode below.
+    /// Effective multi-selection for bulk actions, keyed by book path. The union
+    /// of the individually-toggled `lib_marked_base` and the live visual range.
     pub lib_marked: HashSet<String>,
+    /// Books toggled individually with Space (non-contiguous), kept separate so a
+    /// live visual range can be layered on top without clobbering them.
+    pub lib_marked_base: HashSet<String>,
     /// Visual-select anchor (book index) while in visual mode; `None` otherwise.
     /// The selection is the contiguous range between the anchor and `lib_sel`.
     pub lib_visual: Option<usize>,
@@ -1861,6 +1864,7 @@ impl App {
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_marked: HashSet::new(),
+            lib_marked_base: HashSet::new(),
             lib_visual: None,
             lib_side_new: false,
             lib_sort: SortKey::Default,
@@ -1920,6 +1924,7 @@ impl App {
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_marked: HashSet::new(),
+            lib_marked_base: HashSet::new(),
             lib_visual: None,
             lib_side_new: false,
             lib_sort: SortKey::Default,
@@ -2574,38 +2579,57 @@ impl App {
         }
     }
 
-    /// Toggle vim-style visual select: enter with the anchor at the cursor, or
-    /// exit and clear the selection.
+    /// Toggle vim-style visual (range) select. Entering anchors at the cursor;
+    /// exiting commits the live range into the individual selection so it sticks.
     fn lib_toggle_visual(&mut self) {
         if self.lib_visual.is_some() {
-            self.lib_exit_visual();
+            self.lib_marked_base = self.lib_marked.clone(); // commit the range
+            self.lib_visual = None;
         } else {
             self.lib_visual = Some(self.lib_sel);
             self.lib_visual_sync();
         }
     }
 
-    /// Leave visual mode and clear the selection.
+    /// Toggle the current book in the individual (Space) selection, then advance
+    /// — so non-contiguous picks build up, file-manager style. Finalises any live
+    /// visual range first.
+    fn lib_toggle_mark(&mut self) {
+        if self.lib_visual.is_some() {
+            self.lib_marked_base = self.lib_marked.clone();
+            self.lib_visual = None;
+        }
+        if let Some(b) = self.lib_books.get(self.lib_sel) {
+            let path = b.path.clone();
+            if !self.lib_marked_base.remove(&path) {
+                self.lib_marked_base.insert(path);
+            }
+        }
+        self.lib_marked = self.lib_marked_base.clone();
+        self.lib_move(1);
+    }
+
+    /// Leave visual mode and clear the whole selection (individual + range).
     fn lib_exit_visual(&mut self) {
         self.lib_visual = None;
         self.lib_marked.clear();
+        self.lib_marked_base.clear();
     }
 
-    /// Recompute the marked set as the contiguous range between the visual anchor
-    /// and the cursor. A no-op outside visual mode; called after cursor movement.
+    /// Recompute the effective selection: the individual picks plus, in visual
+    /// mode, the contiguous range between the anchor and the cursor. Called after
+    /// cursor movement.
     fn lib_visual_sync(&mut self) {
         let Some(anchor) = self.lib_visual else {
             return;
         };
-        if self.lib_books.is_empty() {
-            self.lib_marked.clear();
-            return;
+        let mut sel = self.lib_marked_base.clone();
+        if !self.lib_books.is_empty() {
+            let last = self.lib_books.len() - 1;
+            let (lo, hi) = (anchor.min(self.lib_sel).min(last), anchor.max(self.lib_sel).min(last));
+            sel.extend(self.lib_books[lo..=hi].iter().map(|b| b.path.clone()));
         }
-        let last = self.lib_books.len() - 1;
-        let a = anchor.min(last);
-        let s = self.lib_sel.min(last);
-        let (lo, hi) = (a.min(s), a.max(s));
-        self.lib_marked = self.lib_books[lo..=hi].iter().map(|b| b.path.clone()).collect();
+        self.lib_marked = sel;
     }
 
     /// Favorite all marked books (or unfavorite them if all are already
@@ -3507,7 +3531,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Esc => {
-                if self.lib_visual.is_some() {
+                if self.lib_visual.is_some() || !self.lib_marked.is_empty() {
                     self.lib_exit_visual();
                 } else if self.lib_filter.is_empty() {
                     self.should_quit = true;
@@ -3516,7 +3540,8 @@ impl App {
                     self.refresh_library();
                 }
             }
-            // Vim-style visual select: V starts/stops; movement extends the range.
+            // Select: Space toggles individual books; V is a vim-style range.
+            KeyCode::Char(' ') => self.lib_toggle_mark(),
             KeyCode::Char('V') => self.lib_toggle_visual(),
             // Tab cycles focus through the visible panes.
             KeyCode::Tab => self.lib_cycle_pane(1),
@@ -3572,9 +3597,9 @@ impl App {
                 }
                 _ => self.lib_sel = self.lib_books.len().saturating_sub(1),
             },
-            // Resize the focused side pane; show/hide the sidebar / detail pane.
-            KeyCode::Char('[') => self.lib_resize(-2),
-            KeyCode::Char(']') => self.lib_resize(2),
+            // Resize the focused side pane (Shift+</>); show/hide sidebar/detail.
+            KeyCode::Char('<') => self.lib_resize(-2),
+            KeyCode::Char('>') => self.lib_resize(2),
             KeyCode::Char('b') => {
                 self.lib_show_sidebar = !self.lib_show_sidebar;
                 self.lib_ensure_pane_visible();
@@ -4299,12 +4324,12 @@ mod tests {
         app.on_key(key('h'));
         assert_eq!(app.lib_pane, LibPane::Sidebar);
         let w0 = app.lib_sidebar_w;
-        app.on_key(key(']'));
+        app.on_key(key('>'));
         assert_eq!(app.lib_sidebar_w, w0 + 2);
-        app.on_key(key('['));
+        app.on_key(key('<'));
         assert_eq!(app.lib_sidebar_w, w0);
         for _ in 0..40 {
-            app.on_key(key('['));
+            app.on_key(key('<'));
         }
         assert_eq!(app.lib_sidebar_w, SIDEBAR_W_MIN, "clamped at the minimum");
 
@@ -4618,6 +4643,34 @@ mod tests {
         app.on_key(ctrl('u'));
         app.on_key(code(KeyCode::Enter));
         assert!(names(&app).is_empty());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // Space toggles individual (non-contiguous) books into the selection.
+    #[test]
+    fn space_selects_individual_books() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_space_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for (p, t) in [("/a.epub", "A"), ("/b.epub", "B"), ("/c.epub", "C")] {
+                store
+                    .upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                    .unwrap();
+            }
+        }
+
+        let mut app = App::library();
+        app.on_key(key(' ')); // pick A, advance to B
+        app.on_key(code(KeyCode::Down)); // skip B → C
+        app.on_key(key(' ')); // pick C
+        assert!(app.lib_marked.contains("/a.epub"));
+        assert!(app.lib_marked.contains("/c.epub"));
+        assert!(!app.lib_marked.contains("/b.epub"), "B was skipped — non-contiguous");
+        assert!(app.lib_visual.is_none(), "Space doesn't enter visual mode");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
