@@ -164,16 +164,14 @@ pub const DEFAULT_RENAME_TEMPLATE: &str = "%T.%E";
 pub enum EditTab {
     Details,
     Cover,
-    Collections,
     Online,
     File,
 }
 
 impl EditTab {
-    pub const ALL: [EditTab; 5] = [
+    pub const ALL: [EditTab; 4] = [
         EditTab::Details,
         EditTab::Cover,
-        EditTab::Collections,
         EditTab::Online,
         EditTab::File,
     ];
@@ -181,7 +179,6 @@ impl EditTab {
         match self {
             EditTab::Details => "Details",
             EditTab::Cover => "Cover",
-            EditTab::Collections => "Collections",
             EditTab::Online => "Online",
             EditTab::File => "File",
         }
@@ -265,13 +262,6 @@ pub struct MetaEdit {
     /// Cursor position (char index) within the field being edited.
     pub cursor: usize,
 
-    // Collections tab -----------------------------------------------------
-    /// (collection name, whether this book is a member).
-    pub shelves: Vec<(String, bool)>,
-    pub shelf_sel: usize,
-    /// Buffer while typing a new collection name (`None` otherwise).
-    pub new_shelf: Option<String>,
-
     // Online / Cover tabs — independent search state per tab --------------
     /// Online (metadata) tab search.
     pub online: Search,
@@ -346,7 +336,6 @@ impl MetaEdit {
                 FILE_NAME => Some(&mut self.rename_name),
                 _ => None,
             },
-            EditTab::Collections => None,
         }
     }
 
@@ -376,21 +365,16 @@ impl MetaEdit {
     pub fn has_invalid(&self) -> bool {
         (0..self.values.len()).any(|i| self.field_invalid(i))
     }
-
-    /// The "new collection" row index (one past the existing collections).
-    pub fn new_shelf_row(&self) -> usize {
-        self.shelves.len()
-    }
 }
 
 /// Add-to-collection picker: toggle the focused book's membership in existing
 /// collections, or type a new collection name. The last row is "new".
 pub struct ShelfPicker {
-    /// Book being filed.
-    pub path: String,
-    /// Title, for the popup header.
+    /// Books being filed — one (the current book) or many (a multi-selection).
+    pub targets: Vec<String>,
+    /// Title, for the popup header ("Title" or "N books").
     pub title: String,
-    /// (collection name, whether the book is currently on it).
+    /// (collection name, whether *all* targets are currently on it).
     pub shelves: Vec<(String, bool)>,
     /// Focused row; `shelves.len()` selects the "＋ New collection" row.
     pub sel: usize,
@@ -403,6 +387,15 @@ impl ShelfPicker {
     pub fn new_row(&self) -> usize {
         self.shelves.len()
     }
+}
+
+/// Inline collection editing in the sidebar: typing a name to create a new
+/// collection, or renaming an existing one (clearing the name deletes it).
+pub struct CollInput {
+    pub buf: String,
+    pub cursor: usize,
+    /// `Some(old)` while renaming that collection; `None` while creating one.
+    pub rename_from: Option<String>,
 }
 
 /// One adjustable setting (identity, not position — so section headers can be
@@ -1600,6 +1593,8 @@ pub struct App {
     pub meta_edit: Option<MetaEdit>,
     /// Open bulk-rename popup (template applied to the marked books), if any.
     pub bulk_rename: Option<BulkRename>,
+    /// Inline sidebar collection editor (create / rename), if active.
+    pub lib_coll_edit: Option<CollInput>,
     /// Open image viewer overlay, if any.
     pub image_view: Option<ImageView>,
     /// Detected terminal image protocol (None if unsupported / headless).
@@ -1630,6 +1625,8 @@ pub struct App {
     /// Visual-select anchor (book index) while in visual mode; `None` otherwise.
     /// The selection is the contiguous range between the anchor and `lib_sel`.
     pub lib_visual: Option<usize>,
+    /// Sidebar cursor parked on the trailing "＋ New collection" row.
+    pub lib_side_new: bool,
     /// Active sort key and direction for the book list.
     pub lib_sort: SortKey,
     pub lib_sort_desc: bool,
@@ -1848,6 +1845,7 @@ impl App {
             note_input: None,
             meta_edit: None,
             bulk_rename: None,
+            lib_coll_edit: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -1864,6 +1862,7 @@ impl App {
             lib_sel: 0,
             lib_marked: HashSet::new(),
             lib_visual: None,
+            lib_side_new: false,
             lib_sort: SortKey::Default,
             lib_sort_desc: false,
             lib_filter: String::new(),
@@ -1905,6 +1904,7 @@ impl App {
             note_input: None,
             meta_edit: None,
             bulk_rename: None,
+            lib_coll_edit: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -1921,6 +1921,7 @@ impl App {
             lib_sel: 0,
             lib_marked: HashSet::new(),
             lib_visual: None,
+            lib_side_new: false,
             lib_sort: SortKey::Default,
             lib_sort_desc: false,
             lib_filter: String::new(),
@@ -2132,17 +2133,19 @@ impl App {
     }
 
     /// (collection name, is-member) pairs for a book, sorted by name.
-    fn shelf_membership(&self, path: &str) -> Vec<(String, bool)> {
+    /// Each collection paired with whether *every* target book is on it (so the
+    /// picker's tick means "all selected are members"). Works for one or many.
+    fn shelf_membership(&self, targets: &[String]) -> Vec<(String, bool)> {
         let Some(store) = &self.store else {
             return Vec::new();
         };
-        let on: HashSet<String> = store.shelves_for(path).into_iter().collect();
         store
             .all_shelves()
             .into_iter()
             .map(|(name, _)| {
-                let member = on.contains(&name);
-                (name, member)
+                let all = !targets.is_empty()
+                    && targets.iter().all(|p| store.shelves_for(p).iter().any(|s| s == &name));
+                (name, all)
             })
             .collect()
     }
@@ -2171,7 +2174,6 @@ impl App {
             .map(|(m, _)| meta_fields_from(&m))
             .unwrap_or_else(|_| vec![String::new(); META_FIELDS.len()]);
         let cursor = values[0].chars().count();
-        let shelves = self.shelf_membership(&path);
         self.meta_edit = Some(MetaEdit {
             path,
             book_title,
@@ -2181,9 +2183,6 @@ impl App {
             original,
             row: 0,
             cursor,
-            shelves,
-            shelf_sel: 0,
-            new_shelf: None,
             online: Search {
                 q: q.clone(),
                 ..Search::default()
@@ -2206,15 +2205,10 @@ impl App {
     }
 
     fn meta_edit_key(&mut self, key: KeyEvent) {
-        let (mode, tab, typing_shelf) = match &self.meta_edit {
-            Some(e) => (e.mode, e.tab, e.new_shelf.is_some()),
+        let (mode, tab) = match &self.meta_edit {
+            Some(e) => (e.mode, e.tab),
             None => return,
         };
-        // Typing a new collection name takes precedence.
-        if tab == EditTab::Collections && typing_shelf {
-            self.meta_edit_new_shelf(key);
-            return;
-        }
         // Editing the search bar (Online/Cover tabs).
         let editing_query = matches!(tab, EditTab::Online | EditTab::Cover)
             && self.meta_edit.as_ref().is_some_and(|e| e.search().editing);
@@ -2243,7 +2237,6 @@ impl App {
             KeyCode::BackTab => self.meta_edit_switch_tab(-1),
             _ => match tab {
                 EditTab::Details => self.details_nav_key(key),
-                EditTab::Collections => self.collections_nav_key(key),
                 EditTab::Online | EditTab::Cover => self.online_nav_key(key),
                 EditTab::File => self.file_nav_key(key),
             },
@@ -2352,99 +2345,6 @@ impl App {
         }
     }
 
-    /// Collections tab, navigate mode: move the cursor, toggle membership, or
-    /// start typing a new collection.
-    fn collections_nav_key(&mut self, key: KeyEvent) {
-        let new_row = match &self.meta_edit {
-            Some(e) => e.new_shelf_row(),
-            None => return,
-        };
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.shelf_sel = e.shelf_sel.saturating_sub(1);
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.shelf_sel = (e.shelf_sel + 1).min(new_row);
-                }
-            }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                let sel = match &self.meta_edit {
-                    Some(e) => e.shelf_sel,
-                    None => return,
-                };
-                if sel == new_row {
-                    if let Some(e) = self.meta_edit.as_mut() {
-                        e.new_shelf = Some(String::new());
-                    }
-                } else {
-                    self.toggle_editor_shelf(sel);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Toggle the book's membership in collection `sel`, in place (live to store).
-    fn toggle_editor_shelf(&mut self, sel: usize) {
-        let Some(ed) = self.meta_edit.as_mut() else {
-            return;
-        };
-        let Some((name, member)) = ed.shelves.get_mut(sel) else {
-            return;
-        };
-        if let Some(store) = &self.store {
-            if *member {
-                store.remove_from_shelf(&ed.path, name);
-            } else {
-                store.add_to_shelf(&ed.path, name);
-            }
-        }
-        *member = !*member;
-    }
-
-    /// Collections tab: typing/confirming a new collection name.
-    fn meta_edit_new_shelf(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.new_shelf = None;
-                }
-            }
-            KeyCode::Backspace => {
-                if let Some(b) = self.meta_edit.as_mut().and_then(|e| e.new_shelf.as_mut()) {
-                    b.pop();
-                }
-            }
-            KeyCode::Char(c) => {
-                if let Some(b) = self.meta_edit.as_mut().and_then(|e| e.new_shelf.as_mut()) {
-                    b.push(c);
-                }
-            }
-            KeyCode::Enter => {
-                let (name, path) = match &self.meta_edit {
-                    Some(e) => (
-                        e.new_shelf.clone().unwrap_or_default().trim().to_string(),
-                        e.path.clone(),
-                    ),
-                    None => return,
-                };
-                if !name.is_empty() {
-                    if let Some(store) = &self.store {
-                        store.add_to_shelf(&path, &name);
-                    }
-                }
-                let shelves = self.shelf_membership(&path);
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.shelves = shelves;
-                    e.new_shelf = None;
-                }
-            }
-            _ => {}
-        }
-    }
 
     /// Online/Cover tabs, browsing the results: `/` or typing opens the search
     /// bar; j/k move the selection; Enter applies (metadata on Online, the
@@ -3135,20 +3035,30 @@ impl App {
     }
 
     /// Select the sidebar entry at ring index `i` (clamped) and load its books.
+    /// Index `lib_view_count()` is the trailing "＋ New collection" row, which
+    /// parks the cursor without changing the view.
     fn lib_set_view_index(&mut self, i: usize) {
         let total = self.lib_view_count();
         if total == 0 {
             return;
         }
         self.lib_exit_visual();
-        self.lib_view = self.lib_view_at(i.min(total - 1));
+        if i >= total {
+            self.lib_side_new = true; // parked on "＋ New collection"
+            return;
+        }
+        self.lib_side_new = false;
+        self.lib_view = self.lib_view_at(i);
         self.lib_sel = 0;
         self.refresh_library();
     }
 
     /// Move the sidebar cursor by `delta` (clamped), switching the view live.
+    /// The cursor ranges over the views plus the trailing "＋ New" row.
     fn lib_side_move(&mut self, delta: isize) {
-        let next = (self.lib_view_index() as isize + delta).max(0) as usize;
+        let max = self.lib_view_count(); // index of "＋ New collection"
+        let cur = if self.lib_side_new { max } else { self.lib_view_index() };
+        let next = (cur as isize + delta).clamp(0, max as isize) as usize;
         self.lib_set_view_index(next);
     }
 
@@ -3281,6 +3191,10 @@ impl App {
         }
         if self.bulk_rename.is_some() {
             self.bulk_rename_key(key);
+            return;
+        }
+        if self.lib_coll_edit.is_some() {
+            self.lib_coll_edit_key(key);
             return;
         }
         if self.shelf_picker.is_some() {
@@ -3634,10 +3548,15 @@ impl App {
                     self.lib_cycle_pane(1)
                 }
             }
-            // Enter: from the sidebar step into the list; else open the book.
+            // Enter: from the sidebar step into the list (or create a collection
+            // when parked on the "＋ New" row); else open the book.
             KeyCode::Enter => {
                 if pane == LibPane::Sidebar {
-                    self.lib_pane = LibPane::List;
+                    if self.lib_side_new {
+                        self.lib_coll_begin_new();
+                    } else {
+                        self.lib_pane = LibPane::List;
+                    }
                 } else {
                     self.open_selected();
                 }
@@ -3680,6 +3599,14 @@ impl App {
                 }
             }
             KeyCode::Char('c') => self.open_shelf_picker(),
+            // Rename the focused collection in place (sidebar, on a collection).
+            KeyCode::Char('r')
+                if pane == LibPane::Sidebar
+                    && !self.lib_side_new
+                    && matches!(self.lib_view, LibView::Shelf(_)) =>
+            {
+                self.lib_coll_begin_rename()
+            }
             KeyCode::Char('x') => self.remove_from_current_shelf(),
             KeyCode::Char('v') => {
                 self.config.library_layout = self.config.library_layout.next();
@@ -3711,19 +3638,118 @@ impl App {
         self.lib_visual_sync();
     }
 
-    /// Open the add-to-collection picker for the selected book, pre-ticking the
-    /// collections it already belongs to.
-    fn open_shelf_picker(&mut self) {
-        let Some((path, title)) = self
-            .lib_books
-            .get(self.lib_sel)
-            .map(|b| (b.path.clone(), b.title.clone()))
-        else {
+    // --- Inline sidebar collection editing ------------------------------
+
+    fn lib_coll_input_mut(&mut self) -> Option<&mut CollInput> {
+        self.lib_coll_edit.as_mut()
+    }
+
+    /// Begin creating a new collection (inline at the "＋ New" sidebar row).
+    fn lib_coll_begin_new(&mut self) {
+        self.lib_coll_edit = Some(CollInput { buf: String::new(), cursor: 0, rename_from: None });
+    }
+
+    /// Begin renaming the focused sidebar collection in place.
+    fn lib_coll_begin_rename(&mut self) {
+        if let LibView::Shelf(name) = &self.lib_view {
+            let name = name.clone();
+            self.lib_coll_edit = Some(CollInput {
+                cursor: name.chars().count(),
+                buf: name.clone(),
+                rename_from: Some(name),
+            });
+        }
+    }
+
+    /// Commit the inline edit: rename, create, or (on an emptied name) delete.
+    fn lib_coll_commit(&mut self) {
+        let Some(input) = self.lib_coll_edit.take() else {
             return;
         };
-        let shelves = self.shelf_membership(&path);
+        let name = input.buf.trim().to_string();
+        if let Some(store) = &self.store {
+            match (&input.rename_from, name.is_empty()) {
+                (Some(old), true) => store.delete_shelf(old), // cleared name ⇒ delete
+                (Some(old), false) => store.rename_shelf(old, &name),
+                (None, false) => store.create_collection(&name),
+                (None, true) => {} // empty new ⇒ no-op
+            }
+        }
+        // Follow the result: view the created/renamed collection.
+        if !name.is_empty() {
+            self.lib_side_new = false;
+            self.lib_view = LibView::Shelf(name);
+            self.lib_sel = 0;
+        }
+        self.refresh_library();
+    }
+
+    /// Keys while the inline collection editor is active.
+    fn lib_coll_edit_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => self.lib_coll_edit = None,
+            KeyCode::Enter => self.lib_coll_commit(),
+            KeyCode::Left => {
+                if let Some(i) = self.lib_coll_input_mut() {
+                    i.cursor = i.cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Right => {
+                if let Some(i) = self.lib_coll_input_mut() {
+                    i.cursor = (i.cursor + 1).min(i.buf.chars().count());
+                }
+            }
+            KeyCode::Char('u') if ctrl => {
+                if let Some(i) = self.lib_coll_input_mut() {
+                    i.buf.clear();
+                    i.cursor = 0;
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(i) = self.lib_coll_input_mut() {
+                    let c = i.cursor;
+                    if str_delete_before(&mut i.buf, c) {
+                        i.cursor -= 1;
+                    }
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(i) = self.lib_coll_input_mut() {
+                    let cur = i.cursor;
+                    str_insert(&mut i.buf, cur, c);
+                    i.cursor += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Open the add-to-collection picker, pre-ticking the collections the
+    /// target(s) already belong to. Files the multi-selection when present.
+    fn open_shelf_picker(&mut self) {
+        // Operate on the multi-selection when present, else the current book.
+        let (targets, title) = if !self.lib_marked.is_empty() {
+            let targets: Vec<String> = self
+                .lib_books
+                .iter()
+                .filter(|b| self.lib_marked.contains(&b.path))
+                .map(|b| b.path.clone())
+                .collect();
+            let n = targets.len();
+            (targets, format!("{n} book{}", if n == 1 { "" } else { "s" }))
+        } else {
+            match self.lib_books.get(self.lib_sel) {
+                Some(b) => (vec![b.path.clone()], b.title.clone()),
+                None => return,
+            }
+        };
+        if targets.is_empty() {
+            return;
+        }
+        let shelves = self.shelf_membership(&targets);
         self.shelf_picker = Some(ShelfPicker {
-            path,
+            targets,
             title,
             shelves,
             sel: 0,
@@ -3758,7 +3784,9 @@ impl App {
                     let name = buf.trim().to_string();
                     if !name.is_empty() {
                         if let Some(store) = &self.store {
-                            store.add_to_shelf(&p.path, &name);
+                            for path in &p.targets {
+                                store.add_to_shelf(path, &name);
+                            }
                         }
                         self.refresh_shelf_picker();
                     } else {
@@ -3772,7 +3800,12 @@ impl App {
         }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
+                // After a bulk filing, the selection has been consumed.
+                let bulk = p.targets.len() > 1;
                 self.shelf_picker = None;
+                if bulk {
+                    self.lib_exit_visual();
+                }
                 self.refresh_library();
             }
             KeyCode::Up | KeyCode::Char('k') => p.sel = p.sel.saturating_sub(1),
@@ -3788,7 +3821,8 @@ impl App {
         }
     }
 
-    /// Toggle the focused book's membership in the selected collection, in place.
+    /// Toggle every target book's membership in the selected collection. A
+    /// ticked row (all members) removes all; otherwise it adds all.
     fn toggle_picked_shelf(&mut self) {
         let Some(p) = self.shelf_picker.as_mut() else {
             return;
@@ -3796,24 +3830,27 @@ impl App {
         let Some((name, member)) = p.shelves.get_mut(p.sel) else {
             return;
         };
+        let add = !*member;
         if let Some(store) = &self.store {
-            if *member {
-                store.remove_from_shelf(&p.path, name);
-            } else {
-                store.add_to_shelf(&p.path, name);
+            for path in &p.targets {
+                if add {
+                    store.add_to_shelf(path, name);
+                } else {
+                    store.remove_from_shelf(path, name);
+                }
             }
         }
-        *member = !*member;
+        *member = add;
     }
 
     /// Rebuild the picker's shelf list after a new collection is created, then
     /// leave creating mode with the cursor on the new entry.
     fn refresh_shelf_picker(&mut self) {
-        let path = match &self.shelf_picker {
-            Some(p) => p.path.clone(),
+        let targets = match &self.shelf_picker {
+            Some(p) => p.targets.clone(),
             None => return,
         };
-        let shelves = self.shelf_membership(&path);
+        let shelves = self.shelf_membership(&targets);
         if let Some(p) = self.shelf_picker.as_mut() {
             p.shelves = shelves;
             p.new_name = None;
@@ -4449,8 +4486,8 @@ mod tests {
         let mut app = App::library();
         assert_eq!(app.lib_books.len(), 1);
         app.on_key(key('e'));
-        // Details → Cover → Collections → Online → File.
-        for _ in 0..4 {
+        // Details → Cover → Online → File.
+        for _ in 0..3 {
             app.on_key(code(KeyCode::Tab));
         }
         assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::File);
@@ -4541,6 +4578,88 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    // Inline sidebar collection editing: create → rename → delete (clear name).
+    #[test]
+    fn collections_inline_create_rename_delete() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_cm_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                .unwrap();
+        }
+        let names = |a: &App| {
+            a.store.as_ref().unwrap().all_shelves().into_iter().map(|(n, _)| n).collect::<Vec<_>>()
+        };
+
+        let mut app = App::library();
+        // Create (the "＋ New collection" inline field).
+        app.lib_coll_begin_new();
+        for c in "Sci".chars() {
+            app.on_key(key(c)); // routed to the inline editor
+        }
+        app.on_key(code(KeyCode::Enter));
+        assert_eq!(names(&app), vec!["Sci"]);
+        assert!(matches!(app.lib_view, LibView::Shelf(ref n) if n == "Sci"));
+
+        // Rename in place: Sci → SciFi.
+        app.lib_coll_begin_rename();
+        for c in "Fi".chars() {
+            app.on_key(key(c));
+        }
+        app.on_key(code(KeyCode::Enter));
+        assert_eq!(names(&app), vec!["SciFi"]);
+
+        // Delete by clearing the name and committing.
+        app.lib_coll_begin_rename();
+        app.on_key(ctrl('u'));
+        app.on_key(code(KeyCode::Enter));
+        assert!(names(&app).is_empty());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // `c` with a multi-selection files every selected book into the collection.
+    #[test]
+    fn bulk_shelf_assign_files_all_selected() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_bsa_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for (p, t) in [("/a.epub", "A"), ("/b.epub", "B")] {
+                store
+                    .upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                    .unwrap();
+            }
+        }
+
+        let mut app = App::library();
+        app.on_key(key('V')); // visual select from book 0
+        app.on_key(key('j')); // extend to book 1
+        assert_eq!(app.lib_marked.len(), 2);
+        app.on_key(key('c')); // bulk shelf picker
+        assert_eq!(app.shelf_picker.as_ref().unwrap().targets.len(), 2);
+        // Select the "＋ New collection" row, create "Unread", filing both books.
+        app.on_key(code(KeyCode::Enter)); // onto +New row → start typing
+        for c in "Unread".chars() {
+            app.on_key(key(c));
+        }
+        app.on_key(code(KeyCode::Enter)); // create + file all
+        app.on_key(key('q')); // close (clears the selection)
+
+        let store = app.store.as_ref().unwrap();
+        assert!(store.shelves_for("/a.epub").contains(&"Unread".to_string()));
+        assert!(store.shelves_for("/b.epub").contains(&"Unread".to_string()));
+        assert!(app.lib_marked.is_empty(), "selection cleared after bulk file");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     // The settings cursor lands only on items, never on section headers.
     #[test]
     fn settings_nav_skips_section_headers() {
@@ -4583,8 +4702,8 @@ mod tests {
 
         let mut app = App::library();
         app.on_key(key('e'));
-        // Details → Cover → Collections → Online.
-        for _ in 0..3 {
+        // Details → Cover → Online.
+        for _ in 0..2 {
             app.on_key(code(KeyCode::Tab));
         }
         assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Online);
@@ -4633,8 +4752,7 @@ mod tests {
         assert_eq!(app.meta_edit.as_ref().unwrap().cover_search.q, "ab");
         let online_prefill = app.meta_edit.as_ref().unwrap().online.q.clone();
 
-        // Cover → Collections → Online: the online query is untouched.
-        app.on_key(code(KeyCode::Tab));
+        // Cover → Online: the online query is untouched.
         app.on_key(code(KeyCode::Tab));
         assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Online);
         assert_eq!(app.meta_edit.as_ref().unwrap().online.q, online_prefill);
@@ -4649,37 +4767,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    // Collections tab toggles membership and creates new collections.
-    #[test]
-    fn meta_editor_collections_tab() {
-        let _env = crate::test_env_guard();
-        let tmp = std::env::temp_dir().join(format!("delryn_edit3_{}", std::process::id()));
-        // SAFETY: serialized by `_env`; scopes the config dir to this process.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
-        {
-            let store = Store::open_default().unwrap();
-            store
-                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
-                .unwrap();
-        }
-
-        let mut app = App::library();
-        app.on_key(key('e'));
-        // Tab to Collections (Details → Cover → Collections).
-        app.on_key(code(KeyCode::Tab));
-        app.on_key(code(KeyCode::Tab));
-        assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Collections);
-        // No shelves yet → cursor sits on the "new" row; Enter starts typing.
-        app.on_key(code(KeyCode::Enter));
-        assert!(app.meta_edit.as_ref().unwrap().new_shelf.is_some());
-        for c in "Sci-Fi".chars() {
-            app.on_key(key(c));
-        }
-        app.on_key(code(KeyCode::Enter)); // create + add
-        let ed = app.meta_edit.as_ref().unwrap();
-        assert_eq!(ed.shelves.len(), 1);
-        assert_eq!(ed.shelves[0], ("Sci-Fi".to_string(), true), "book added to new collection");
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
 }

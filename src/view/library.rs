@@ -356,28 +356,64 @@ fn section_item(label: &str, here: bool, focused: bool, theme: Theme) -> ListIte
 }
 
 fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: bool) {
+    // The "＋ New" row parks the cursor without changing the active view, so a
+    // section/collection isn't "here" while it's selected.
+    let on_new = app.lib_side_new;
     let mut items: Vec<ListItem> = LibrarySection::ALL
         .iter()
         .map(|s| {
-            let here = matches!(&app.lib_view, LibView::Section(cur) if cur == s);
+            let here = !on_new && matches!(&app.lib_view, LibView::Section(cur) if cur == s);
             section_item(s.label(), here, focused, theme)
         })
         .collect();
 
-    // User collections, below a divider, each with its book count.
-    if !app.lib_shelves.is_empty() {
-        let mut header = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
-        if let Some(bg) = theme.bg {
-            header = header.bg(bg);
-        }
-        items.push(ListItem::new(Line::from(Span::styled("  Collections", header))));
-        for (name, count) in &app.lib_shelves {
-            let here = matches!(&app.lib_view, LibView::Shelf(cur) if cur == name);
+    // Collections, below a divider, each with its book count — always shown so
+    // "＋ New collection" is reachable even before any collection exists.
+    let mut header = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
+    if let Some(bg) = theme.bg {
+        header = header.bg(bg);
+    }
+    items.push(ListItem::new(Line::from(Span::styled("  Collections", header))));
+    // Which collection (if any) is being renamed in place.
+    let renaming = app
+        .lib_coll_edit
+        .as_ref()
+        .and_then(|e| e.rename_from.as_deref());
+    let creating = app.lib_coll_edit.as_ref().filter(|e| e.rename_from.is_none());
+    for (name, count) in &app.lib_shelves {
+        if Some(name.as_str()) == renaming {
+            items.push(coll_edit_item(app.lib_coll_edit.as_ref().unwrap(), theme));
+        } else {
+            let here = !on_new && matches!(&app.lib_view, LibView::Shelf(cur) if cur == name);
             items.push(section_item(&format!("{name}  ({count})"), here, focused, theme));
         }
     }
+    // The trailing "＋ New collection" row — an inline input while creating.
+    if let Some(input) = creating {
+        items.push(coll_edit_item(input, theme));
+    } else {
+        items.push(section_item("＋ New collection", on_new, focused, theme));
+    }
 
     f.render_widget(List::new(items).block(pane_block("Library", focused, theme)), area);
+}
+
+/// A sidebar row rendered as an inline text field (create / rename a
+/// collection), with a block cursor at the caret.
+fn coll_edit_item(input: &crate::app::CollInput, theme: Theme) -> ListItem<'static> {
+    let bg = theme.bg.unwrap_or(Color::Black);
+    let chars: Vec<char> = input.buf.chars().collect();
+    let cur = input.cursor.min(chars.len());
+    let text = Style::default().fg(theme.heading).add_modifier(Modifier::BOLD);
+    let cursor = Style::default().fg(bg).bg(theme.accent).add_modifier(Modifier::BOLD);
+    let mut spans = vec![Span::styled("▸ ", Style::default().fg(theme.accent))];
+    spans.push(Span::styled(chars[..cur].iter().collect::<String>(), text));
+    let at = chars.get(cur).map(|c| c.to_string()).unwrap_or_else(|| " ".into());
+    spans.push(Span::styled(at, cursor));
+    if cur < chars.len() {
+        spans.push(Span::styled(chars[cur + 1..].iter().collect::<String>(), text));
+    }
+    ListItem::new(Line::from(spans))
 }
 
 fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: bool) {
