@@ -13,12 +13,13 @@ const USER_AGENT: &str = "delryn/0.1 (+https://github.com/dilmun/delryn)";
 const SEARCH_URL: &str = "https://openlibrary.org/search.json";
 /// Fields requested from the search endpoint (keeps the payload small).
 const FIELDS: &str =
-    "title,author_name,first_publish_year,publisher,isbn,series_name,series_position,cover_i";
+    "title,subtitle,author_name,first_publish_year,publisher,isbn,series_name,series_position,cover_i";
 
 /// A search hit, normalized to delryn's editable metadata fields.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Candidate {
     pub title: String,
+    pub subtitle: Option<String>,
     pub authors: Vec<String>,
     pub year: Option<i32>,
     pub publisher: Option<String>,
@@ -195,6 +196,8 @@ struct Doc {
     #[serde(default)]
     title: String,
     #[serde(default)]
+    subtitle: String,
+    #[serde(default)]
     author_name: Vec<String>,
     first_publish_year: Option<i32>,
     #[serde(default)]
@@ -210,8 +213,10 @@ struct Doc {
 
 impl Doc {
     fn into_candidate(self) -> Candidate {
+        let subtitle = self.subtitle.trim();
         Candidate {
             title: self.title,
+            subtitle: (!subtitle.is_empty()).then(|| subtitle.to_string()),
             authors: self.author_name,
             year: self.first_publish_year,
             publisher: self.publisher.into_iter().next(),

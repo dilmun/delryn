@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use ratatui_image::{Resize, StatefulImage};
 
-use crate::app::{App, EditMode, EditTab, META_FIELDS, MetaEdit};
+use crate::app::{App, EditMode, EditTab, LOOKUP_FIELDS, META_FIELDS, MetaEdit};
 use crate::theme::Theme;
 
 /// Left column width for field labels.
@@ -38,9 +38,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
     f.render_widget(Clear, area);
     let title = {
         let ed = app.meta_edit.as_ref().unwrap();
+        // Progress counter when stepping through a multi-book edit queue.
+        let progress = if app.edit_total > 1 {
+            format!(" ({}/{})", app.edit_total - app.edit_queue.len(), app.edit_total)
+        } else {
+            String::new()
+        };
         format!(
-            " ✎ Edit · {} ",
-            super::truncate(&ed.book_title, area.width.saturating_sub(14) as usize)
+            " ✎ Edit{progress} · {} ",
+            super::truncate(&ed.book_title, area.width.saturating_sub(20) as usize)
         )
     };
     let block = Block::default()
@@ -134,13 +140,28 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
                 }
             }
         }
-        EditTab::Online | EditTab::Cover => {
+        EditTab::Online => {
+            // Mirror render_online: query (row 0), gap (1), three seed fields
+            // (rows 2..5), rule (5), results from row 6.
+            for i in 0..LOOKUP_FIELDS as u16 {
+                let y = body.y + 2 + i;
+                if in_body(y) {
+                    fields.push((i as usize, value_start, row(2 + i)));
+                }
+            }
+            // query (1) + gap (1) + fields (LOOKUP_FIELDS) + rule (1).
+            let first = 3 + LOOKUP_FIELDS as u16;
+            for i in 0..results_len as u16 {
+                let y = body.y + first + i;
+                if !in_body(y) {
+                    break;
+                }
+                results.push((i as usize, Rect { x: body.x, y, width: body.width, height: 1 }));
+            }
+        }
+        EditTab::Cover => {
             search = Some(row(0)); // search bar occupies the first body row
-            let rw = if tab == EditTab::Cover {
-                body.width.saturating_sub(38) // results sit left of the preview
-            } else {
-                body.width
-            };
+            let rw = body.width.saturating_sub(38); // results sit left of the preview
             for i in 0..results_len as u16 {
                 let y = body.y + 2 + i; // one search row + one blank
                 if !in_body(y) {
@@ -155,18 +176,20 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
     app.mouse.edit_search = search;
 }
 
-/// The single foot-of-popup line: a transient status message (search progress,
+/// The single foot-of-popup line: the tab's transient status (search progress,
 /// result counts, errors) when present, otherwise a quiet search hint on the
-/// lookup tabs. This is where every "searching…" / help string now lives.
+/// lookup tabs. The status is shown only on the tab it belongs to, so a
+/// Cover/Lookup "searching…" never leaks onto Details.
 fn footer_line(ed: &MetaEdit, theme: Theme) -> Line<'static> {
-    if let Some(status) = &ed.status {
+    let on_this_tab = ed.status_tab == Some(ed.tab);
+    if let Some(status) = ed.status.as_ref().filter(|_| on_this_tab) {
         return Line::styled(
             format!("  {status}"),
             Style::default().fg(theme.heading).add_modifier(Modifier::ITALIC),
         );
     }
     let hint = match ed.tab {
-        EditTab::Online => "  type or / to search by title",
+        EditTab::Online => "  edit Title / Author, then ⏎ to search",
         EditTab::Cover => "  type or / to search for a cover",
         EditTab::Details => "",
     };
@@ -258,14 +281,19 @@ fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     f.render_widget(Paragraph::new(Line::from(spans)), line);
 }
 
-/// Results as a list; `cover` shows a cover availability mark, else year/series.
-/// Online tab: the metadata-candidate list (title — author, year · series).
+/// The Lookup metadata-candidate list (title — author, year · series). A row is
+/// selected only when the keyboard focus has moved past the seed fields into the
+/// results (and not while a field is being edited).
 fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     let bg = theme.bg.unwrap_or(Color::Black);
     let mut lines: Vec<Line> = Vec::new();
-    let search = ed.search();
-    for (i, c) in search.results.iter().enumerate().take(area.height as usize) {
-        let selected = i == search.row && !search.editing;
+    let sel = if !ed.lookup.editing && ed.lookup.focus >= LOOKUP_FIELDS {
+        Some(ed.lookup.focus - LOOKUP_FIELDS)
+    } else {
+        None
+    };
+    for (i, c) in ed.online.results.iter().enumerate().take(area.height as usize) {
+        let selected = sel == Some(i);
         let marker = if selected { "▸ " } else { "  " };
         let series = match (&c.series, c.series_index) {
             (Some(s), Some(n)) => format!("  · {s} #{n}"),
@@ -309,11 +337,64 @@ fn cover_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
-/// Online tab: search bar + a results list; Enter applies the metadata.
+/// Lookup tab: a read-only composed query, the editable Title/Author/Year seed
+/// fields it's derived from, then the results list. Enter applies the metadata.
 fn render_online(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
-    let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
-    search_bar(f, rows[0], ed, theme);
-    results_list(f, rows[1], ed, theme);
+    let rows = Layout::vertical([
+        Constraint::Length(1),                   // composed query (read-only)
+        Constraint::Length(1),                   // gap
+        Constraint::Length(LOOKUP_FIELDS as u16), // seed fields
+        Constraint::Length(1),                   // rule
+        Constraint::Min(0),                      // results
+    ])
+    .split(area);
+
+    // Read-only composed query — label aligned with the seed fields below.
+    let q = ed.lookup.query();
+    let query_line = Line::from(vec![
+        Span::styled(
+            format!("   {:<LABEL_W$}", "query"),
+            Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
+        ),
+        if q.is_empty() {
+            Span::styled("— fill the fields below", Style::default().fg(theme.muted).add_modifier(Modifier::DIM))
+        } else {
+            Span::styled(q, Style::default().fg(theme.heading).add_modifier(Modifier::BOLD))
+        },
+    ]);
+    f.render_widget(Paragraph::new(query_line), rows[0]);
+
+    // Editable seed fields (reuse the Details form-field renderer).
+    const LABELS: [&str; LOOKUP_FIELDS] = ["Title", "Author"];
+    let value_w = (rows[2].width as usize).saturating_sub(LABEL_W + 6).max(8);
+    let fields: Vec<Line> = (0..LOOKUP_FIELDS)
+        .map(|i| {
+            let focused = ed.lookup.focus == i;
+            let editing = focused && ed.lookup.editing;
+            form_field(
+                LABELS[i],
+                ed.lookup.field(i),
+                focused,
+                editing,
+                ed.lookup.cursor,
+                false,
+                false,
+                value_w,
+                theme,
+            )
+        })
+        .collect();
+    f.render_widget(Paragraph::new(fields), rows[2]);
+
+    f.render_widget(
+        Paragraph::new(Line::styled(
+            "─".repeat(rows[3].width as usize),
+            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+        )),
+        rows[3],
+    );
+
+    results_list(f, rows[4], ed, theme);
 }
 
 /// Cover tab: search bar on top, results list on the left, and a wide preview of
