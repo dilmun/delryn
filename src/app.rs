@@ -152,35 +152,25 @@ const F_INDEX: usize = 4;
 pub const ONLINE_LIMIT: usize = 5;
 
 /// File-tab row layout: the template, the resulting name, then the Rename action.
-pub const FILE_TEMPLATE: usize = 0;
-pub const FILE_NAME: usize = 1;
-
-/// Default rename template (`Title.epub`). Placeholders are filled from the
-/// edited metadata; see [`fill_template`].
+/// Default rename template (`Title.epub`). Placeholders are filled from a book's
+/// metadata; see [`fill_template`]. Used by the bulk-rename popup.
 pub const DEFAULT_RENAME_TEMPLATE: &str = "%T.%E";
 
-/// Tabs of the metadata editor.
+/// Tabs of the metadata editor. (Renaming lives in the bulk-rename popup.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditTab {
     Details,
     Cover,
     Online,
-    File,
 }
 
 impl EditTab {
-    pub const ALL: [EditTab; 4] = [
-        EditTab::Details,
-        EditTab::Cover,
-        EditTab::Online,
-        EditTab::File,
-    ];
+    pub const ALL: [EditTab; 3] = [EditTab::Details, EditTab::Cover, EditTab::Online];
     pub fn label(self) -> &'static str {
         match self {
             EditTab::Details => "Details",
             EditTab::Cover => "Cover",
             EditTab::Online => "Lookup",
-            EditTab::File => "Rename",
         }
     }
 }
@@ -233,14 +223,16 @@ pub struct BulkRename {
     pub template: String,
     pub cursor: usize,
     pub targets: Vec<BulkTarget>,
+    /// Expand the popup to (near) full screen for a wider before/after view.
+    pub full: bool,
 }
 
 /// Outcome of renaming a single book file.
 enum RenameOutcome {
     Renamed,
     Unchanged,
-    /// Skipped, with a short reason (name empty / clashes / move failed).
-    Skipped(&'static str),
+    /// Skipped — name empty, target clashes, or the move failed.
+    Skipped,
 }
 
 /// Open metadata-edit form: a tabbed, scalable editor over one book.
@@ -278,14 +270,6 @@ pub struct MetaEdit {
     pub preview_cover: Option<Vec<u8>>,
     pub preview_url: String,
 
-    // File tab ------------------------------------------------------------
-    /// Rename template (placeholders filled from the edited metadata).
-    pub rename_template: String,
-    /// The resulting filename — recomputed from the template, or hand-edited.
-    pub rename_name: String,
-    /// Focused File-tab row (template / name / Rename action).
-    pub file_row: usize,
-
     /// Transient one-line status (search progress, results, errors).
     pub status: Option<String>,
 }
@@ -316,26 +300,15 @@ impl MetaEdit {
     fn cur_field_len(&self) -> usize {
         match self.tab {
             EditTab::Online | EditTab::Cover => self.search().q.chars().count(),
-            EditTab::File => match self.file_row {
-                FILE_TEMPLATE => self.rename_template.chars().count(),
-                FILE_NAME => self.rename_name.chars().count(),
-                _ => 0,
-            },
             _ => self.field_len(),
         }
     }
 
-    /// The string currently being typed into (a Details field, the search query,
-    /// or a File-tab field).
+    /// The string currently being typed into (a Details field or the search query).
     fn edit_target(&mut self) -> Option<&mut String> {
         match self.tab {
             EditTab::Details => self.values.get_mut(self.row),
             EditTab::Online | EditTab::Cover => Some(&mut self.search_mut().q),
-            EditTab::File => match self.file_row {
-                FILE_TEMPLATE => Some(&mut self.rename_template),
-                FILE_NAME => Some(&mut self.rename_name),
-                _ => None,
-            },
         }
     }
 
@@ -2201,12 +2174,8 @@ impl App {
             cover: None,
             preview_cover: None,
             preview_url: String::new(),
-            rename_template: DEFAULT_RENAME_TEMPLATE.to_string(),
-            rename_name: String::new(),
-            file_row: FILE_TEMPLATE,
             status: None,
         });
-        self.recompute_rename();
     }
 
     fn meta_edit_key(&mut self, key: KeyEvent) {
@@ -2230,25 +2199,19 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.meta_edit = None,
-            KeyCode::Char('s') if ctrl => {
-                // On the File tab, ^S applies the rename first (no separate
-                // button); a hard rename error keeps the editor open.
-                let on_file = self.meta_edit.as_ref().map(|e| e.tab) == Some(EditTab::File);
-                if !on_file || self.apply_rename() {
-                    self.save_meta_edit();
-                }
-            }
+            KeyCode::Char('s') if ctrl => self.save_meta_edit(),
             KeyCode::Tab => self.meta_edit_switch_tab(1),
             KeyCode::BackTab => self.meta_edit_switch_tab(-1),
-            // Jump straight to a tab by number (1–4).
-            KeyCode::Char(c @ '1'..='4') => {
+            // Jump straight to a tab by number.
+            KeyCode::Char(c @ '1'..='9') => {
                 let i = c as usize - '1' as usize;
-                self.meta_edit_goto_tab(EditTab::ALL[i]);
+                if i < EditTab::ALL.len() {
+                    self.meta_edit_goto_tab(EditTab::ALL[i]);
+                }
             }
             _ => match tab {
                 EditTab::Details => self.details_nav_key(key),
                 EditTab::Online | EditTab::Cover => self.online_nav_key(key),
-                EditTab::File => self.file_nav_key(key),
             },
         }
     }
@@ -2268,10 +2231,6 @@ impl App {
         if let Some(ed) = self.meta_edit.as_mut() {
             ed.tab = tab;
             ed.mode = EditMode::Nav;
-        }
-        // Entering the File tab refreshes the previewed name from the template.
-        if tab == EditTab::File {
-            self.recompute_rename();
         }
         // Entering the Cover tab runs the cover search once, so candidates appear
         // without a manual search (uses the book's ISBN + the seeded query).
@@ -2310,7 +2269,6 @@ impl App {
 
     /// Edit mode: type into the focused field (Details or Online query).
     fn meta_edit_typing(&mut self, key: KeyEvent) {
-        let recompute;
         {
             let Some(ed) = self.meta_edit.as_mut() else {
                 return;
@@ -2354,11 +2312,6 @@ impl App {
                 }
                 _ => {}
             }
-            // Editing the rename template re-derives the previewed filename.
-            recompute = ed.tab == EditTab::File && ed.file_row == FILE_TEMPLATE;
-        }
-        if recompute {
-            self.recompute_rename();
         }
     }
 
@@ -2489,53 +2442,13 @@ impl App {
         }
     }
 
-    /// File tab, navigate mode: move between the template, name, and Rename
-    /// action; Enter edits a field or performs the rename.
-    fn file_nav_key(&mut self, key: KeyEvent) {
-        if self.meta_edit.is_none() {
-            return;
-        }
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.file_row = e.file_row.saturating_sub(1);
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.file_row = (e.file_row + 1).min(FILE_NAME);
-                }
-            }
-            // Enter edits the focused field; ^S performs the rename + save.
-            KeyCode::Enter => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.mode = EditMode::Edit;
-                    e.cursor = e.cur_field_len();
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Recompute the previewed filename from the template + current metadata.
-    fn recompute_rename(&mut self) {
-        let Some(ed) = self.meta_edit.as_mut() else {
-            return;
-        };
-        let ext = std::path::Path::new(&ed.path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("epub");
-        ed.rename_name = fill_template(&ed.rename_template, &ed.values, ext);
-    }
-
     /// Move one book file to `new_name` (in its own directory), repointing the
     /// database row and cached cover. Pure mechanism — no UI/state side effects
     /// beyond persistence, so both the editor and bulk rename share it.
     fn rename_book_file(&self, old: &str, new_name: &str) -> RenameOutcome {
         let name = sanitize_filename(new_name.trim());
         if name.is_empty() {
-            return RenameOutcome::Skipped("name is empty");
+            return RenameOutcome::Skipped;
         }
         let old_path = std::path::Path::new(old);
         let new_path = match old_path.parent() {
@@ -2547,10 +2460,10 @@ impl App {
             return RenameOutcome::Unchanged;
         }
         if new_path.exists() {
-            return RenameOutcome::Skipped("a file with that name already exists");
+            return RenameOutcome::Skipped;
         }
         if std::fs::rename(old, &new_path).is_err() {
-            return RenameOutcome::Skipped("rename failed");
+            return RenameOutcome::Skipped;
         }
         // Repoint persistence + move the cached cover to the new key.
         if let Some(store) = &self.store {
@@ -2558,37 +2471,6 @@ impl App {
         }
         let _ = std::fs::rename(online::cover_cache_path(old), online::cover_cache_path(&new));
         RenameOutcome::Renamed
-    }
-
-    /// Editor File-tab rename. Returns `true` when it's safe to proceed with
-    /// saving (renamed, or the name was unchanged); `false` on a hard error,
-    /// leaving the editor open with the reason in its status line.
-    fn apply_rename(&mut self) -> bool {
-        let (old, name) = match self.meta_edit.as_ref() {
-            Some(ed) => (ed.path.clone(), ed.rename_name.clone()),
-            None => return false,
-        };
-        match self.rename_book_file(&old, &name) {
-            RenameOutcome::Renamed => {
-                let new = std::path::Path::new(&old)
-                    .with_file_name(sanitize_filename(name.trim()))
-                    .to_string_lossy()
-                    .into_owned();
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.status = Some(format!("renamed to {}", sanitize_filename(name.trim())));
-                    e.path = new;
-                }
-                self.refresh_library();
-                true
-            }
-            RenameOutcome::Unchanged => true,
-            RenameOutcome::Skipped(reason) => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.status = Some(reason.into());
-                }
-                false
-            }
-        }
     }
 
     /// Toggle vim-style visual (range) select. Entering anchors at the cursor;
@@ -2725,6 +2607,7 @@ impl App {
             cursor: template.chars().count(),
             template,
             targets,
+            full: false,
         });
     }
 
@@ -2740,7 +2623,7 @@ impl App {
             match self.rename_book_file(&t.path, &new_name) {
                 RenameOutcome::Renamed => renamed += 1,
                 RenameOutcome::Unchanged => {}
-                RenameOutcome::Skipped(_) => skipped += 1,
+                RenameOutcome::Skipped => skipped += 1,
             }
         }
         self.lib_exit_visual();
@@ -2758,6 +2641,12 @@ impl App {
         match key.code {
             KeyCode::Esc => self.bulk_rename = None,
             KeyCode::Char('s') if ctrl => self.apply_bulk_rename(),
+            // Toggle the full-screen before/after view.
+            KeyCode::Char('f') if ctrl => {
+                if let Some(b) = self.bulk_rename.as_mut() {
+                    b.full = !b.full;
+                }
+            }
             KeyCode::Left => {
                 if let Some(b) = self.bulk_rename.as_mut() {
                     b.cursor = b.cursor.saturating_sub(1);
@@ -4153,13 +4042,7 @@ impl App {
     fn editor_click(&mut self, col: u16, row: u16) {
         let pt = (col, row).into();
         if let Some(&(tab, _)) = self.mouse.edit_tabs.iter().find(|(_, r)| r.contains(pt)) {
-            if let Some(e) = self.meta_edit.as_mut() {
-                e.tab = tab;
-                e.mode = EditMode::Nav;
-            }
-            if self.meta_edit.as_ref().map(|e| e.tab) == Some(EditTab::File) {
-                self.recompute_rename();
-            }
+            self.meta_edit_goto_tab(tab);
             return;
         }
         if self.mouse.edit_search.is_some_and(|r| r.contains(pt)) {
@@ -4168,10 +4051,8 @@ impl App {
         }
         if let Some(&(idx, vstart, _)) = self.mouse.edit_fields.iter().find(|(_, _, r)| r.contains(pt)) {
             if let Some(e) = self.meta_edit.as_mut() {
-                match e.tab {
-                    EditTab::Details => e.row = idx,
-                    EditTab::File => e.file_row = idx,
-                    _ => {}
+                if e.tab == EditTab::Details {
+                    e.row = idx;
                 }
                 e.mode = EditMode::Edit;
                 let len = e.cur_field_len();
@@ -4531,16 +4412,11 @@ mod tests {
 
         let mut app = App::library();
         assert_eq!(app.lib_books.len(), 1);
-        app.on_key(key('e'));
-        // Details → Cover → Online → File.
-        for _ in 0..3 {
-            app.on_key(code(KeyCode::Tab));
-        }
-        assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::File);
-        // Entering the File tab derived the name from "%T.%E".
-        assert_eq!(app.meta_edit.as_ref().unwrap().rename_name, "Clean Title.epub");
-        // ^S on the File tab renames the file and saves (no separate button).
-        app.on_key(ctrl('s'));
+        // Select the book and bulk-rename it (the per-book Rename tab is gone).
+        app.on_key(key(' ')); // select
+        app.on_key(key('e')); // bulk rename popup (default "%T.%E")
+        assert!(app.bulk_rename.is_some());
+        app.on_key(ctrl('s')); // apply
 
         let new = books.join("Clean Title.epub");
         assert!(new.exists(), "renamed file exists");

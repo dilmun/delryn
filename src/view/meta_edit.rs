@@ -7,13 +7,11 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use ratatui_image::{Resize, StatefulImage};
 
-use crate::app::{
-    App, DEFAULT_RENAME_TEMPLATE, EditMode, EditTab, FILE_NAME, FILE_TEMPLATE, META_FIELDS, MetaEdit,
-};
+use crate::app::{App, EditMode, EditTab, META_FIELDS, MetaEdit};
 use crate::theme::Theme;
 
 /// Left column width for field labels.
@@ -78,7 +76,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     match app.meta_edit.as_ref().unwrap().tab {
         EditTab::Details => render_details(f, body, app.meta_edit.as_ref().unwrap(), theme),
         EditTab::Online => render_online(f, body, app.meta_edit.as_ref().unwrap(), theme),
-        EditTab::File => render_file(f, body, app.meta_edit.as_ref().unwrap(), theme),
         EditTab::Cover => render_cover(f, body, app, theme),
     }
 
@@ -143,10 +140,6 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
                     line += 1;
                 }
             }
-        }
-        EditTab::File => {
-            fields.push((FILE_TEMPLATE, value_start, row(0)));
-            fields.push((FILE_NAME, value_start, row(1)));
         }
         EditTab::Online | EditTab::Cover => {
             search = Some(row(0)); // search bar occupies the first body row
@@ -363,65 +356,6 @@ fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
             pinner,
         );
     }
-}
-
-fn render_file(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
-    let rows = Layout::vertical([
-        Constraint::Length(1), // template
-        Constraint::Length(1), // resulting name
-        Constraint::Length(1), // spacer
-        Constraint::Min(0),    // current + placeholder legend
-    ])
-    .split(area);
-    let value_w = (area.width as usize).saturating_sub(LABEL_W + 6).max(8);
-
-    let tmpl = ed.file_row == FILE_TEMPLATE;
-    f.render_widget(
-        Paragraph::new(form_field(
-            "Template",
-            &ed.rename_template,
-            tmpl,
-            tmpl && ed.mode == EditMode::Edit,
-            ed.cursor,
-            false,
-            ed.rename_template != DEFAULT_RENAME_TEMPLATE,
-            value_w,
-            theme,
-        )),
-        rows[0],
-    );
-    let namef = ed.file_row == FILE_NAME;
-    let current = std::path::Path::new(&ed.path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    f.render_widget(
-        Paragraph::new(form_field(
-            "New name",
-            &ed.rename_name,
-            namef,
-            namef && ed.mode == EditMode::Edit,
-            ed.cursor,
-            false,
-            ed.rename_name != current,
-            value_w,
-            theme,
-        )),
-        rows[1],
-    );
-
-    let info = vec![
-        Line::from(vec![
-            Span::styled(format!(" {:<pad$}", "current", pad = LABEL_W + 2), Style::default().fg(theme.muted)),
-            Span::styled(current.to_string(), Style::default().fg(theme.fg)),
-        ]),
-        Line::raw(""),
-        Line::styled(
-            "   %T title   %A author   %Y year   %S series   %I #   %P publisher   %E ext",
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
-        ),
-    ];
-    f.render_widget(Paragraph::new(info).wrap(Wrap { trim: true }), rows[3]);
 }
 
 /// A value with a block cursor at `caret`, windowed to `valw` cells so the caret

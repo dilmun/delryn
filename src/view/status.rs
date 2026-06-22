@@ -79,7 +79,7 @@ fn legend(app: &App) -> Option<(String, String)> {
     if let Some(br) = &app.bulk_rename {
         return Some((
             format!("Bulk rename · {} books", br.targets.len()),
-            "type template · ←→ move · ^U clear · ^S rename all · Esc cancel".into(),
+            "type template · ^F full screen · ^U clear · ^S rename all · Esc cancel".into(),
         ));
     }
     if let Some(e) = &app.lib_coll_edit {
@@ -107,10 +107,9 @@ fn editor_legend(ed: &MetaEdit) -> (String, String) {
         "type to edit · ←→ move · ^U clear · ⏎/Esc done"
     } else {
         match ed.tab {
-            EditTab::Details => "Tab tab · j/k move · ⏎ edit · r/R reset · ^S save · Esc",
-            EditTab::Cover => "Tab tab · / search · j/k pick · ⏎ use cover · ^S save · Esc",
-            EditTab::Online => "Tab tab · / search · j/k pick · ⏎ apply · ^S save · Esc",
-            EditTab::File => "Tab tab · j/k move · ⏎ edit · ^S rename + save · Esc",
+            EditTab::Details => "1-3 tab · j/k move · ⏎ edit · r/R reset · ^S save · Esc",
+            EditTab::Cover => "1-3 tab · / search · j/k pick · ⏎ use cover · ^S save · Esc",
+            EditTab::Online => "1-3 tab · / search · j/k pick · ⏎ apply · ^S save · Esc",
         }
     };
     (state, keys.to_string())

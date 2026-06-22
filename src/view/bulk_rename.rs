@@ -15,14 +15,25 @@ pub fn render(f: &mut Frame, app: &App) {
     };
     let theme = app.config.theme;
     let bg = theme.bg.unwrap_or(Color::Black);
-    let area = super::centered(f.area(), 84, 26);
+    // ^F expands to (near) full screen for a wider, taller before/after view.
+    let area = if br.full {
+        let a = f.area();
+        super::centered(a, a.width.saturating_sub(4), a.height.saturating_sub(2))
+    } else {
+        super::centered(f.area(), 84, 26)
+    };
     f.render_widget(Clear, area);
 
+    let title = if br.full {
+        format!(" Bulk rename · {} books  (^F exit full screen) ", br.targets.len())
+    } else {
+        format!(" Bulk rename · {} books ", br.targets.len())
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
-            format!(" Bulk rename · {} books ", br.targets.len()),
+            title,
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().fg(theme.fg).bg(bg));
