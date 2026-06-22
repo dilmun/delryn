@@ -184,6 +184,19 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 });
             }
         }
+        // Code blocks marked up as styled containers rather than <pre>/<code>
+        // (e.g. Springer/Apress `<div class="ProgramCode">` with per-line
+        // `<div class="FixedLine">`). Render them as real code.
+        _ if is_code_container(e) => {
+            let lines = trim_blank_edges(code_lines(node).into_iter());
+            let lines = strip_line_numbers(lines);
+            if !lines.is_empty() {
+                out.push(Block::Code {
+                    lang: detect_lang(node),
+                    lines,
+                });
+            }
+        }
         // Generic containers: recurse.
         _ => walk_children(node, ctx, out),
     }
@@ -254,6 +267,37 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
         }
         _ => {}
     }
+}
+
+/// Does the element carry `want` as one of its space-separated class tokens
+/// (case-insensitive)?
+fn class_has_token(e: &scraper::node::Element, want: &str) -> bool {
+    e.attr("class")
+        .is_some_and(|c| c.split_whitespace().any(|t| t.eq_ignore_ascii_case(want)))
+}
+
+/// A non-`<pre>` block that is really a code listing, by its class. Covers the
+/// common publisher conventions (notably Springer/Apress `ProgramCode`).
+fn is_code_container(e: &scraper::node::Element) -> bool {
+    matches!(e.name(), "div" | "section")
+        && ["ProgramCode", "SourceCode", "CodeBlock", "code", "sourceCode"]
+            .iter()
+            .any(|t| class_has_token(e, t))
+}
+
+/// Code lines from a styled code container. When the source wraps each line in a
+/// `<div class="FixedLine">` (Springer/Apress), one line per such div; otherwise
+/// fall back to splitting the concatenated text on newlines.
+fn code_lines(node: NodeRef<Node>) -> Vec<String> {
+    let fixed: Vec<String> = node
+        .descendants()
+        .filter(|n| matches!(n.value(), Node::Element(e) if class_has_token(e, "FixedLine")))
+        .map(|n| raw_text(n).trim_end().to_string())
+        .collect();
+    if !fixed.is_empty() {
+        return fixed;
+    }
+    raw_text(node).split('\n').map(|l| l.trim_end().to_string()).collect()
 }
 
 /// Concatenate all descendant text verbatim (for `<pre>`).
@@ -399,4 +443,40 @@ fn detect_lang(node: NodeRef<Node>) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn code_lines_of(blocks: &[Block]) -> Option<&Vec<String>> {
+        blocks.iter().find_map(|b| match b {
+            Block::Code { lines, .. } => Some(lines),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn springer_program_code_div_is_a_code_block() {
+        // Springer/Apress markup: no <pre>/<code>, lines in FixedLine divs.
+        let xhtml = r#"<html><body>
+            <p>Example:</p>
+            <div class="ProgramCode" id="PC1"><div class="LineGroup">
+              <div class="FixedLine">#include &lt;vector></div>
+              <div class="FixedLine">int main() {}</div>
+            </div></div>
+        </body></html>"#;
+        let blocks = parse_blocks(xhtml);
+        let lines = code_lines_of(&blocks).expect("a code block");
+        assert_eq!(
+            lines,
+            &vec!["#include <vector>".to_string(), "int main() {}".to_string()]
+        );
+    }
+
+    #[test]
+    fn plain_divs_are_not_code() {
+        let xhtml = r#"<html><body><div class="Para">just a paragraph</div></body></html>"#;
+        assert!(code_lines_of(&parse_blocks(xhtml)).is_none());
+    }
 }

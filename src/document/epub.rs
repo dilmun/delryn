@@ -226,7 +226,12 @@ fn extract_metadata(doc: &mut EpubDoc<BufReader<File>>, size: u64) -> Metadata {
         .collect();
     let language = doc.mdata("language").map(|m| m.value.clone());
     let identifier = doc.mdata("identifier").map(|m| m.value.clone());
-    let year = doc.mdata("date").and_then(|m| parse_year(&m.value));
+    // Prefer the publication date; many EPUB3 files only carry the last-modified
+    // timestamp (dcterms:modified), so fall back to that for the year.
+    let year = doc
+        .mdata("date")
+        .and_then(|m| parse_year(&m.value))
+        .or_else(|| doc.mdata("dcterms:modified").and_then(|m| parse_year(&m.value)));
     let publisher = doc.mdata("publisher").map(|m| m.value.trim().to_string());
     let (series, series_index) = extract_series(doc);
     // EPUB has no standard subtitle; Calibre stores one as a refined title.
