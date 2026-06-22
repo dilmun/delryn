@@ -352,37 +352,105 @@ pub fn extract_book_metadata(path: impl AsRef<Path>) -> ExtractedMeta {
 
 /// Leaf block-element lines of a section in document order — a block with no
 /// block descendant, so a wrapping `<div>` doesn't swallow every line into one.
+/// A `<br/>` *inside* a block also starts a new line, so a title and subtitle
+/// packed into one heading (`Title<br/><i>Subtitle</i>`) come out separately.
 fn leaf_block_lines(xhtml: &str) -> Vec<String> {
     use scraper::{Html, Selector};
     let doc = Html::parse_document(xhtml);
     let Ok(sel) = Selector::parse("h1,h2,h3,h4,h5,h6,p,div,li") else {
         return Vec::new();
     };
-    doc.select(&sel)
-        .filter(|e| e.select(&sel).next().is_none())
-        .map(|e| e.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|s| !s.is_empty())
-        .collect()
+    let mut out = Vec::new();
+    for el in doc.select(&sel) {
+        if el.select(&sel).next().is_some() {
+            continue; // not a leaf block
+        }
+        for raw in block_text_lines(el) {
+            let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !line.is_empty() {
+                out.push(line);
+            }
+        }
+    }
+    out
+}
+
+/// An element's text, with each `<br>` starting a new line.
+fn block_text_lines(el: scraper::ElementRef) -> Vec<String> {
+    use scraper::Node;
+    let mut lines = vec![String::new()];
+    for node in el.descendants() {
+        match node.value() {
+            Node::Text(t) => lines.last_mut().unwrap().push_str(t),
+            Node::Element(e) if e.name() == "br" => lines.push(String::new()),
+            _ => {}
+        }
+    }
+    lines
 }
 
 /// Parse a title-page-like section into (title, subtitle, author). A title page
-/// keeps each in a *separate* block — headings in clean files, plain `<div>`/`<p>`
-/// lines in converted (calibre) ones. The first real line is the title and the
-/// next the subtitle; a separator line (`—`, `by`, …) ends the title block, and
-/// the first real line after it is the author.
+/// keeps each in a *separate* line — headings, `<br/>`-split text, or plain
+/// `<div>`/`<p>` lines in converted files. The first real line is the title and
+/// the next a (distinct, non-boilerplate) subtitle; the title block ends at a
+/// separator (`—`, `by`) or boilerplate (copyright/ISBN/…), and the first real
+/// line after a separator is the author.
 fn parse_title_page(xhtml: &str) -> Option<(String, Option<String>, Option<String>)> {
     let lines = leaf_block_lines(xhtml);
-    // Only a short section is a title page; a long one is a chapter.
-    if lines.is_empty() || lines.len() > TITLE_PAGE_MAX_BLOCKS {
+    if lines.is_empty() {
         return None;
     }
-    let sep = lines.iter().position(|l| is_separator_line(l));
-    let area = &lines[..sep.unwrap_or(lines.len())];
-    let ti = area.iter().position(|l| is_title_candidate(l))?;
-    let title = area[ti].clone();
-    let subtitle = area.get(ti + 1).filter(|l| is_title_candidate(l)).cloned();
-    let author = sep.and_then(|s| lines[s + 1..].iter().find(|l| is_title_candidate(l)).cloned());
+    // A title page is a short section, or one whose title block is quickly
+    // followed by copyright-style boilerplate (a chapter has neither).
+    let boiler_near_top = lines.iter().take(12).any(|l| is_boilerplate(l));
+    if lines.len() > TITLE_PAGE_MAX_BLOCKS && !boiler_near_top {
+        return None;
+    }
+    // Title block = leading lines before the first separator or boilerplate.
+    let end = lines
+        .iter()
+        .position(|l| is_separator_line(l) || is_boilerplate(l))
+        .unwrap_or(lines.len())
+        .min(TITLE_PAGE_MAX_BLOCKS);
+    let head = &lines[..end];
+    let ti = head.iter().position(|l| is_title_candidate(l))?;
+    let title = head[ti].clone();
+    // Subtitle: the next real line that isn't just the title repeated.
+    let subtitle = head
+        .iter()
+        .skip(ti + 1)
+        .find(|l| is_title_candidate(l) && !title_overlaps(l, &title))
+        .cloned();
+    let author = author_after_separator(&lines);
     Some((title, subtitle, author))
+}
+
+/// The first real, non-boilerplate line after a `—`/`by` separator — the author.
+fn author_after_separator(lines: &[String]) -> Option<String> {
+    let sep = lines.iter().position(|l| is_separator_line(l))?;
+    lines[sep + 1..].iter().find(|l| is_title_candidate(l) && !is_boilerplate(l)).cloned()
+}
+
+/// True when two lines are the same title (or one contains the other) — used to
+/// reject a "subtitle" that merely repeats the title.
+fn title_overlaps(a: &str, b: &str) -> bool {
+    let (a, b) = (a.to_lowercase(), b.to_lowercase());
+    a == b || a.contains(&b) || b.contains(&a)
+}
+
+/// Copyright / imprint boilerplate that must never be taken as a title, subtitle,
+/// or author.
+fn is_boilerplate(line: &str) -> bool {
+    let l = line.trim().to_lowercase();
+    l.starts_with("copyright")
+        || l.starts_with('©')
+        || l.contains("all rights reserved")
+        || l.contains("no part of this")
+        || l.starts_with("isbn")
+        || l.contains("first published")
+        || l.contains("printed in")
+        || l.starts_with("published by")
+        || l.contains("library of congress")
 }
 
 /// Pull a title (+ optional subtitle) out of one XHTML section: the title page if
@@ -452,15 +520,22 @@ fn find_publisher(text: &str) -> Option<String> {
     if let Some(p) = PUBS.iter().find(|p| low.contains(&p.to_lowercase())) {
         return Some(p.to_string());
     }
-    let labelled = regex::Regex::new(r"(?i)published by\s+([^\n\r.,;]{2,50})")
-        .ok()
-        .and_then(|re| re.captures(text).map(|c| c[1].to_string()))?;
-    let p = labelled.trim().to_string();
-    // Reject sentence fragments (a publisher name has no lowercase sentence words).
-    let looks_like_name = !p.is_empty()
-        && p.split_whitespace().count() <= 6
-        && !p.split_whitespace().any(|w| matches!(w, "can" | "the" | "and" | "any" | "for" | "nor" | "of"));
-    looks_like_name.then_some(p)
+    // "Published by X", or "Copyright © 2024 by X" — the name after "by".
+    for pat in [r"(?i)published by\s+([^\n\r.,;]{2,50})", r"(?i)(?:copyright|©)[^\n]*?\bby\s+([^\n\r.,;]{2,50})"] {
+        let Ok(re) = regex::Regex::new(pat) else { continue };
+        let Some(cap) = re.captures(text) else { continue };
+        let p = cap[1].trim().to_string();
+        // Reject sentence fragments (a publisher name has no sentence words).
+        let looks_like_name = !p.is_empty()
+            && p.split_whitespace().count() <= 6
+            && !p.split_whitespace().any(|w| {
+                matches!(w.to_lowercase().as_str(), "can" | "the" | "and" | "any" | "for" | "nor" | "of")
+            });
+        if looks_like_name {
+            return Some(p);
+        }
+    }
+    None
 }
 
 /// A line that divides the title block from the author (`—`, `-`, `·`, `by`).
@@ -719,6 +794,7 @@ mod tests {
         // Publisher: known names win; sentence boilerplate is rejected.
         assert_eq!(find_publisher("© 2019 Apress Media LLC"), Some("Apress".into()));
         assert_eq!(find_publisher("Published by Acme Press, London"), Some("Acme Press".into()));
+        assert_eq!(find_publisher("Copyright © 2024 by HiTeX Press"), Some("HiTeX Press".into()));
         assert_eq!(
             find_publisher("Neither the publisher nor the author can accept responsibility"),
             None
@@ -755,6 +831,22 @@ mod tests {
             Some((
                 "Building Chatbots with Python".into(),
                 Some("Using Natural Language Processing and Machine Learning".into())
+            ))
+        );
+
+        // LaTeX-style: title + subtitle in one heading split by <br/>, with the
+        // subtitle italicised and copyright following. Title/subtitle split; the
+        // copyright is never taken as the subtitle.
+        let latex = "<html><body><div class=\"maketitle\">\
+            <h2>CUDA Programming with C++<br/><i>From Basics to Expert Proficiency</i></h2>\
+            <div class=\"author\"></div></div>\
+            <div class=\"center\"><p>Copyright © 2024 by HiTeX Press<br/>All rights reserved. \
+            No part of this publication may be reproduced.</p></div></body></html>";
+        assert_eq!(
+            title_from_html(latex),
+            Some((
+                "CUDA Programming with C++".into(),
+                Some("From Basics to Expert Proficiency".into())
             ))
         );
 
