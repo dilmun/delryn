@@ -66,6 +66,8 @@ pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
 }
 
 pub fn render(f: &mut Frame, app: &mut App) {
+    // Hit rects are rebuilt every frame by the renderers below.
+    app.mouse.clear();
     match app.mode {
         Mode::Reader => reader::render(f, app),
         Mode::Library => library::render(f, app),

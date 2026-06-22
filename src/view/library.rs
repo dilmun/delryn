@@ -127,6 +127,7 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
     app.lib_grid_cols = cols;
     app.ensure_grid_covers(&paths, GRID_BUILD_PER_FRAME);
     let font = super::image_font(app);
+    let mut book_hits: Vec<(usize, Rect)> = Vec::with_capacity(visible.len());
 
     for (i, path, title, fav, marked) in &visible {
         let pos = i - start;
@@ -135,6 +136,8 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
         let y = y0 + r * cell_h;
         let card = Rect { x, y, width: cover_w, height: cover_h };
         let label = Rect { x, y: y + cover_h, width: cover_w, height: LABEL_H };
+        // Whole cell (cover + title) is the click target for this book.
+        book_hits.push((*i, Rect { x, y, width: cover_w, height: cover_h + LABEL_H }));
         let selected = *i == sel;
 
         // Card frame — rounded; accent border for the cursor, marker colour for a
@@ -203,6 +206,7 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
             label,
         );
     }
+    app.mouse.books = book_hits;
 }
 
 /// Right-hand pane: the selected book's cover (via the image protocol) plus its
@@ -363,7 +367,7 @@ fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: 
     f.render_widget(List::new(items).block(pane_block("Library", focused, theme)), area);
 }
 
-fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: bool) {
+fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: bool) {
     let block = pane_block("Books", focused, theme);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -394,6 +398,8 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: boo
     let mut rows: Vec<Row> = Vec::new();
     let mut sel_row = 0;
     let mut last_series: Option<&str> = None;
+    // (book index, row position) for each book row, for mouse hit-testing.
+    let mut row_meta: Vec<(usize, usize)> = Vec::with_capacity(app.lib_books.len());
     for (i, b) in app.lib_books.iter().enumerate() {
         if grouped && last_series != Some(b.series.as_str()) {
             let n = counts.get(b.series.as_str()).copied().unwrap_or(0);
@@ -403,6 +409,7 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: boo
         if i == sel {
             sel_row = rows.len();
         }
+        row_meta.push((i, rows.len()));
         let marked = app.lib_marked.contains(&b.path);
         rows.push(book_row(b, compact, grouped, marked, theme));
     }
@@ -439,6 +446,23 @@ fn render_books(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: boo
     }
     let mut state = TableState::new().with_selected(Some(sel_row));
     f.render_stateful_widget(table, area, &mut state);
+
+    // Map each on-screen book row to its index for click hit-testing, using the
+    // scroll offset the table settled on and the header line (non-compact only).
+    let offset = state.offset();
+    let header_h: u16 = if compact { 0 } else { 1 };
+    let mut hits: Vec<(usize, Rect)> = Vec::with_capacity(row_meta.len());
+    for (idx, pos) in row_meta {
+        if pos < offset {
+            continue;
+        }
+        let sy = area.y + header_h + (pos - offset) as u16;
+        if sy >= area.y + area.height {
+            continue;
+        }
+        hits.push((idx, Rect { x: area.x, y: sy, width: area.width, height: 1 }));
+    }
+    app.mouse.books = hits;
 }
 
 /// A series group header row (spans the title column).

@@ -553,6 +553,32 @@ pub struct LayoutRects {
     pub content: Option<Rect>,
 }
 
+/// Clickable regions captured during the last render, for mouse hit-testing.
+/// Rebuilt every frame by the view layer; consulted by `on_mouse`.
+#[derive(Default)]
+pub struct MouseHits {
+    /// Library: (book index, screen rect) for each visible row / grid cell.
+    pub books: Vec<(usize, Rect)>,
+    /// Editor tab strip: (tab, rect).
+    pub edit_tabs: Vec<(EditTab, Rect)>,
+    /// Editor Details/File fields: (row index, value-start column, rect).
+    pub edit_fields: Vec<(usize, u16, Rect)>,
+    /// Editor Online/Cover results: (result index, rect).
+    pub edit_results: Vec<(usize, Rect)>,
+    /// Editor search bar rect.
+    pub edit_search: Option<Rect>,
+}
+
+impl MouseHits {
+    pub fn clear(&mut self) {
+        self.books.clear();
+        self.edit_tabs.clear();
+        self.edit_fields.clear();
+        self.edit_results.clear();
+        self.edit_search = None;
+    }
+}
+
 /// A reading position, for the navigation (back/forward) history.
 #[derive(Clone, Copy)]
 struct Pos {
@@ -1565,6 +1591,8 @@ pub struct App {
     pub config: Config,
     pub reader: Option<Reader>,
     pub last_layout: LayoutRects,
+    /// Clickable regions from the last render (mouse hit-testing).
+    pub mouse: MouseHits,
     pub pending: Pending,
     pub should_quit: bool,
     /// Open settings popup, if any.
@@ -1813,6 +1841,7 @@ impl App {
             config,
             reader: Some(reader),
             last_layout: LayoutRects::default(),
+            mouse: MouseHits::default(),
             pending: Pending::default(),
             should_quit: false,
             settings: None,
@@ -1868,6 +1897,7 @@ impl App {
             config,
             reader: None,
             last_layout: LayoutRects::default(),
+            mouse: MouseHits::default(),
             pending: Pending::default(),
             should_quit: false,
             settings: None,
@@ -3919,36 +3949,105 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, m: MouseEvent) {
-        if !self.config.mouse_enabled || self.mode != Mode::Reader {
+        if !self.config.mouse_enabled {
             return;
         }
-        // The wheel scrolls whichever pane the cursor is over: the TOC view
-        // (without changing the selection) or the content.
-        let over_sidebar = self
-            .last_layout
-            .sidebar
-            .is_some_and(|sb| sb.contains((m.column, m.row).into()));
         match m.kind {
-            MouseEventKind::ScrollDown => {
+            // The wheel scrolls whichever reader pane the cursor is over: the TOC
+            // (without changing the selection) or the content.
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                if self.mode != Mode::Reader {
+                    return;
+                }
+                let d: isize = if matches!(m.kind, MouseEventKind::ScrollUp) { -3 } else { 3 };
+                let over_sidebar = self
+                    .last_layout
+                    .sidebar
+                    .is_some_and(|sb| sb.contains((m.column, m.row).into()));
                 if let Some(r) = self.reader.as_mut() {
                     if over_sidebar {
-                        r.sidebar_wheel(3);
+                        r.sidebar_wheel(d);
                     } else {
-                        r.queue_scroll(3);
+                        r.queue_scroll(d);
                     }
                 }
             }
-            MouseEventKind::ScrollUp => {
-                if let Some(r) = self.reader.as_mut() {
-                    if over_sidebar {
-                        r.sidebar_wheel(-3);
-                    } else {
-                        r.queue_scroll(-3);
-                    }
-                }
-            }
-            MouseEventKind::Down(_) => self.mouse_click(m.column, m.row),
+            MouseEventKind::Down(_) => self.mouse_down(m.column, m.row),
             _ => {}
+        }
+    }
+
+    /// Route a left-click to the active overlay / mode using the hit rects
+    /// captured during the last render.
+    fn mouse_down(&mut self, col: u16, row: u16) {
+        if self.meta_edit.is_some() {
+            self.editor_click(col, row);
+            return;
+        }
+        // Other overlays are keyboard-driven (no hit rects); swallow the click.
+        if self.settings.is_some()
+            || self.shelf_picker.is_some()
+            || self.bulk_rename.is_some()
+            || self.annot.is_some()
+            || self.image_view.is_some()
+            || self.note_input.is_some()
+        {
+            return;
+        }
+        match self.mode {
+            Mode::Reader => self.mouse_click(col, row),
+            Mode::Library => self.library_click(col, row),
+        }
+    }
+
+    /// Library click: select the clicked book and focus the list pane.
+    fn library_click(&mut self, col: u16, row: u16) {
+        let pt = (col, row).into();
+        if let Some(&(idx, _)) = self.mouse.books.iter().find(|(_, r)| r.contains(pt)) {
+            self.lib_sel = idx.min(self.lib_books.len().saturating_sub(1));
+            self.lib_pane = LibPane::List;
+        }
+    }
+
+    /// Editor click: switch tab, focus + edit a field (caret at the click),
+    /// open the search bar, or pick a result.
+    fn editor_click(&mut self, col: u16, row: u16) {
+        let pt = (col, row).into();
+        if let Some(&(tab, _)) = self.mouse.edit_tabs.iter().find(|(_, r)| r.contains(pt)) {
+            if let Some(e) = self.meta_edit.as_mut() {
+                e.tab = tab;
+                e.mode = EditMode::Nav;
+            }
+            if self.meta_edit.as_ref().map(|e| e.tab) == Some(EditTab::File) {
+                self.recompute_rename();
+            }
+            return;
+        }
+        if self.mouse.edit_search.is_some_and(|r| r.contains(pt)) {
+            self.online_begin_query(None);
+            return;
+        }
+        if let Some(&(idx, vstart, _)) = self.mouse.edit_fields.iter().find(|(_, _, r)| r.contains(pt)) {
+            if let Some(e) = self.meta_edit.as_mut() {
+                match e.tab {
+                    EditTab::Details => e.row = idx,
+                    EditTab::File => e.file_row = idx,
+                    _ => {}
+                }
+                e.mode = EditMode::Edit;
+                let len = e.cur_field_len();
+                e.cursor = (col.saturating_sub(vstart) as usize).min(len);
+            }
+            return;
+        }
+        let hit = self
+            .mouse
+            .edit_results
+            .iter()
+            .find(|(_, r)| r.contains(pt))
+            .map(|&(idx, _)| idx);
+        if let (Some(idx), Some(e)) = (hit, self.meta_edit.as_mut()) {
+            e.search_mut().row = idx;
         }
     }
 
@@ -4349,6 +4448,38 @@ mod tests {
         assert!(!books.join("a old.epub").exists(), "old file gone");
         assert!(app.bulk_rename.is_none(), "popup closed after apply");
         assert!(app.lib_marked.is_empty(), "selection cleared after apply");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // A left-click on a book's hit rect selects it (mouse dispatch).
+    #[test]
+    fn library_click_selects_book() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_click_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for (p, t) in [("/a.epub", "A"), ("/b.epub", "B")] {
+                store
+                    .upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                    .unwrap();
+            }
+        }
+        let mut app = App::library();
+        // Stand in for the render that normally fills these rects.
+        app.mouse.books = vec![
+            (0, Rect::new(0, 0, 20, 1)),
+            (1, Rect::new(0, 1, 20, 1)),
+        ];
+        app.on_mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.lib_sel, 1, "click on the second row selects it");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
