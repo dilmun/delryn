@@ -38,9 +38,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
     f.render_widget(Clear, area);
     let title = {
         let ed = app.meta_edit.as_ref().unwrap();
+        // Progress counter when stepping through a multi-book edit queue.
+        let progress = if app.edit_total > 1 {
+            format!(" ({}/{})", app.edit_total - app.edit_queue.len(), app.edit_total)
+        } else {
+            String::new()
+        };
         format!(
-            " ✎ Edit · {} ",
-            super::truncate(&ed.book_title, area.width.saturating_sub(14) as usize)
+            " ✎ Edit{progress} · {} ",
+            super::truncate(&ed.book_title, area.width.saturating_sub(20) as usize)
         )
     };
     let block = Block::default()
