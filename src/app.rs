@@ -371,6 +371,26 @@ pub struct CollInput {
     pub rename_from: Option<String>,
 }
 
+/// A destructive action waiting for a yes/no answer. One uniform prompt across
+/// the app (`y`/`⏎` confirm, `n`/`Esc` cancel), shown in the status bar.
+pub struct PendingConfirm {
+    /// The question, e.g. `Delete "SciFi"?` or `Rename 3 books?`.
+    pub question: String,
+    /// What to run when the user confirms.
+    action: ConfirmAction,
+}
+
+/// The action a [`PendingConfirm`] commits on `yes`. The relevant popup state
+/// (editor / rename / collection editor) is still open behind the prompt.
+enum ConfirmAction {
+    /// Save the metadata editor (fields + embed cover).
+    SaveMeta,
+    /// Apply the rename template to the popup's targets.
+    Rename,
+    /// Commit the inline collection editor (rename, or delete on a cleared name).
+    Collection,
+}
+
 /// One adjustable setting (identity, not position — so section headers can be
 /// inserted freely without re-indexing the change handler).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1568,6 +1588,9 @@ pub struct App {
     pub bulk_rename: Option<BulkRename>,
     /// Inline sidebar collection editor (create / rename), if active.
     pub lib_coll_edit: Option<CollInput>,
+    /// A destructive action awaiting a yes/no confirmation, if any. Intercepts
+    /// input ahead of every popup and is answered with y/⏎ or n/Esc.
+    pub pending_confirm: Option<PendingConfirm>,
     /// Open image viewer overlay, if any.
     pub image_view: Option<ImageView>,
     /// Detected terminal image protocol (None if unsupported / headless).
@@ -1822,6 +1845,7 @@ impl App {
             meta_edit: None,
             bulk_rename: None,
             lib_coll_edit: None,
+            pending_confirm: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -1882,6 +1906,7 @@ impl App {
             meta_edit: None,
             bulk_rename: None,
             lib_coll_edit: None,
+            pending_confirm: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -2199,7 +2224,12 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.meta_edit = None,
-            KeyCode::Char('s') if ctrl => self.save_meta_edit(),
+            // ^S asks for confirmation first (unless a field is invalid).
+            KeyCode::Char('s') if ctrl => {
+                if !self.meta_edit.as_ref().is_some_and(MetaEdit::has_invalid) {
+                    self.ask_confirm("Save changes?", ConfirmAction::SaveMeta);
+                }
+            }
             KeyCode::Tab => self.meta_edit_switch_tab(1),
             KeyCode::BackTab => self.meta_edit_switch_tab(-1),
             // Jump straight to a tab by number.
@@ -2647,7 +2677,14 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.bulk_rename = None,
-            KeyCode::Char('s') if ctrl => self.apply_bulk_rename(),
+            // ^S asks for confirmation before moving files on disk.
+            KeyCode::Char('s') if ctrl => {
+                let n = self.bulk_rename.as_ref().map_or(0, |b| b.targets.len());
+                if n > 0 {
+                    let q = format!("Rename {n} book{}?", if n == 1 { "" } else { "s" });
+                    self.ask_confirm(&q, ConfirmAction::Rename);
+                }
+            }
             // Toggle the full-screen before/after view.
             KeyCode::Char('f') if ctrl => {
                 if let Some(b) = self.bulk_rename.as_mut() {
@@ -3116,6 +3153,11 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return;
         }
+        // A pending yes/no confirmation is modal: it answers before any popup.
+        if self.pending_confirm.is_some() {
+            self.confirm_key(key);
+            return;
+        }
         if self.settings.is_some() {
             self.settings_key(key);
             return;
@@ -3182,6 +3224,35 @@ impl App {
                 self.lib_flash = None;
                 self.library_key(key);
             }
+        }
+    }
+
+    /// Raise the uniform yes/no confirmation for a destructive action. The
+    /// underlying popup (editor / rename / collection editor) stays open behind
+    /// the prompt, so cancelling returns the user exactly where they were.
+    fn ask_confirm(&mut self, question: &str, action: ConfirmAction) {
+        self.pending_confirm = Some(PendingConfirm { question: question.to_string(), action });
+    }
+
+    /// Answer the pending confirmation: `y`/`⏎` commits, `n`/`Esc` cancels, and
+    /// any other key is ignored (the prompt stays up).
+    fn confirm_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => self.confirm_commit(),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => self.pending_confirm = None,
+            _ => {}
+        }
+    }
+
+    /// Run the confirmed action and dismiss the prompt.
+    fn confirm_commit(&mut self) {
+        let Some(p) = self.pending_confirm.take() else {
+            return;
+        };
+        match p.action {
+            ConfirmAction::SaveMeta => self.save_meta_edit(),
+            ConfirmAction::Rename => self.apply_bulk_rename(),
+            ConfirmAction::Collection => self.lib_coll_commit(),
         }
     }
 
@@ -3627,7 +3698,21 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.lib_coll_edit = None,
-            KeyCode::Enter => self.lib_coll_commit(),
+            KeyCode::Enter => {
+                // Creating a new collection commits at once (nothing to undo);
+                // renaming or deleting an existing one asks for confirmation.
+                match self.lib_coll_edit.as_ref() {
+                    Some(i) if i.rename_from.is_none() => self.lib_coll_commit(),
+                    Some(i) => {
+                        let q = match &i.rename_from {
+                            Some(old) if i.buf.trim().is_empty() => format!("Delete “{old}”?"),
+                            _ => format!("Rename to “{}”?", i.buf.trim()),
+                        };
+                        self.ask_confirm(&q, ConfirmAction::Collection);
+                    }
+                    None => {}
+                }
+            }
             KeyCode::Left => {
                 if let Some(i) = self.lib_coll_input_mut() {
                     i.cursor = i.cursor.saturating_sub(1);
@@ -4011,6 +4096,10 @@ impl App {
     /// Route a left-click to the active overlay / mode using the hit rects
     /// captured during the last render.
     fn mouse_down(&mut self, col: u16, row: u16) {
+        // A pending confirmation is modal — swallow clicks until it's answered.
+        if self.pending_confirm.is_some() {
+            return;
+        }
         if self.meta_edit.is_some() {
             self.editor_click(col, row);
             return;
@@ -4283,22 +4372,70 @@ mod tests {
         app.on_key(code(KeyCode::Esc));
         assert!(app.meta_edit.as_ref().unwrap().has_invalid(), "non-numeric year invalid");
 
-        // ^S must NOT save while invalid.
+        // ^S must NOT even prompt to save while invalid.
         app.on_key(ctrl('s'));
+        assert!(app.pending_confirm.is_none(), "no save prompt while invalid");
         assert!(app.meta_edit.is_some(), "save blocked while invalid");
 
-        // Fix the year, then ^S saves and persists.
+        // Fix the year, then ^S → confirm → save and persist.
         app.on_key(code(KeyCode::Enter));
         app.on_key(ctrl('u'));
         for c in "2001".chars() {
             app.on_key(key(c));
         }
         app.on_key(code(KeyCode::Esc));
+        // ^S asks for confirmation; the editor stays open until answered.
         app.on_key(ctrl('s'));
+        assert!(app.pending_confirm.is_some(), "^S asks to confirm");
+        assert!(app.meta_edit.is_some(), "editor open while confirming");
+        app.on_key(key('y')); // confirm
+        assert!(app.pending_confirm.is_none(), "prompt dismissed");
         assert!(app.meta_edit.is_none(), "valid edit saves & closes");
         let b = &app.lib_books[0];
         assert_eq!(b.title, "XK");
         assert_eq!(b.year, Some(2001));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ^S raises a yes/no prompt; n (or Esc) cancels without saving, leaving the
+    // editor open. Unrelated keys are ignored while the prompt is up.
+    #[test]
+    fn save_confirmation_can_be_cancelled() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_cfm_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book("/k.epub", "K", "Auth", Some(1999), 1, 1, 1, "", None, "", "", "", "")
+                .unwrap();
+        }
+
+        let mut app = App::library();
+        app.on_key(key('e')); // open editor
+        // Change the title so there's something to save.
+        app.on_key(code(KeyCode::Enter));
+        app.on_key(key('X'));
+        app.on_key(code(KeyCode::Esc)); // back to nav
+
+        // ^S raises the prompt; nothing is saved yet and the editor stays open.
+        app.on_key(ctrl('s'));
+        assert!(app.pending_confirm.is_some(), "prompt up");
+        // An unrelated key is ignored — the prompt is modal.
+        app.on_key(code(KeyCode::Tab));
+        assert!(app.pending_confirm.is_some(), "stray key ignored, prompt stays");
+        // n cancels, the editor remains open, nothing persisted.
+        app.on_key(key('n'));
+        assert!(app.pending_confirm.is_none(), "n dismisses the prompt");
+        assert!(app.meta_edit.is_some(), "editor stays open after cancel");
+        assert_eq!(app.lib_books[0].title, "K", "nothing persisted on cancel");
+
+        // Esc also cancels the prompt (and keeps the editor).
+        app.on_key(ctrl('s'));
+        app.on_key(code(KeyCode::Esc));
+        assert!(app.pending_confirm.is_none() && app.meta_edit.is_some(), "Esc cancels");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4418,7 +4555,9 @@ mod tests {
         // `r` renames the current book (no need to mark it) via the popup.
         app.on_key(key('r')); // rename popup (default "%T.%E")
         assert!(app.bulk_rename.is_some());
-        app.on_key(ctrl('s')); // apply
+        app.on_key(ctrl('s')); // ^S asks to confirm
+        assert!(app.pending_confirm.is_some(), "rename asks to confirm");
+        app.on_key(key('y')); // confirm + apply
 
         let new = books.join("Clean Title.epub");
         assert!(new.exists(), "renamed file exists");
@@ -4459,7 +4598,8 @@ mod tests {
         app.on_key(key('r')); // rename the selection (not the editor)
         assert!(app.bulk_rename.is_some());
         assert!(app.meta_edit.is_none());
-        app.on_key(ctrl('s')); // apply default "%T.%E"
+        app.on_key(ctrl('s')); // ^S asks to confirm
+        app.on_key(key('y')); // confirm + apply default "%T.%E"
 
         assert!(books.join("Alpha.epub").exists(), "Alpha renamed");
         assert!(books.join("Beta.epub").exists(), "Beta renamed");
@@ -4529,18 +4669,22 @@ mod tests {
         assert_eq!(names(&app), vec!["Sci"]);
         assert!(matches!(app.lib_view, LibView::Shelf(ref n) if n == "Sci"));
 
-        // Rename in place: Sci → SciFi.
+        // Rename in place: Sci → SciFi. ⏎ asks to confirm; y commits.
         app.lib_coll_begin_rename();
         for c in "Fi".chars() {
             app.on_key(key(c));
         }
         app.on_key(code(KeyCode::Enter));
+        assert!(app.pending_confirm.is_some(), "rename asks to confirm");
+        app.on_key(key('y'));
         assert_eq!(names(&app), vec!["SciFi"]);
 
-        // Delete by clearing the name and committing.
+        // Delete by clearing the name and confirming.
         app.lib_coll_begin_rename();
         app.on_key(ctrl('u'));
         app.on_key(code(KeyCode::Enter));
+        assert!(app.pending_confirm.is_some(), "delete asks to confirm");
+        app.on_key(key('y'));
         assert!(names(&app).is_empty());
 
         let _ = std::fs::remove_dir_all(&tmp);
