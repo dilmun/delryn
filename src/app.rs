@@ -1752,7 +1752,8 @@ fn load_cover_bytes(path: &str) -> Option<Vec<u8>> {
         Ok(bytes) if !bytes.is_empty() => return Some(bytes),
         _ => {}
     }
-    epub::read_metadata(path).ok().and_then(|(m, _)| m.cover.map(|(b, _)| b))
+    // Declared cover, else the first content image (converted files declare none).
+    epub::extract_cover(path).map(|(b, _)| b)
 }
 
 /// Fill a rename template from the edited metadata `values` (in [`META_FIELDS`]

@@ -237,6 +237,62 @@ pub fn extract_content_title(path: impl AsRef<Path>) -> Option<(String, Option<S
     None
 }
 
+/// The book's cover image bytes (+ mime). Prefers the EPUB's *declared* cover;
+/// for converted files that declare none, falls back to the first image in the
+/// opening sections (their cover page), so the library shows a cover too.
+pub fn extract_cover(path: impl AsRef<Path>) -> Option<(Vec<u8>, String)> {
+    let mut doc = EpubDoc::new(path.as_ref()).ok()?;
+    match doc.get_cover() {
+        Some(cover) => Some(cover),
+        None => first_content_image(&mut doc),
+    }
+}
+
+/// First embedded image referenced by the book's opening sections (its cover
+/// page), resolved to bytes + mime — the cover fallback for files with no
+/// declared cover.
+fn first_content_image(doc: &mut EpubDoc<BufReader<File>>) -> Option<(Vec<u8>, String)> {
+    let n = doc.get_num_chapters().min(3);
+    for i in 0..n {
+        if !doc.set_current_chapter(i) {
+            continue;
+        }
+        let dir = doc
+            .get_current_path()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .unwrap_or_default();
+        let Some((xhtml, _)) = doc.get_current_str() else {
+            continue;
+        };
+        let Some(src) = first_img_src(&xhtml) else {
+            continue;
+        };
+        if let Some(bytes) = resolve_image(doc, &dir, &src) {
+            return Some((bytes, mime_from_ext(&src).to_string()));
+        }
+    }
+    None
+}
+
+/// The `src` of the first `<img>` in a section.
+fn first_img_src(xhtml: &str) -> Option<String> {
+    use scraper::{Html, Selector};
+    let doc = Html::parse_document(xhtml);
+    let sel = Selector::parse("img").ok()?;
+    doc.select(&sel).find_map(|e| e.value().attr("src").map(str::to_string))
+}
+
+/// Guess an image mime from a filename extension (defaults to JPEG).
+fn mime_from_ext(src: &str) -> &'static str {
+    match Path::new(src).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => "image/jpeg",
+    }
+}
+
 /// Most leaf blocks a section can have and still be treated as a title page
 /// rather than a chapter (so chapter body text is never mistaken for a title).
 const TITLE_PAGE_MAX_BLOCKS: usize = 14;
@@ -617,7 +673,19 @@ fn build_outline(
 
 #[cfg(test)]
 mod tests {
-    use super::{converted_from, find_isbn, find_publisher, find_year, title_from_html};
+    use super::{converted_from, find_isbn, find_publisher, find_year, first_img_src, mime_from_ext, title_from_html};
+
+    #[test]
+    fn cover_fallback_helpers() {
+        assert_eq!(
+            first_img_src("<html><body><img src=\"images/cover.jpeg\" class=\"c\"/></body></html>"),
+            Some("images/cover.jpeg".into())
+        );
+        assert_eq!(first_img_src("<html><body><p>no image</p></body></html>"), None);
+        assert_eq!(mime_from_ext("a/b/cover.PNG"), "image/png");
+        assert_eq!(mime_from_ext("cover.jpg"), "image/jpeg");
+        assert_eq!(mime_from_ext("cover"), "image/jpeg");
+    }
 
     #[test]
     fn content_metadata_scanners() {
