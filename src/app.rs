@@ -1659,6 +1659,11 @@ pub struct App {
     /// A destructive action awaiting a yes/no confirmation, if any. Intercepts
     /// input ahead of every popup and is answered with y/⏎ or n/Esc.
     pub pending_confirm: Option<PendingConfirm>,
+    /// Remaining book paths to edit after the current one, when editing a
+    /// multi-selection one book at a time (`^S` saves+advances, `Esc` skips).
+    pub edit_queue: Vec<String>,
+    /// Total books in the current edit queue (for the `N/total` header).
+    pub edit_total: usize,
     /// Open image viewer overlay, if any.
     pub image_view: Option<ImageView>,
     /// Detected terminal image protocol (None if unsupported / headless).
@@ -1844,14 +1849,27 @@ pub fn main_title(raw: &str) -> String {
 /// cleaner for a metadata search than the full byline. Splits on the usual
 /// separators (`,`, `;`, ` and `, ` & `) and keeps the first *non-empty* name, so
 /// a malformed byline like ", Kissinger" yields "Kissinger", not leading junk.
+/// Placeholder bylines (`Unknown`, `Anonymous`, …) become empty.
 pub fn first_author(authors: &str) -> String {
+    if is_placeholder_author(authors) {
+        return String::new();
+    }
     let mut a = authors.trim();
     for sep in [",", ";", " and ", " & "] {
         if let Some(piece) = a.split(sep).map(str::trim).find(|p| !p.is_empty()) {
             a = piece;
         }
     }
-    a.trim_matches(|c: char| matches!(c, ',' | ';' | '&') || c.is_whitespace()).to_string()
+    let first = a.trim_matches(|c: char| matches!(c, ',' | ';' | '&') || c.is_whitespace());
+    if is_placeholder_author(first) { String::new() } else { first.to_string() }
+}
+
+/// A non-author placeholder the indexer or a converter leaves behind.
+fn is_placeholder_author(s: &str) -> bool {
+    matches!(
+        s.trim().to_lowercase().as_str(),
+        "" | "unknown" | "unknown author" | "anonymous" | "n/a" | "na" | "none"
+    )
 }
 
 /// If `title` ends with `<sep><subtitle>` (the subtitle matched case-insensitively),
@@ -2029,6 +2047,8 @@ impl App {
             bulk_rename: None,
             lib_coll_edit: None,
             pending_confirm: None,
+            edit_queue: Vec::new(),
+            edit_total: 0,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -2090,6 +2110,8 @@ impl App {
             bulk_rename: None,
             lib_coll_edit: None,
             pending_confirm: None,
+            edit_queue: Vec::new(),
+            edit_total: 0,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -2338,11 +2360,22 @@ impl App {
 
     /// Open the tabbed metadata editor on the selected book.
     fn open_meta_edit(&mut self) {
-        let Some(b) = self.lib_books.get(self.lib_sel) else {
+        let Some(path) = self.lib_books.get(self.lib_sel).map(|b| b.path.clone()) else {
             return;
         };
+        self.open_meta_edit_path(&path);
+    }
+
+    /// Open the metadata editor on the book at `path` — shared by the current
+    /// selection and stepping through a multi-book edit queue.
+    fn open_meta_edit_path(&mut self, path: &str) {
+        let Some(b) = self.lib_books.iter().find(|b| b.path == path) else {
+            return;
+        };
+        // Snapshot the fields we need, then drop the borrow on `self.lib_books`.
         let path = b.path.clone();
         let book_title = b.title.clone();
+        let author_raw = b.author.clone();
         let values = vec![
             b.title.clone(),
             b.author.clone(),
@@ -2359,20 +2392,17 @@ impl App {
             .map(|(m, _)| meta_fields_from(&m))
             .unwrap_or_else(|_| vec![String::new(); META_FIELDS.len()]);
 
-        // Seed the Lookup form, worst-input-last so a filename never drives the
-        // search when real metadata exists: the DB title if it's a real title
-        // (not just the filename stem), else the EPUB's declared title, else the
-        // filename. Whichever it is, `main_title` strips any subtitle/edition
-        // after a separator, and `first_author` keeps a single author.
+        // Seed Title, worst-input-last so a filename never drives the search when
+        // real metadata exists: the DB title if it's a real title (not just the
+        // filename stem), else the EPUB's declared title, else the filename, else
+        // the book's content. `main_title` strips any subtitle after a separator.
         let stem = std::path::Path::new(&path)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .trim();
-        let db_title = b.title.trim();
+        let db_title = book_title.trim();
         let epub_title = original.first().map(String::as_str).unwrap_or("").trim();
-        // An ID-like "title" (a bare number / UUID) is worse than the filename,
-        // which for these converted files usually carries the real title.
         let real_meta = if !db_title.is_empty() && db_title != stem && !looks_like_id(db_title) {
             Some(db_title)
         } else if !epub_title.is_empty() && !looks_like_id(epub_title) {
@@ -2382,24 +2412,17 @@ impl App {
         };
         let name = match real_meta {
             Some(t) => main_title(t),
-            None => {
-                // Junk metadata: the book's content keeps title and subtitle in
-                // separate blocks, so it splits them better than the filename
-                // (which often merges them). Try content first, then the filename.
-                epub::extract_content_title(&path)
-                    .map(|(t, _)| main_title(&t))
-                    .filter(|n| !n.is_empty() && !looks_like_id(n))
-                    .unwrap_or_else(|| main_title(stem))
-            }
+            None => epub::extract_content_title(&path)
+                .map(|(t, _)| main_title(&t))
+                .filter(|n| !n.is_empty() && !looks_like_id(n))
+                .unwrap_or_else(|| main_title(stem)),
         };
-        let lookup = LookupForm {
-            name,
-            author: first_author(&b.author),
-            ..LookupForm::default()
-        };
-        // The Cover tab still searches with a free-text bar, seeded from the
-        // book's title + author.
-        let cover_q = format!("{} {}", b.title, b.author).trim().to_string();
+        let author = first_author(&author_raw);
+        // Cover search is seeded from the SAME clean title + author, not the raw
+        // (possibly ID-like) metadata, so its query/results aren't junk.
+        let cover_q =
+            format!("{name} {author}").split_whitespace().collect::<Vec<_>>().join(" ");
+        let lookup = LookupForm { name, author, ..LookupForm::default() };
         let cursor = values[0].chars().count();
         self.meta_edit = Some(MetaEdit {
             path,
@@ -2425,6 +2448,38 @@ impl App {
         });
     }
 
+    /// Begin editing a multi-selection one book at a time: open the editor on the
+    /// first selected book and queue the rest. `^S` saves and advances; `Esc`
+    /// skips to the next; the editor closes after the last.
+    fn start_bulk_edit(&mut self) {
+        let mut paths: Vec<String> = self
+            .lib_books
+            .iter()
+            .filter(|b| self.lib_marked.contains(&b.path))
+            .map(|b| b.path.clone())
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        self.edit_total = paths.len();
+        let first = paths.remove(0);
+        self.edit_queue = paths;
+        self.lib_exit_visual(); // the selection is captured in the queue now
+        self.open_meta_edit_path(&first);
+    }
+
+    /// Advance to the next book in the edit queue. Returns false (and resets the
+    /// queue) when there are none left, so the caller can close the editor.
+    fn advance_edit_queue(&mut self) -> bool {
+        if self.edit_queue.is_empty() {
+            self.edit_total = 0;
+            return false;
+        }
+        let next = self.edit_queue.remove(0);
+        self.open_meta_edit_path(&next);
+        true
+    }
+
     fn meta_edit_key(&mut self, key: KeyEvent) {
         let (mode, tab) = match &self.meta_edit {
             Some(e) => (e.mode, e.tab),
@@ -2448,7 +2503,12 @@ impl App {
         // Navigate mode.
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Esc => self.meta_edit = None,
+            // In a multi-book queue, Esc skips to the next; otherwise it closes.
+            KeyCode::Esc => {
+                if !self.advance_edit_queue() {
+                    self.meta_edit = None;
+                }
+            }
             // ^S asks for confirmation first (unless a field is invalid).
             KeyCode::Char('s') if ctrl => {
                 if !self.meta_edit.as_ref().is_some_and(MetaEdit::has_invalid) {
@@ -3352,6 +3412,8 @@ impl App {
             self.lib_flash = Some(embed_cover_into_file(&ed.path, bytes));
         }
         self.refresh_library();
+        // In a multi-book edit, move on to the next; else `take()` left it closed.
+        self.advance_edit_queue();
     }
 
     /// Visible panes, left → right, given show flags and the active layout.
@@ -4002,7 +4064,14 @@ impl App {
                     self.bulk_favorite()
                 }
             }
-            KeyCode::Char('e') => self.open_meta_edit(),
+            // `e` edits the current book; with a selection, edits each in turn.
+            KeyCode::Char('e') => {
+                if self.lib_marked.is_empty() {
+                    self.open_meta_edit();
+                } else {
+                    self.start_bulk_edit();
+                }
+            }
             KeyCode::Char('c') => self.open_shelf_picker(),
             // `r` renames: the focused collection in place (sidebar), else the
             // selected book(s) — the current one when nothing is marked.
@@ -5322,6 +5391,11 @@ mod tests {
         // Malformed bylines with leading/stray separators don't yield junk.
         assert_eq!(first_author(", Kissinger"), "Kissinger");
         assert_eq!(first_author(" , Smith , Jones"), "Smith");
+        // Placeholder bylines become empty (not "Unknown").
+        assert_eq!(first_author("Unknown"), "");
+        assert_eq!(first_author("Unknown Author"), "");
+        assert_eq!(first_author("anonymous"), "");
+        assert_eq!(first_author("Real Name, Other"), "Real Name");
         // The composed query flattens punctuation noise into clean words.
         let f = LookupForm {
             name: "Deep Learning With Python".into(),
@@ -5370,13 +5444,85 @@ mod tests {
 
         let mut app = App::library();
         app.on_key(key('e'));
-        for _ in 0..2 {
-            app.on_key(code(KeyCode::Tab)); // → Lookup
-        }
         let ed = app.meta_edit.as_ref().unwrap();
+        // Title from the filename; author placeholder "Unknown" → empty; the
+        // Cover query is the same clean title, not the ID-like metadata title.
         assert_eq!(ed.lookup.name, "Building Chatbots with Python");
+        assert_eq!(ed.lookup.author, "");
+        assert_eq!(ed.cover_search.q, "Building Chatbots with Python");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    // Editing a multi-selection steps through each book: ^S saves + advances,
+    // and the editor closes after the last.
+    #[test]
+    fn bulk_edit_steps_through_selection() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_bulkedit_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for (p, t) in [("/a.epub", "A"), ("/b.epub", "B"), ("/c.epub", "C")] {
+                store
+                    .upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                    .unwrap();
+            }
+        }
+
+        let mut app = App::library();
+        assert_eq!(app.lib_books.len(), 3);
+        app.on_key(key('V')); // visual from book 0
+        app.on_key(key('j')); // extend to book 1
+        assert_eq!(app.lib_marked.len(), 2);
+
+        app.on_key(key('e')); // start the bulk edit
+        assert!(app.meta_edit.is_some());
+        assert_eq!(app.edit_total, 2);
+        assert_eq!(app.edit_queue.len(), 1, "one book still queued");
+        let first = app.meta_edit.as_ref().unwrap().path.clone();
+
+        // ^S → confirm → save and advance to the next book.
+        app.on_key(ctrl('s'));
+        app.on_key(key('y'));
+        assert!(app.meta_edit.is_some(), "advanced to the next book");
+        assert_eq!(app.edit_queue.len(), 0);
+        let second = app.meta_edit.as_ref().unwrap().path.clone();
+        assert_ne!(first, second);
+
+        // ^S on the last → confirm → editor closes, queue reset.
+        app.on_key(ctrl('s'));
+        app.on_key(key('y'));
+        assert!(app.meta_edit.is_none(), "editor closes after the last book");
+        assert_eq!(app.edit_total, 0);
+    }
+
+    // Esc skips to the next book in a bulk edit (rather than closing).
+    #[test]
+    fn bulk_edit_esc_skips_to_next() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_bulkskip_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for (p, t) in [("/a.epub", "A"), ("/b.epub", "B")] {
+                store.upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
+            }
+        }
+
+        let mut app = App::library();
+        app.on_key(key('A')); // select all
+        assert_eq!(app.lib_marked.len(), 2);
+        app.on_key(key('e'));
+        assert!(app.meta_edit.is_some());
+        app.on_key(code(KeyCode::Esc)); // skip first → next opens
+        assert!(app.meta_edit.is_some(), "Esc advanced, not closed");
+        assert_eq!(app.edit_queue.len(), 0);
+        app.on_key(code(KeyCode::Esc)); // skip last → closes
+        assert!(app.meta_edit.is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

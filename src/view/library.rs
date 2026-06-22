@@ -672,9 +672,9 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     // Selection (visual range or individual picks) gets bulk keys; grid (no
     // side panes) gets size keys, else the panes get </> resize.
     let keys = if visual {
-        "j/k extend · space pick · r rename · f favorite · V/Esc cancel"
+        "j/k extend · space pick · e edit · r rename · f favorite · V/Esc cancel"
     } else if marked > 0 {
-        "space/A pick · r rename · f favorite · c shelf · Esc clear"
+        "space/A pick · e edit · r rename · f favorite · c shelf · Esc clear"
     } else if app.is_grid() {
         "hjkl move · ⏎ open · space/V/A select · e edit · r rename · c shelf · s sort · v view · +/- size · q"
     } else {
