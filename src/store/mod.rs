@@ -52,6 +52,9 @@ CREATE TABLE IF NOT EXISTS shelves (
     name TEXT NOT NULL,
     PRIMARY KEY (path, name)
 );
+CREATE TABLE IF NOT EXISTS collections (
+    name TEXT PRIMARY KEY
+);
 ";
 
 /// A bookmark or note, anchored to content by a text quote (reflow-stable).
@@ -181,6 +184,12 @@ impl Store {
         // file (a file fact, refreshed every index — not subject to `edited`).
         let _ = conn.execute(
             "ALTER TABLE books ADD COLUMN converted INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        // First-class collections: seed the names table from existing memberships
+        // so collections created before this migration keep showing.
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO collections (name) SELECT DISTINCT name FROM shelves",
             [],
         );
         // Full-text index (graceful: skipped if FTS5 isn't compiled in).
@@ -537,12 +546,27 @@ impl Store {
 
     // --- Collections (shelves) -------------------------------------------
 
-    /// File a book onto a named collection (idempotent). Blank names are ignored.
+    /// Create an (initially empty) collection. Collections are first-class
+    /// (a names table), so one can exist before any book is filed onto it.
+    /// Idempotent; blank names ignored.
+    pub fn create_collection(&self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let _ = self
+            .conn
+            .execute("INSERT OR IGNORE INTO collections (name) VALUES (?1)", params![name]);
+    }
+
+    /// File a book onto a named collection (idempotent), creating the collection
+    /// if it doesn't exist yet. Blank names are ignored.
     pub fn add_to_shelf(&self, path: &str, name: &str) {
         let name = name.trim();
         if name.is_empty() {
             return;
         }
+        self.create_collection(name);
         let _ = self.conn.execute(
             "INSERT OR IGNORE INTO shelves (path, name) VALUES (?1, ?2)",
             params![path, name],
@@ -558,6 +582,31 @@ impl Store {
         );
     }
 
+    /// Rename a collection across all its books. If `new` already exists, the
+    /// two merge (books on both are deduped by the (path, name) primary key).
+    /// A blank new name is ignored.
+    pub fn rename_shelf(&self, old: &str, new: &str) {
+        let new = new.trim();
+        if new.is_empty() || new == old {
+            return;
+        }
+        // OR IGNORE skips rows that would collide with an existing `new` entry;
+        // the follow-up delete clears those now-merged leftovers.
+        self.create_collection(new);
+        let _ = self.conn.execute(
+            "UPDATE OR IGNORE shelves SET name = ?2 WHERE name = ?1",
+            params![old, new],
+        );
+        let _ = self.conn.execute("DELETE FROM shelves WHERE name = ?1", params![old]);
+        let _ = self.conn.execute("DELETE FROM collections WHERE name = ?1", params![old]);
+    }
+
+    /// Delete a collection entirely (its name + every book's membership in it).
+    pub fn delete_shelf(&self, name: &str) {
+        let _ = self.conn.execute("DELETE FROM shelves WHERE name = ?1", params![name]);
+        let _ = self.conn.execute("DELETE FROM collections WHERE name = ?1", params![name]);
+    }
+
     /// Collection names a book belongs to, sorted.
     pub fn shelves_for(&self, path: &str) -> Vec<String> {
         let mut out = Vec::new();
@@ -571,11 +620,14 @@ impl Store {
         out
     }
 
-    /// All collections with their book counts, sorted by name.
+    /// All collections with their book counts, sorted by name. Includes empty
+    /// collections (count 0) so freshly-created ones still appear.
     pub fn all_shelves(&self) -> Vec<(String, usize)> {
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT name, COUNT(*) FROM shelves GROUP BY name ORDER BY name COLLATE NOCASE",
+            "SELECT c.name, COUNT(s.path) FROM collections c \
+             LEFT JOIN shelves s ON s.name = c.name \
+             GROUP BY c.name ORDER BY c.name COLLATE NOCASE",
         ) {
             if let Ok(rows) = stmt.query_map([], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as usize))
@@ -802,9 +854,23 @@ mod tests {
         let titles: Vec<&str> = scifi.iter().map(|b| b.title.as_str()).collect();
         assert_eq!(titles, vec!["Alpha", "Beta"]);
 
-        // Removing the last member drops the collection from the listing.
+        // Collections are first-class: removing the last member leaves the
+        // (now empty) collection in the listing with count 0.
         store.remove_from_shelf("/a.epub", "To Read");
+        assert_eq!(
+            store.all_shelves(),
+            vec![("Sci-Fi".into(), 2), ("To Read".into(), 0)]
+        );
+        // Deleting it removes the collection entirely.
+        store.delete_shelf("To Read");
         assert_eq!(store.all_shelves(), vec![("Sci-Fi".into(), 2)]);
+
+        // An empty collection can be created on its own and persists.
+        store.create_collection("Wishlist");
+        assert!(store.all_shelves().iter().any(|(n, c)| n == "Wishlist" && *c == 0));
+        // Rename merges on collision.
+        store.rename_shelf("Wishlist", "Sci-Fi");
+        assert!(!store.all_shelves().iter().any(|(n, _)| n == "Wishlist"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -82,6 +82,19 @@ fn legend(app: &App) -> Option<(String, String)> {
             "type template · ←→ move · ^U clear · ^S rename all · Esc cancel".into(),
         ));
     }
+    if let Some(e) = &app.lib_coll_edit {
+        return Some(if e.rename_from.is_some() {
+            (
+                "Rename collection".into(),
+                "type · ←→ move · ^U clear · ⏎ save · empty ⏎ deletes · Esc cancel".into(),
+            )
+        } else {
+            (
+                "New collection".into(),
+                "type a name · ←→ move · ^U clear · ⏎ create · Esc cancel".into(),
+            )
+        });
+    }
     None
 }
 
@@ -90,13 +103,12 @@ fn editor_legend(ed: &MetaEdit) -> (String, String) {
     let state = format!("Edit · {}", ed.tab.label());
     let keys = if ed.search().editing {
         "type to search · ←→ move · ^U clear · ⏎ run · Esc done"
-    } else if ed.mode == EditMode::Edit || ed.new_shelf.is_some() {
+    } else if ed.mode == EditMode::Edit {
         "type to edit · ←→ move · ^U clear · ⏎/Esc done"
     } else {
         match ed.tab {
             EditTab::Details => "Tab tab · j/k move · ⏎ edit · r/R reset · ^S save · Esc",
             EditTab::Cover => "Tab tab · / search · j/k pick · ⏎ use cover · ^S save · Esc",
-            EditTab::Collections => "Tab tab · j/k move · ⏎ toggle/new · ^S save · Esc",
             EditTab::Online => "Tab tab · / search · j/k pick · ⏎ apply · ^S save · Esc",
             EditTab::File => "Tab tab · j/k move · ⏎ edit · ^S rename + save · Esc",
         }
