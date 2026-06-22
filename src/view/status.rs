@@ -82,13 +82,18 @@ fn legend(app: &App) -> Option<(String, String)> {
             "type template · ←→ move · ^U clear · ^S rename all · Esc cancel".into(),
         ));
     }
-    if let Some(m) = &app.coll_manager {
-        let keys = if m.input.is_some() {
-            "type a name · ←→ move · ^U clear · ⏎ save · Esc cancel"
+    if let Some(e) = &app.lib_coll_edit {
+        return Some(if e.rename_from.is_some() {
+            (
+                "Rename collection".into(),
+                "type · ←→ move · ^U clear · ⏎ save · empty ⏎ deletes · Esc cancel".into(),
+            )
         } else {
-            "↑↓ move · ⏎ open · n new · r rename · d delete · Esc close"
-        };
-        return Some(("Collections".into(), keys.into()));
+            (
+                "New collection".into(),
+                "type a name · ←→ move · ^U clear · ⏎ create · Esc cancel".into(),
+            )
+        });
     }
     None
 }
