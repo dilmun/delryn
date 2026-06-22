@@ -39,7 +39,7 @@ fn render_overlay(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = centered(f.area(), 72, 18);
+    let area = super::centered(f.area(), 72, 18);
     f.render_widget(Clear, area);
 
     let bg = theme.bg.unwrap_or(Color::Black);
@@ -54,7 +54,7 @@ fn render_overlay(f: &mut Frame, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
+    let rows = Layout::vertical([Constraint::Min(0)]).split(inner);
 
     if state.items.is_empty() {
         f.render_widget(
@@ -92,23 +92,5 @@ fn render_overlay(f: &mut Frame, app: &App) {
         st.select(Some(state.sel.min(state.items.len().saturating_sub(1))));
         f.render_stateful_widget(list, rows[0], &mut st);
     }
-
-    f.render_widget(
-        Paragraph::new(Line::styled(
-            "↑↓ move   ⏎ jump   d delete   Esc close",
-            Style::default().fg(theme.muted),
-        )),
-        rows[1],
-    );
-}
-
-fn centered(area: Rect, w: u16, h: u16) -> Rect {
-    let w = w.min(area.width.saturating_sub(2)).max(1);
-    let h = h.min(area.height.saturating_sub(2)).max(1);
-    Rect {
-        x: area.x + (area.width.saturating_sub(w)) / 2,
-        y: area.y + (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    }
+    // Shortcuts live in the bottom status bar (see view::status).
 }

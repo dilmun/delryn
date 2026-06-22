@@ -2,12 +2,12 @@
 //! navigable, edits the live config. See `DESIGN.md` §7.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::{App, SettingsTab, settings_rows};
+use crate::app::{App, SettingRow, SettingsTab, settings_rows};
 
 const TABS: [SettingsTab; 3] = [
     SettingsTab::General,
@@ -20,7 +20,8 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = centered(f.area(), 60, 20);
+    // Tall enough for the grouped Reading tab (sections + items), clamped to fit.
+    let area = super::centered(f.area(), 64, 28);
 
     f.render_widget(Clear, area);
 
@@ -40,7 +41,6 @@ pub fn render(f: &mut Frame, app: &App) {
         Constraint::Length(1), // tabs
         Constraint::Length(1), // spacer
         Constraint::Min(0),    // body
-        Constraint::Length(1), // hint
     ])
     .split(inner);
 
@@ -60,51 +60,37 @@ pub fn render(f: &mut Frame, app: &App) {
     }
     f.render_widget(Paragraph::new(Line::from(tab_spans)), rows[0]);
 
-    // Rows.
-    let items = settings_rows(&app.config, state.tab);
+    // Rows: section headers (non-selectable) interleaved with settings.
     let mut lines: Vec<Line> = Vec::new();
-    if items.is_empty() {
-        lines.push(Line::styled(
-            "  (coming soon)",
-            Style::default().fg(theme.muted),
-        ));
-    }
-    for (i, (label, value)) in items.iter().enumerate() {
-        let selected = i == state.row;
-        let marker = if selected { "▸ " } else { "  " };
-        let label_style = if selected {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.fg)
-        };
-        let pad = 26usize.saturating_sub(label.chars().count() + 2);
-        lines.push(Line::from(vec![
-            Span::styled(format!("{marker}{label}"), label_style),
-            Span::raw(" ".repeat(pad)),
-            Span::styled(value.clone(), Style::default().fg(theme.heading)),
-        ]));
+    for (i, row) in settings_rows(state.tab).iter().enumerate() {
+        match row {
+            SettingRow::Section(title) => {
+                if i > 0 {
+                    lines.push(Line::raw(""));
+                }
+                lines.push(Line::styled(
+                    format!("  {title}"),
+                    Style::default().fg(theme.muted).add_modifier(Modifier::BOLD | Modifier::DIM),
+                ));
+            }
+            SettingRow::Item(item) => {
+                let selected = i == state.row;
+                let marker = if selected { "  ▸ " } else { "    " };
+                let label = item.label();
+                let label_style = if selected {
+                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.fg)
+                };
+                let pad = 28usize.saturating_sub(label.chars().count() + 4);
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{marker}{label}"), label_style),
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled(item.value(&app.config), Style::default().fg(theme.heading)),
+                ]));
+            }
+        }
     }
     f.render_widget(Paragraph::new(lines), rows[2]);
-
-    f.render_widget(
-        Paragraph::new(Line::styled(
-            "↑↓ move   ←→ change   Tab switch   Esc close",
-            Style::default().fg(theme.muted),
-        )),
-        rows[3],
-    );
-}
-
-/// A centered rect of at most `w`×`h`, clamped to `area`.
-fn centered(area: Rect, w: u16, h: u16) -> Rect {
-    let w = w.min(area.width.saturating_sub(2)).max(1);
-    let h = h.min(area.height.saturating_sub(2)).max(1);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    }
+    // Shortcuts live in the bottom status bar (see view::status).
 }

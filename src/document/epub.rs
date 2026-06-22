@@ -227,16 +227,51 @@ fn extract_metadata(doc: &mut EpubDoc<BufReader<File>>, size: u64) -> Metadata {
     let language = doc.mdata("language").map(|m| m.value.clone());
     let identifier = doc.mdata("identifier").map(|m| m.value.clone());
     let year = doc.mdata("date").and_then(|m| parse_year(&m.value));
+    let publisher = doc.mdata("publisher").map(|m| m.value.trim().to_string());
+    let (series, series_index) = extract_series(doc);
+    // EPUB has no standard subtitle; Calibre stores one as a refined title.
+    let subtitle = doc
+        .metadata
+        .iter()
+        .find(|m| m.property == "title" && m.refinement("title-type").is_some_and(|r| r.value == "subtitle"))
+        .map(|m| m.value.trim().to_string());
     let cover = doc.get_cover();
     Metadata {
         title,
+        subtitle,
         authors,
         year,
         language,
         identifier,
+        series,
+        series_index,
+        publisher,
         cover,
         size,
     }
+}
+
+/// Series name + position, from either Calibre's legacy `<meta name="calibre:series">`
+/// (the common case in the wild) or EPUB3's `belongs-to-collection` with a
+/// `group-position` refinement.
+fn extract_series(doc: &EpubDoc<BufReader<File>>) -> (Option<String>, Option<f32>) {
+    if let Some(s) = doc.mdata("calibre:series") {
+        let idx = doc
+            .mdata("calibre:series_index")
+            .and_then(|m| m.value.trim().parse().ok());
+        return (Some(s.value.trim().to_string()), idx);
+    }
+    if let Some(c) = doc
+        .metadata
+        .iter()
+        .find(|m| m.property == "belongs-to-collection")
+    {
+        let idx = c
+            .refinement("group-position")
+            .and_then(|r| r.value.trim().parse().ok());
+        return (Some(c.value.trim().to_string()), idx);
+    }
+    (None, None)
 }
 
 /// Dates look like "1851", "1851-01-01", or "-800"; take the leading integer.

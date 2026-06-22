@@ -4,6 +4,7 @@
 //! one knows which format is open. See `DESIGN.md` §3.
 
 pub mod epub;
+pub mod epub_write;
 pub mod html;
 
 use anyhow::Result;
@@ -12,10 +13,18 @@ use anyhow::Result;
 #[derive(Debug, Clone, Default)]
 pub struct Metadata {
     pub title: String,
+    /// Subtitle, if declared (rare in EPUB; usually filled online or by hand).
+    pub subtitle: Option<String>,
     pub authors: Vec<String>,
     pub year: Option<i32>,
     pub language: Option<String>,
     pub identifier: Option<String>,
+    /// Series this book belongs to (e.g. "Foundation"), if declared.
+    pub series: Option<String>,
+    /// Position within the series (e.g. `2.0`), if declared.
+    pub series_index: Option<f32>,
+    /// Publisher, if declared.
+    pub publisher: Option<String>,
     /// Raw cover image bytes + mime type, if the book has a cover.
     pub cover: Option<(Vec<u8>, String)>,
     /// Source file size in bytes.
