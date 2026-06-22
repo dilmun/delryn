@@ -164,16 +164,14 @@ pub const DEFAULT_RENAME_TEMPLATE: &str = "%T.%E";
 pub enum EditTab {
     Details,
     Cover,
-    Collections,
     Online,
     File,
 }
 
 impl EditTab {
-    pub const ALL: [EditTab; 5] = [
+    pub const ALL: [EditTab; 4] = [
         EditTab::Details,
         EditTab::Cover,
-        EditTab::Collections,
         EditTab::Online,
         EditTab::File,
     ];
@@ -181,7 +179,6 @@ impl EditTab {
         match self {
             EditTab::Details => "Details",
             EditTab::Cover => "Cover",
-            EditTab::Collections => "Collections",
             EditTab::Online => "Online",
             EditTab::File => "File",
         }
@@ -265,13 +262,6 @@ pub struct MetaEdit {
     /// Cursor position (char index) within the field being edited.
     pub cursor: usize,
 
-    // Collections tab -----------------------------------------------------
-    /// (collection name, whether this book is a member).
-    pub shelves: Vec<(String, bool)>,
-    pub shelf_sel: usize,
-    /// Buffer while typing a new collection name (`None` otherwise).
-    pub new_shelf: Option<String>,
-
     // Online / Cover tabs — independent search state per tab --------------
     /// Online (metadata) tab search.
     pub online: Search,
@@ -346,7 +336,6 @@ impl MetaEdit {
                 FILE_NAME => Some(&mut self.rename_name),
                 _ => None,
             },
-            EditTab::Collections => None,
         }
     }
 
@@ -375,11 +364,6 @@ impl MetaEdit {
     /// Any field currently invalid (blocks save).
     pub fn has_invalid(&self) -> bool {
         (0..self.values.len()).any(|i| self.field_invalid(i))
-    }
-
-    /// The "new collection" row index (one past the existing collections).
-    pub fn new_shelf_row(&self) -> usize {
-        self.shelves.len()
     }
 }
 
@@ -2171,7 +2155,6 @@ impl App {
             .map(|(m, _)| meta_fields_from(&m))
             .unwrap_or_else(|_| vec![String::new(); META_FIELDS.len()]);
         let cursor = values[0].chars().count();
-        let shelves = self.shelf_membership(&path);
         self.meta_edit = Some(MetaEdit {
             path,
             book_title,
@@ -2181,9 +2164,6 @@ impl App {
             original,
             row: 0,
             cursor,
-            shelves,
-            shelf_sel: 0,
-            new_shelf: None,
             online: Search {
                 q: q.clone(),
                 ..Search::default()
@@ -2206,15 +2186,10 @@ impl App {
     }
 
     fn meta_edit_key(&mut self, key: KeyEvent) {
-        let (mode, tab, typing_shelf) = match &self.meta_edit {
-            Some(e) => (e.mode, e.tab, e.new_shelf.is_some()),
+        let (mode, tab) = match &self.meta_edit {
+            Some(e) => (e.mode, e.tab),
             None => return,
         };
-        // Typing a new collection name takes precedence.
-        if tab == EditTab::Collections && typing_shelf {
-            self.meta_edit_new_shelf(key);
-            return;
-        }
         // Editing the search bar (Online/Cover tabs).
         let editing_query = matches!(tab, EditTab::Online | EditTab::Cover)
             && self.meta_edit.as_ref().is_some_and(|e| e.search().editing);
@@ -2243,7 +2218,6 @@ impl App {
             KeyCode::BackTab => self.meta_edit_switch_tab(-1),
             _ => match tab {
                 EditTab::Details => self.details_nav_key(key),
-                EditTab::Collections => self.collections_nav_key(key),
                 EditTab::Online | EditTab::Cover => self.online_nav_key(key),
                 EditTab::File => self.file_nav_key(key),
             },
@@ -2352,99 +2326,6 @@ impl App {
         }
     }
 
-    /// Collections tab, navigate mode: move the cursor, toggle membership, or
-    /// start typing a new collection.
-    fn collections_nav_key(&mut self, key: KeyEvent) {
-        let new_row = match &self.meta_edit {
-            Some(e) => e.new_shelf_row(),
-            None => return,
-        };
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.shelf_sel = e.shelf_sel.saturating_sub(1);
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.shelf_sel = (e.shelf_sel + 1).min(new_row);
-                }
-            }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                let sel = match &self.meta_edit {
-                    Some(e) => e.shelf_sel,
-                    None => return,
-                };
-                if sel == new_row {
-                    if let Some(e) = self.meta_edit.as_mut() {
-                        e.new_shelf = Some(String::new());
-                    }
-                } else {
-                    self.toggle_editor_shelf(sel);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Toggle the book's membership in collection `sel`, in place (live to store).
-    fn toggle_editor_shelf(&mut self, sel: usize) {
-        let Some(ed) = self.meta_edit.as_mut() else {
-            return;
-        };
-        let Some((name, member)) = ed.shelves.get_mut(sel) else {
-            return;
-        };
-        if let Some(store) = &self.store {
-            if *member {
-                store.remove_from_shelf(&ed.path, name);
-            } else {
-                store.add_to_shelf(&ed.path, name);
-            }
-        }
-        *member = !*member;
-    }
-
-    /// Collections tab: typing/confirming a new collection name.
-    fn meta_edit_new_shelf(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.new_shelf = None;
-                }
-            }
-            KeyCode::Backspace => {
-                if let Some(b) = self.meta_edit.as_mut().and_then(|e| e.new_shelf.as_mut()) {
-                    b.pop();
-                }
-            }
-            KeyCode::Char(c) => {
-                if let Some(b) = self.meta_edit.as_mut().and_then(|e| e.new_shelf.as_mut()) {
-                    b.push(c);
-                }
-            }
-            KeyCode::Enter => {
-                let (name, path) = match &self.meta_edit {
-                    Some(e) => (
-                        e.new_shelf.clone().unwrap_or_default().trim().to_string(),
-                        e.path.clone(),
-                    ),
-                    None => return,
-                };
-                if !name.is_empty() {
-                    if let Some(store) = &self.store {
-                        store.add_to_shelf(&path, &name);
-                    }
-                }
-                let shelves = self.shelf_membership(&path);
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.shelves = shelves;
-                    e.new_shelf = None;
-                }
-            }
-            _ => {}
-        }
-    }
 
     /// Online/Cover tabs, browsing the results: `/` or typing opens the search
     /// bar; j/k move the selection; Enter applies (metadata on Online, the
@@ -4449,8 +4330,8 @@ mod tests {
         let mut app = App::library();
         assert_eq!(app.lib_books.len(), 1);
         app.on_key(key('e'));
-        // Details → Cover → Collections → Online → File.
-        for _ in 0..4 {
+        // Details → Cover → Online → File.
+        for _ in 0..3 {
             app.on_key(code(KeyCode::Tab));
         }
         assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::File);
@@ -4583,8 +4464,8 @@ mod tests {
 
         let mut app = App::library();
         app.on_key(key('e'));
-        // Details → Cover → Collections → Online.
-        for _ in 0..3 {
+        // Details → Cover → Online.
+        for _ in 0..2 {
             app.on_key(code(KeyCode::Tab));
         }
         assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Online);
@@ -4633,8 +4514,7 @@ mod tests {
         assert_eq!(app.meta_edit.as_ref().unwrap().cover_search.q, "ab");
         let online_prefill = app.meta_edit.as_ref().unwrap().online.q.clone();
 
-        // Cover → Collections → Online: the online query is untouched.
-        app.on_key(code(KeyCode::Tab));
+        // Cover → Online: the online query is untouched.
         app.on_key(code(KeyCode::Tab));
         assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Online);
         assert_eq!(app.meta_edit.as_ref().unwrap().online.q, online_prefill);
@@ -4649,37 +4529,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    // Collections tab toggles membership and creates new collections.
-    #[test]
-    fn meta_editor_collections_tab() {
-        let _env = crate::test_env_guard();
-        let tmp = std::env::temp_dir().join(format!("delryn_edit3_{}", std::process::id()));
-        // SAFETY: serialized by `_env`; scopes the config dir to this process.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
-        {
-            let store = Store::open_default().unwrap();
-            store
-                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
-                .unwrap();
-        }
-
-        let mut app = App::library();
-        app.on_key(key('e'));
-        // Tab to Collections (Details → Cover → Collections).
-        app.on_key(code(KeyCode::Tab));
-        app.on_key(code(KeyCode::Tab));
-        assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Collections);
-        // No shelves yet → cursor sits on the "new" row; Enter starts typing.
-        app.on_key(code(KeyCode::Enter));
-        assert!(app.meta_edit.as_ref().unwrap().new_shelf.is_some());
-        for c in "Sci-Fi".chars() {
-            app.on_key(key(c));
-        }
-        app.on_key(code(KeyCode::Enter)); // create + add
-        let ed = app.meta_edit.as_ref().unwrap();
-        assert_eq!(ed.shelves.len(), 1);
-        assert_eq!(ed.shelves[0], ("Sci-Fi".to_string(), true), "book added to new collection");
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
 }

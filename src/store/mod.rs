@@ -558,6 +558,28 @@ impl Store {
         );
     }
 
+    /// Rename a collection across all its books. If `new` already exists, the
+    /// two merge (books on both are deduped by the (path, name) primary key).
+    /// A blank new name is ignored.
+    pub fn rename_shelf(&self, old: &str, new: &str) {
+        let new = new.trim();
+        if new.is_empty() || new == old {
+            return;
+        }
+        // OR IGNORE skips rows that would collide with an existing `new` entry;
+        // the follow-up delete clears those now-merged leftovers.
+        let _ = self.conn.execute(
+            "UPDATE OR IGNORE shelves SET name = ?2 WHERE name = ?1",
+            params![old, new],
+        );
+        let _ = self.conn.execute("DELETE FROM shelves WHERE name = ?1", params![old]);
+    }
+
+    /// Delete a collection entirely (removes every book's membership in it).
+    pub fn delete_shelf(&self, name: &str) {
+        let _ = self.conn.execute("DELETE FROM shelves WHERE name = ?1", params![name]);
+    }
+
     /// Collection names a book belongs to, sorted.
     pub fn shelves_for(&self, path: &str) -> Vec<String> {
         let mut out = Vec::new();
