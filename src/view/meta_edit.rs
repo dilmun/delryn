@@ -176,11 +176,13 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
     app.mouse.edit_search = search;
 }
 
-/// The single foot-of-popup line: a transient status message (search progress,
+/// The single foot-of-popup line: the tab's transient status (search progress,
 /// result counts, errors) when present, otherwise a quiet search hint on the
-/// lookup tabs. This is where every "searching…" / help string now lives.
+/// lookup tabs. The status is shown only on the tab it belongs to, so a
+/// Cover/Lookup "searching…" never leaks onto Details.
 fn footer_line(ed: &MetaEdit, theme: Theme) -> Line<'static> {
-    if let Some(status) = &ed.status {
+    let on_this_tab = ed.status_tab == Some(ed.tab);
+    if let Some(status) = ed.status.as_ref().filter(|_| on_this_tab) {
         return Line::styled(
             format!("  {status}"),
             Style::default().fg(theme.heading).add_modifier(Modifier::ITALIC),
