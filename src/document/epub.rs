@@ -334,13 +334,16 @@ pub fn extract_book_metadata(path: impl AsRef<Path>) -> ExtractedMeta {
                 out.author = a;
             }
         }
-        if out.year.is_none() || out.publisher.is_none() || out.isbn.is_none() {
+        if out.year.is_none() || out.publisher.is_none() || out.isbn.is_none() || out.author.is_none()
+        {
             let text = html2text::from_read(xhtml.as_bytes(), EXTRACT_WIDTH).unwrap_or_default();
             out.isbn = out.isbn.or_else(|| find_isbn(&text));
             out.year = out.year.or_else(|| find_year(&text));
             out.publisher = out.publisher.or_else(|| find_publisher(&text));
+            // Many books name the author only in an "About the Author" page.
+            out.author = out.author.or_else(|| find_author_bio(&text));
         }
-        if out.title.is_some() && out.isbn.is_some() && out.year.is_some() {
+        if out.title.is_some() && out.author.is_some() && out.isbn.is_some() && out.year.is_some() {
             break;
         }
     }
@@ -402,6 +405,19 @@ fn title_from_html(xhtml: &str) -> Option<(String, Option<String>)> {
 fn find_isbn(text: &str) -> Option<String> {
     let re = regex::Regex::new(r"(?i)ISBN.{0,30}?([0-9][0-9\- ]{8,18}[0-9Xx])").ok()?;
     re.captures_iter(text).find_map(|c| crate::online::normalize_isbn(&c[1]))
+}
+
+/// The author named in an "About the Author" section, e.g. "Shekhar Khandelwal
+/// is a distinguished…" → "Shekhar Khandelwal". Takes the words after the heading
+/// up to a biographical verb (is/was/works/holds/…), 1–4 words.
+fn find_author_bio(text: &str) -> Option<String> {
+    let re = regex::Regex::new(
+        r"(?i)about the authors?[\s:]+([^\n,]{2,40}?)\s+(?:is|was|are|has|have|holds|works|serves|received|earned|currently)\b",
+    )
+    .ok()?;
+    let name = re.captures(text)?[1].trim().to_string();
+    let words = name.split_whitespace().count();
+    (1..=4).contains(&words).then_some(name)
 }
 
 /// A publication year near a copyright / "published" marker.
@@ -673,7 +689,10 @@ fn build_outline(
 
 #[cfg(test)]
 mod tests {
-    use super::{converted_from, find_isbn, find_publisher, find_year, first_img_src, mime_from_ext, title_from_html};
+    use super::{
+        converted_from, find_author_bio, find_isbn, find_publisher, find_year, first_img_src,
+        mime_from_ext, title_from_html,
+    };
 
     #[test]
     fn cover_fallback_helpers() {
@@ -704,6 +723,13 @@ mod tests {
             find_publisher("Neither the publisher nor the author can accept responsibility"),
             None
         );
+        // Author from an "About the Author" bio.
+        assert_eq!(
+            find_author_bio("About the Author\n\nShekhar Khandelwal is a distinguished AI Scientist."),
+            Some("Shekhar Khandelwal".into())
+        );
+        assert_eq!(find_author_bio("About the author: Jane Roe works at Acme."), Some("Jane Roe".into()));
+        assert_eq!(find_author_bio("no author section here"), None);
     }
 
     #[test]
