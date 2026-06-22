@@ -15,14 +15,27 @@ pub fn render(f: &mut Frame, app: &App) {
     };
     let theme = app.config.theme;
     let bg = theme.bg.unwrap_or(Color::Black);
-    let area = super::centered(f.area(), 84, 26);
+    // ^F expands to (near) full screen for a wider, taller before/after view.
+    let area = if br.full {
+        let a = f.area();
+        super::centered(a, a.width.saturating_sub(4), a.height.saturating_sub(2))
+    } else {
+        super::centered(f.area(), 84, 26)
+    };
     f.render_widget(Clear, area);
 
+    let n = br.targets.len();
+    let books = if n == 1 { "book" } else { "books" };
+    let title = if br.full {
+        format!(" Rename · {n} {books}  (^F exit full screen) ")
+    } else {
+        format!(" Rename · {n} {books} ")
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
-            format!(" Bulk rename · {} books ", br.targets.len()),
+            title,
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().fg(theme.fg).bg(bg));
@@ -37,21 +50,14 @@ pub fn render(f: &mut Frame, app: &App) {
     ])
     .split(inner);
 
-    // Template field — flat, label-shaded, with a block cursor.
+    // Template field — flat, label-shaded, with a block cursor that scrolls
+    // horizontally so the caret stays visible for long templates.
     let mut spans = vec![Span::styled(
         " template   ",
         Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
     )];
-    let chars: Vec<char> = br.template.chars().collect();
-    let cur = br.cursor.min(chars.len());
-    let text = Style::default().fg(theme.heading).add_modifier(Modifier::BOLD);
-    let cursor = Style::default().fg(bg).bg(theme.accent).add_modifier(Modifier::BOLD);
-    spans.push(Span::styled(chars[..cur].iter().collect::<String>(), text));
-    let at = chars.get(cur).map(|c| c.to_string()).unwrap_or_else(|| " ".into());
-    spans.push(Span::styled(at, cursor));
-    if cur < chars.len() {
-        spans.push(Span::styled(chars[cur + 1..].iter().collect::<String>(), text));
-    }
+    let w = rows[0].width.saturating_sub(12) as usize; // " template   " = 12 cells
+    spans.extend(super::field_spans(&br.template, br.cursor, w, theme));
     f.render_widget(Paragraph::new(Line::from(spans)), rows[0]);
 
     f.render_widget(

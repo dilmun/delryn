@@ -152,35 +152,25 @@ const F_INDEX: usize = 4;
 pub const ONLINE_LIMIT: usize = 5;
 
 /// File-tab row layout: the template, the resulting name, then the Rename action.
-pub const FILE_TEMPLATE: usize = 0;
-pub const FILE_NAME: usize = 1;
-
-/// Default rename template (`Title.epub`). Placeholders are filled from the
-/// edited metadata; see [`fill_template`].
+/// Default rename template (`Title.epub`). Placeholders are filled from a book's
+/// metadata; see [`fill_template`]. Used by the bulk-rename popup.
 pub const DEFAULT_RENAME_TEMPLATE: &str = "%T.%E";
 
-/// Tabs of the metadata editor.
+/// Tabs of the metadata editor. (Renaming lives in the bulk-rename popup.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditTab {
     Details,
     Cover,
     Online,
-    File,
 }
 
 impl EditTab {
-    pub const ALL: [EditTab; 4] = [
-        EditTab::Details,
-        EditTab::Cover,
-        EditTab::Online,
-        EditTab::File,
-    ];
+    pub const ALL: [EditTab; 3] = [EditTab::Details, EditTab::Cover, EditTab::Online];
     pub fn label(self) -> &'static str {
         match self {
             EditTab::Details => "Details",
             EditTab::Cover => "Cover",
-            EditTab::Online => "Online",
-            EditTab::File => "File",
+            EditTab::Online => "Lookup",
         }
     }
 }
@@ -233,14 +223,16 @@ pub struct BulkRename {
     pub template: String,
     pub cursor: usize,
     pub targets: Vec<BulkTarget>,
+    /// Expand the popup to (near) full screen for a wider before/after view.
+    pub full: bool,
 }
 
 /// Outcome of renaming a single book file.
 enum RenameOutcome {
     Renamed,
     Unchanged,
-    /// Skipped, with a short reason (name empty / clashes / move failed).
-    Skipped(&'static str),
+    /// Skipped — name empty, target clashes, or the move failed.
+    Skipped,
 }
 
 /// Open metadata-edit form: a tabbed, scalable editor over one book.
@@ -278,14 +270,6 @@ pub struct MetaEdit {
     pub preview_cover: Option<Vec<u8>>,
     pub preview_url: String,
 
-    // File tab ------------------------------------------------------------
-    /// Rename template (placeholders filled from the edited metadata).
-    pub rename_template: String,
-    /// The resulting filename — recomputed from the template, or hand-edited.
-    pub rename_name: String,
-    /// Focused File-tab row (template / name / Rename action).
-    pub file_row: usize,
-
     /// Transient one-line status (search progress, results, errors).
     pub status: Option<String>,
 }
@@ -316,26 +300,15 @@ impl MetaEdit {
     fn cur_field_len(&self) -> usize {
         match self.tab {
             EditTab::Online | EditTab::Cover => self.search().q.chars().count(),
-            EditTab::File => match self.file_row {
-                FILE_TEMPLATE => self.rename_template.chars().count(),
-                FILE_NAME => self.rename_name.chars().count(),
-                _ => 0,
-            },
             _ => self.field_len(),
         }
     }
 
-    /// The string currently being typed into (a Details field, the search query,
-    /// or a File-tab field).
+    /// The string currently being typed into (a Details field or the search query).
     fn edit_target(&mut self) -> Option<&mut String> {
         match self.tab {
             EditTab::Details => self.values.get_mut(self.row),
             EditTab::Online | EditTab::Cover => Some(&mut self.search_mut().q),
-            EditTab::File => match self.file_row {
-                FILE_TEMPLATE => Some(&mut self.rename_template),
-                FILE_NAME => Some(&mut self.rename_name),
-                _ => None,
-            },
         }
     }
 
@@ -396,6 +369,26 @@ pub struct CollInput {
     pub cursor: usize,
     /// `Some(old)` while renaming that collection; `None` while creating one.
     pub rename_from: Option<String>,
+}
+
+/// A destructive action waiting for a yes/no answer. One uniform prompt across
+/// the app (`y`/`⏎` confirm, `n`/`Esc` cancel), shown in the status bar.
+pub struct PendingConfirm {
+    /// The question, e.g. `Delete "SciFi"?` or `Rename 3 books?`.
+    pub question: String,
+    /// What to run when the user confirms.
+    action: ConfirmAction,
+}
+
+/// The action a [`PendingConfirm`] commits on `yes`. The relevant popup state
+/// (editor / rename / collection editor) is still open behind the prompt.
+enum ConfirmAction {
+    /// Save the metadata editor (fields + embed cover).
+    SaveMeta,
+    /// Apply the rename template to the popup's targets.
+    Rename,
+    /// Commit the inline collection editor (rename, or delete on a cleared name).
+    Collection,
 }
 
 /// One adjustable setting (identity, not position — so section headers can be
@@ -1595,6 +1588,9 @@ pub struct App {
     pub bulk_rename: Option<BulkRename>,
     /// Inline sidebar collection editor (create / rename), if active.
     pub lib_coll_edit: Option<CollInput>,
+    /// A destructive action awaiting a yes/no confirmation, if any. Intercepts
+    /// input ahead of every popup and is answered with y/⏎ or n/Esc.
+    pub pending_confirm: Option<PendingConfirm>,
     /// Open image viewer overlay, if any.
     pub image_view: Option<ImageView>,
     /// Detected terminal image protocol (None if unsupported / headless).
@@ -1619,9 +1615,12 @@ pub struct App {
     pub lib_shelves: Vec<(String, usize)>,
     pub lib_books: Vec<BookRow>,
     pub lib_sel: usize,
-    /// Multi-selection for bulk actions, keyed by book path (stable across sort).
-    /// Populated by the vim-style visual mode below.
+    /// Effective multi-selection for bulk actions, keyed by book path. The union
+    /// of the individually-toggled `lib_marked_base` and the live visual range.
     pub lib_marked: HashSet<String>,
+    /// Books toggled individually with Space (non-contiguous), kept separate so a
+    /// live visual range can be layered on top without clobbering them.
+    pub lib_marked_base: HashSet<String>,
     /// Visual-select anchor (book index) while in visual mode; `None` otherwise.
     /// The selection is the contiguous range between the anchor and `lib_sel`.
     pub lib_visual: Option<usize>,
@@ -1846,6 +1845,7 @@ impl App {
             meta_edit: None,
             bulk_rename: None,
             lib_coll_edit: None,
+            pending_confirm: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -1861,6 +1861,7 @@ impl App {
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_marked: HashSet::new(),
+            lib_marked_base: HashSet::new(),
             lib_visual: None,
             lib_side_new: false,
             lib_sort: SortKey::Default,
@@ -1905,6 +1906,7 @@ impl App {
             meta_edit: None,
             bulk_rename: None,
             lib_coll_edit: None,
+            pending_confirm: None,
             image_view: None,
             picker: None,
             image_builder: None,
@@ -1920,6 +1922,7 @@ impl App {
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_marked: HashSet::new(),
+            lib_marked_base: HashSet::new(),
             lib_visual: None,
             lib_side_new: false,
             lib_sort: SortKey::Default,
@@ -2196,12 +2199,8 @@ impl App {
             cover: None,
             preview_cover: None,
             preview_url: String::new(),
-            rename_template: DEFAULT_RENAME_TEMPLATE.to_string(),
-            rename_name: String::new(),
-            file_row: FILE_TEMPLATE,
             status: None,
         });
-        self.recompute_rename();
     }
 
     fn meta_edit_key(&mut self, key: KeyEvent) {
@@ -2225,36 +2224,43 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.meta_edit = None,
+            // ^S asks for confirmation first (unless a field is invalid).
             KeyCode::Char('s') if ctrl => {
-                // On the File tab, ^S applies the rename first (no separate
-                // button); a hard rename error keeps the editor open.
-                let on_file = self.meta_edit.as_ref().map(|e| e.tab) == Some(EditTab::File);
-                if !on_file || self.apply_rename() {
-                    self.save_meta_edit();
+                if !self.meta_edit.as_ref().is_some_and(MetaEdit::has_invalid) {
+                    self.ask_confirm("Save changes?", ConfirmAction::SaveMeta);
                 }
             }
             KeyCode::Tab => self.meta_edit_switch_tab(1),
             KeyCode::BackTab => self.meta_edit_switch_tab(-1),
+            // Jump straight to a tab by number.
+            KeyCode::Char(c @ '1'..='9') => {
+                let i = c as usize - '1' as usize;
+                if i < EditTab::ALL.len() {
+                    self.meta_edit_goto_tab(EditTab::ALL[i]);
+                }
+            }
             _ => match tab {
                 EditTab::Details => self.details_nav_key(key),
                 EditTab::Online | EditTab::Cover => self.online_nav_key(key),
-                EditTab::File => self.file_nav_key(key),
             },
         }
     }
 
     fn meta_edit_switch_tab(&mut self, delta: isize) {
-        let Some(ed) = self.meta_edit.as_mut() else {
+        let Some(ed) = self.meta_edit.as_ref() else {
             return;
         };
         let i = EditTab::ALL.iter().position(|t| *t == ed.tab).unwrap_or(0) as isize;
         let n = EditTab::ALL.len() as isize;
-        ed.tab = EditTab::ALL[(i + delta).rem_euclid(n) as usize];
-        ed.mode = EditMode::Nav;
-        let tab = ed.tab;
-        // Entering the File tab refreshes the previewed name from the template.
-        if tab == EditTab::File {
-            self.recompute_rename();
+        self.meta_edit_goto_tab(EditTab::ALL[(i + delta).rem_euclid(n) as usize]);
+    }
+
+    /// Switch to `tab` (shared by Tab/Shift-Tab and the 1–4 number keys),
+    /// running the per-tab on-enter work.
+    fn meta_edit_goto_tab(&mut self, tab: EditTab) {
+        if let Some(ed) = self.meta_edit.as_mut() {
+            ed.tab = tab;
+            ed.mode = EditMode::Nav;
         }
         // Entering the Cover tab runs the cover search once, so candidates appear
         // without a manual search (uses the book's ISBN + the seeded query).
@@ -2293,7 +2299,6 @@ impl App {
 
     /// Edit mode: type into the focused field (Details or Online query).
     fn meta_edit_typing(&mut self, key: KeyEvent) {
-        let recompute;
         {
             let Some(ed) = self.meta_edit.as_mut() else {
                 return;
@@ -2337,11 +2342,6 @@ impl App {
                 }
                 _ => {}
             }
-            // Editing the rename template re-derives the previewed filename.
-            recompute = ed.tab == EditTab::File && ed.file_row == FILE_TEMPLATE;
-        }
-        if recompute {
-            self.recompute_rename();
         }
     }
 
@@ -2472,53 +2472,13 @@ impl App {
         }
     }
 
-    /// File tab, navigate mode: move between the template, name, and Rename
-    /// action; Enter edits a field or performs the rename.
-    fn file_nav_key(&mut self, key: KeyEvent) {
-        if self.meta_edit.is_none() {
-            return;
-        }
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.file_row = e.file_row.saturating_sub(1);
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.file_row = (e.file_row + 1).min(FILE_NAME);
-                }
-            }
-            // Enter edits the focused field; ^S performs the rename + save.
-            KeyCode::Enter => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.mode = EditMode::Edit;
-                    e.cursor = e.cur_field_len();
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Recompute the previewed filename from the template + current metadata.
-    fn recompute_rename(&mut self) {
-        let Some(ed) = self.meta_edit.as_mut() else {
-            return;
-        };
-        let ext = std::path::Path::new(&ed.path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("epub");
-        ed.rename_name = fill_template(&ed.rename_template, &ed.values, ext);
-    }
-
     /// Move one book file to `new_name` (in its own directory), repointing the
     /// database row and cached cover. Pure mechanism — no UI/state side effects
     /// beyond persistence, so both the editor and bulk rename share it.
     fn rename_book_file(&self, old: &str, new_name: &str) -> RenameOutcome {
         let name = sanitize_filename(new_name.trim());
         if name.is_empty() {
-            return RenameOutcome::Skipped("name is empty");
+            return RenameOutcome::Skipped;
         }
         let old_path = std::path::Path::new(old);
         let new_path = match old_path.parent() {
@@ -2530,10 +2490,10 @@ impl App {
             return RenameOutcome::Unchanged;
         }
         if new_path.exists() {
-            return RenameOutcome::Skipped("a file with that name already exists");
+            return RenameOutcome::Skipped;
         }
         if std::fs::rename(old, &new_path).is_err() {
-            return RenameOutcome::Skipped("rename failed");
+            return RenameOutcome::Skipped;
         }
         // Repoint persistence + move the cached cover to the new key.
         if let Some(store) = &self.store {
@@ -2543,69 +2503,64 @@ impl App {
         RenameOutcome::Renamed
     }
 
-    /// Editor File-tab rename. Returns `true` when it's safe to proceed with
-    /// saving (renamed, or the name was unchanged); `false` on a hard error,
-    /// leaving the editor open with the reason in its status line.
-    fn apply_rename(&mut self) -> bool {
-        let (old, name) = match self.meta_edit.as_ref() {
-            Some(ed) => (ed.path.clone(), ed.rename_name.clone()),
-            None => return false,
-        };
-        match self.rename_book_file(&old, &name) {
-            RenameOutcome::Renamed => {
-                let new = std::path::Path::new(&old)
-                    .with_file_name(sanitize_filename(name.trim()))
-                    .to_string_lossy()
-                    .into_owned();
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.status = Some(format!("renamed to {}", sanitize_filename(name.trim())));
-                    e.path = new;
-                }
-                self.refresh_library();
-                true
-            }
-            RenameOutcome::Unchanged => true,
-            RenameOutcome::Skipped(reason) => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.status = Some(reason.into());
-                }
-                false
-            }
-        }
-    }
-
-    /// Toggle vim-style visual select: enter with the anchor at the cursor, or
-    /// exit and clear the selection.
+    /// Toggle vim-style visual (range) select. Entering anchors at the cursor;
+    /// exiting commits the live range into the individual selection so it sticks.
     fn lib_toggle_visual(&mut self) {
         if self.lib_visual.is_some() {
-            self.lib_exit_visual();
+            self.lib_marked_base = self.lib_marked.clone(); // commit the range
+            self.lib_visual = None;
         } else {
             self.lib_visual = Some(self.lib_sel);
             self.lib_visual_sync();
         }
     }
 
-    /// Leave visual mode and clear the selection.
+    /// Toggle the current book in the individual (Space) selection, then advance
+    /// — so non-contiguous picks build up, file-manager style. Finalises any live
+    /// visual range first.
+    fn lib_toggle_mark(&mut self) {
+        if self.lib_visual.is_some() {
+            self.lib_marked_base = self.lib_marked.clone();
+            self.lib_visual = None;
+        }
+        if let Some(b) = self.lib_books.get(self.lib_sel) {
+            let path = b.path.clone();
+            if !self.lib_marked_base.remove(&path) {
+                self.lib_marked_base.insert(path);
+            }
+        }
+        self.lib_marked = self.lib_marked_base.clone();
+        self.lib_move(1);
+    }
+
+    /// Select every book in the current list (for bulk actions over the library).
+    fn lib_mark_all(&mut self) {
+        self.lib_visual = None;
+        self.lib_marked_base = self.lib_books.iter().map(|b| b.path.clone()).collect();
+        self.lib_marked = self.lib_marked_base.clone();
+    }
+
+    /// Leave visual mode and clear the whole selection (individual + range).
     fn lib_exit_visual(&mut self) {
         self.lib_visual = None;
         self.lib_marked.clear();
+        self.lib_marked_base.clear();
     }
 
-    /// Recompute the marked set as the contiguous range between the visual anchor
-    /// and the cursor. A no-op outside visual mode; called after cursor movement.
+    /// Recompute the effective selection: the individual picks plus, in visual
+    /// mode, the contiguous range between the anchor and the cursor. Called after
+    /// cursor movement.
     fn lib_visual_sync(&mut self) {
         let Some(anchor) = self.lib_visual else {
             return;
         };
-        if self.lib_books.is_empty() {
-            self.lib_marked.clear();
-            return;
+        let mut sel = self.lib_marked_base.clone();
+        if !self.lib_books.is_empty() {
+            let last = self.lib_books.len() - 1;
+            let (lo, hi) = (anchor.min(self.lib_sel).min(last), anchor.max(self.lib_sel).min(last));
+            sel.extend(self.lib_books[lo..=hi].iter().map(|b| b.path.clone()));
         }
-        let last = self.lib_books.len() - 1;
-        let a = anchor.min(last);
-        let s = self.lib_sel.min(last);
-        let (lo, hi) = (a.min(s), a.max(s));
-        self.lib_marked = self.lib_books[lo..=hi].iter().map(|b| b.path.clone()).collect();
+        self.lib_marked = sel;
     }
 
     /// Favorite all marked books (or unfavorite them if all are already
@@ -2641,13 +2596,20 @@ impl App {
         ));
     }
 
-    /// Open the bulk-rename popup over the marked books (snapshotting the data
-    /// the template needs from each).
+    /// Open the rename popup over the marked books, or — when nothing is marked —
+    /// the current book. Snapshots the data the template needs from each.
     fn open_bulk_rename(&mut self) {
+        let current = self.lib_books.get(self.lib_sel).map(|b| b.path.clone());
         let targets: Vec<BulkTarget> = self
             .lib_books
             .iter()
-            .filter(|b| self.lib_marked.contains(&b.path))
+            .filter(|b| {
+                if self.lib_marked.is_empty() {
+                    Some(&b.path) == current.as_ref()
+                } else {
+                    self.lib_marked.contains(&b.path)
+                }
+            })
             .map(|b| {
                 let ext = std::path::Path::new(&b.path)
                     .extension()
@@ -2682,6 +2644,7 @@ impl App {
             cursor: template.chars().count(),
             template,
             targets,
+            full: false,
         });
     }
 
@@ -2697,7 +2660,7 @@ impl App {
             match self.rename_book_file(&t.path, &new_name) {
                 RenameOutcome::Renamed => renamed += 1,
                 RenameOutcome::Unchanged => {}
-                RenameOutcome::Skipped(_) => skipped += 1,
+                RenameOutcome::Skipped => skipped += 1,
             }
         }
         self.lib_exit_visual();
@@ -2714,7 +2677,20 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.bulk_rename = None,
-            KeyCode::Char('s') if ctrl => self.apply_bulk_rename(),
+            // ^S asks for confirmation before moving files on disk.
+            KeyCode::Char('s') if ctrl => {
+                let n = self.bulk_rename.as_ref().map_or(0, |b| b.targets.len());
+                if n > 0 {
+                    let q = format!("Rename {n} book{}?", if n == 1 { "" } else { "s" });
+                    self.ask_confirm(&q, ConfirmAction::Rename);
+                }
+            }
+            // Toggle the full-screen before/after view.
+            KeyCode::Char('f') if ctrl => {
+                if let Some(b) = self.bulk_rename.as_mut() {
+                    b.full = !b.full;
+                }
+            }
             KeyCode::Left => {
                 if let Some(b) = self.bulk_rename.as_mut() {
                     b.cursor = b.cursor.saturating_sub(1);
@@ -3177,6 +3153,11 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return;
         }
+        // A pending yes/no confirmation is modal: it answers before any popup.
+        if self.pending_confirm.is_some() {
+            self.confirm_key(key);
+            return;
+        }
         if self.settings.is_some() {
             self.settings_key(key);
             return;
@@ -3243,6 +3224,35 @@ impl App {
                 self.lib_flash = None;
                 self.library_key(key);
             }
+        }
+    }
+
+    /// Raise the uniform yes/no confirmation for a destructive action. The
+    /// underlying popup (editor / rename / collection editor) stays open behind
+    /// the prompt, so cancelling returns the user exactly where they were.
+    fn ask_confirm(&mut self, question: &str, action: ConfirmAction) {
+        self.pending_confirm = Some(PendingConfirm { question: question.to_string(), action });
+    }
+
+    /// Answer the pending confirmation: `y`/`⏎` commits, `n`/`Esc` cancels, and
+    /// any other key is ignored (the prompt stays up).
+    fn confirm_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => self.confirm_commit(),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => self.pending_confirm = None,
+            _ => {}
+        }
+    }
+
+    /// Run the confirmed action and dismiss the prompt.
+    fn confirm_commit(&mut self) {
+        let Some(p) = self.pending_confirm.take() else {
+            return;
+        };
+        match p.action {
+            ConfirmAction::SaveMeta => self.save_meta_edit(),
+            ConfirmAction::Rename => self.apply_bulk_rename(),
+            ConfirmAction::Collection => self.lib_coll_commit(),
         }
     }
 
@@ -3507,7 +3517,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Esc => {
-                if self.lib_visual.is_some() {
+                if self.lib_visual.is_some() || !self.lib_marked.is_empty() {
                     self.lib_exit_visual();
                 } else if self.lib_filter.is_empty() {
                     self.should_quit = true;
@@ -3516,8 +3526,11 @@ impl App {
                     self.refresh_library();
                 }
             }
-            // Vim-style visual select: V starts/stops; movement extends the range.
+            // Select: Space toggles individual books; V is a vim-style range;
+            // A selects all (e.g. to bulk-rename/sanitize the whole library).
+            KeyCode::Char(' ') => self.lib_toggle_mark(),
             KeyCode::Char('V') => self.lib_toggle_visual(),
+            KeyCode::Char('A') => self.lib_mark_all(),
             // Tab cycles focus through the visible panes.
             KeyCode::Tab => self.lib_cycle_pane(1),
             KeyCode::BackTab => self.lib_cycle_pane(-1),
@@ -3572,9 +3585,9 @@ impl App {
                 }
                 _ => self.lib_sel = self.lib_books.len().saturating_sub(1),
             },
-            // Resize the focused side pane; show/hide the sidebar / detail pane.
-            KeyCode::Char('[') => self.lib_resize(-2),
-            KeyCode::Char(']') => self.lib_resize(2),
+            // Resize the focused side pane (Shift+</>); show/hide sidebar/detail.
+            KeyCode::Char('<') => self.lib_resize(-2),
+            KeyCode::Char('>') => self.lib_resize(2),
             KeyCode::Char('b') => {
                 self.lib_show_sidebar = !self.lib_show_sidebar;
                 self.lib_ensure_pane_visible();
@@ -3591,15 +3604,10 @@ impl App {
                     self.bulk_favorite()
                 }
             }
-            KeyCode::Char('e') => {
-                if self.lib_marked.is_empty() {
-                    self.open_meta_edit()
-                } else {
-                    self.open_bulk_rename()
-                }
-            }
+            KeyCode::Char('e') => self.open_meta_edit(),
             KeyCode::Char('c') => self.open_shelf_picker(),
-            // Rename the focused collection in place (sidebar, on a collection).
+            // `r` renames: the focused collection in place (sidebar), else the
+            // selected book(s) — the current one when nothing is marked.
             KeyCode::Char('r')
                 if pane == LibPane::Sidebar
                     && !self.lib_side_new
@@ -3607,6 +3615,7 @@ impl App {
             {
                 self.lib_coll_begin_rename()
             }
+            KeyCode::Char('r') => self.open_bulk_rename(),
             KeyCode::Char('x') => self.remove_from_current_shelf(),
             KeyCode::Char('v') => {
                 self.config.library_layout = self.config.library_layout.next();
@@ -3689,7 +3698,21 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.lib_coll_edit = None,
-            KeyCode::Enter => self.lib_coll_commit(),
+            KeyCode::Enter => {
+                // Creating a new collection commits at once (nothing to undo);
+                // renaming or deleting an existing one asks for confirmation.
+                match self.lib_coll_edit.as_ref() {
+                    Some(i) if i.rename_from.is_none() => self.lib_coll_commit(),
+                    Some(i) => {
+                        let q = match &i.rename_from {
+                            Some(old) if i.buf.trim().is_empty() => format!("Delete “{old}”?"),
+                            _ => format!("Rename to “{}”?", i.buf.trim()),
+                        };
+                        self.ask_confirm(&q, ConfirmAction::Collection);
+                    }
+                    None => {}
+                }
+            }
             KeyCode::Left => {
                 if let Some(i) = self.lib_coll_input_mut() {
                     i.cursor = i.cursor.saturating_sub(1);
@@ -4073,6 +4096,10 @@ impl App {
     /// Route a left-click to the active overlay / mode using the hit rects
     /// captured during the last render.
     fn mouse_down(&mut self, col: u16, row: u16) {
+        // A pending confirmation is modal — swallow clicks until it's answered.
+        if self.pending_confirm.is_some() {
+            return;
+        }
         if self.meta_edit.is_some() {
             self.editor_click(col, row);
             return;
@@ -4107,13 +4134,7 @@ impl App {
     fn editor_click(&mut self, col: u16, row: u16) {
         let pt = (col, row).into();
         if let Some(&(tab, _)) = self.mouse.edit_tabs.iter().find(|(_, r)| r.contains(pt)) {
-            if let Some(e) = self.meta_edit.as_mut() {
-                e.tab = tab;
-                e.mode = EditMode::Nav;
-            }
-            if self.meta_edit.as_ref().map(|e| e.tab) == Some(EditTab::File) {
-                self.recompute_rename();
-            }
+            self.meta_edit_goto_tab(tab);
             return;
         }
         if self.mouse.edit_search.is_some_and(|r| r.contains(pt)) {
@@ -4122,10 +4143,8 @@ impl App {
         }
         if let Some(&(idx, vstart, _)) = self.mouse.edit_fields.iter().find(|(_, _, r)| r.contains(pt)) {
             if let Some(e) = self.meta_edit.as_mut() {
-                match e.tab {
-                    EditTab::Details => e.row = idx,
-                    EditTab::File => e.file_row = idx,
-                    _ => {}
+                if e.tab == EditTab::Details {
+                    e.row = idx;
                 }
                 e.mode = EditMode::Edit;
                 let len = e.cur_field_len();
@@ -4299,12 +4318,12 @@ mod tests {
         app.on_key(key('h'));
         assert_eq!(app.lib_pane, LibPane::Sidebar);
         let w0 = app.lib_sidebar_w;
-        app.on_key(key(']'));
+        app.on_key(key('>'));
         assert_eq!(app.lib_sidebar_w, w0 + 2);
-        app.on_key(key('['));
+        app.on_key(key('<'));
         assert_eq!(app.lib_sidebar_w, w0);
         for _ in 0..40 {
-            app.on_key(key('['));
+            app.on_key(key('<'));
         }
         assert_eq!(app.lib_sidebar_w, SIDEBAR_W_MIN, "clamped at the minimum");
 
@@ -4353,22 +4372,70 @@ mod tests {
         app.on_key(code(KeyCode::Esc));
         assert!(app.meta_edit.as_ref().unwrap().has_invalid(), "non-numeric year invalid");
 
-        // ^S must NOT save while invalid.
+        // ^S must NOT even prompt to save while invalid.
         app.on_key(ctrl('s'));
+        assert!(app.pending_confirm.is_none(), "no save prompt while invalid");
         assert!(app.meta_edit.is_some(), "save blocked while invalid");
 
-        // Fix the year, then ^S saves and persists.
+        // Fix the year, then ^S → confirm → save and persist.
         app.on_key(code(KeyCode::Enter));
         app.on_key(ctrl('u'));
         for c in "2001".chars() {
             app.on_key(key(c));
         }
         app.on_key(code(KeyCode::Esc));
+        // ^S asks for confirmation; the editor stays open until answered.
         app.on_key(ctrl('s'));
+        assert!(app.pending_confirm.is_some(), "^S asks to confirm");
+        assert!(app.meta_edit.is_some(), "editor open while confirming");
+        app.on_key(key('y')); // confirm
+        assert!(app.pending_confirm.is_none(), "prompt dismissed");
         assert!(app.meta_edit.is_none(), "valid edit saves & closes");
         let b = &app.lib_books[0];
         assert_eq!(b.title, "XK");
         assert_eq!(b.year, Some(2001));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ^S raises a yes/no prompt; n (or Esc) cancels without saving, leaving the
+    // editor open. Unrelated keys are ignored while the prompt is up.
+    #[test]
+    fn save_confirmation_can_be_cancelled() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_cfm_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book("/k.epub", "K", "Auth", Some(1999), 1, 1, 1, "", None, "", "", "", "")
+                .unwrap();
+        }
+
+        let mut app = App::library();
+        app.on_key(key('e')); // open editor
+        // Change the title so there's something to save.
+        app.on_key(code(KeyCode::Enter));
+        app.on_key(key('X'));
+        app.on_key(code(KeyCode::Esc)); // back to nav
+
+        // ^S raises the prompt; nothing is saved yet and the editor stays open.
+        app.on_key(ctrl('s'));
+        assert!(app.pending_confirm.is_some(), "prompt up");
+        // An unrelated key is ignored — the prompt is modal.
+        app.on_key(code(KeyCode::Tab));
+        assert!(app.pending_confirm.is_some(), "stray key ignored, prompt stays");
+        // n cancels, the editor remains open, nothing persisted.
+        app.on_key(key('n'));
+        assert!(app.pending_confirm.is_none(), "n dismisses the prompt");
+        assert!(app.meta_edit.is_some(), "editor stays open after cancel");
+        assert_eq!(app.lib_books[0].title, "K", "nothing persisted on cancel");
+
+        // Esc also cancels the prompt (and keeps the editor).
+        app.on_key(ctrl('s'));
+        app.on_key(code(KeyCode::Esc));
+        assert!(app.pending_confirm.is_none() && app.meta_edit.is_some(), "Esc cancels");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4485,16 +4552,12 @@ mod tests {
 
         let mut app = App::library();
         assert_eq!(app.lib_books.len(), 1);
-        app.on_key(key('e'));
-        // Details → Cover → Online → File.
-        for _ in 0..3 {
-            app.on_key(code(KeyCode::Tab));
-        }
-        assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::File);
-        // Entering the File tab derived the name from "%T.%E".
-        assert_eq!(app.meta_edit.as_ref().unwrap().rename_name, "Clean Title.epub");
-        // ^S on the File tab renames the file and saves (no separate button).
-        app.on_key(ctrl('s'));
+        // `r` renames the current book (no need to mark it) via the popup.
+        app.on_key(key('r')); // rename popup (default "%T.%E")
+        assert!(app.bulk_rename.is_some());
+        app.on_key(ctrl('s')); // ^S asks to confirm
+        assert!(app.pending_confirm.is_some(), "rename asks to confirm");
+        app.on_key(key('y')); // confirm + apply
 
         let new = books.join("Clean Title.epub");
         assert!(new.exists(), "renamed file exists");
@@ -4532,10 +4595,11 @@ mod tests {
         app.on_key(key('V')); // visual select from book 0
         app.on_key(key('j')); // extend to book 1
         assert_eq!(app.lib_marked.len(), 2);
-        app.on_key(key('e')); // marks present → bulk rename, not the editor
+        app.on_key(key('r')); // rename the selection (not the editor)
         assert!(app.bulk_rename.is_some());
         assert!(app.meta_edit.is_none());
-        app.on_key(ctrl('s')); // apply default "%T.%E"
+        app.on_key(ctrl('s')); // ^S asks to confirm
+        app.on_key(key('y')); // confirm + apply default "%T.%E"
 
         assert!(books.join("Alpha.epub").exists(), "Alpha renamed");
         assert!(books.join("Beta.epub").exists(), "Beta renamed");
@@ -4605,19 +4669,51 @@ mod tests {
         assert_eq!(names(&app), vec!["Sci"]);
         assert!(matches!(app.lib_view, LibView::Shelf(ref n) if n == "Sci"));
 
-        // Rename in place: Sci → SciFi.
+        // Rename in place: Sci → SciFi. ⏎ asks to confirm; y commits.
         app.lib_coll_begin_rename();
         for c in "Fi".chars() {
             app.on_key(key(c));
         }
         app.on_key(code(KeyCode::Enter));
+        assert!(app.pending_confirm.is_some(), "rename asks to confirm");
+        app.on_key(key('y'));
         assert_eq!(names(&app), vec!["SciFi"]);
 
-        // Delete by clearing the name and committing.
+        // Delete by clearing the name and confirming.
         app.lib_coll_begin_rename();
         app.on_key(ctrl('u'));
         app.on_key(code(KeyCode::Enter));
+        assert!(app.pending_confirm.is_some(), "delete asks to confirm");
+        app.on_key(key('y'));
         assert!(names(&app).is_empty());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // Space toggles individual (non-contiguous) books into the selection.
+    #[test]
+    fn space_selects_individual_books() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_space_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for (p, t) in [("/a.epub", "A"), ("/b.epub", "B"), ("/c.epub", "C")] {
+                store
+                    .upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                    .unwrap();
+            }
+        }
+
+        let mut app = App::library();
+        app.on_key(key(' ')); // pick A, advance to B
+        app.on_key(code(KeyCode::Down)); // skip B → C
+        app.on_key(key(' ')); // pick C
+        assert!(app.lib_marked.contains("/a.epub"));
+        assert!(app.lib_marked.contains("/c.epub"));
+        assert!(!app.lib_marked.contains("/b.epub"), "B was skipped — non-contiguous");
+        assert!(app.lib_visual.is_none(), "Space doesn't enter visual mode");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
