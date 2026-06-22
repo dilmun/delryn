@@ -237,9 +237,16 @@ pub fn extract_content_title(path: impl AsRef<Path>) -> Option<(String, Option<S
     None
 }
 
-/// Pull a title (+ optional subtitle) out of one XHTML section: the first real
-/// heading, with a `.subtitle` line or a deeper following heading as subtitle;
-/// falling back to a non-generic `<title>` element.
+/// Most leaf blocks a section can have and still be treated as a title page
+/// rather than a chapter (so chapter body text is never mistaken for a title).
+const TITLE_PAGE_MAX_BLOCKS: usize = 14;
+
+/// Pull a title (+ optional subtitle) out of one XHTML section. A title page
+/// keeps the title, subtitle and author in *separate* block elements — headings
+/// in clean files, plain `<div>`/`<p>` lines in converted (calibre) ones. Take
+/// the first real line as the title and the next as the subtitle, stopping at a
+/// separator line (`—`, `by`, …) so the author isn't captured. Falls back to a
+/// non-generic `<title>` element.
 fn title_from_html(xhtml: &str) -> Option<(String, Option<String>)> {
     use scraper::{Html, Selector};
     let doc = Html::parse_document(xhtml);
@@ -247,36 +254,39 @@ fn title_from_html(xhtml: &str) -> Option<(String, Option<String>)> {
         e.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
     };
 
-    let sub_class = Selector::parse(".subtitle, .Subtitle, .sub-title, .book-subtitle")
-        .ok()
-        .and_then(|sel| doc.select(&sel).map(collapse).find(|s| !s.is_empty()));
-
-    let h_sel = Selector::parse("h1, h2, h3").ok()?;
-    let headings: Vec<(u8, String)> = doc
-        .select(&h_sel)
-        .filter_map(|e| {
-            let level = e.value().name().as_bytes().get(1).map(|b| b - b'0').unwrap_or(9);
-            let text = collapse(e);
-            (!text.is_empty()).then_some((level, text))
-        })
+    // Leaf block lines in document order (a block with no block descendant), so
+    // a wrapping <div> doesn't swallow every line into one.
+    let block_sel = Selector::parse("h1,h2,h3,h4,h5,h6,p,div,li").ok()?;
+    let lines: Vec<String> = doc
+        .select(&block_sel)
+        .filter(|e| e.select(&block_sel).next().is_none())
+        .map(collapse)
+        .filter(|s| !s.is_empty())
         .collect();
 
-    if let Some(idx) = headings.iter().position(|(_, t)| is_title_candidate(t)) {
-        let (lvl, title) = headings[idx].clone();
-        let subtitle = sub_class.or_else(|| {
-            headings
-                .get(idx + 1)
-                .filter(|(l, t)| *l > lvl && is_title_candidate(t))
-                .map(|(_, t)| t.clone())
-        });
-        return Some((title, subtitle));
+    // Only treat a short section as a title page; a long one is a chapter.
+    if !lines.is_empty() && lines.len() <= TITLE_PAGE_MAX_BLOCKS {
+        // Everything up to the first separator line is the title/subtitle block.
+        let end = lines.iter().position(|l| is_separator_line(l)).unwrap_or(lines.len());
+        let area = &lines[..end];
+        if let Some(ti) = area.iter().position(|l| is_title_candidate(l)) {
+            let title = area[ti].clone();
+            let subtitle = area.get(ti + 1).filter(|l| is_title_candidate(l)).cloned();
+            return Some((title, subtitle));
+        }
     }
 
     let head_title = doc
         .select(&Selector::parse("title").ok()?)
         .map(collapse)
         .find(|s| is_title_candidate(s))?;
-    Some((head_title, sub_class))
+    Some((head_title, None))
+}
+
+/// A line that divides the title block from the author (`—`, `-`, `·`, `by`).
+fn is_separator_line(l: &str) -> bool {
+    let t = l.trim();
+    t.eq_ignore_ascii_case("by") || (!t.is_empty() && t.chars().all(|c| !c.is_alphanumeric()))
 }
 
 /// Is `t` a plausible book title rather than an opaque ID or generic front-matter
@@ -505,15 +515,31 @@ mod tests {
     fn content_title_from_headings() {
         // h1 title + h2 subtitle.
         let html = "<html><body><h1>Building Chatbots with Python</h1>\
-            <h2>Using NLP and Machine Learning</h2><p>…</p></body></html>";
+            <h2>Using NLP and Machine Learning</h2></body></html>";
         assert_eq!(
             title_from_html(html),
             Some(("Building Chatbots with Python".into(), Some("Using NLP and Machine Learning".into())))
         );
 
-        // A leading generic heading (Cover) is skipped; .subtitle class is used.
+        // Calibre-style title page: plain <div> lines, title and subtitle split
+        // into separate blocks, an em-dash separator before the author. Only the
+        // title + subtitle are captured — never the author.
+        let calibre = "<html><body><div class=\"c1\">\
+            <div class=\"c2\">Building Chatbots with Python</div>\
+            <div class=\"c2\">Using Natural Language Processing and Machine Learning</div>\
+            <div class=\"c2\">—</div>\
+            <div class=\"c2\">Sumit Raj</div></div></body></html>";
+        assert_eq!(
+            title_from_html(calibre),
+            Some((
+                "Building Chatbots with Python".into(),
+                Some("Using Natural Language Processing and Machine Learning".into())
+            ))
+        );
+
+        // A leading generic block (Cover) is skipped.
         let html = "<html><body><h1>Cover</h1><h1>Deep Learning for Data Architects</h1>\
-            <p class=\"subtitle\">Unleash the power of Python</p></body></html>";
+            <p>Unleash the power of Python</p></body></html>";
         assert_eq!(
             title_from_html(html),
             Some((
@@ -522,14 +548,16 @@ mod tests {
             ))
         );
 
-        // No real heading → fall back to a non-generic <title>.
+        // No usable block → fall back to a non-generic <title>.
         let html =
             "<html><head><title>A Real Book Title</title></head><body><p>x</p></body></html>";
         assert_eq!(title_from_html(html), Some(("A Real Book Title".into(), None)));
 
-        // Nothing usable (only an ID-ish/generic heading) → None.
+        // An ID-ish heading is not a title.
         assert_eq!(title_from_html("<html><body><h1>503392068</h1></body></html>"), None);
-        assert_eq!(title_from_html("<html><body><p>no headings here</p></body></html>"), None);
+        // A long section is a chapter, not a title page → ignored.
+        let chapter = format!("<html><body>{}</body></html>", "<p>line</p>".repeat(20));
+        assert_eq!(title_from_html(&chapter), None);
     }
 
     #[test]
