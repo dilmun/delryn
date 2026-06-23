@@ -80,6 +80,13 @@ the size guidelines.
       mathml` transcodes MathML→LaTeX-ish, then reuses `latex_to_unicode`
       (∑ᵢ₌₁ⁿ i², fractions, roots, scripts). `LineKind::Math` for display.
       Alt-less inline images show a quiet ▢. *Deferred: next/prev + index.*
+- [x] **Equation/line-art images render legibly** (`delryn-media`): publishers
+      ship equations as black-ink-on-transparent PNGs that were black-on-black on
+      a dark reader. Now classified as line-art vs photo by colourfulness +
+      sparsity (no per-publisher rules) and repainted as an ink-coverage matte in
+      the theme's colours (alpha or luminance matte); photos keep their colours,
+      transparency flattened onto the page. Re-tints on theme change. *(Re-test
+      the two-page-view "some images don't show" now that visibility is fixed.)*
 
 Phase 1 content model is complete end-to-end (parse → rich `Block` → render).
 The deferred bits are all *interactive navigation*, gathered into Phase 2's
