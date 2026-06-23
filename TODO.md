@@ -4,9 +4,14 @@ Living backlog. See `ARCHITECTURE.md` for the target structure and `DESIGN.md`
 for the original spec. Phases are sequential; within a phase, items ship in
 small green commits (build + `cargo test` + `cargo clippy` clean each step).
 
-## Phase 0 — Foundation (`refactor/workspace`)
+## Phase 0 — Foundation (`refactor/workspace`) — ✅ complete
 
-Migrate to a Cargo workspace and clear every dev docs violation.
+Migrate to a Cargo workspace and clear every dev docs violation. Done: workspace
+extracted into 8 crates; the `app` god-object and every god-file (store, epub,
+library/meta_edit views) split into focused modules; let-chains modernization;
+`cargo clippy` 0-warning workspace-wide. No source file in the core logic now
+exceeds the size guidelines bar the cohesive `editor.rs`/`reader.rs` view-models
+(noted as optional sub-splits).
 
 - [x] Workspace skeleton: root `[workspace]`, crate → `crates/delryn`.
 - [x] Extract `delryn-model` (content/metadata/toc/math types + naming helpers).
