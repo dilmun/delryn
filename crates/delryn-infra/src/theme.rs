@@ -1,8 +1,11 @@
-//! Colour themes. Each theme maps semantic roles (body, heading, quote, link,
-//! code, markers, status bar) to colours, and names a syntect theme for code
-//! highlighting so prose and code stay coordinated. See `DESIGN.md` §7.
+//! Colour themes — the single source of truth for every colour the app paints.
+//! Each theme maps semantic roles (body, heading, quote, link, code, markers,
+//! status bar, errors) to colours, names a syntect theme so prose and code stay
+//! coordinated, and resolves the concrete `ink`/`paper` used to recolour images.
+//! No renderer should hardcode a colour or a fallback — go through a `Theme`.
+//! See `DESIGN.md` §7.
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
@@ -23,6 +26,8 @@ pub struct Theme {
     pub status_bg: Color,
     /// Sidebar selection / current-chapter accent.
     pub accent: Color,
+    /// Errors / invalid input / destructive actions.
+    pub danger: Color,
     /// syntect theme name used to highlight code blocks.
     pub syntect: &'static str,
 }
@@ -39,6 +44,74 @@ impl Theme {
         let i = THEMES.iter().position(|t| t.name == self.name).unwrap_or(0);
         THEMES[(i + THEMES.len() - 1) % THEMES.len()]
     }
+
+    /// The base text style: foreground always, background only when the theme
+    /// paints one (so the `terminal` theme keeps the terminal's own backdrop).
+    pub fn text_style(&self) -> Style {
+        let s = Style::default().fg(self.fg);
+        match self.bg {
+            Some(bg) => s.bg(bg),
+            None => s,
+        }
+    }
+
+    /// A concrete, opaque page colour for popups/overlays that must stay readable
+    /// over content. Falls back to black for the `terminal` theme, which has no
+    /// background of its own.
+    pub fn paper(&self) -> Color {
+        self.bg.unwrap_or(Color::Black)
+    }
+
+    /// The foreground for text drawn *on* the `accent` colour (selections, pills,
+    /// highlighted rows) — i.e. the inverse of the page.
+    pub fn on_accent(&self) -> Color {
+        self.paper()
+    }
+
+    /// The (ink, paper) sRGB pair used to recolour monochrome/line-art images to
+    /// match the theme. Terminal-relative colours (`Reset`, no `bg`) fall back to
+    /// black ink on a white page — the publisher's intent — and the two are
+    /// forced apart if they'd be too close to read.
+    pub fn image_ink(&self) -> ([u8; 3], [u8; 3]) {
+        let ink = rgb_of(self.fg).unwrap_or([0, 0, 0]);
+        let paper = self.bg.and_then(rgb_of).unwrap_or([255, 255, 255]);
+        let lum = |c: [u8; 3]| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
+        if (lum(ink) - lum(paper)).abs() < 64.0 {
+            let opposite = if lum(paper) < 128.0 {
+                [235, 235, 235]
+            } else {
+                [20, 20, 20]
+            };
+            (opposite, paper)
+        } else {
+            (ink, paper)
+        }
+    }
+}
+
+/// Concrete sRGB for a ratatui [`Color`], or `None` for terminal-relative colours
+/// (`Reset`, palette indices) whose true RGB we can't know.
+pub fn rgb_of(c: Color) -> Option<[u8; 3]> {
+    Some(match c {
+        Color::Rgb(r, g, b) => [r, g, b],
+        Color::Black => [0, 0, 0],
+        Color::White => [238, 238, 238],
+        Color::Red => [205, 49, 49],
+        Color::Green => [13, 188, 121],
+        Color::Yellow => [229, 229, 16],
+        Color::Blue => [36, 114, 200],
+        Color::Magenta => [188, 63, 188],
+        Color::Cyan => [17, 168, 205],
+        Color::Gray => [180, 180, 180],
+        Color::DarkGray => [102, 102, 102],
+        Color::LightRed => [241, 76, 76],
+        Color::LightGreen => [35, 209, 139],
+        Color::LightYellow => [245, 245, 67],
+        Color::LightBlue => [59, 142, 234],
+        Color::LightMagenta => [214, 112, 214],
+        Color::LightCyan => [41, 184, 219],
+        Color::Reset | Color::Indexed(_) => return None,
+    })
 }
 
 /// Look a theme up by name (for persistence).
@@ -77,6 +150,7 @@ pub const TERMINAL: Theme = Theme {
     status_fg: Color::Black,
     status_bg: Color::Gray,
     accent: Color::Rgb(137, 180, 250),
+    danger: Color::Rgb(0xe0, 0x5a, 0x5a),
     syntect: "base16-ocean.dark",
 };
 
@@ -93,6 +167,7 @@ pub const DARK: Theme = Theme {
     status_fg: Color::Rgb(0x1e, 0x1e, 0x2e),
     status_bg: Color::Rgb(0x89, 0xb4, 0xfa),
     accent: Color::Rgb(0xf5, 0xc2, 0xe7),
+    danger: Color::Rgb(0xf3, 0x8b, 0xa8),
     syntect: "base16-mocha.dark",
 };
 
@@ -109,6 +184,7 @@ pub const OLED: Theme = Theme {
     status_fg: Color::Rgb(0xd0, 0xd0, 0xd0),
     status_bg: Color::Rgb(0x18, 0x18, 0x18),
     accent: Color::Rgb(0x4e, 0xa1, 0xff),
+    danger: Color::Rgb(0xff, 0x5a, 0x5a),
     syntect: "base16-ocean.dark",
 };
 
@@ -125,6 +201,7 @@ pub const HIGH_CONTRAST: Theme = Theme {
     status_fg: Color::Rgb(0x00, 0x00, 0x00),
     status_bg: Color::Rgb(0xff, 0xff, 0xff),
     accent: Color::Rgb(0xff, 0xff, 0x00),
+    danger: Color::Rgb(0xff, 0x00, 0x00),
     syntect: "base16-ocean.dark",
 };
 
@@ -141,6 +218,7 @@ pub const SOLARIZED_DARK: Theme = Theme {
     status_fg: Color::Rgb(0x93, 0xa1, 0xa1),
     status_bg: Color::Rgb(0x07, 0x36, 0x42),
     accent: Color::Rgb(0x26, 0x8b, 0xd2),
+    danger: Color::Rgb(0xdc, 0x32, 0x2f),
     syntect: "Solarized (dark)",
 };
 
@@ -157,6 +235,7 @@ pub const SOLARIZED_LIGHT: Theme = Theme {
     status_fg: Color::Rgb(0x58, 0x6e, 0x75),
     status_bg: Color::Rgb(0xee, 0xe8, 0xd5),
     accent: Color::Rgb(0x26, 0x8b, 0xd2),
+    danger: Color::Rgb(0xdc, 0x32, 0x2f),
     syntect: "Solarized (light)",
 };
 
@@ -173,6 +252,7 @@ pub const DRACULA: Theme = Theme {
     status_fg: Color::Rgb(0xf8, 0xf8, 0xf2),
     status_bg: Color::Rgb(0x44, 0x47, 0x5a),
     accent: Color::Rgb(0xff, 0x79, 0xc6),
+    danger: Color::Rgb(0xff, 0x55, 0x55),
     syntect: "base16-mocha.dark",
 };
 
@@ -189,6 +269,7 @@ pub const GRUVBOX: Theme = Theme {
     status_fg: Color::Rgb(0x28, 0x28, 0x28),
     status_bg: Color::Rgb(0xa8, 0x99, 0x84),
     accent: Color::Rgb(0xfa, 0xbd, 0x2f),
+    danger: Color::Rgb(0xfb, 0x49, 0x34),
     syntect: "base16-eighties.dark",
 };
 
@@ -205,5 +286,47 @@ pub const LIGHT: Theme = Theme {
     status_fg: Color::Rgb(0x1a, 0x1a, 0x1a),
     status_bg: Color::Rgb(0xe6, 0xe6, 0xe6),
     accent: Color::Rgb(0x0b, 0x5c, 0xad),
+    danger: Color::Rgb(0xc0, 0x28, 0x28),
     syntect: "InspiredGitHub",
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paper_is_concrete_even_for_terminal_theme() {
+        // The terminal theme has no bg of its own, but popups need a concrete one.
+        assert_eq!(TERMINAL.paper(), Color::Black);
+        assert_eq!(OLED.paper(), Color::Rgb(0, 0, 0));
+        assert_eq!(LIGHT.paper(), Color::Rgb(0xff, 0xff, 0xff));
+    }
+
+    #[test]
+    fn every_theme_resolves_a_readable_image_ink_pair() {
+        // ink and paper must always differ enough to read an equation against.
+        let lum = |c: [u8; 3]| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
+        for t in THEMES {
+            let (ink, paper) = t.image_ink();
+            assert!(
+                (lum(ink) - lum(paper)).abs() >= 64.0,
+                "{} ink/paper too close: {ink:?} vs {paper:?}",
+                t.name
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_theme_inks_black_on_white() {
+        // Reset fg + no bg → the publisher's intended dark-on-light page.
+        assert_eq!(TERMINAL.image_ink(), ([0, 0, 0], [255, 255, 255]));
+    }
+
+    #[test]
+    fn rgb_of_resolves_concrete_but_not_terminal_relative() {
+        assert_eq!(rgb_of(Color::Rgb(1, 2, 3)), Some([1, 2, 3]));
+        assert_eq!(rgb_of(Color::Black), Some([0, 0, 0]));
+        assert_eq!(rgb_of(Color::Reset), None);
+        assert_eq!(rgb_of(Color::Indexed(5)), None);
+    }
+}

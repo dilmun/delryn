@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
@@ -42,7 +42,7 @@ fn render_overlay(f: &mut Frame, app: &App) {
     let area = super::centered(f.area(), 72, 18);
     f.render_widget(Clear, area);
 
-    let bg = theme.bg.unwrap_or(Color::Black);
+    let bg = theme.paper();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))

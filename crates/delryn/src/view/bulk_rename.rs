@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
@@ -14,7 +14,7 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let bg = theme.bg.unwrap_or(Color::Black);
+    let bg = theme.paper();
     // ^F expands to (near) full screen for a wider, taller before/after view.
     let area = if br.full {
         let a = f.area();

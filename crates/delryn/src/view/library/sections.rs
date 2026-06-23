@@ -7,7 +7,7 @@ use super::*;
 fn section_item(label: &str, here: bool, focused: bool, theme: Theme) -> ListItem<'static> {
     let style = if here && focused {
         Style::default()
-            .fg(theme.bg.unwrap_or(Color::Black))
+            .fg(theme.on_accent())
             .bg(theme.accent)
             .add_modifier(Modifier::BOLD)
     } else if here {

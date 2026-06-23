@@ -18,7 +18,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
     f.render_widget(Clear, area);
 
-    let bg = theme.bg.unwrap_or(ratatui::style::Color::Black);
+    let bg = theme.paper();
     let title = format!(" Image {}/{} ", view.sel + 1, view.protocols.len());
     let block = Block::default()
         .borders(Borders::ALL)

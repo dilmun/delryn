@@ -20,7 +20,7 @@ pub fn render(f: &mut Frame, app: &App) {
 
     f.render_widget(Clear, area);
 
-    let bg = theme.bg.unwrap_or(ratatui::style::Color::Black);
+    let bg = theme.paper();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))

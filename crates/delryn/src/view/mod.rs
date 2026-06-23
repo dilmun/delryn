@@ -18,54 +18,12 @@ use ratatui::layout::Rect;
 
 use crate::app::{App, Mode};
 
-/// Resolve the theme's text + page colours into an [`media::Ink`] for recolouring
-/// math/line-art images. Unknown colours (the default theme's terminal-default
-/// `Reset`/`None`) fall back to a black-ink-on-white-page matte — the publisher's
-/// intended look, always legible. The two colours are forced apart if they'd
-/// otherwise be too close to read.
+/// Adapt the theme's resolved (ink, paper) sRGB into a [`media::Ink`] for
+/// recolouring math/line-art images. The colour resolution itself lives on the
+/// theme (the single source of truth); this is just the format-layer adapter.
 pub fn theme_ink(theme: crate::theme::Theme) -> crate::media::Ink {
-    let ink = rgb_of(theme.fg).unwrap_or([0, 0, 0]);
-    let paper = theme.bg.and_then(rgb_of).unwrap_or([255, 255, 255]);
-    // Guarantee contrast: if ink and paper are close in luminance, snap ink to
-    // black or white opposite the paper.
-    let lum = |c: [u8; 3]| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
-    let (ink, paper) = if (lum(ink) - lum(paper)).abs() < 64.0 {
-        let opposite = if lum(paper) < 128.0 {
-            [235, 235, 235]
-        } else {
-            [20, 20, 20]
-        };
-        (opposite, paper)
-    } else {
-        (ink, paper)
-    };
+    let (ink, paper) = theme.image_ink();
     crate::media::Ink { ink, paper }
-}
-
-/// Concrete sRGB for a ratatui [`Color`], or `None` for terminal-relative colours
-/// (`Reset`, palette indices) whose true RGB we can't know.
-fn rgb_of(c: ratatui::style::Color) -> Option<[u8; 3]> {
-    use ratatui::style::Color::*;
-    Some(match c {
-        Rgb(r, g, b) => [r, g, b],
-        Black => [0, 0, 0],
-        White => [238, 238, 238],
-        Red => [205, 49, 49],
-        Green => [13, 188, 121],
-        Yellow => [229, 229, 16],
-        Blue => [36, 114, 200],
-        Magenta => [188, 63, 188],
-        Cyan => [17, 168, 205],
-        Gray => [180, 180, 180],
-        DarkGray => [102, 102, 102],
-        LightRed => [241, 76, 76],
-        LightGreen => [35, 209, 139],
-        LightYellow => [245, 245, 67],
-        LightBlue => [59, 142, 234],
-        LightMagenta => [214, 112, 214],
-        LightCyan => [41, 184, 219],
-        Reset | Indexed(_) => return None,
-    })
 }
 
 /// Terminal cell size in pixels (w, h), for sizing image render rects. Falls
@@ -181,7 +139,7 @@ pub fn field_spans(
     width: usize,
     theme: crate::theme::Theme,
 ) -> Vec<ratatui::text::Span<'static>> {
-    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::style::{Modifier, Style};
     use ratatui::text::Span;
 
     let chars: Vec<char> = val.chars().collect();
@@ -195,7 +153,7 @@ pub fn field_spans(
         .fg(theme.heading)
         .add_modifier(Modifier::BOLD);
     let cursor = Style::default()
-        .fg(theme.bg.unwrap_or(Color::Black))
+        .fg(theme.on_accent())
         .bg(theme.accent)
         .add_modifier(Modifier::BOLD);
 
