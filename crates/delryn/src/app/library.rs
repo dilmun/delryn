@@ -56,6 +56,7 @@ pub enum SortKey {
     Year,
     Progress,
     Size,
+    Rating,
 }
 
 impl SortKey {
@@ -67,6 +68,7 @@ impl SortKey {
             SortKey::Year => "year",
             SortKey::Progress => "progress",
             SortKey::Size => "size",
+            SortKey::Rating => "rating",
         }
     }
 
@@ -78,7 +80,8 @@ impl SortKey {
             SortKey::Author => SortKey::Year,
             SortKey::Year => SortKey::Progress,
             SortKey::Progress => SortKey::Size,
-            SortKey::Size => SortKey::Default,
+            SortKey::Size => SortKey::Rating,
+            SortKey::Rating => SortKey::Default,
         }
     }
 }
@@ -157,6 +160,7 @@ impl App {
                 SortKey::Year => a.year.cmp(&b.year),
                 SortKey::Progress => a.pct.cmp(&b.pct),
                 SortKey::Size => a.size.cmp(&b.size),
+                SortKey::Rating => a.rating.cmp(&b.rating),
                 SortKey::Default => std::cmp::Ordering::Equal,
             };
             if desc { ord.reverse() } else { ord }
@@ -189,6 +193,19 @@ impl App {
         if let (Some(store), Some(book)) = (&self.store, self.lib_books.get(self.lib_sel)) {
             store.set_favorite(&book.path, !book.favorite);
         }
+        self.refresh_library();
+    }
+
+    /// Set the selected book's rating (0 clears), flashing the result.
+    fn lib_set_rating(&mut self, rating: u8) {
+        if let (Some(store), Some(book)) = (&self.store, self.lib_books.get(self.lib_sel)) {
+            store.set_rating(&book.path, rating);
+        }
+        self.lib_flash = Some(if rating == 0 {
+            "rating cleared".to_string()
+        } else {
+            format!("rated {}", "★".repeat(rating as usize))
+        });
         self.refresh_library();
     }
 
@@ -503,6 +520,10 @@ impl App {
                 } else {
                     self.bulk_favorite()
                 }
+            }
+            // 0–5 rate the selected book (0 clears the rating).
+            KeyCode::Char(c @ '0'..='5') if pane != LibPane::Sidebar => {
+                self.lib_set_rating(c as u8 - b'0');
             }
             // `e` edits the current book; with a selection, edits each in turn.
             KeyCode::Char('e') => {

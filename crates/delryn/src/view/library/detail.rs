@@ -25,6 +25,7 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
     let pct = b.pct;
     let fav = b.favorite;
     let converted = b.converted;
+    let rating = b.rating;
 
     let parts = Layout::vertical([Constraint::Min(2), Constraint::Length(13)]).split(inner);
 
@@ -72,6 +73,14 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
         lines.push(meta_kv("Series", &series, theme));
     }
     lines.push(meta_kv("Year", &year, theme));
+    if rating > 0 {
+        let stars = format!(
+            "{}{}",
+            "★".repeat(rating as usize),
+            "☆".repeat(5 - rating as usize)
+        );
+        lines.push(meta_kv("Rating", &stars, theme));
+    }
     if !publisher.is_empty() {
         lines.push(meta_kv("Publisher", &publisher, theme));
     }
