@@ -48,7 +48,7 @@ fn is_block(node: NodeRef<Node>) -> bool {
 fn is_real_image(e: &scraper::node::Element) -> bool {
     let alt = e.attr("alt").unwrap_or("");
     let src = e.attr("src").unwrap_or("");
-    !crate::math::is_math(alt) && !is_icon_src(src)
+    !delryn_model::math::is_math(alt) && !is_icon_src(src)
 }
 
 fn is_icon_src(src: &str) -> bool {
@@ -245,8 +245,8 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
                 // icons/figures aren't silently dropped.
                 "img" => {
                     let alt = e.attr("alt").unwrap_or("");
-                    let text = if crate::math::is_math(alt) {
-                        crate::math::latex_to_unicode(alt)
+                    let text = if delryn_model::math::is_math(alt) {
+                        delryn_model::math::latex_to_unicode(alt)
                     } else {
                         img_label(e)
                     };

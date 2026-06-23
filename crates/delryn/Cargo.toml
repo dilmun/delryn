@@ -9,17 +9,13 @@ delryn-infra = { workspace = true }
 delryn-store = { workspace = true }
 delryn-online = { workspace = true }
 delryn-media = { workspace = true }
+delryn-format = { workspace = true }
 anyhow.workspace = true
 arboard.workspace = true
 crossterm.workspace = true
-ego-tree.workspace = true
-epub.workspace = true
-html2text.workspace = true
 image.workspace = true
 lru.workspace = true
 ratatui.workspace = true
 ratatui-image.workspace = true
 regex.workspace = true
-scraper.workspace = true
 syntect.workspace = true
-zip.workspace = true

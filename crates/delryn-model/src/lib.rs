@@ -4,6 +4,7 @@
 //! No I/O, no UI, no external dependencies — everything else depends on this.
 
 pub mod content;
+pub mod math;
 pub mod metadata;
 pub mod naming;
 pub mod toc;

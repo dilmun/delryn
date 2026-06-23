@@ -6,17 +6,16 @@
 
 pub mod app;
 pub mod clipboard;
-pub mod document;
 pub mod highlight;
 pub mod input;
 pub mod layout;
 pub mod library;
-pub mod math;
 pub mod search;
 pub mod view;
 
 // Extracted layers, re-exported so existing `crate::{store, online, config, …}`
 // paths keep resolving.
+pub use delryn_format as document;
 pub use delryn_infra::{config, paths, test_env_guard, theme};
 pub use delryn_media as media;
 pub use delryn_online as online;
