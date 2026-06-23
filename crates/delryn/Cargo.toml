@@ -8,6 +8,7 @@ delryn-model = { workspace = true }
 delryn-infra = { workspace = true }
 delryn-store = { workspace = true }
 delryn-online = { workspace = true }
+delryn-media = { workspace = true }
 anyhow.workspace = true
 arboard.workspace = true
 crossterm.workspace = true
