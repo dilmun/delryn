@@ -133,7 +133,9 @@ pub fn field_spans(
     // Anchor the window so the caret sits at its right edge — guarantees the
     // caret (and the text being typed) is always on screen.
     let start = (caret + 1).saturating_sub(win);
-    let text = Style::default().fg(theme.heading).add_modifier(Modifier::BOLD);
+    let text = Style::default()
+        .fg(theme.heading)
+        .add_modifier(Modifier::BOLD);
     let cursor = Style::default()
         .fg(theme.bg.unwrap_or(Color::Black))
         .bg(theme.accent)

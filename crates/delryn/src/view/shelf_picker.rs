@@ -26,7 +26,9 @@ pub fn render(f: &mut Frame, app: &App) {
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
             " Add to collection ",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().fg(theme.fg).bg(bg));
     let inner = block.inner(area);
@@ -41,7 +43,9 @@ pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(
         Paragraph::new(Line::styled(
             super::truncate(&p.title, inner.width as usize),
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::ITALIC),
         )),
         rows[0],
     );
@@ -52,13 +56,18 @@ pub fn render(f: &mut Frame, app: &App) {
         let marker = if selected { "▸ " } else { "  " };
         let check = if *member { "[✓] " } else { "[ ] " };
         let style = if selected {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
         } else if *member {
             Style::default().fg(theme.fg)
         } else {
             Style::default().fg(theme.muted)
         };
-        lines.push(Line::from(Span::styled(format!("{marker}{check}{name}"), style)));
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{check}{name}"),
+            style,
+        )));
     }
 
     // The "new collection" row — a label, or a live text input when creating.
@@ -72,7 +81,9 @@ pub fn render(f: &mut Frame, app: &App) {
     } else {
         let marker = if new_selected { "▸ " } else { "  " };
         let style = if new_selected {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.muted)
         };

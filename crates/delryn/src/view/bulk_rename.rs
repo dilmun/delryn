@@ -36,7 +36,9 @@ pub fn render(f: &mut Frame, app: &App) {
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
             title,
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().fg(theme.fg).bg(bg));
     let inner = block.inner(area);
@@ -54,7 +56,9 @@ pub fn render(f: &mut Frame, app: &App) {
     // horizontally so the caret stays visible for long templates.
     let mut spans = vec![Span::styled(
         " template   ",
-        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
     )];
     let w = rows[0].width.saturating_sub(12) as usize; // " template   " = 12 cells
     spans.extend(super::field_spans(&br.template, br.cursor, w, theme));

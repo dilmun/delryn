@@ -25,12 +25,16 @@ pub fn bar(f: &mut Frame, area: Rect, theme: Theme, state: &str, keys: &str) {
     let line = Line::from(vec![
         Span::styled(
             format!(" {keys}"),
-            Style::default().fg(theme.status_fg).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(theme.status_fg)
+                .add_modifier(Modifier::DIM),
         ),
         Span::raw(" ".repeat(pad + 1)),
         Span::styled(
             format!("{state} "),
-            Style::default().fg(theme.status_fg).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.status_fg)
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
     f.render_widget(
@@ -75,7 +79,10 @@ fn legend(app: &App) -> Option<(String, String)> {
         ));
     }
     if app.image_view.is_some() {
-        return Some(("Images".into(), "n/N · h/l · ←→ page · i / q / Esc close".into()));
+        return Some((
+            "Images".into(),
+            "n/N · h/l · ←→ page · i / q / Esc close".into(),
+        ));
     }
     if let Some(ed) = &app.meta_edit {
         return Some(editor_legend(ed));
@@ -122,7 +129,9 @@ fn editor_legend(ed: &MetaEdit) -> (String, String) {
         "type to edit · ←→ move · ^U clear · ⏎/Esc done"
     } else {
         match ed.tab {
-            EditTab::Details => "1-3 tab · j/k · ⏎ edit · x extract-from-book · r/R reset · ^S · Esc",
+            EditTab::Details => {
+                "1-3 tab · j/k · ⏎ edit · x extract-from-book · r/R reset · ^S · Esc"
+            }
             EditTab::Cover => "1-3 tab · / search · j/k pick · ⏎ use cover · ^S save · Esc",
             EditTab::Online => "", // handled above
         }

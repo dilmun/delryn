@@ -4,8 +4,8 @@
 //! across resizes. The view layer maps these to ratatui styles. See
 //! `DESIGN.md` §2.1, §4.
 
-use delryn_model::{Block, Inline, Span};
 use crate::highlight::highlight_code;
+use delryn_model::{Block, Inline, Span};
 
 /// An RGB foreground colour (from syntax highlighting / themes).
 pub type Rgb = (u8, u8, u8);
@@ -95,7 +95,13 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
     let mut code_idx = 0usize;
 
     for block in blocks {
-        let is_item = matches!(block, Block::Para { marker: Some(_), .. });
+        let is_item = matches!(
+            block,
+            Block::Para {
+                marker: Some(_),
+                ..
+            }
+        );
 
         // Spacing between blocks: blank line(s), except between consecutive list
         // items and around explicit blanks.
@@ -185,7 +191,10 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                                 fg: None,
                             }];
                             full.append(&mut line_runs);
-                            out.push(DisplayLine { runs: full, kind: LineKind::Code(code_idx) });
+                            out.push(DisplayLine {
+                                runs: full,
+                                kind: LineKind::Code(code_idx),
+                            });
                         }
                     } else {
                         // No-wrap: one row per source line, panned by code_hscroll.
@@ -195,7 +204,10 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                             fg: None,
                         }];
                         full.extend(shift_runs(runs, opts.code_hscroll, avail));
-                        out.push(DisplayLine { runs: full, kind: LineKind::Code(code_idx) });
+                        out.push(DisplayLine {
+                            runs: full,
+                            kind: LineKind::Code(code_idx),
+                        });
                     }
                 }
                 code_idx += 1;
@@ -213,7 +225,10 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
     let mut spaced = Vec::with_capacity(out.len() * (1 + line_spacing as usize));
     for line in out {
         let spread = !line.runs.is_empty()
-            && matches!(line.kind, LineKind::Body | LineKind::Heading(_) | LineKind::Quote);
+            && matches!(
+                line.kind,
+                LineKind::Body | LineKind::Heading(_) | LineKind::Quote
+            );
         spaced.push(line);
         if spread {
             for _ in 0..line_spacing {
@@ -245,7 +260,11 @@ fn wrap_spans(
     let mut i = 0;
     let mut first_line = true;
     while i < words.len() {
-        let prefix = if first_line { first_prefix } else { cont_prefix };
+        let prefix = if first_line {
+            first_prefix
+        } else {
+            cont_prefix
+        };
         let avail = width.saturating_sub(prefix.chars().count()).max(1);
 
         let mut runs: Vec<Run> = Vec::new();
@@ -313,7 +332,11 @@ fn shift_runs(runs: Vec<Run>, skip: usize, avail: usize) -> Vec<Run> {
             taken += 1;
         }
         if !text.is_empty() {
-            out.push(Run { text, style: run.style, fg: run.fg });
+            out.push(Run {
+                text,
+                style: run.style,
+                fg: run.fg,
+            });
         }
     }
     out

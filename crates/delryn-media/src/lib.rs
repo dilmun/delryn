@@ -140,10 +140,15 @@ fn build_plan(
         image::imageops::FilterType::Triangle,
     );
     let size = ratatui::layout::Size::new(cols, rows);
-    let proto = SlicedProtocol::new_with_resize(picker, img, size, ratatui_image::Resize::Fit(None))
-        .ok()?;
+    let proto =
+        SlicedProtocol::new_with_resize(picker, img, size, ratatui_image::Resize::Fit(None))
+            .ok()?;
     let s = proto.size();
-    Some(ImagePlan { proto, cols: s.width, rows: s.height })
+    Some(ImagePlan {
+        proto,
+        cols: s.width,
+        rows: s.height,
+    })
 }
 
 /// A request to build one image's protocol off the main thread.
@@ -188,18 +193,36 @@ impl ImageBuilder {
                 // from — they only delay the section now in view.
                 let cur = worker_current.load(Ordering::Relaxed);
                 if k.section.abs_diff(cur) > KEEP_RADIUS {
-                    if res_tx.send(BuiltImage { key: k, plan: None, stale: true }).is_err() {
+                    if res_tx
+                        .send(BuiltImage {
+                            key: k,
+                            plan: None,
+                            stale: true,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                     continue;
                 }
                 let plan = build_plan(&picker, &req.bytes, k.avail, k.max_rows, k.max_px);
-                if res_tx.send(BuiltImage { key: k, plan, stale: false }).is_err() {
+                if res_tx
+                    .send(BuiltImage {
+                        key: k,
+                        plan,
+                        stale: false,
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
         });
-        ImageBuilder { req_tx, res_rx, current }
+        ImageBuilder {
+            req_tx,
+            res_rx,
+            current,
+        }
     }
 
     /// Tell the worker which section is in view, so it can drop stale builds.

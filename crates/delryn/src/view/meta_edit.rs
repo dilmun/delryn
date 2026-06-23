@@ -40,7 +40,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let ed = app.meta_edit.as_ref().unwrap();
         // Progress counter when stepping through a multi-book edit queue.
         let progress = if app.edit_total > 1 {
-            format!(" ({}/{})", app.edit_total - app.edit_queue.len(), app.edit_total)
+            format!(
+                " ({}/{})",
+                app.edit_total - app.edit_queue.len(),
+                app.edit_total
+            )
         } else {
             String::new()
         };
@@ -54,7 +58,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
             title,
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().fg(theme.fg).bg(bg));
     let inner = block.inner(area);
@@ -111,12 +117,25 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
             tx += 1;
         }
         let w = t.label().chars().count() as u16 + 4; // " N label "
-        tabs.push((*t, Rect { x: tx, y: tab_strip.y, width: w, height: 1 }));
+        tabs.push((
+            *t,
+            Rect {
+                x: tx,
+                y: tab_strip.y,
+                width: w,
+                height: 1,
+            },
+        ));
         tx += w;
     }
     app.mouse.edit_tabs = tabs;
 
-    let row = |i: u16| Rect { x: body.x, y: body.y + i, width: body.width, height: 1 };
+    let row = |i: u16| Rect {
+        x: body.x,
+        y: body.y + i,
+        width: body.width,
+        height: 1,
+    };
     let in_body = |y: u16| y < body.y + body.height;
     let value_start = body.x + 3 + LABEL_W as u16; // marker (3) + label column
     let mut fields = Vec::new();
@@ -156,7 +175,15 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
                 if !in_body(y) {
                     break;
                 }
-                results.push((i as usize, Rect { x: body.x, y, width: body.width, height: 1 }));
+                results.push((
+                    i as usize,
+                    Rect {
+                        x: body.x,
+                        y,
+                        width: body.width,
+                        height: 1,
+                    },
+                ));
             }
         }
         EditTab::Cover => {
@@ -167,7 +194,15 @@ fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
                 if !in_body(y) {
                     break;
                 }
-                results.push((i as usize, Rect { x: body.x, y, width: rw, height: 1 }));
+                results.push((
+                    i as usize,
+                    Rect {
+                        x: body.x,
+                        y,
+                        width: rw,
+                        height: 1,
+                    },
+                ));
             }
         }
     }
@@ -185,7 +220,9 @@ fn footer_line(ed: &MetaEdit, theme: Theme) -> Line<'static> {
     if let Some(status) = ed.status.as_ref().filter(|_| on_this_tab) {
         return Line::styled(
             format!("  {status}"),
-            Style::default().fg(theme.heading).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.heading)
+                .add_modifier(Modifier::ITALIC),
         );
     }
     let hint = match ed.tab {
@@ -193,7 +230,10 @@ fn footer_line(ed: &MetaEdit, theme: Theme) -> Line<'static> {
         EditTab::Cover => "  type or / to search for a cover",
         EditTab::Details => "",
     };
-    Line::styled(hint, Style::default().fg(theme.muted).add_modifier(Modifier::DIM))
+    Line::styled(
+        hint,
+        Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+    )
 }
 
 fn render_tabs(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Color) {
@@ -208,11 +248,20 @@ fn render_tabs(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Color
         if *t == ed.tab {
             spans.push(Span::styled(
                 format!(" {num} {} ", t.label()),
-                Style::default().fg(bg).bg(theme.accent).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(bg)
+                    .bg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
             ));
         } else {
-            spans.push(Span::styled(format!(" {num} "), Style::default().fg(theme.accent)));
-            spans.push(Span::styled(format!("{} ", t.label()), Style::default().fg(theme.muted)));
+            spans.push(Span::styled(
+                format!(" {num} "),
+                Style::default().fg(theme.accent),
+            ));
+            spans.push(Span::styled(
+                format!("{} ", t.label()),
+                Style::default().fg(theme.muted),
+            ));
         }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -235,7 +284,9 @@ fn render_details(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
         }
         lines.push(Line::styled(
             format!(" {section}"),
-            Style::default().fg(theme.muted).add_modifier(Modifier::BOLD | Modifier::DIM),
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::BOLD | Modifier::DIM),
         ));
         for &i in *fields {
             let focused = i == ed.row;
@@ -273,9 +324,15 @@ fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     if focused {
         spans.extend(super::field_spans(&s.q, ed.cursor, w, theme));
     } else if s.q.is_empty() {
-        spans.push(Span::styled("type to search…", Style::default().fg(theme.muted)));
+        spans.push(Span::styled(
+            "type to search…",
+            Style::default().fg(theme.muted),
+        ));
     } else {
-        spans.push(Span::styled(super::truncate(&s.q, w), Style::default().fg(theme.fg)));
+        spans.push(Span::styled(
+            super::truncate(&s.q, w),
+            Style::default().fg(theme.fg),
+        ));
     }
     let line = Rect { height: 1, ..area };
     f.render_widget(Paragraph::new(Line::from(spans)), line);
@@ -292,7 +349,13 @@ fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     } else {
         None
     };
-    for (i, c) in ed.online.results.iter().enumerate().take(area.height as usize) {
+    for (i, c) in ed
+        .online
+        .results
+        .iter()
+        .enumerate()
+        .take(area.height as usize)
+    {
         let selected = sel == Some(i);
         let marker = if selected { "▸ " } else { "  " };
         let series = match (&c.series, c.series_index) {
@@ -300,15 +363,24 @@ fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
             (Some(s), None) => format!("  · {s}"),
             _ => String::new(),
         };
-        let tail = format!("{}{series}", c.year.map(|y| format!(" ({y})")).unwrap_or_default());
+        let tail = format!(
+            "{}{series}",
+            c.year.map(|y| format!(" ({y})")).unwrap_or_default()
+        );
         let text = format!("{} — {}{tail}", c.title, c.author_line());
         let style = if selected {
-            Style::default().fg(bg).bg(theme.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(bg)
+                .bg(theme.accent)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg)
         };
         lines.push(Line::from(Span::styled(
-            format!("{marker}{}", super::truncate(&text, area.width.saturating_sub(3) as usize)),
+            format!(
+                "{marker}{}",
+                super::truncate(&text, area.width.saturating_sub(3) as usize)
+            ),
             style,
         )));
     }
@@ -325,12 +397,18 @@ fn cover_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
         let selected = i == s.row && !s.editing;
         let marker = if selected { "▸ " } else { "  " };
         let style = if selected {
-            Style::default().fg(bg).bg(theme.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(bg)
+                .bg(theme.accent)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg)
         };
         lines.push(Line::from(Span::styled(
-            format!("{marker}{}", super::truncate(&h.source, area.width.saturating_sub(3) as usize)),
+            format!(
+                "{marker}{}",
+                super::truncate(&h.source, area.width.saturating_sub(3) as usize)
+            ),
             style,
         )));
     }
@@ -341,11 +419,11 @@ fn cover_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
 /// fields it's derived from, then the results list. Enter applies the metadata.
 fn render_online(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     let rows = Layout::vertical([
-        Constraint::Length(1),                   // composed query (read-only)
-        Constraint::Length(1),                   // gap
+        Constraint::Length(1),                    // composed query (read-only)
+        Constraint::Length(1),                    // gap
         Constraint::Length(LOOKUP_FIELDS as u16), // seed fields
-        Constraint::Length(1),                   // rule
-        Constraint::Min(0),                      // results
+        Constraint::Length(1),                    // rule
+        Constraint::Min(0),                       // results
     ])
     .split(area);
 
@@ -354,12 +432,22 @@ fn render_online(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     let query_line = Line::from(vec![
         Span::styled(
             format!("   {:<LABEL_W$}", "query"),
-            Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::BOLD),
         ),
         if q.is_empty() {
-            Span::styled("— fill the fields below", Style::default().fg(theme.muted).add_modifier(Modifier::DIM))
+            Span::styled(
+                "— fill the fields below",
+                Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+            )
         } else {
-            Span::styled(q, Style::default().fg(theme.heading).add_modifier(Modifier::BOLD))
+            Span::styled(
+                q,
+                Style::default()
+                    .fg(theme.heading)
+                    .add_modifier(Modifier::BOLD),
+            )
         },
     ]);
     f.render_widget(Paragraph::new(query_line), rows[0]);
@@ -456,7 +544,10 @@ fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
         } else {
             "\n  no cover"
         };
-        f.render_widget(Paragraph::new(msg).style(Style::default().fg(theme.muted)), pinner);
+        f.render_widget(
+            Paragraph::new(msg).style(Style::default().fg(theme.muted)),
+            pinner,
+        );
     }
 }
 
@@ -518,7 +609,11 @@ fn form_field(
 
 /// A centered rect scaled to the terminal (≈72% × 70%, clamped).
 fn scaled(area: Rect) -> Rect {
-    let w = (area.width * 72 / 100).clamp(40, 96).min(area.width.saturating_sub(2).max(1));
-    let h = (area.height * 70 / 100).clamp(14, 34).min(area.height.saturating_sub(2).max(1));
+    let w = (area.width * 72 / 100)
+        .clamp(40, 96)
+        .min(area.width.saturating_sub(2).max(1));
+    let h = (area.height * 70 / 100)
+        .clamp(14, 34)
+        .min(area.height.saturating_sub(2).max(1));
     super::centered(area, w, h)
 }

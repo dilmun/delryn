@@ -12,8 +12,7 @@ use serde::Deserialize;
 const USER_AGENT: &str = "delryn/0.1 (afathi.social@gmail.com)";
 const SEARCH_URL: &str = "https://openlibrary.org/search.json";
 /// Fields requested from the search endpoint (keeps the payload small).
-const FIELDS: &str =
-    "title,subtitle,author_name,first_publish_year,publisher,isbn,series_name,series_position,cover_i";
+const FIELDS: &str = "title,subtitle,author_name,first_publish_year,publisher,isbn,series_name,series_position,cover_i";
 
 /// A search hit, normalized to delryn's editable metadata fields.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -43,9 +42,9 @@ impl Candidate {
                 "https://covers.openlibrary.org/b/id/{id}-L.jpg?default=false"
             ));
         }
-        self.isbn.as_ref().map(|isbn| {
-            format!("https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false")
-        })
+        self.isbn
+            .as_ref()
+            .map(|isbn| format!("https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false"))
     }
 }
 
@@ -90,8 +89,14 @@ fn gb_cover_url(isbn: &str, zoom: u8) -> String {
 pub fn cover_candidates(query: &str, isbn_raw: &str, limit: usize) -> Vec<CoverHit> {
     let mut hits = Vec::new();
     if let Some(isbn) = normalize_isbn(isbn_raw) {
-        hits.push(CoverHit { source: "Google Books".into(), url: gb_cover_url(&isbn, 1) });
-        hits.push(CoverHit { source: "Google Books HD".into(), url: gb_cover_url(&isbn, 3) });
+        hits.push(CoverHit {
+            source: "Google Books".into(),
+            url: gb_cover_url(&isbn, 1),
+        });
+        hits.push(CoverHit {
+            source: "Google Books HD".into(),
+            url: gb_cover_url(&isbn, 3),
+        });
         hits.push(CoverHit {
             source: "Open Library".into(),
             url: format!("https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false"),
@@ -120,7 +125,10 @@ pub fn cover_candidates(query: &str, isbn_raw: &str, limit: usize) -> Vec<CoverH
 /// Download cover image bytes. `None` on error or an implausibly small body
 /// (a stray placeholder).
 pub fn fetch_cover(url: &str) -> Option<Vec<u8>> {
-    let mut resp = ureq::get(url).header("User-Agent", USER_AGENT).call().ok()?;
+    let mut resp = ureq::get(url)
+        .header("User-Agent", USER_AGENT)
+        .call()
+        .ok()?;
     let bytes = resp.body_mut().read_to_vec().ok()?;
     (bytes.len() > 256).then_some(bytes)
 }
@@ -146,7 +154,10 @@ pub fn save_cover(book_path: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
 }
 
 fn search_url(query: &str, limit: usize) -> String {
-    format!("{SEARCH_URL}?q={}&limit={limit}&fields={FIELDS}", enc(query))
+    format!(
+        "{SEARCH_URL}?q={}&limit={limit}&fields={FIELDS}",
+        enc(query)
+    )
 }
 
 /// Minimal percent-encoding for query values (no extra dependency).
@@ -172,7 +183,11 @@ struct SearchResp {
 
 impl SearchResp {
     fn into_candidates(self, limit: usize) -> Vec<Candidate> {
-        self.docs.into_iter().take(limit).map(Doc::into_candidate).collect()
+        self.docs
+            .into_iter()
+            .take(limit)
+            .map(Doc::into_candidate)
+            .collect()
     }
 }
 
@@ -206,7 +221,10 @@ impl Doc {
             year: self.first_publish_year,
             publisher: self.publisher.into_iter().next(),
             series: self.series_name.into_iter().next(),
-            series_index: self.series_position.first().and_then(|s| s.trim().parse().ok()),
+            series_index: self
+                .series_position
+                .first()
+                .and_then(|s| s.trim().parse().ok()),
             isbn: self.isbn.into_iter().next(),
             cover_id: self.cover_i,
         }
@@ -262,9 +280,18 @@ mod tests {
         // Empty query ⇒ no network; only the ISBN-direct sources.
         let hits = cover_candidates("", "urn:isbn:978-3-031-61037-0", 5);
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
-        assert!(urls.iter().any(|u| u.contains("books.google.com") && u.contains("zoom=1")));
-        assert!(urls.iter().any(|u| u.contains("books.google.com") && u.contains("zoom=3")));
-        assert!(urls.iter().any(|u| u.contains("covers.openlibrary.org/b/isbn/9783031610370")));
+        assert!(
+            urls.iter()
+                .any(|u| u.contains("books.google.com") && u.contains("zoom=1"))
+        );
+        assert!(
+            urls.iter()
+                .any(|u| u.contains("books.google.com") && u.contains("zoom=3"))
+        );
+        assert!(
+            urls.iter()
+                .any(|u| u.contains("covers.openlibrary.org/b/isbn/9783031610370"))
+        );
         // A non-ISBN identifier and empty query ⇒ nothing (no covers to offer).
         assert!(cover_candidates("", "calibre:255", 5).is_empty());
     }
@@ -283,6 +310,10 @@ mod tests {
     fn live_search_dune() {
         let cands = search("dune frank herbert", 3);
         assert!(!cands.is_empty(), "expected live results");
-        assert!(cands.iter().any(|c| c.title.to_lowercase().contains("dune")));
+        assert!(
+            cands
+                .iter()
+                .any(|c| c.title.to_lowercase().contains("dune"))
+        );
     }
 }

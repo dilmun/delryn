@@ -104,7 +104,9 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
     // balanced margins instead of one big gap on the right / bottom. The trailing
     // gutter (cell pitch − card) is trimmed off each edge before centering.
     let block_w = (cols as u16 * cell_w).saturating_sub(1).min(area.width);
-    let block_h = (rows_screen as u16 * cell_h).saturating_sub(1).min(area.height);
+    let block_h = (rows_screen as u16 * cell_h)
+        .saturating_sub(1)
+        .min(area.height);
     let x0 = area.x + (area.width - block_w) / 2;
     let y0 = area.y + (area.height - block_h) / 2;
 
@@ -137,12 +139,30 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
         let (r, c) = ((pos / cols) as u16, (pos % cols) as u16);
         let x = x0 + c * cell_w;
         let y = y0 + r * cell_h;
-        let card = Rect { x, y, width: cover_w, height: cover_h };
+        let card = Rect {
+            x,
+            y,
+            width: cover_w,
+            height: cover_h,
+        };
         // Title sits on a single row so the selection highlight covers only the
         // text, not the blank gutter row below it; LABEL_H still spaces the cells.
-        let label = Rect { x, y: y + cover_h, width: cover_w, height: 1 };
+        let label = Rect {
+            x,
+            y: y + cover_h,
+            width: cover_w,
+            height: 1,
+        };
         // Whole cell (cover + title) is the click target for this book.
-        book_hits.push((*i, Rect { x, y, width: cover_w, height: cover_h + LABEL_H }));
+        book_hits.push((
+            *i,
+            Rect {
+                x,
+                y,
+                width: cover_w,
+                height: cover_h + LABEL_H,
+            },
+        ));
         let selected = *i == sel;
 
         // Card frame — rounded; accent border for the cursor, marker colour for a
@@ -196,7 +216,9 @@ fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused: 
         }
 
         let style = if selected {
-            Style::default().fg(theme.bg.unwrap_or(Color::Black)).bg(theme.accent)
+            Style::default()
+                .fg(theme.bg.unwrap_or(Color::Black))
+                .bg(theme.accent)
         } else {
             Style::default().fg(theme.fg)
         };
@@ -249,7 +271,11 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused
     } else {
         let ph = Paragraph::new("\n  (no cover)")
             .style(Style::default().fg(theme.muted))
-            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme.muted)));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.muted)),
+            );
         f.render_widget(ph, parts[0]);
     }
 
@@ -260,14 +286,19 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused
                 if fav { "★ " } else { "" },
                 Style::default().fg(theme.marker),
             ),
-            Span::styled(title, Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                title,
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::styled(author, Style::default().fg(theme.muted)),
     ];
     if !subtitle.is_empty() {
         lines.push(Line::styled(
             subtitle,
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::ITALIC),
         ));
     }
     lines.push(Line::raw(""));
@@ -288,13 +319,19 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused
     lines.push(Line::from(vec![
         Span::styled("Source: ", Style::default().fg(theme.muted)),
         Span::styled(
-            if converted { "Converted EPUB" } else { "Original EPUB" },
+            if converted {
+                "Converted EPUB"
+            } else {
+                "Original EPUB"
+            },
             Style::default().fg(if converted { theme.marker } else { theme.fg }),
         ),
     ]));
     lines.push(meta_kv("Progress", &format!("{pct}%"), theme));
     f.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: true }).style(base(theme)),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .style(base(theme)),
         parts[1],
     );
 }
@@ -339,7 +376,9 @@ fn section_item(label: &str, here: bool, focused: bool, theme: Theme) -> ListIte
             .bg(theme.accent)
             .add_modifier(Modifier::BOLD)
     } else if here {
-        let mut s = Style::default().fg(theme.accent).add_modifier(Modifier::BOLD);
+        let mut s = Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD);
         if let Some(bg) = theme.bg {
             s = s.bg(bg);
         }
@@ -373,21 +412,36 @@ fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: 
     if let Some(bg) = theme.bg {
         header = header.bg(bg);
     }
-    items.push(ListItem::new(Line::from(Span::styled("  Collections", header))));
+    items.push(ListItem::new(Line::from(Span::styled(
+        "  Collections",
+        header,
+    ))));
     // Which collection (if any) is being renamed in place.
     let renaming = app
         .lib_coll_edit
         .as_ref()
         .and_then(|e| e.rename_from.as_deref());
-    let creating = app.lib_coll_edit.as_ref().filter(|e| e.rename_from.is_none());
+    let creating = app
+        .lib_coll_edit
+        .as_ref()
+        .filter(|e| e.rename_from.is_none());
     // Value width inside the pane: drop the L/R border (2) and the "▸ " marker (2).
     let field_w = area.width.saturating_sub(4).max(2) as usize;
     for (name, count) in &app.lib_shelves {
         if Some(name.as_str()) == renaming {
-            items.push(coll_edit_item(app.lib_coll_edit.as_ref().unwrap(), field_w, theme));
+            items.push(coll_edit_item(
+                app.lib_coll_edit.as_ref().unwrap(),
+                field_w,
+                theme,
+            ));
         } else {
             let here = !on_new && matches!(&app.lib_view, LibView::Shelf(cur) if cur == name);
-            items.push(section_item(&format!("{name}  ({count})"), here, focused, theme));
+            items.push(section_item(
+                &format!("{name}  ({count})"),
+                here,
+                focused,
+                theme,
+            ));
         }
     }
     // The trailing "＋ New collection" row — an inline input while creating.
@@ -397,7 +451,10 @@ fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: 
         items.push(section_item("＋ New collection", on_new, focused, theme));
     }
 
-    f.render_widget(List::new(items).block(pane_block("Library", focused, theme)), area);
+    f.render_widget(
+        List::new(items).block(pane_block("Library", focused, theme)),
+        area,
+    );
 }
 
 /// A sidebar row rendered as an inline text field (create / rename a
@@ -457,7 +514,11 @@ fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused:
     }
 
     let widths: Vec<Constraint> = if compact {
-        vec![Constraint::Length(1), Constraint::Min(10), Constraint::Length(4)]
+        vec![
+            Constraint::Length(1),
+            Constraint::Min(10),
+            Constraint::Length(4),
+        ]
     } else {
         vec![
             Constraint::Length(1),  // favorite star
@@ -477,13 +538,17 @@ fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused:
             .fg(theme.bg.unwrap_or(Color::Black))
             .bg(theme.accent)
     } else {
-        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
     };
 
     // Center the selected row in the viewport (clamped at the ends), like the
     // sidebar — instead of letting it stick to whichever edge we scroll toward.
     let header_h: u16 = if compact { 0 } else { 1 };
-    let view_rows = (area.height as usize).saturating_sub(header_h as usize).max(1);
+    let view_rows = (area.height as usize)
+        .saturating_sub(header_h as usize)
+        .max(1);
     let max_off = rows.len().saturating_sub(view_rows);
     let centered_off = sel_row.saturating_sub(view_rows / 2).min(max_off);
 
@@ -511,7 +576,15 @@ fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Theme, focused:
         if sy >= area.y + area.height {
             continue;
         }
-        hits.push((idx, Rect { x: area.x, y: sy, width: area.width, height: 1 }));
+        hits.push((
+            idx,
+            Rect {
+                x: area.x,
+                y: sy,
+                width: area.width,
+                height: 1,
+            },
+        ));
     }
     app.mouse.books = hits;
 }
@@ -527,7 +600,9 @@ fn series_header_row(series: &str, count: usize, theme: Theme) -> Row<'static> {
         Cell::from(""),
         Cell::from(Line::from(Span::styled(
             label,
-            Style::default().fg(theme.heading).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.heading)
+                .add_modifier(Modifier::BOLD),
         ))),
     ])
 }
@@ -542,17 +617,27 @@ fn header_row(app: &App, theme: Theme) -> Row<'static> {
             text.to_string()
         };
         let style = if active {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(theme.muted).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::BOLD)
         };
         let line = Line::from(Span::styled(label, style));
-        Cell::from(if right { line.alignment(Alignment::Right) } else { line })
+        Cell::from(if right {
+            line.alignment(Alignment::Right)
+        } else {
+            line
+        })
     };
     let plain = |text: &str| {
         Cell::from(Line::from(Span::styled(
             text.to_string(),
-            Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::BOLD),
         )))
     };
     Row::new(vec![
@@ -571,7 +656,12 @@ fn header_row(app: &App, theme: Theme) -> Row<'static> {
 fn book_row(b: &BookRow, compact: bool, grouped: bool, marked: bool, theme: Theme) -> Row<'static> {
     // The 1-cell lead column shows a multi-select check, else the favorite star.
     let star = if marked {
-        Cell::from(Span::styled("✓", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)))
+        Cell::from(Span::styled(
+            "✓",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
     } else if b.favorite {
         Cell::from(Span::styled("★", Style::default().fg(theme.marker)))
     } else {
@@ -579,12 +669,18 @@ fn book_row(b: &BookRow, compact: bool, grouped: bool, marked: bool, theme: Them
     };
     let title = title_cell(b, grouped, theme);
     let num = |s: String| {
-        Cell::from(Line::from(Span::styled(s, Style::default().fg(theme.muted))).alignment(Alignment::Right))
+        Cell::from(
+            Line::from(Span::styled(s, Style::default().fg(theme.muted)))
+                .alignment(Alignment::Right),
+        )
     };
     if compact {
         Row::new(vec![star, title, num(format!("{}%", b.pct))])
     } else {
-        let author = Cell::from(Span::styled(b.author.clone(), Style::default().fg(theme.muted)));
+        let author = Cell::from(Span::styled(
+            b.author.clone(),
+            Style::default().fg(theme.muted),
+        ));
         let year = num(b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into()));
         Row::new(vec![
             star,
@@ -655,7 +751,11 @@ fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
         let pos = if app.lib_books.is_empty() {
             String::new()
         } else {
-            format!("{}/{} · ", app.lib_sel.min(app.lib_books.len() - 1) + 1, app.lib_books.len())
+            format!(
+                "{}/{} · ",
+                app.lib_sel.min(app.lib_books.len() - 1) + 1,
+                app.lib_books.len()
+            )
         };
         let size = if app.is_grid() {
             format!(" · {} covers", app.config.library_grid_size.label())

@@ -25,7 +25,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .border_style(Style::default().fg(theme.accent))
         .title(Line::styled(
             title,
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(bg));
     let inner = block.inner(area);

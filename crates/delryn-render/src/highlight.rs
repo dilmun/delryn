@@ -8,8 +8,8 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
-use delryn_model::Inline;
 use crate::layout::Run;
+use delryn_model::Inline;
 
 static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
 static THEMES: OnceLock<ThemeSet> = OnceLock::new();

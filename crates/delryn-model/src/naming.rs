@@ -76,8 +76,10 @@ pub fn main_title(raw: &str) -> String {
             cut = cut.min(i);
         }
     }
-    let head: String =
-        t[..cut].chars().map(|c| if c == '_' || c == '.' { ' ' } else { c }).collect();
+    let head: String = t[..cut]
+        .chars()
+        .map(|c| if c == '_' || c == '.' { ' ' } else { c })
+        .collect();
     head.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -97,7 +99,11 @@ pub fn first_author(authors: &str) -> String {
         }
     }
     let first = a.trim_matches(|c: char| matches!(c, ',' | ';' | '&') || c.is_whitespace());
-    if is_placeholder_author(first) { String::new() } else { first.to_string() }
+    if is_placeholder_author(first) {
+        String::new()
+    } else {
+        first.to_string()
+    }
 }
 
 /// A non-author placeholder the indexer or a converter leaves behind.
@@ -214,30 +220,60 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(fill_template("%T.%E", &v, "epub"), "Dune.epub");
-        assert_eq!(fill_template("%A - %T (%Y).%E", &v, "epub"), "Frank Herbert - Dune (1965).epub");
-        assert_eq!(fill_template("%S %I - %T.%E", &v, "epub"), "Dune 1 - Dune.epub");
+        assert_eq!(
+            fill_template("%A - %T (%Y).%E", &v, "epub"),
+            "Frank Herbert - Dune (1965).epub"
+        );
+        assert_eq!(
+            fill_template("%S %I - %T.%E", &v, "epub"),
+            "Dune 1 - Dune.epub"
+        );
         assert_eq!(fill_template("100%% %T.%E", &v, "epub"), "100% Dune.epub");
-        let bad: Vec<String> = ["A/B:C", "", "", "", "", ""].iter().map(|s| s.to_string()).collect();
+        let bad: Vec<String> = ["A/B:C", "", "", "", "", ""]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(fill_template("%T.%E", &bad, "epub"), "A B C.epub");
     }
 
     #[test]
     fn filename_title_strips_subtitle() {
-        assert_eq!(filename_title("Main Title: The Subtitle", "The Subtitle"), "Main Title");
-        assert_eq!(filename_title("Main Title - The Subtitle", "The Subtitle"), "Main Title");
-        assert_eq!(filename_title("Main Title — The Subtitle", "The Subtitle"), "Main Title");
-        assert_eq!(filename_title("Main: SUBTITLE", "subtitle"), "Main");
-        assert_eq!(filename_title("Applied NLP: Implementing ML", ""), "Applied NLP");
         assert_eq!(
-            filename_title("Applied NLP with Python: Implementing ML", "A Different Subtitle Wording"),
+            filename_title("Main Title: The Subtitle", "The Subtitle"),
+            "Main Title"
+        );
+        assert_eq!(
+            filename_title("Main Title - The Subtitle", "The Subtitle"),
+            "Main Title"
+        );
+        assert_eq!(
+            filename_title("Main Title — The Subtitle", "The Subtitle"),
+            "Main Title"
+        );
+        assert_eq!(filename_title("Main: SUBTITLE", "subtitle"), "Main");
+        assert_eq!(
+            filename_title("Applied NLP: Implementing ML", ""),
+            "Applied NLP"
+        );
+        assert_eq!(
+            filename_title(
+                "Applied NLP with Python: Implementing ML",
+                "A Different Subtitle Wording"
+            ),
             "Applied NLP with Python"
         );
         assert_eq!(
-            filename_title("Applied Natural Language Processing with Python", "Implementing ML and DL"),
+            filename_title(
+                "Applied Natural Language Processing with Python",
+                "Implementing ML and DL"
+            ),
             "Applied Natural Language Processing with Python"
         );
         assert_eq!(filename_title("Plain Title", ""), "Plain Title");
-        assert_eq!(filename_title("Re:Zero Starting Life", ""), "Re:Zero Starting Life");
+        assert_eq!(
+            filename_title("Re:Zero Starting Life", ""),
+            "Re:Zero Starting Life"
+        );
     }
 
     #[test]
@@ -252,7 +288,10 @@ mod tests {
         assert_eq!(first_author("anonymous"), "");
         assert_eq!(first_author("Real Name, Other"), "Real Name");
 
-        assert_eq!(main_title("Deep Learning With Python : A Crash Course"), "Deep Learning With Python");
+        assert_eq!(
+            main_title("Deep Learning With Python : A Crash Course"),
+            "Deep Learning With Python"
+        );
         assert_eq!(main_title("Some Book - Author - 2020"), "Some Book");
         assert_eq!(main_title("some_book_title.v2"), "some book title v2");
         assert_eq!(main_title("Title (1st ed)"), "Title");
@@ -272,9 +311,18 @@ mod tests {
 
     #[test]
     fn normalize_isbn_cleans_identifiers() {
-        assert_eq!(normalize_isbn("isbn:9789819753338").as_deref(), Some("9789819753338"));
-        assert_eq!(normalize_isbn("urn:isbn:978-3-031-61037-0").as_deref(), Some("9783031610370"));
-        assert_eq!(normalize_isbn("9781492094524").as_deref(), Some("9781492094524"));
+        assert_eq!(
+            normalize_isbn("isbn:9789819753338").as_deref(),
+            Some("9789819753338")
+        );
+        assert_eq!(
+            normalize_isbn("urn:isbn:978-3-031-61037-0").as_deref(),
+            Some("9783031610370")
+        );
+        assert_eq!(
+            normalize_isbn("9781492094524").as_deref(),
+            Some("9781492094524")
+        );
         assert_eq!(normalize_isbn("0441013597").as_deref(), Some("0441013597"));
         assert_eq!(normalize_isbn("5cdd9eaf-3ede-43dc-9509-845585947b3d"), None);
         assert_eq!(normalize_isbn("calibre:255"), None);
