@@ -97,11 +97,10 @@ fn load_blocks(doc: &mut EpubDoc<BufReader<File>>, index: usize) -> Result<Vec<B
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_default();
     for block in &mut blocks {
-        if let Block::Image { src, data, .. } = block {
-            if let Some(bytes) = resolve_image(doc, &dir, src) {
+        if let Block::Image { src, data, .. } = block
+            && let Some(bytes) = resolve_image(doc, &dir, src) {
                 *data = bytes;
             }
-        }
     }
     Ok(blocks)
 }
@@ -204,14 +203,12 @@ pub fn read_fulltext(path: impl AsRef<Path>) -> Result<String> {
         .with_context(|| format!("opening EPUB {}", path.as_ref().display()))?;
     let mut out = String::new();
     for i in 0..doc.get_num_chapters() {
-        if doc.set_current_chapter(i) {
-            if let Some((xhtml, _)) = doc.get_current_str() {
-                if let Ok(text) = html2text::from_read(xhtml.as_bytes(), EXTRACT_WIDTH) {
+        if doc.set_current_chapter(i)
+            && let Some((xhtml, _)) = doc.get_current_str()
+                && let Ok(text) = html2text::from_read(xhtml.as_bytes(), EXTRACT_WIDTH) {
                     out.push_str(&text);
                     out.push('\n');
                 }
-            }
-        }
     }
     Ok(out)
 }

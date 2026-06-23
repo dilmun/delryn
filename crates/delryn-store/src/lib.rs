@@ -445,11 +445,10 @@ impl Store {
 
     pub fn all_book_paths(&self) -> Vec<String> {
         let mut out = Vec::new();
-        if let Ok(mut stmt) = self.conn.prepare("SELECT path FROM books") {
-            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+        if let Ok(mut stmt) = self.conn.prepare("SELECT path FROM books")
+            && let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
                 out.extend(rows.flatten());
             }
-        }
         out
     }
 
@@ -476,11 +475,9 @@ impl Store {
         if let Ok(mut stmt) = self
             .conn
             .prepare("SELECT path FROM fts WHERE body MATCH ?1 LIMIT 500")
-        {
-            if let Ok(rows) = stmt.query_map(params![expr], |r| r.get::<_, String>(0)) {
+            && let Ok(rows) = stmt.query_map(params![expr], |r| r.get::<_, String>(0)) {
                 out.extend(rows.flatten());
             }
-        }
         out
     }
 
@@ -626,11 +623,10 @@ impl Store {
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
             "SELECT name FROM shelves WHERE path = ?1 ORDER BY name COLLATE NOCASE",
-        ) {
-            if let Ok(rows) = stmt.query_map(params![path], |r| r.get::<_, String>(0)) {
+        )
+            && let Ok(rows) = stmt.query_map(params![path], |r| r.get::<_, String>(0)) {
                 out.extend(rows.flatten());
             }
-        }
         out
     }
 
@@ -642,13 +638,12 @@ impl Store {
             "SELECT c.name, COUNT(s.path) FROM collections c \
              LEFT JOIN shelves s ON s.name = c.name \
              GROUP BY c.name ORDER BY c.name COLLATE NOCASE",
-        ) {
-            if let Ok(rows) = stmt.query_map([], |r| {
+        )
+            && let Ok(rows) = stmt.query_map([], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as usize))
             }) {
                 out.extend(rows.flatten());
             }
-        }
         out
     }
 

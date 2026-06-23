@@ -58,11 +58,10 @@ pub fn prune_missing(paths: &[String], store: &Store) -> usize {
 pub fn index_fulltext(store: &Store) -> usize {
     let mut n = 0;
     for path in store.all_book_paths() {
-        if let Ok(text) = epub::read_fulltext(&path) {
-            if store.index_text(&path, &text).is_ok() {
+        if let Ok(text) = epub::read_fulltext(&path)
+            && store.index_text(&path, &text).is_ok() {
                 n += 1;
             }
-        }
     }
     n
 }
@@ -76,11 +75,10 @@ fn scan_dir(dir: &Path, store: &Store, force: bool) -> usize {
         let path = entry.path();
         if path.is_dir() {
             indexed += scan_dir(&path, store, force);
-        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub")) {
-            if index_book(&path, store, force) {
+        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub"))
+            && index_book(&path, store, force) {
                 indexed += 1;
             }
-        }
     }
     indexed
 }
