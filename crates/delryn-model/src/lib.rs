@@ -9,6 +9,6 @@ pub mod metadata;
 pub mod naming;
 pub mod toc;
 
-pub use content::{Block, Inline, Section, Span};
+pub use content::{Block, CalloutKind, Inline, Section, Span, TableCell};
 pub use metadata::Metadata;
 pub use toc::{OutlineItem, TocEntry};
