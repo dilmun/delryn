@@ -56,6 +56,7 @@ pub fn highlight_code(lines: &[String], lang: Option<&str>, theme_name: &str) ->
                             italic: style.font_style.contains(FontStyle::ITALIC),
                             code: true,
                             link: false,
+                            math: false,
                         },
                         fg: Some((c.r, c.g, c.b)),
                     });
