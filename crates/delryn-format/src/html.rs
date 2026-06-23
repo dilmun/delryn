@@ -139,11 +139,16 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 out.push(Block::Footnote { label, blocks });
             }
         }
-        // Display (block) math: a standalone math image (or a math/equation
-        // container) becomes a centred Block::Math. Inline math stays inline.
-        "p" | "div" if display_math(node).is_some() => {
-            out.push(Block::Math {
-                tex: display_math(node).unwrap(),
+        // Display (block) math backed by an image renders as the *image* (high
+        // fidelity), with the math Unicode as the alt for the no-graphics
+        // fallback. Inline math stays inline (converted to Unicode).
+        "p" | "div" if display_math_image(node).is_some() => {
+            let (src, alt) = display_math_image(node).unwrap();
+            out.push(Block::Image {
+                src,
+                alt,
+                data: Vec::new(),
+                caption: Vec::new(),
             });
         }
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
@@ -460,33 +465,31 @@ fn img_label(e: &scraper::node::Element) -> String {
     }
 }
 
-/// If a block is standalone display math, its TeX source. True when it holds a
-/// math image and either no other text or a math/equation/display class — so an
-/// equation on its own line becomes a centred block, while math mid-sentence
-/// stays inline.
-fn display_math(node: NodeRef<Node>) -> Option<String> {
+/// If a block is standalone display math backed by an image, its `(src,
+/// Unicode-alt)`. True when it holds a math image and either no other text or a
+/// math/equation/display class — so an equation on its own line renders as the
+/// image (Unicode alt as fallback), while math mid-sentence stays inline.
+fn display_math_image(node: NodeRef<Node>) -> Option<(String, String)> {
     let class_math = matches!(node.value(), Node::Element(e) if e.attr("class").is_some_and(|c| {
         let l = c.to_ascii_lowercase();
         l.contains("math") || l.contains("equation") || l.contains("display")
     }));
-    let mut tex = None;
+    let mut found = None;
     let mut other_text = false;
     for d in node.descendants() {
         match d.value() {
             Node::Element(e) if e.name() == "img" => {
                 let alt = e.attr("alt").unwrap_or("");
                 if delryn_model::math::is_math(alt) {
-                    tex = Some(alt.to_string());
+                    found = Some((e.attr("src").unwrap_or("").to_string(), math_unicode(alt)));
                 }
             }
             Node::Text(t) if !t.text.trim().is_empty() => other_text = true,
             _ => {}
         }
     }
-    match tex {
-        // Hand back final Unicode (LaTeX and MathML both resolve here), so the
-        // layout just centres it — no second conversion pass.
-        Some(t) if !other_text || class_math => Some(math_unicode(&t)),
+    match found {
+        Some(x) if !other_text || class_math => Some(x),
         _ => None,
     }
 }
@@ -880,23 +883,26 @@ mod tests {
         assert_eq!(first_anchor(&blocks), Some(&Anchor::Footnote("fn7".into())));
     }
 
-    fn has_math_block(blocks: &[Block]) -> Option<&str> {
+    /// The `(src, alt)` of a display-math image block, if any.
+    fn display_math_img(blocks: &[Block]) -> Option<(&str, &str)> {
         blocks.iter().find_map(|b| match b {
-            Block::Math { tex } => Some(tex.as_str()),
+            Block::Image { src, alt, .. } => Some((src.as_str(), alt.as_str())),
             _ => None,
         })
     }
 
     #[test]
-    fn standalone_math_image_is_a_display_block() {
-        // EPUB display math: a math image (LaTeX `\[ … \]` in alt) on its own line.
+    fn standalone_math_image_is_a_display_image() {
+        // EPUB display math: a math image (LaTeX `\[ … \]` in alt) on its own
+        // line renders as the image, with the Unicode as the (fallback) alt.
         let blocks = parse_blocks(
             r#"<html><body><p><img alt="\[\int_0^1 x\,dx\]" src="eq.png"/></p></body></html>"#,
         );
-        let tex = has_math_block(&blocks).expect("a display-math block");
-        // tex is already Unicode: \int → ∫, subscripts/superscripts applied.
-        assert!(tex.contains('∫'), "tex: {tex:?}");
-        assert!(!tex.contains("\\int"), "no raw LaTeX: {tex:?}");
+        let (src, alt) = display_math_img(&blocks).expect("a display-math image");
+        assert_eq!(src, "eq.png", "renders the actual equation image");
+        // The alt is Unicode: \int → ∫, no raw LaTeX.
+        assert!(alt.contains('∫'), "unicode alt: {alt:?}");
+        assert!(!alt.contains("\\int"), "no raw LaTeX: {alt:?}");
     }
 
     #[test]
@@ -905,12 +911,14 @@ mod tests {
         // with the inner quotes escaped (scraper decodes them back).
         let raw = r#"<mml:math xmlns:mml="http://www.w3.org/1998/Math/MathML"><mml:mi>Σ</mml:mi></mml:math>"#;
         let alt = raw.replace('"', "&quot;");
-        // Standalone → display math block.
+        // Standalone → display-math image; its alt is Unicode, never raw tags.
         let block = parse_blocks(&format!(
             r#"<html><body><p><img alt="{alt}" src="e.png"/></p></body></html>"#
         ));
-        let tex = has_math_block(&block).expect("display math from MathML alt");
-        assert!(!tex.contains("<m"), "no raw MathML tags: {tex:?}");
+        let (_src, alt_text) =
+            display_math_img(&block).expect("display math image from MathML alt");
+        assert!(alt_text.contains('Σ'), "alt: {alt_text:?}");
+        assert!(!alt_text.contains("<m"), "no raw MathML tags: {alt_text:?}");
 
         // Inline → unicode within the paragraph, never the raw tags.
         let inline = parse_blocks(&format!(
@@ -938,7 +946,10 @@ mod tests {
         let blocks = parse_blocks(
             r#"<html><body><p>where <img alt="\(x^2\)" src="e.png"/> is the area.</p></body></html>"#,
         );
-        assert!(has_math_block(&blocks).is_none(), "stays inline");
+        assert!(
+            display_math_img(&blocks).is_none(),
+            "stays inline, not an image"
+        );
         // It renders inline (as Unicode) inside one paragraph with its context.
         let text: String = blocks
             .iter()
