@@ -33,7 +33,9 @@ Migrate to a Cargo workspace and clear every dev docs violation.
 - [ ] Sub-split `app/editor.rs` (~1.2k): carve the background online/cover
       execution (`online_search`/`apply_candidate`/`poll_online`/`tick_preview`/
       previews) into `app/editor/online.rs`, leaving the editor shell + dispatch.
-- [ ] Split oversized views (`view/library` 814, `view/meta_edit` 619).
+- [x] Split oversized views: `view/library` (814 → library/ dir: grid/detail/
+      sections/books/status) and `view/meta_edit` (619 → meta_edit/ dir: hits +
+      online), each leaving render() + shared helpers in mod.rs.
 - [x] Split `delryn-store` (1065 → ~590) by entity (books/progress/annotations/
       shelves/search submodules, each an `impl Store` block).
 - [x] Split `delryn-format::epub` (997 → mod 575 + content_meta 437): carve the
