@@ -98,8 +98,13 @@ jump-by-type + a reader cursor.
 ## Phase 3 — Library platform
 
 - [ ] Views: Table (sortable columns), Cover Wall; refine Grid/List.
-- [ ] Smart collections + filter DSL (`tag:rust AND rating>=4`, `status:reading`).
-- [ ] Reading status (Unread/Reading/Paused/Finished/Dropped/Reference) + rating.
+- [x] Smart collections + **filter DSL**: `delryn-library::query` — fields
+      (title/author/series/publisher/language/isbn, year/progress/rating numeric),
+      flags (favorite/converted/unread/reading/finished), AND/OR/NOT, parens,
+      quoted values; the `/` filter uses it (plain queries keep substring + FTS).
+- [~] Reading status + **rating** (0–5 ★, keys 0–5, detail stars, sort, DSL
+      `rating>=4`). *Still: a manual reading-status enum (Paused/Dropped/Reference)
+      beyond the progress-derived unread/reading/finished.*
 - [ ] Duplicate detection across formats; merge/keep/remove.
 - [ ] Metadata diff view (current vs remote, selective apply).
 
