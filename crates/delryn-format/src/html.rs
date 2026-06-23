@@ -139,6 +139,13 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 out.push(Block::Footnote { label, blocks });
             }
         }
+        // Display (block) math: a standalone math image (or a math/equation
+        // container) becomes a centred Block::Math. Inline math stays inline.
+        "p" | "div" if display_math(node).is_some() => {
+            out.push(Block::Math {
+                tex: display_math(node).unwrap(),
+            });
+        }
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
             let level = e.name().as_bytes()[1] - b'0';
             let mut spans = Vec::new();
@@ -446,6 +453,35 @@ fn img_label(e: &scraper::node::Element) -> String {
     match e.attr("alt").map(str::trim).filter(|a| !a.is_empty()) {
         Some(alt) => format!("[{alt}]"),
         None => "[image]".to_string(),
+    }
+}
+
+/// If a block is standalone display math, its TeX source. True when it holds a
+/// math image and either no other text or a math/equation/display class — so an
+/// equation on its own line becomes a centred block, while math mid-sentence
+/// stays inline.
+fn display_math(node: NodeRef<Node>) -> Option<String> {
+    let class_math = matches!(node.value(), Node::Element(e) if e.attr("class").is_some_and(|c| {
+        let l = c.to_ascii_lowercase();
+        l.contains("math") || l.contains("equation") || l.contains("display")
+    }));
+    let mut tex = None;
+    let mut other_text = false;
+    for d in node.descendants() {
+        match d.value() {
+            Node::Element(e) if e.name() == "img" => {
+                let alt = e.attr("alt").unwrap_or("");
+                if delryn_model::math::is_math(alt) {
+                    tex = Some(alt.to_string());
+                }
+            }
+            Node::Text(t) if !t.text.trim().is_empty() => other_text = true,
+            _ => {}
+        }
+    }
+    match tex {
+        Some(t) if !other_text || class_math => Some(t),
+        _ => None,
     }
 }
 
@@ -821,6 +857,46 @@ mod tests {
             r##"<html><body><p>text<a epub:type="noteref" href="#fn7">7</a></p></body></html>"##,
         );
         assert_eq!(first_anchor(&blocks), Some(&Anchor::Footnote("fn7".into())));
+    }
+
+    fn has_math_block(blocks: &[Block]) -> Option<&str> {
+        blocks.iter().find_map(|b| match b {
+            Block::Math { tex } => Some(tex.as_str()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn standalone_math_image_is_a_display_block() {
+        // EPUB display math: a math image (LaTeX `\[ … \]` in alt) on its own line.
+        let blocks = parse_blocks(
+            r#"<html><body><p><img alt="\[\int_0^1 x\,dx\]" src="eq.png"/></p></body></html>"#,
+        );
+        let tex = has_math_block(&blocks).expect("a display-math block");
+        assert!(tex.contains("int"), "tex: {tex:?}");
+    }
+
+    #[test]
+    fn math_image_amid_text_stays_inline() {
+        // Math mid-sentence must NOT become a display block.
+        let blocks = parse_blocks(
+            r#"<html><body><p>where <img alt="\(x^2\)" src="e.png"/> is the area.</p></body></html>"#,
+        );
+        assert!(has_math_block(&blocks).is_none(), "stays inline");
+        // It renders inline (as Unicode) inside one paragraph with its context.
+        let text: String = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Para { spans, .. } => {
+                    Some(spans.iter().map(|s| s.text.as_str()).collect::<String>())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            text.contains("where") && text.contains("area") && !text.contains('['),
+            "got: {text:?}"
+        );
     }
 
     #[test]
