@@ -1,0 +1,14 @@
+[package]
+name = "delryn-format"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+delryn-model = { workspace = true }
+anyhow.workspace = true
+ego-tree.workspace = true
+epub.workspace = true
+html2text.workspace = true
+regex.workspace = true
+scraper.workspace = true
+zip.workspace = true

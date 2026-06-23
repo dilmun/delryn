@@ -1,0 +1,23 @@
+[package]
+name = "delryn"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+delryn-model = { workspace = true }
+delryn-infra = { workspace = true }
+delryn-store = { workspace = true }
+delryn-online = { workspace = true }
+delryn-media = { workspace = true }
+delryn-format = { workspace = true }
+delryn-render = { workspace = true }
+delryn-library = { workspace = true }
+anyhow.workspace = true
+arboard.workspace = true
+crossterm.workspace = true
+image.workspace = true
+lru.workspace = true
+ratatui.workspace = true
+ratatui-image.workspace = true
+regex.workspace = true
+syntect.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "delryn-library"
+version.workspace = true
+edition.workspace = true
+
+# Library management: scanning/indexing today; collections, smart-collection
+# query, dedup, search orchestration, and statistics will join here.
+[dependencies]
+delryn-format = { workspace = true }
+delryn-store = { workspace = true }
+delryn-infra = { workspace = true }

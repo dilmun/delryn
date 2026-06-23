@@ -1,0 +1,10 @@
+[package]
+name = "delryn-render"
+version.workspace = true
+edition.workspace = true
+
+# Model → laid-out terminal content: reflow/layout + syntax highlighting today;
+# pagination, tables, and graphical math will join here.
+[dependencies]
+delryn-model = { workspace = true }
+syntect.workspace = true
