@@ -12,7 +12,7 @@ use anyhow::Result;
 use lru::LruCache;
 
 use crate::document::{Block, Document, OutlineItem};
-use crate::layout::{DisplayLine, WrapOpts, wrap_blocks};
+use crate::layout::{DisplayLine, LineKind, WrapOpts, wrap_blocks};
 use crate::media::{self, ImageBuilder, ImagePlan, ImgKey};
 use crate::search::{Matcher, SearchMode};
 use crate::theme;
@@ -338,6 +338,72 @@ impl Reader {
             .nth(n)
     }
 
+    /// `(display-line, code-block-index)` for the first line of each code block in
+    /// the current section, in document order.
+    fn code_starts(&self) -> Vec<(usize, usize)> {
+        let mut starts = Vec::new();
+        let mut prev: Option<usize> = None;
+        for (i, l) in self.lines.iter().enumerate() {
+            let cur = match l.kind {
+                LineKind::Code(idx) => Some(idx),
+                _ => None,
+            };
+            if let Some(idx) = cur
+                && prev != Some(idx)
+            {
+                starts.push((i, idx));
+            }
+            prev = cur;
+        }
+        starts
+    }
+
+    /// Jump to the next (`forward`) or previous code block in the chapter,
+    /// flashing the position. Returns whether it moved.
+    fn jump_code(&mut self, forward: bool) -> bool {
+        self.ensure_wrapped(self.last_measure.max(1));
+        let starts = self.code_starts();
+        let target = if forward {
+            starts.iter().find(|(line, _)| *line > self.scroll).copied()
+        } else {
+            starts
+                .iter()
+                .rev()
+                .find(|(line, _)| *line < self.scroll)
+                .copied()
+        };
+        match target {
+            Some((line, idx)) => {
+                self.push_history();
+                self.scroll = line;
+                self.scroll_pending = 0;
+                self.clamp_scroll();
+                self.flash = Some(format!("code {}/{}", idx + 1, starts.len()));
+                true
+            }
+            None => {
+                self.flash = Some(if starts.is_empty() {
+                    "no code blocks in this chapter".to_string()
+                } else if forward {
+                    "no code below — G or J for more".to_string()
+                } else {
+                    "no code above".to_string()
+                });
+                false
+            }
+        }
+    }
+
+    /// Jump to the next code block in the chapter (key `w`).
+    pub fn next_code(&mut self) -> bool {
+        self.jump_code(true)
+    }
+
+    /// Jump to the previous code block in the chapter (key `b`).
+    pub fn prev_code(&mut self) -> bool {
+        self.jump_code(false)
+    }
+
     /// Copy the code block currently in view (the topmost visible one) to the
     /// system clipboard. Returns the number of lines copied.
     pub fn copy_visible_code(&mut self) -> Option<usize> {
@@ -598,4 +664,122 @@ fn loose_key(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Document, Section, SectionLoader, TocEntry};
+    use delryn_model::{Metadata, Span};
+
+    /// A minimal in-memory `Document` for reader tests: a list of sections, each
+    /// a list of blocks. No TOC/outline/images.
+    struct MockDoc {
+        sections: Vec<Vec<Block>>,
+        meta: Metadata,
+        toc: Vec<TocEntry>,
+        outline: Vec<OutlineItem>,
+    }
+
+    impl MockDoc {
+        fn new(sections: Vec<Vec<Block>>) -> Self {
+            MockDoc {
+                sections,
+                meta: Metadata::default(),
+                toc: Vec::new(),
+                outline: Vec::new(),
+            }
+        }
+    }
+
+    struct MockLoader(Vec<Vec<Block>>);
+    impl SectionLoader for MockLoader {
+        fn load(&mut self, i: usize) -> Vec<Block> {
+            self.0.get(i).cloned().unwrap_or_default()
+        }
+    }
+
+    impl Document for MockDoc {
+        fn metadata(&self) -> &Metadata {
+            &self.meta
+        }
+        fn toc(&self) -> &[TocEntry] {
+            &self.toc
+        }
+        fn outline(&self) -> &[OutlineItem] {
+            &self.outline
+        }
+        fn loader(&self) -> Box<dyn SectionLoader> {
+            Box::new(MockLoader(self.sections.clone()))
+        }
+        fn section_count(&self) -> usize {
+            self.sections.len()
+        }
+        fn load_section(&mut self, index: usize) -> anyhow::Result<Section> {
+            Ok(Section {
+                index,
+                blocks: self.sections.get(index).cloned().unwrap_or_default(),
+            })
+        }
+    }
+
+    fn para() -> Block {
+        Block::Para {
+            spans: vec![Span::plain("lorem ipsum dolor sit amet ".repeat(4))],
+            indent: 0,
+            quote: false,
+            marker: None,
+        }
+    }
+    fn code(s: &str) -> Block {
+        Block::Code {
+            lang: None,
+            lines: vec![s.to_string()],
+        }
+    }
+
+    fn reader_with(blocks: Vec<Block>) -> Reader {
+        let mut r = Reader::new(Box::new(MockDoc::new(vec![blocks]))).unwrap();
+        r.last_measure = 40;
+        r.ensure_wrapped(40);
+        r
+    }
+
+    #[test]
+    fn code_starts_finds_each_block() {
+        let r = reader_with(vec![para(), code("a"), para(), code("b"), para()]);
+        let starts = r.code_starts();
+        assert_eq!(starts.len(), 2, "two code blocks");
+        assert_eq!(starts[0].1, 0);
+        assert_eq!(starts[1].1, 1);
+        assert!(starts[0].0 < starts[1].0, "in document order");
+    }
+
+    #[test]
+    fn next_prev_code_walks_blocks_and_stops_at_edges() {
+        let mut r = reader_with(vec![para(), code("a"), para(), code("b"), para()]);
+        let starts = r.code_starts();
+
+        assert!(r.next_code(), "to first code");
+        assert_eq!(r.scroll, starts[0].0);
+        assert!(r.next_code(), "to second code");
+        assert_eq!(r.scroll, starts[1].0);
+        assert!(!r.next_code(), "no code below");
+        assert_eq!(r.scroll, starts[1].0, "stays put at the last block");
+
+        assert!(r.prev_code(), "back to first code");
+        assert_eq!(r.scroll, starts[0].0);
+        assert!(!r.prev_code(), "no code above the first");
+    }
+
+    #[test]
+    fn code_nav_flashes_when_no_code() {
+        let mut r = reader_with(vec![para(), para()]);
+        assert!(!r.next_code());
+        assert!(
+            r.flash.as_deref().unwrap_or("").contains("no code blocks"),
+            "flash: {:?}",
+            r.flash
+        );
+    }
 }
