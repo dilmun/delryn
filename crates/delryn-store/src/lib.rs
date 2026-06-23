@@ -131,6 +131,8 @@ pub struct BookRow {
     /// True when the EPUB looks converted/repackaged (e.g. by calibre) rather
     /// than an original publisher file.
     pub converted: bool,
+    /// User rating, 0 (unrated) to 5 stars.
+    pub rating: u8,
 }
 
 /// Saved reading position for a book.
@@ -193,6 +195,11 @@ impl Store {
             "ALTER TABLE books ADD COLUMN converted INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // User rating (0 unrated … 5 stars); user-set, preserved across rescans.
+        let _ = conn.execute(
+            "ALTER TABLE books ADD COLUMN rating INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         // First-class collections: seed the names table from existing memberships
         // so collections created before this migration keep showing.
         let _ = conn.execute(
@@ -222,7 +229,7 @@ impl Store {
         let sql = format!(
             "SELECT b.path, b.title, b.author, b.year, b.size, b.favorite, b.sections, \
              p.section, p.frac, b.series, b.series_index, b.publisher, \
-             b.subtitle, b.isbn, b.language, b.converted \
+             b.subtitle, b.isbn, b.language, b.converted, b.rating \
              FROM books b LEFT JOIN progress p ON p.path = b.path {join} \
              WHERE {where_clause} ORDER BY {order}"
         );
@@ -257,6 +264,7 @@ impl Store {
                 isbn: r.get(13)?,
                 language: r.get(14)?,
                 converted: r.get::<_, i64>(15)? != 0,
+                rating: r.get::<_, i64>(16)?.clamp(0, 5) as u8,
             })
         });
         if let Ok(rows) = rows {
