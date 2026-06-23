@@ -58,7 +58,11 @@ the size guidelines.
 
 ## Phase 1 — Technical content rendering
 
-- [ ] Rich `Block` model (Code/Math/Table/Figure/Callout/Footnote/Citation/CrossRef).
+- [x] Rich `Block` model: `Math`/`Table`/`Callout`/`Footnote` variants + figure
+      captions on `Image`; `CalloutKind` (label + `from_word` classifier). Layout
+      renders all (centred Unicode math, aligned tables w/ header rule, bordered
+      callouts/footnotes via a width-aware nested wrapper). Producers land per-
+      feature below. *(Citation/CrossRef are inline — they arrive with footnotes.)*
 - [ ] Code blocks: syntect highlighting, line numbers, wrap/h-scroll, copy, export,
       next/prev navigation, per-chapter code index.
 - [ ] Callouts/admonitions (NOTE/TIP/WARNING/…), block quotes.

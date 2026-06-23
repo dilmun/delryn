@@ -11,7 +11,7 @@ use anyhow::Result;
 
 // The format-independent content model now lives in `delryn-model`; re-exported
 // here so existing `document::{Block, Metadata, …}` paths keep resolving.
-pub use delryn_model::{Block, Inline, Metadata, OutlineItem, Section, Span, TocEntry};
+pub use delryn_model::{Block, CalloutKind, Inline, Metadata, OutlineItem, Section, Span, TocEntry};
 
 /// A self-contained, `Send` handle that loads a section's blocks off the main
 /// thread. Used to pre-wrap neighbouring chapters in the background so scrolling
