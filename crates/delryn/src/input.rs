@@ -58,13 +58,12 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     // Accumulate a vim count prefix (a leading 0 is "go to col 0", not a count).
-    if let KeyCode::Char(c) = key.code {
-        if c.is_ascii_digit() && !(c == '0' && pending.count.is_none()) {
+    if let KeyCode::Char(c) = key.code
+        && c.is_ascii_digit() && !(c == '0' && pending.count.is_none()) {
             let d = c as usize - '0' as usize;
             pending.count = Some(pending.count.unwrap_or(0) * 10 + d);
             return Action::None;
         }
-    }
     let count = pending.count.take().unwrap_or(1);
 
     // `gg` → top.

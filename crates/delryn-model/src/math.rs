@@ -53,7 +53,7 @@ pub fn latex_to_unicode(raw: &str) -> String {
     s = fracs(&s);
     s = replace_symbols(&s);
     s = scripts(&s);
-    s = s.replace('{', "").replace('}', "");
+    s = s.replace(['{', '}'], "");
     s = drop_backslashes(&s);
     collapse_ws(&s)
 }
@@ -160,12 +160,11 @@ fn unwrap_cmds(input: &str, cmds: &[&str]) -> String {
                         s.replace_range(pos..close, &inner);
                         continue 'outer;
                     }
-                } else if let Some(c) = s[arg..].chars().next() {
-                    if c.is_alphanumeric() {
+                } else if let Some(c) = s[arg..].chars().next()
+                    && c.is_alphanumeric() {
                         s.replace_range(pos..arg + c.len_utf8(), &c.to_string());
                         continue 'outer;
                     }
-                }
                 from = after;
             }
         }
@@ -181,12 +180,11 @@ fn fracs(input: &str) -> String {
             break;
         };
         // expect a second group immediately after
-        if s[after_num..].starts_with('{') {
-            if let Some((den, after_den)) = take_group(&s, after_num) {
+        if s[after_num..].starts_with('{')
+            && let Some((den, after_den)) = take_group(&s, after_num) {
                 s.replace_range(pos..after_den, &format!("{num}/{den}"));
                 continue;
             }
-        }
         break;
     }
     s

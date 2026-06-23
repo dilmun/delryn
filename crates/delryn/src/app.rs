@@ -961,11 +961,10 @@ impl Reader {
             }
             match done.plan {
                 Some(plan) => {
-                    if let Some((_, evicted)) = self.image_cache.push(done.key, plan) {
-                        if let Some(id) = evicted.image_id() {
+                    if let Some((_, evicted)) = self.image_cache.push(done.key, plan)
+                        && let Some(id) = evicted.image_id() {
                             self.pending_deletes.push(id);
                         }
-                    }
                 }
                 None => {
                     self.img_failed.insert(done.key);
@@ -1357,11 +1356,10 @@ impl Reader {
 
     /// Jump to the selected sidebar row.
     pub fn sidebar_activate(&mut self) {
-        if let Some(oi) = self.selected_outline() {
-            if let Some(item) = self.outline.get(oi).cloned() {
+        if let Some(oi) = self.selected_outline()
+            && let Some(item) = self.outline.get(oi).cloned() {
                 self.jump_to(item.section, item.locator.as_deref());
             }
-        }
     }
 
     /// `l`/→: expand a collapsed parent, otherwise jump.
@@ -1385,13 +1383,11 @@ impl Reader {
             self.collapsed.insert(oi);
         } else {
             let depth = self.outline[oi].depth;
-            if depth > 0 {
-                if let Some(pi) = (0..oi).rev().find(|&j| self.outline[j].depth < depth) {
-                    if let Some(pos) = self.outline_visible().iter().position(|&x| x == pi) {
+            if depth > 0
+                && let Some(pi) = (0..oi).rev().find(|&j| self.outline[j].depth < depth)
+                    && let Some(pos) = self.outline_visible().iter().position(|&x| x == pi) {
                         self.sidebar_sel = pos;
                     }
-                }
-            }
         }
     }
 
@@ -1847,8 +1843,8 @@ fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, St
     let book_path = std::fs::canonicalize(path)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.to_string());
-    if let Some(store) = store {
-        if let Some(p) = store.load_progress(&book_path) {
+    if let Some(store) = store
+        && let Some(p) = store.load_progress(&book_path) {
             config.view_mode = p.view_mode;
             if let Some(t) = theme::by_name(&p.theme) {
                 config.theme = t;
@@ -1856,7 +1852,6 @@ fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, St
             reader.load(p.section);
             reader.pending_frac = Some(p.frac);
         }
-    }
     Ok((reader, config, book_path))
 }
 
@@ -3416,8 +3411,8 @@ impl App {
 
     /// Persist the current reading position (best-effort).
     pub fn save_progress(&self) {
-        if let (Some(store), Some(reader)) = (&self.store, &self.reader) {
-            if !self.book_path.is_empty() {
+        if let (Some(store), Some(reader)) = (&self.store, &self.reader)
+            && !self.book_path.is_empty() {
                 let _ = store.save_progress(
                     &self.book_path,
                     reader.section,
@@ -3426,7 +3421,6 @@ impl App {
                     self.config.theme.name,
                 );
             }
-        }
     }
 
     /// Accumulate elapsed reading time into the open book and reset the clock.
@@ -3619,9 +3613,9 @@ impl App {
         match key.code {
             KeyCode::Esc => self.note_input = None,
             KeyCode::Enter => {
-                if let Some(text) = self.note_input.take() {
-                    if let (Some(store), Some(r)) = (&self.store, &self.reader) {
-                        if !self.book_path.is_empty() {
+                if let Some(text) = self.note_input.take()
+                    && let (Some(store), Some(r)) = (&self.store, &self.reader)
+                        && !self.book_path.is_empty() {
                             store.add_annotation(
                                 &self.book_path,
                                 r.section,
@@ -3629,8 +3623,6 @@ impl App {
                                 text.trim(),
                             );
                         }
-                    }
-                }
             }
             KeyCode::Backspace => {
                 if let Some(s) = self.note_input.as_mut() {
@@ -3654,11 +3646,10 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::Char('\'') | KeyCode::Char('q') => self.annot = None,
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(a) = self.annot.as_mut() {
-                    if len > 0 {
+                if let Some(a) = self.annot.as_mut()
+                    && len > 0 {
                         a.sel = (sel + 1).min(len - 1);
                     }
-                }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let Some(a) = self.annot.as_mut() {
@@ -4336,8 +4327,8 @@ impl App {
             Action::SearchNext => reader.search_next(),
             Action::SearchPrev => reader.search_prev(),
             Action::AddBookmark => {
-                if let Some(store) = &self.store {
-                    if !self.book_path.is_empty() {
+                if let Some(store) = &self.store
+                    && !self.book_path.is_empty() {
                         store.add_annotation(
                             &self.book_path,
                             reader.section,
@@ -4345,7 +4336,6 @@ impl App {
                             "",
                         );
                     }
-                }
             }
             Action::AddNote => self.note_input = Some(String::new()),
             Action::OpenAnnotations => {
@@ -4389,9 +4379,9 @@ impl App {
         }
 
         // Persist on chapter change or a settings change (cheap).
-        if save || reader.section != before {
-            if let Some(store) = &self.store {
-                if !self.book_path.is_empty() {
+        if (save || reader.section != before)
+            && let Some(store) = &self.store
+                && !self.book_path.is_empty() {
                     let _ = store.save_progress(
                         &self.book_path,
                         reader.section,
@@ -4400,8 +4390,6 @@ impl App {
                         self.config.theme.name,
                     );
                 }
-            }
-        }
     }
 
     pub fn on_mouse(&mut self, m: MouseEvent) {

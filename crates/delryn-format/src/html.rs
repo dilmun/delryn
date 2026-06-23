@@ -323,11 +323,10 @@ fn strip_line_numbers(lines: Vec<String>) -> Vec<String> {
             continue;
         }
         nonempty += 1;
-        if let Some(rest) = t.strip_prefix(&(i + 1).to_string()) {
-            if rest.is_empty() || rest.starts_with([' ', '\t']) {
+        if let Some(rest) = t.strip_prefix(&(i + 1).to_string())
+            && (rest.is_empty() || rest.starts_with([' ', '\t'])) {
                 numbered += 1;
             }
-        }
     }
     if nonempty < 2 || numbered * 4 < nonempty * 3 {
         return lines;
@@ -434,13 +433,11 @@ fn detect_lang(node: NodeRef<Node>) -> Option<String> {
         })
     }
     for n in node.descendants() {
-        if let Node::Element(e) = n.value() {
-            if let Some(class) = e.attr("class") {
-                if let Some(lang) = from_class(class) {
+        if let Node::Element(e) = n.value()
+            && let Some(class) = e.attr("class")
+                && let Some(lang) = from_class(class) {
                     return Some(lang);
                 }
-            }
-        }
     }
     None
 }

@@ -99,7 +99,8 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
 
         // Spacing between blocks: blank line(s), except between consecutive list
         // items and around explicit blanks.
-        if !first && !matches!(block, Block::Blank) && !(is_item && prev_item) {
+        let consecutive_items = is_item && prev_item;
+        if !(first || matches!(block, Block::Blank) || consecutive_items) {
             for _ in 0..para_spacing {
                 out.push(DisplayLine::blank());
             }
