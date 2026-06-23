@@ -94,6 +94,8 @@ pub struct App {
     pub settings: Option<Settings>,
     /// Open annotations overlay, if any.
     pub annot: Option<AnnotState>,
+    /// Open library-statistics overlay, if any.
+    pub stats: Option<crate::library::stats::LibraryStats>,
     /// Active note-entry buffer, if typing a note.
     pub note_input: Option<String>,
     /// Open metadata-edit form (library), if any.
@@ -294,6 +296,7 @@ impl App {
             should_quit: false,
             settings: None,
             annot: None,
+            stats: None,
             note_input: None,
             meta_edit: None,
             bulk_rename: None,
@@ -357,6 +360,7 @@ impl App {
             should_quit: false,
             settings: None,
             annot: None,
+            stats: None,
             note_input: None,
             meta_edit: None,
             bulk_rename: None,
