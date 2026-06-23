@@ -5,7 +5,7 @@
 use ego_tree::NodeRef;
 use scraper::{Html, Node};
 
-use super::{Block, CalloutKind, Inline, Span};
+use super::{Block, CalloutKind, Inline, Span, TableCell};
 
 /// Parse a section's XHTML into a list of reflowable blocks.
 pub fn parse_blocks(xhtml: &str) -> Vec<Block> {
@@ -205,8 +205,13 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 });
             }
         }
-        // Other tables: degrade to one paragraph per cell for now (real column
-        // layout is a later refinement).
+        // Real data tables → a structured Block::Table (aligned column layout).
+        "table" => {
+            if let Some(table) = parse_table(node) {
+                out.push(table);
+            }
+        }
+        // A stray cell outside a recognised table: degrade to a paragraph.
         "td" | "th" => {
             let mut spans = Vec::new();
             for c in node.children() {
@@ -467,6 +472,48 @@ fn aside_kind_from_icon(src: &str) -> CalloutKind {
     }
 }
 
+/// Parse a `<table>` into a [`Block::Table`]. The first row is the header when
+/// it sits in a `<thead>` or is made entirely of `<th>` cells. Cell content is
+/// flattened to inline spans. (Nested tables are uncommon in books; their rows
+/// are folded into the outer table.)
+fn parse_table(node: NodeRef<Node>) -> Option<Block> {
+    let is_named =
+        |n: &NodeRef<Node>, name: &str| matches!(n.value(), Node::Element(e) if e.name() == name);
+    let cells_of = |tr: NodeRef<Node>| -> Vec<TableCell> {
+        tr.children()
+            .filter(|c| is_named(c, "td") || is_named(c, "th"))
+            .map(|cell| {
+                let mut spans = Vec::new();
+                for c in cell.children() {
+                    collect_inline(c, Inline::default(), &mut spans);
+                }
+                spans
+            })
+            .collect()
+    };
+
+    let mut header: Option<Vec<TableCell>> = None;
+    let mut rows: Vec<Vec<TableCell>> = Vec::new();
+    for tr in node.descendants().filter(|n| is_named(n, "tr")) {
+        let cells = cells_of(tr);
+        if cells.is_empty() {
+            continue;
+        }
+        let all_th = tr
+            .children()
+            .filter(|c| is_named(c, "td") || is_named(c, "th"))
+            .all(|c| is_named(&c, "th"));
+        let in_thead = tr.ancestors().any(|a| is_named(&a, "thead"));
+        if header.is_none() && rows.is_empty() && (all_th || in_thead) {
+            header = Some(cells);
+        } else {
+            rows.push(cells);
+        }
+    }
+
+    (header.is_some() || !rows.is_empty()).then_some(Block::Table { header, rows })
+}
+
 /// Table cells that carry text (i.e. the content cell, not the icon-only cell).
 fn content_cells(node: NodeRef<Node>) -> Vec<NodeRef<Node>> {
     node.descendants()
@@ -588,6 +635,70 @@ mod tests {
             r#"<html><body><div class="footnote"><p>1. a source</p></div></body></html>"#,
         );
         assert!(first_callout(&blocks).is_none());
+    }
+
+    fn first_table(blocks: &[Block]) -> &Block {
+        blocks
+            .iter()
+            .find(|b| matches!(b, Block::Table { .. }))
+            .expect("a table block")
+    }
+
+    fn cell_text(cell: &[Span]) -> String {
+        cell.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn table_with_thead_splits_header_and_rows() {
+        let blocks = parse_blocks(
+            r#"<html><body><table>
+                <thead><tr><th>Name</th><th>Qty</th></tr></thead>
+                <tbody>
+                  <tr><td>Apples</td><td>12</td></tr>
+                  <tr><td>Pears</td><td>3</td></tr>
+                </tbody>
+            </table></body></html>"#,
+        );
+        let Block::Table { header, rows } = first_table(&blocks) else {
+            unreachable!()
+        };
+        let h = header.as_ref().expect("header row");
+        assert_eq!(cell_text(&h[0]), "Name");
+        assert_eq!(cell_text(&h[1]), "Qty");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(cell_text(&rows[0][0]), "Apples");
+        assert_eq!(cell_text(&rows[1][1]), "3");
+    }
+
+    #[test]
+    fn header_inferred_from_all_th_first_row() {
+        // No <thead>, but the first row is all <th>.
+        let blocks = parse_blocks(
+            r#"<html><body><table>
+                <tr><th>A</th><th>B</th></tr>
+                <tr><td>1</td><td>2</td></tr>
+            </table></body></html>"#,
+        );
+        let Block::Table { header, rows } = first_table(&blocks) else {
+            unreachable!()
+        };
+        assert!(header.is_some(), "all-<th> first row is the header");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn headerless_table_is_all_rows() {
+        let blocks = parse_blocks(
+            r#"<html><body><table>
+                <tr><td>1</td><td>2</td></tr>
+                <tr><td>3</td><td>4</td></tr>
+            </table></body></html>"#,
+        );
+        let Block::Table { header, rows } = first_table(&blocks) else {
+            unreachable!()
+        };
+        assert!(header.is_none());
+        assert_eq!(rows.len(), 2);
     }
 
     #[test]
