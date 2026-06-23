@@ -200,7 +200,13 @@ impl App {
         };
         let c = &mut self.config;
         match item {
-            SettingItem::Theme => c.theme = if delta > 0 { c.theme.next() } else { c.theme.prev() },
+            SettingItem::Theme => {
+                c.theme = if delta > 0 {
+                    c.theme.next()
+                } else {
+                    c.theme.prev()
+                }
+            }
             SettingItem::ViewMode => {
                 c.view_mode = if delta > 0 {
                     c.view_mode.next()
