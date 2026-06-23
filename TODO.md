@@ -128,6 +128,34 @@ jump-by-type + a reader cursor.
 - [x] Command palette (`:`): `delryn-library::fuzzy` matcher + `app/palette.rs` —
       jump to section/collection, sort, cycle layout, toggle panes, stats, export.
 
+## Theming & content coherence
+
+Goal: the active theme is the **single source of truth** that colourises every
+part of the app, and all content (ink vs. pictures) blends with it. Two rules —
+*ink* (text, symbols, line-art equations/diagrams, icons, marks) is painted in
+theme ink/paper; *pictures* (photos, colour charts, covers) are never recoloured,
+only framed/matted to sit in the theme.
+
+- [x] **`Theme` = single source of truth** (`delryn-infra::theme`): `text_style()`,
+      `paper()`, `on_accent()`, `image_ink()` + `danger` colour; removed all
+      hardcoded `Color::Black/Red` fallbacks and the 5 duplicated `base()` helpers.
+- [x] Equation/line-art images recoloured to theme (alpha/luminance matte); photos
+      kept faithful (flattened onto paper). *(shipped earlier)*
+- [ ] **Image policy + smart-invert option** (the next piece): a setting with
+      modes — **Auto** (current: recolour ink, keep pictures), **Invert
+      backgrounds** (lightness-invert opaque light-bg figures so white-bg charts
+      go dark with detail kept; leave true photos), **Faithful** (never touch).
+      Use **lightness inversion (flip L in HSL/Lab, keep hue+sat)**, NOT naive
+      `255−RGB` (which negates photos). Scope by the existing ink/picture
+      classifier; covers always faithful. Optional reader keybind to flip the
+      current view.
+- [ ] **Code-block blending:** background = reader paper, syntax palette tuned to
+      sit on it (kills the mismatched-rectangle look). Biggest remaining gap.
+- [ ] **Figure framing:** consistent themed border + padding (and optional soft
+      scrim on very dark themes) so pictures read as intentional cards.
+- [ ] **Icons → themed glyphs:** extend callout-icon handling — map common
+      publisher icons (note/tip/warning/✓/•) to Unicode glyphs in theme colours.
+
 ## Phase 5 — Formats
 
 - [x] **Format recognition foundation:** `delryn-format::BookFormat` classifies
