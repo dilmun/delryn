@@ -203,6 +203,15 @@ impl App {
         self.refresh_library();
     }
 
+    /// Open the library-statistics overlay (computed over all books).
+    fn open_stats(&mut self) {
+        if let Some(store) = &self.store {
+            let books = store.all_books();
+            let secs = store.total_read_seconds();
+            self.stats = Some(crate::library::stats::compute(&books, secs));
+        }
+    }
+
     /// Set the selected book's rating (0 clears), flashing the result.
     fn lib_set_rating(&mut self, rating: u8) {
         if let (Some(store), Some(book)) = (&self.store, self.lib_books.get(self.lib_sel)) {
@@ -532,6 +541,8 @@ impl App {
             KeyCode::Char(c @ '0'..='5') if pane != LibPane::Sidebar => {
                 self.lib_set_rating(c as u8 - b'0');
             }
+            // `i` opens the library statistics overlay.
+            KeyCode::Char('i') => self.open_stats(),
             // `e` edits the current book; with a selection, edits each in turn.
             KeyCode::Char('e') => {
                 if self.lib_marked.is_empty() {
