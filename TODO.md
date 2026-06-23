@@ -21,9 +21,12 @@ Migrate to a Cargo workspace and clear every dev docs violation.
       fixes → **0 warnings workspace-wide**.
 - [x] `cargo fmt` the workspace (canonical Rust 1.96 style).
 - [x] Reinstall path is now `cargo install --path crates/delryn`.
-- [ ] Split `app.rs` (~5.4k) into `app/` submodules (impl App per concern:
-      reader/library/select/editor/lookup/rename/collections/confirm/mouse/
-      settings); split `apply()` (183) and `library_key()` (165).
+- [~] Split `app.rs` into `app/` submodules (`refactor/app-split`). Done:
+      `confirm`, `settings`, `mouse` (mod.rs 5.6k → ~5.2k, each a green commit).
+      Remaining concerns: reader · library · select · editor · lookup · rename ·
+      collections; then split `apply()` (183) and `library_key()` (165). Pattern:
+      child-module `impl App`, cross-module methods `pub(crate)`, types re-exported
+      from `mod.rs`; concern tests stay in mod.rs (shared `key`/`ctrl`/`code` helpers).
 - [ ] Split oversized views (`view/library` 714, `view/meta_edit` 524).
 - [ ] Split `delryn-store` (925) by entity; `delryn-format::epub` (903) by concern.
 - [ ] Drop the 4 `#[allow(too_many_arguments)]` via small param structs.
