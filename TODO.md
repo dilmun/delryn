@@ -86,9 +86,12 @@ jump-by-type + a reader cursor.
 ## Phase 2 — Reading experience
 
 - [ ] Reading modes: Continuous, Page, Chapter, Focus, Study, Research, Presentation.
+      *(Have: Center/Fill/TwoPage view modes, focus mode, chapter-lock.)*
 - [ ] Pagination models: continuous / virtual pages / book pages (PDF) / reflowed.
-- [ ] Navigation: reading history, navigation history (back/forward), jump-by-type.
-- [ ] Bookmarks: named, quick, folders.
+- [~] Navigation: reading history + back/forward (pre-existing) and **jump-by-type**
+      done — `w`/`b` cycle code/table/math/figure/footnote ("kind N/M"). *Still:
+      a reader cursor for footnote ref→def jump/return + cross-ref/citation jump.*
+- [ ] Bookmarks: named, quick, folders. *(Have: bookmark/note annotations + overlay.)*
 
 ## Phase 3 — Library platform
 
