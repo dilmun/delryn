@@ -40,7 +40,12 @@ Migrate to a Cargo workspace and clear every dev docs violation.
       shelves/search submodules, each an `impl Store` block).
 - [x] Split `delryn-format::epub` (997 → mod 575 + content_meta 437): carve the
       content-based metadata heuristics into `epub/content_meta.rs`.
-- [ ] Drop the 4 `#[allow(too_many_arguments)]` via small param structs.
+- [x] Resolve the 4 `#[allow(too_many_arguments)]`: `view::reader::render_column`
+      was under threshold (allow removed); `meta_edit::form_field` grouped its 5
+      field-state args into a `FieldState` struct; the two `Store` row-writers
+      (`upsert_book`/`update_book_meta`) keep a *documented* scoped suppression —
+      their args are the `books` columns 1:1, so a param struct would only shadow
+      the table (and would churn ~30 call sites). `cargo clippy` is 0-warning.
 
 ## Phase 1 — Technical content rendering
 
