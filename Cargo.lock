@@ -903,21 +903,31 @@ dependencies = [
  "anyhow",
  "arboard",
  "crossterm",
- "ego-tree",
- "epub",
+ "delryn-format",
  "delryn-infra",
  "delryn-media",
  "delryn-model",
  "delryn-online",
  "delryn-store",
- "html2text",
  "image",
  "lru",
  "ratatui",
  "ratatui-image",
  "regex",
- "scraper",
  "syntect",
+]
+
+[[package]]
+name = "delryn-format"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ego-tree",
+ "epub",
+ "delryn-model",
+ "html2text",
+ "regex",
+ "scraper",
  "zip",
 ]
 
