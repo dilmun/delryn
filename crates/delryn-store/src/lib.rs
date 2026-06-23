@@ -356,7 +356,15 @@ impl Store {
              series_index = ?6, publisher = ?7, subtitle = ?8, isbn = ?9, \
              language = ?10, edited = 1 WHERE path = ?1",
             params![
-                path, title, author, year, series, series_index, publisher, subtitle, isbn,
+                path,
+                title,
+                author,
+                year,
+                series,
+                series_index,
+                publisher,
+                subtitle,
+                isbn,
                 language
             ],
         );
@@ -446,9 +454,10 @@ impl Store {
     pub fn all_book_paths(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare("SELECT path FROM books")
-            && let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-                out.extend(rows.flatten());
-            }
+            && let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0))
+        {
+            out.extend(rows.flatten());
+        }
         out
     }
 
@@ -475,9 +484,10 @@ impl Store {
         if let Ok(mut stmt) = self
             .conn
             .prepare("SELECT path FROM fts WHERE body MATCH ?1 LIMIT 500")
-            && let Ok(rows) = stmt.query_map(params![expr], |r| r.get::<_, String>(0)) {
-                out.extend(rows.flatten());
-            }
+            && let Ok(rows) = stmt.query_map(params![expr], |r| r.get::<_, String>(0))
+        {
+            out.extend(rows.flatten());
+        }
         out
     }
 
@@ -549,9 +559,11 @@ impl Store {
 
     pub fn total_read_seconds(&self) -> i64 {
         self.conn
-            .query_row("SELECT COALESCE(SUM(read_seconds), 0) FROM books", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COALESCE(SUM(read_seconds), 0) FROM books",
+                [],
+                |r| r.get(0),
+            )
             .unwrap_or(0)
     }
 
@@ -565,9 +577,10 @@ impl Store {
         if name.is_empty() {
             return;
         }
-        let _ = self
-            .conn
-            .execute("INSERT OR IGNORE INTO collections (name) VALUES (?1)", params![name]);
+        let _ = self.conn.execute(
+            "INSERT OR IGNORE INTO collections (name) VALUES (?1)",
+            params![name],
+        );
     }
 
     /// File a book onto a named collection (idempotent), creating the collection
@@ -608,25 +621,34 @@ impl Store {
             "UPDATE OR IGNORE shelves SET name = ?2 WHERE name = ?1",
             params![old, new],
         );
-        let _ = self.conn.execute("DELETE FROM shelves WHERE name = ?1", params![old]);
-        let _ = self.conn.execute("DELETE FROM collections WHERE name = ?1", params![old]);
+        let _ = self
+            .conn
+            .execute("DELETE FROM shelves WHERE name = ?1", params![old]);
+        let _ = self
+            .conn
+            .execute("DELETE FROM collections WHERE name = ?1", params![old]);
     }
 
     /// Delete a collection entirely (its name + every book's membership in it).
     pub fn delete_shelf(&self, name: &str) {
-        let _ = self.conn.execute("DELETE FROM shelves WHERE name = ?1", params![name]);
-        let _ = self.conn.execute("DELETE FROM collections WHERE name = ?1", params![name]);
+        let _ = self
+            .conn
+            .execute("DELETE FROM shelves WHERE name = ?1", params![name]);
+        let _ = self
+            .conn
+            .execute("DELETE FROM collections WHERE name = ?1", params![name]);
     }
 
     /// Collection names a book belongs to, sorted.
     pub fn shelves_for(&self, path: &str) -> Vec<String> {
         let mut out = Vec::new();
-        if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT name FROM shelves WHERE path = ?1 ORDER BY name COLLATE NOCASE",
-        )
-            && let Ok(rows) = stmt.query_map(params![path], |r| r.get::<_, String>(0)) {
-                out.extend(rows.flatten());
-            }
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT name FROM shelves WHERE path = ?1 ORDER BY name COLLATE NOCASE")
+            && let Ok(rows) = stmt.query_map(params![path], |r| r.get::<_, String>(0))
+        {
+            out.extend(rows.flatten());
+        }
         out
     }
 
@@ -638,12 +660,11 @@ impl Store {
             "SELECT c.name, COUNT(s.path) FROM collections c \
              LEFT JOIN shelves s ON s.name = c.name \
              GROUP BY c.name ORDER BY c.name COLLATE NOCASE",
-        )
-            && let Ok(rows) = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as usize))
-            }) {
-                out.extend(rows.flatten());
-            }
+        ) && let Ok(rows) = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as usize))
+        }) {
+            out.extend(rows.flatten());
+        }
         out
     }
 
@@ -767,7 +788,21 @@ mod tests {
         assert_eq!(store.list_annotations("/books/a.epub").len(), 1);
 
         store
-            .upsert_book("/books/a.epub", "A", "Au", None, 10, 8, 1, "", None, "", "", "", "")
+            .upsert_book(
+                "/books/a.epub",
+                "A",
+                "Au",
+                None,
+                10,
+                8,
+                1,
+                "",
+                None,
+                "",
+                "",
+                "",
+                "",
+            )
             .unwrap();
         store.add_read_time("/books/a.epub", 120);
         store.add_read_time("/books/a.epub", 60);
@@ -783,9 +818,21 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         let store = Store::open_default().unwrap();
 
-        store.upsert_book("/a.epub", "Dune", "Herbert", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
-        store.upsert_book("/b.epub", "dune", "Other", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
-        store.upsert_book("/c.epub", "Unique", "Someone", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
+        store
+            .upsert_book(
+                "/a.epub", "Dune", "Herbert", None, 1, 1, 1, "", None, "", "", "", "",
+            )
+            .unwrap();
+        store
+            .upsert_book(
+                "/b.epub", "dune", "Other", None, 1, 1, 1, "", None, "", "", "", "",
+            )
+            .unwrap();
+        store
+            .upsert_book(
+                "/c.epub", "Unique", "Someone", None, 1, 1, 1, "", None, "", "", "", "",
+            )
+            .unwrap();
 
         let dups = store.list_books(LibrarySection::Duplicates);
         assert_eq!(dups.len(), 2, "both 'Dune' editions are duplicates");
@@ -801,20 +848,83 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         let store = Store::open_default().unwrap();
 
-        store.upsert_book("/f2.epub", "Foundation and Empire", "Asimov", None, 1, 1, 1,
-            "Foundation", Some(2.0), "Gnome", "", "", "").unwrap();
-        store.upsert_book("/f1.epub", "Foundation", "Asimov", None, 1, 1, 1,
-            "Foundation", Some(1.0), "Gnome", "", "", "").unwrap();
-        store.upsert_book("/d.epub", "Dune", "Herbert", None, 1, 1, 1,
-            "Dune Chronicles", Some(1.0), "Chilton", "", "", "").unwrap();
-        store.upsert_book("/x.epub", "Standalone", "Nobody", None, 1, 1, 1,
-            "", None, "Self", "", "", "").unwrap();
+        store
+            .upsert_book(
+                "/f2.epub",
+                "Foundation and Empire",
+                "Asimov",
+                None,
+                1,
+                1,
+                1,
+                "Foundation",
+                Some(2.0),
+                "Gnome",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        store
+            .upsert_book(
+                "/f1.epub",
+                "Foundation",
+                "Asimov",
+                None,
+                1,
+                1,
+                1,
+                "Foundation",
+                Some(1.0),
+                "Gnome",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        store
+            .upsert_book(
+                "/d.epub",
+                "Dune",
+                "Herbert",
+                None,
+                1,
+                1,
+                1,
+                "Dune Chronicles",
+                Some(1.0),
+                "Chilton",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        store
+            .upsert_book(
+                "/x.epub",
+                "Standalone",
+                "Nobody",
+                None,
+                1,
+                1,
+                1,
+                "",
+                None,
+                "Self",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
 
         let series = store.list_books(LibrarySection::Series);
         let titles: Vec<&str> = series.iter().map(|b| b.title.as_str()).collect();
         // Dune Chronicles < Foundation alphabetically; within Foundation, #1 before #2.
         assert_eq!(titles, vec!["Dune", "Foundation", "Foundation and Empire"]);
-        assert!(series.iter().all(|b| !b.series.is_empty()), "no standalone books");
+        assert!(
+            series.iter().all(|b| !b.series.is_empty()),
+            "no standalone books"
+        );
         assert_eq!(series[1].series_index, Some(1.0));
         assert_eq!(series[1].publisher, "Gnome");
 
@@ -828,8 +938,16 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         let store = Store::open_default().unwrap();
 
-        store.upsert_book("/a.epub", "Alpha", "A", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
-        store.upsert_book("/b.epub", "Beta", "B", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
+        store
+            .upsert_book(
+                "/a.epub", "Alpha", "A", None, 1, 1, 1, "", None, "", "", "", "",
+            )
+            .unwrap();
+        store
+            .upsert_book(
+                "/b.epub", "Beta", "B", None, 1, 1, 1, "", None, "", "", "", "",
+            )
+            .unwrap();
 
         store.add_to_shelf("/a.epub", "Sci-Fi");
         store.add_to_shelf("/a.epub", "Sci-Fi"); // idempotent
@@ -859,7 +977,12 @@ mod tests {
 
         // An empty collection can be created on its own and persists.
         store.create_collection("Wishlist");
-        assert!(store.all_shelves().iter().any(|(n, c)| n == "Wishlist" && *c == 0));
+        assert!(
+            store
+                .all_shelves()
+                .iter()
+                .any(|(n, c)| n == "Wishlist" && *c == 0)
+        );
         // Rename merges on collision.
         store.rename_shelf("Wishlist", "Sci-Fi");
         assert!(!store.all_shelves().iter().any(|(n, _)| n == "Wishlist"));
@@ -875,15 +998,55 @@ mod tests {
         let store = Store::open_default().unwrap();
 
         // Initial index, then a hand-edit.
-        store.upsert_book("/b.epub", "raw title", "raw author", Some(1990), 1, 5, 1,
-            "", None, "", "", "", "").unwrap();
-        store.update_book_meta("/b.epub", "Clean Title", "Real Author", Some(2001),
-            "My Series", Some(3.0), "Pub", "A Subtitle", "9780000000001", "eng");
+        store
+            .upsert_book(
+                "/b.epub",
+                "raw title",
+                "raw author",
+                Some(1990),
+                1,
+                5,
+                1,
+                "",
+                None,
+                "",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        store.update_book_meta(
+            "/b.epub",
+            "Clean Title",
+            "Real Author",
+            Some(2001),
+            "My Series",
+            Some(3.0),
+            "Pub",
+            "A Subtitle",
+            "9780000000001",
+            "eng",
+        );
 
         // A rescan (file changed: new size/sections) must not clobber the edits,
         // but must still refresh the file stats.
-        store.upsert_book("/b.epub", "raw title", "raw author", Some(1990), 999, 9, 2,
-            "", None, "", "", "", "").unwrap();
+        store
+            .upsert_book(
+                "/b.epub",
+                "raw title",
+                "raw author",
+                Some(1990),
+                999,
+                9,
+                2,
+                "",
+                None,
+                "",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
 
         let b = &store.list_books(LibrarySection::All)[0];
         assert_eq!(b.title, "Clean Title");

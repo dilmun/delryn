@@ -29,7 +29,10 @@ impl Span {
 /// A reflowable content block. The layout pass wraps these to the pane width.
 #[derive(Debug, Clone)]
 pub enum Block {
-    Heading { level: u8, spans: Vec<Span> },
+    Heading {
+        level: u8,
+        spans: Vec<Span>,
+    },
     /// A paragraph; may be a list item (`marker`), nested (`indent`), or quoted.
     Para {
         spans: Vec<Span>,

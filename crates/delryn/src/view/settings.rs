@@ -29,7 +29,9 @@ pub fn render(f: &mut Frame, app: &App) {
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
             format!(" {scope} Settings "),
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().fg(theme.fg).bg(bg));
     let inner = block.inner(area);
@@ -51,7 +53,9 @@ pub fn render(f: &mut Frame, app: &App) {
                 }
                 lines.push(Line::styled(
                     format!("  {title}"),
-                    Style::default().fg(theme.muted).add_modifier(Modifier::BOLD | Modifier::DIM),
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::BOLD | Modifier::DIM),
                 ));
             }
             SettingRow::Item(item) => {
@@ -59,7 +63,9 @@ pub fn render(f: &mut Frame, app: &App) {
                 let marker = if selected { "  ▸ " } else { "    " };
                 let label = item.label();
                 let label_style = if selected {
-                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme.fg)
                 };

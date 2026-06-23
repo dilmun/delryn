@@ -48,14 +48,20 @@ fn main() -> Result<()> {
     // `delryn --index`: build the full-text search index, then exit.
     if matches!(args.first().map(String::as_str), Some("--index")) {
         match Store::open_default() {
-            Ok(store) => println!("Full-text indexed {} book(s).", library::index_fulltext(&store)),
+            Ok(store) => println!(
+                "Full-text indexed {} book(s).",
+                library::index_fulltext(&store)
+            ),
             Err(e) => eprintln!("could not open library database: {e}"),
         }
         return Ok(());
     }
 
     // `delryn --export-annotations`: dump bookmarks/notes as Markdown, then exit.
-    if matches!(args.first().map(String::as_str), Some("--export-annotations")) {
+    if matches!(
+        args.first().map(String::as_str),
+        Some("--export-annotations")
+    ) {
         if let Ok(store) = Store::open_default() {
             let mut last = String::new();
             for (path, a) in store.all_annotations() {
@@ -93,7 +99,9 @@ fn main() -> Result<()> {
 
     // Synchronized output (DEC 2026) can be toggled off for terminals that
     // mishandle it: `DELRYN_SYNC=0 delryn …`.
-    let sync = std::env::var("DELRYN_SYNC").map(|v| v != "0").unwrap_or(true);
+    let sync = std::env::var("DELRYN_SYNC")
+        .map(|v| v != "0")
+        .unwrap_or(true);
 
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
@@ -115,8 +123,11 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         // Block for input — only until the next frame is due if a redraw is
         // pending or a scroll is animating, otherwise block long so an idle
         // reader costs ~0% CPU.
-        let busy = app.animating() || app.online_active() || app.lib_grid_pending()
-            || app.cover_pending() || app.preview_pending();
+        let busy = app.animating()
+            || app.online_active()
+            || app.lib_grid_pending()
+            || app.cover_pending()
+            || app.preview_pending();
         let timeout = if dirty || busy {
             FRAME.saturating_sub(last_draw.elapsed())
         } else {

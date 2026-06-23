@@ -8,9 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result};
 use epub::doc::{EpubDoc, NavPoint};
 
-use super::{
-    Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry,
-};
+use super::{Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry};
 
 /// Width handed to html2text so paragraphs come back essentially unwrapped; our
 /// own layout pass re-wraps them to the actual pane width.
@@ -28,11 +26,15 @@ impl EpubDocument {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        let mut doc = EpubDoc::new(path)
-            .with_context(|| format!("opening EPUB {}", path.display()))?;
+        let mut doc =
+            EpubDoc::new(path).with_context(|| format!("opening EPUB {}", path.display()))?;
 
         let metadata = extract_metadata(&mut doc, size);
-        let toc: Vec<TocEntry> = doc.toc.iter().map(|np| convert_navpoint(np, &doc)).collect();
+        let toc: Vec<TocEntry> = doc
+            .toc
+            .iter()
+            .map(|np| convert_navpoint(np, &doc))
+            .collect();
 
         // The navigable outline mirrors the book's own table of contents,
         // preserving its hierarchy (e.g. Part → Chapter → section). Works for
@@ -98,9 +100,10 @@ fn load_blocks(doc: &mut EpubDoc<BufReader<File>>, index: usize) -> Result<Vec<B
         .unwrap_or_default();
     for block in &mut blocks {
         if let Block::Image { src, data, .. } = block
-            && let Some(bytes) = resolve_image(doc, &dir, src) {
-                *data = bytes;
-            }
+            && let Some(bytes) = resolve_image(doc, &dir, src)
+        {
+            *data = bytes;
+        }
     }
     Ok(blocks)
 }
@@ -190,8 +193,7 @@ fn normalize_path(p: &Path) -> PathBuf {
 pub fn read_metadata(path: impl AsRef<Path>) -> Result<(Metadata, usize)> {
     let path = path.as_ref();
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let mut doc =
-        EpubDoc::new(path).with_context(|| format!("opening EPUB {}", path.display()))?;
+    let mut doc = EpubDoc::new(path).with_context(|| format!("opening EPUB {}", path.display()))?;
     let meta = extract_metadata(&mut doc, size);
     let sections = doc.get_num_chapters();
     Ok((meta, sections))
@@ -205,10 +207,11 @@ pub fn read_fulltext(path: impl AsRef<Path>) -> Result<String> {
     for i in 0..doc.get_num_chapters() {
         if doc.set_current_chapter(i)
             && let Some((xhtml, _)) = doc.get_current_str()
-                && let Ok(text) = html2text::from_read(xhtml.as_bytes(), EXTRACT_WIDTH) {
-                    out.push_str(&text);
-                    out.push('\n');
-                }
+            && let Ok(text) = html2text::from_read(xhtml.as_bytes(), EXTRACT_WIDTH)
+        {
+            out.push_str(&text);
+            out.push('\n');
+        }
     }
     Ok(out)
 }
@@ -276,12 +279,19 @@ fn first_img_src(xhtml: &str) -> Option<String> {
     use scraper::{Html, Selector};
     let doc = Html::parse_document(xhtml);
     let sel = Selector::parse("img").ok()?;
-    doc.select(&sel).find_map(|e| e.value().attr("src").map(str::to_string))
+    doc.select(&sel)
+        .find_map(|e| e.value().attr("src").map(str::to_string))
 }
 
 /// Guess an image mime from a filename extension (defaults to JPEG).
 fn mime_from_ext(src: &str) -> &'static str {
-    match Path::new(src).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
+    match Path::new(src)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
         "png" => "image/png",
         "gif" => "image/gif",
         "webp" => "image/webp",
@@ -331,7 +341,10 @@ pub fn extract_book_metadata(path: impl AsRef<Path>) -> ExtractedMeta {
                 out.author = a;
             }
         }
-        if out.year.is_none() || out.publisher.is_none() || out.isbn.is_none() || out.author.is_none()
+        if out.year.is_none()
+            || out.publisher.is_none()
+            || out.isbn.is_none()
+            || out.author.is_none()
         {
             let text = html2text::from_read(xhtml.as_bytes(), EXTRACT_WIDTH).unwrap_or_default();
             out.isbn = out.isbn.or_else(|| find_isbn(&text));
@@ -425,7 +438,10 @@ fn parse_title_page(xhtml: &str) -> Option<(String, Option<String>, Option<Strin
 /// The first real, non-boilerplate line after a `—`/`by` separator — the author.
 fn author_after_separator(lines: &[String]) -> Option<String> {
     let sep = lines.iter().position(|l| is_separator_line(l))?;
-    lines[sep + 1..].iter().find(|l| is_title_candidate(l) && !is_boilerplate(l)).cloned()
+    lines[sep + 1..]
+        .iter()
+        .find(|l| is_title_candidate(l) && !is_boilerplate(l))
+        .cloned()
 }
 
 /// True when two lines are the same title (or one contains the other) — used to
@@ -460,7 +476,13 @@ fn title_from_html(xhtml: &str) -> Option<(String, Option<String>)> {
     let doc = Html::parse_document(xhtml);
     let head_title = doc
         .select(&Selector::parse("title").ok()?)
-        .map(|e| e.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(|e| {
+            e.text()
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .find(|s| is_title_candidate(s))?;
     Some((head_title, None))
 }
@@ -469,7 +491,8 @@ fn title_from_html(xhtml: &str) -> Option<(String, Option<String>)> {
 /// usual clutter between the label and the number (`ISBN-13 (pbk): 978-…`).
 fn find_isbn(text: &str) -> Option<String> {
     let re = regex::Regex::new(r"(?i)ISBN.{0,30}?([0-9][0-9\- ]{8,18}[0-9Xx])").ok()?;
-    re.captures_iter(text).find_map(|c| delryn_model::naming::normalize_isbn(&c[1]))
+    re.captures_iter(text)
+        .find_map(|c| delryn_model::naming::normalize_isbn(&c[1]))
 }
 
 /// The author named in an "About the Author" section, e.g. "Shekhar Khandelwal
@@ -518,15 +541,25 @@ fn find_publisher(text: &str) -> Option<String> {
         return Some(p.to_string());
     }
     // "Published by X", or "Copyright © 2024 by X" — the name after "by".
-    for pat in [r"(?i)published by\s+([^\n\r.,;]{2,50})", r"(?i)(?:copyright|©)[^\n]*?\bby\s+([^\n\r.,;]{2,50})"] {
-        let Ok(re) = regex::Regex::new(pat) else { continue };
-        let Some(cap) = re.captures(text) else { continue };
+    for pat in [
+        r"(?i)published by\s+([^\n\r.,;]{2,50})",
+        r"(?i)(?:copyright|©)[^\n]*?\bby\s+([^\n\r.,;]{2,50})",
+    ] {
+        let Ok(re) = regex::Regex::new(pat) else {
+            continue;
+        };
+        let Some(cap) = re.captures(text) else {
+            continue;
+        };
         let p = cap[1].trim().to_string();
         // Reject sentence fragments (a publisher name has no sentence words).
         let looks_like_name = !p.is_empty()
             && p.split_whitespace().count() <= 6
             && !p.split_whitespace().any(|w| {
-                matches!(w.to_lowercase().as_str(), "can" | "the" | "and" | "any" | "for" | "nor" | "of")
+                matches!(
+                    w.to_lowercase().as_str(),
+                    "can" | "the" | "and" | "any" | "for" | "nor" | "of"
+                )
             });
         if looks_like_name {
             return Some(p);
@@ -584,14 +617,21 @@ fn extract_metadata(doc: &mut EpubDoc<BufReader<File>>, size: u64) -> Metadata {
     let year = doc
         .mdata("date")
         .and_then(|m| parse_year(&m.value))
-        .or_else(|| doc.mdata("dcterms:modified").and_then(|m| parse_year(&m.value)));
+        .or_else(|| {
+            doc.mdata("dcterms:modified")
+                .and_then(|m| parse_year(&m.value))
+        });
     let publisher = doc.mdata("publisher").map(|m| m.value.trim().to_string());
     let (series, series_index) = extract_series(doc);
     // EPUB has no standard subtitle; Calibre stores one as a refined title.
     let subtitle = doc
         .metadata
         .iter()
-        .find(|m| m.property == "title" && m.refinement("title-type").is_some_and(|r| r.value == "subtitle"))
+        .find(|m| {
+            m.property == "title"
+                && m.refinement("title-type")
+                    .is_some_and(|r| r.value == "subtitle")
+        })
         .map(|m| m.value.trim().to_string());
     let cover = doc.get_cover();
     let converted = detect_converted(doc);
@@ -618,7 +658,10 @@ fn extract_metadata(doc: &mut EpubDoc<BufReader<File>>, size: u64) -> Metadata {
 /// (the file was made from a Kindle edition). A clean publisher EPUB — including
 /// ones authored in InDesign/Sigil or with no generator tag — is not flagged.
 fn detect_converted(doc: &EpubDoc<BufReader<File>>) -> bool {
-    let calibre_ns = doc.metadata.iter().any(|m| m.property.starts_with("calibre:"));
+    let calibre_ns = doc
+        .metadata
+        .iter()
+        .any(|m| m.property.starts_with("calibre:"));
     converted_from(
         calibre_ns,
         doc.mdata("generator").map(|m| m.value.as_str()),
@@ -665,7 +708,9 @@ fn converted_from(
         return true;
     }
     // An Amazon ASIN identifier ⇒ the EPUB was made from a Kindle edition.
-    identifier.map(|v| v.to_lowercase().contains("asin")).unwrap_or(false)
+    identifier
+        .map(|v| v.to_lowercase().contains("asin"))
+        .unwrap_or(false)
 }
 
 /// Series name + position, from either Calibre's legacy `<meta name="calibre:series">`
@@ -772,7 +817,10 @@ mod tests {
             first_img_src("<html><body><img src=\"images/cover.jpeg\" class=\"c\"/></body></html>"),
             Some("images/cover.jpeg".into())
         );
-        assert_eq!(first_img_src("<html><body><p>no image</p></body></html>"), None);
+        assert_eq!(
+            first_img_src("<html><body><p>no image</p></body></html>"),
+            None
+        );
         assert_eq!(mime_from_ext("a/b/cover.PNG"), "image/png");
         assert_eq!(mime_from_ext("cover.jpg"), "image/jpeg");
         assert_eq!(mime_from_ext("cover"), "image/jpeg");
@@ -781,27 +829,47 @@ mod tests {
     #[test]
     fn content_metadata_scanners() {
         // ISBN: tolerate label clutter, normalize to bare digits.
-        assert_eq!(find_isbn("ISBN-13 (pbk): 978-1-4842-4096-0"), Some("9781484240960".into()));
-        assert_eq!(find_isbn("eISBN: 9789355515391"), Some("9789355515391".into()));
+        assert_eq!(
+            find_isbn("ISBN-13 (pbk): 978-1-4842-4096-0"),
+            Some("9781484240960".into())
+        );
+        assert_eq!(
+            find_isbn("eISBN: 9789355515391"),
+            Some("9789355515391".into())
+        );
         assert_eq!(find_isbn("no number here"), None);
         // Year: only near a copyright / publication marker.
         assert_eq!(find_year("Copyright © 2019 by Sumit Raj"), Some(2019));
         assert_eq!(find_year("First published 2024 by BPB"), Some(2024));
         assert_eq!(find_year("see you in 2030 maybe"), None);
         // Publisher: known names win; sentence boilerplate is rejected.
-        assert_eq!(find_publisher("© 2019 Apress Media LLC"), Some("Apress".into()));
-        assert_eq!(find_publisher("Published by Acme Press, London"), Some("Acme Press".into()));
-        assert_eq!(find_publisher("Copyright © 2024 by HiTeX Press"), Some("HiTeX Press".into()));
+        assert_eq!(
+            find_publisher("© 2019 Apress Media LLC"),
+            Some("Apress".into())
+        );
+        assert_eq!(
+            find_publisher("Published by Acme Press, London"),
+            Some("Acme Press".into())
+        );
+        assert_eq!(
+            find_publisher("Copyright © 2024 by HiTeX Press"),
+            Some("HiTeX Press".into())
+        );
         assert_eq!(
             find_publisher("Neither the publisher nor the author can accept responsibility"),
             None
         );
         // Author from an "About the Author" bio.
         assert_eq!(
-            find_author_bio("About the Author\n\nShekhar Khandelwal is a distinguished AI Scientist."),
+            find_author_bio(
+                "About the Author\n\nShekhar Khandelwal is a distinguished AI Scientist."
+            ),
             Some("Shekhar Khandelwal".into())
         );
-        assert_eq!(find_author_bio("About the author: Jane Roe works at Acme."), Some("Jane Roe".into()));
+        assert_eq!(
+            find_author_bio("About the author: Jane Roe works at Acme."),
+            Some("Jane Roe".into())
+        );
         assert_eq!(find_author_bio("no author section here"), None);
     }
 
@@ -812,7 +880,10 @@ mod tests {
             <h2>Using NLP and Machine Learning</h2></body></html>";
         assert_eq!(
             title_from_html(html),
-            Some(("Building Chatbots with Python".into(), Some("Using NLP and Machine Learning".into())))
+            Some((
+                "Building Chatbots with Python".into(),
+                Some("Using NLP and Machine Learning".into())
+            ))
         );
 
         // Calibre-style title page: plain <div> lines, title and subtitle split
@@ -861,10 +932,16 @@ mod tests {
         // No usable block → fall back to a non-generic <title>.
         let html =
             "<html><head><title>A Real Book Title</title></head><body><p>x</p></body></html>";
-        assert_eq!(title_from_html(html), Some(("A Real Book Title".into(), None)));
+        assert_eq!(
+            title_from_html(html),
+            Some(("A Real Book Title".into(), None))
+        );
 
         // An ID-ish heading is not a title.
-        assert_eq!(title_from_html("<html><body><h1>503392068</h1></body></html>"), None);
+        assert_eq!(
+            title_from_html("<html><body><h1>503392068</h1></body></html>"),
+            None
+        );
         // A long section is a chapter, not a title page → ignored.
         let chapter = format!("<html><body>{}</body></html>", "<p>line</p>".repeat(20));
         assert_eq!(title_from_html(&chapter), None);
@@ -882,19 +959,39 @@ mod tests {
             None
         ));
         // other conversion tools in the generator.
-        assert!(converted_from(false, Some("Aspose.Words for .NET"), None, None));
+        assert!(converted_from(
+            false,
+            Some("Aspose.Words for .NET"),
+            None,
+            None
+        ));
         assert!(converted_from(false, Some("pandoc"), None, None));
         // an Amazon ASIN identifier ⇒ made from a Kindle edition.
-        assert!(converted_from(false, None, None, Some("urn:asin:B0CRR19Z5D")));
+        assert!(converted_from(
+            false,
+            None,
+            None,
+            Some("urn:asin:B0CRR19Z5D")
+        ));
     }
 
     #[test]
     fn leaves_publisher_files_unflagged() {
         // Adobe InDesign / Sigil are authoring tools, not conversions.
-        assert!(!converted_from(false, Some("Adobe InDesign 19.5.1"), None, None));
+        assert!(!converted_from(
+            false,
+            Some("Adobe InDesign 19.5.1"),
+            None,
+            None
+        ));
         assert!(!converted_from(false, None, Some("Sigil 2.2.1"), None));
         // No generator tag at all (typical academic/publisher EPUB) + a real ISBN.
-        assert!(!converted_from(false, None, None, Some("urn:isbn:978-3-031-61037-0")));
+        assert!(!converted_from(
+            false,
+            None,
+            None,
+            Some("urn:isbn:978-3-031-61037-0")
+        ));
         assert!(!converted_from(false, None, None, None));
     }
 }

@@ -26,15 +26,31 @@ pub fn latex_to_unicode(raw: &str) -> String {
     s = collapse_double_backslashes(&s);
 
     // Structural commands → removed or spaced.
-    for kw in ["\\displaystyle", "\\textstyle", "\\scriptstyle", "\\left", "\\right"] {
+    for kw in [
+        "\\displaystyle",
+        "\\textstyle",
+        "\\scriptstyle",
+        "\\left",
+        "\\right",
+    ] {
         s = s.replace(kw, " ");
     }
     s = remove_envs(&s);
     s = unwrap_cmds(
         &s,
         &[
-            "text", "textbf", "textit", "mathbf", "mathrm", "mathit", "mathsf", "mathcal",
-            "mathbb", "boldsymbol", "mbox", "operatorname",
+            "text",
+            "textbf",
+            "textit",
+            "mathbf",
+            "mathrm",
+            "mathit",
+            "mathsf",
+            "mathcal",
+            "mathbb",
+            "boldsymbol",
+            "mbox",
+            "operatorname",
         ],
     );
     s = s.replace("{,}", ","); // protected thousands separator
@@ -161,10 +177,11 @@ fn unwrap_cmds(input: &str, cmds: &[&str]) -> String {
                         continue 'outer;
                     }
                 } else if let Some(c) = s[arg..].chars().next()
-                    && c.is_alphanumeric() {
-                        s.replace_range(pos..arg + c.len_utf8(), &c.to_string());
-                        continue 'outer;
-                    }
+                    && c.is_alphanumeric()
+                {
+                    s.replace_range(pos..arg + c.len_utf8(), &c.to_string());
+                    continue 'outer;
+                }
                 from = after;
             }
         }
@@ -181,10 +198,11 @@ fn fracs(input: &str) -> String {
         };
         // expect a second group immediately after
         if s[after_num..].starts_with('{')
-            && let Some((den, after_den)) = take_group(&s, after_num) {
-                s.replace_range(pos..after_den, &format!("{num}/{den}"));
-                continue;
-            }
+            && let Some((den, after_den)) = take_group(&s, after_num)
+        {
+            s.replace_range(pos..after_den, &format!("{num}/{den}"));
+            continue;
+        }
         break;
     }
     s

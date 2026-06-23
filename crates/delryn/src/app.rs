@@ -13,9 +13,7 @@ use std::time::Instant;
 use lru::LruCache;
 
 use anyhow::Result;
-use crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use crate::config::{Config, LibLayout};
@@ -141,7 +139,15 @@ pub struct AnnotState {
 /// Editable book-metadata fields, in display order. `Year` and `Series #`
 /// hold numeric text, validated on save.
 pub const META_FIELDS: [&str; 9] = [
-    "Title", "Author", "Year", "Series", "Series #", "Publisher", "Subtitle", "ISBN", "Language",
+    "Title",
+    "Author",
+    "Year",
+    "Series",
+    "Series #",
+    "Publisher",
+    "Subtitle",
+    "ISBN",
+    "Language",
 ];
 /// Field index of the Year field (validated as an integer).
 const F_YEAR: usize = 2;
@@ -268,7 +274,9 @@ impl LookupForm {
 
     /// Char length of the currently focused seed field.
     fn focused_len(&self) -> usize {
-        self.field(self.focus.min(LOOKUP_FIELDS - 1)).chars().count()
+        self.field(self.focus.min(LOOKUP_FIELDS - 1))
+            .chars()
+            .count()
     }
 }
 
@@ -389,7 +397,10 @@ impl MetaEdit {
         match self.tab {
             EditTab::Details => self.values.get_mut(self.row),
             EditTab::Cover => Some(&mut self.cover_search.q),
-            EditTab::Online => Some(self.lookup.field_mut(self.lookup.focus.min(LOOKUP_FIELDS - 1))),
+            EditTab::Online => Some(
+                self.lookup
+                    .field_mut(self.lookup.focus.min(LOOKUP_FIELDS - 1)),
+            ),
         }
     }
 
@@ -962,9 +973,10 @@ impl Reader {
             match done.plan {
                 Some(plan) => {
                     if let Some((_, evicted)) = self.image_cache.push(done.key, plan)
-                        && let Some(id) = evicted.image_id() {
-                            self.pending_deletes.push(id);
-                        }
+                        && let Some(id) = evicted.image_id()
+                    {
+                        self.pending_deletes.push(id);
+                    }
                 }
                 None => {
                     self.img_failed.insert(done.key);
@@ -1011,7 +1023,13 @@ impl Reader {
         let mut idx = 0;
         for block in &self.blocks {
             if let Block::Image { data, .. } = block {
-                let key = ImgKey { section: self.section, idx, avail, max_rows, max_px };
+                let key = ImgKey {
+                    section: self.section,
+                    idx,
+                    avail,
+                    max_rows,
+                    max_px,
+                };
                 let rows = if let Some(plan) = self.image_cache.peek(&key) {
                     plan.rows
                 } else if data.is_empty() {
@@ -1064,7 +1082,13 @@ impl Reader {
             for block in blocks {
                 if let Block::Image { data, .. } = block {
                     if !data.is_empty() {
-                        let key = ImgKey { section: sec, idx, avail, max_rows, max_px };
+                        let key = ImgKey {
+                            section: sec,
+                            idx,
+                            avail,
+                            max_rows,
+                            max_px,
+                        };
                         if !self.image_cache.contains(&key)
                             && !self.img_requested.contains(&key)
                             && !self.img_failed.contains(&key)
@@ -1122,7 +1146,10 @@ impl Reader {
         let text = lines.join("\n");
         let n = lines.len();
         self.pending_clipboard = Some(text);
-        self.flash = Some(format!("✓ copied {n} line{} of code", if n == 1 { "" } else { "s" }));
+        self.flash = Some(format!(
+            "✓ copied {n} line{} of code",
+            if n == 1 { "" } else { "s" }
+        ));
         Some(n)
     }
 
@@ -1135,13 +1162,15 @@ impl Reader {
     /// Are any of the current section's images still building (so the loop
     /// should keep redrawing until they pop in)?
     pub fn images_pending(&self) -> bool {
-        self.image_rows_estimate.iter().enumerate().any(|(i, &rows)| {
-            rows > 0
-                && self
-                    .section_images
-                    .get(&i)
-                    .is_some_and(|k| !self.image_cache.contains(k) && !self.img_failed.contains(k))
-        })
+        self.image_rows_estimate
+            .iter()
+            .enumerate()
+            .any(|(i, &rows)| {
+                rows > 0
+                    && self.section_images.get(&i).is_some_and(|k| {
+                        !self.image_cache.contains(k) && !self.img_failed.contains(k)
+                    })
+            })
     }
 
     pub fn max_scroll(&self) -> usize {
@@ -1357,9 +1386,10 @@ impl Reader {
     /// Jump to the selected sidebar row.
     pub fn sidebar_activate(&mut self) {
         if let Some(oi) = self.selected_outline()
-            && let Some(item) = self.outline.get(oi).cloned() {
-                self.jump_to(item.section, item.locator.as_deref());
-            }
+            && let Some(item) = self.outline.get(oi).cloned()
+        {
+            self.jump_to(item.section, item.locator.as_deref());
+        }
     }
 
     /// `l`/→: expand a collapsed parent, otherwise jump.
@@ -1385,9 +1415,10 @@ impl Reader {
             let depth = self.outline[oi].depth;
             if depth > 0
                 && let Some(pi) = (0..oi).rev().find(|&j| self.outline[j].depth < depth)
-                    && let Some(pos) = self.outline_visible().iter().position(|&x| x == pi) {
-                        self.sidebar_sel = pos;
-                    }
+                && let Some(pos) = self.outline_visible().iter().position(|&x| x == pi)
+            {
+                self.sidebar_sel = pos;
+            }
         }
     }
 
@@ -1774,7 +1805,7 @@ fn load_cover_bytes(path: &str) -> Option<Vec<u8>> {
 // `delryn_model::naming`; re-exported so existing `app::{fill_template, …}` and
 // the bare in-module calls keep working.
 pub use delryn_model::naming::{
-    fill_template, filename_title, first_author, looks_like_id, main_title, sanitize_filename,
+    filename_title, fill_template, first_author, looks_like_id, main_title, sanitize_filename,
 };
 
 /// Write a staged cover into the book file itself (EPUB only), returning a status
@@ -1844,14 +1875,15 @@ fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, St
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.to_string());
     if let Some(store) = store
-        && let Some(p) = store.load_progress(&book_path) {
-            config.view_mode = p.view_mode;
-            if let Some(t) = theme::by_name(&p.theme) {
-                config.theme = t;
-            }
-            reader.load(p.section);
-            reader.pending_frac = Some(p.frac);
+        && let Some(p) = store.load_progress(&book_path)
+    {
+        config.view_mode = p.view_mode;
+        if let Some(t) = theme::by_name(&p.theme) {
+            config.theme = t;
         }
+        reader.load(p.section);
+        reader.pending_frac = Some(p.frac);
+    }
     Ok((reader, config, book_path))
 }
 
@@ -2182,7 +2214,9 @@ impl App {
             .into_iter()
             .map(|(name, _)| {
                 let all = !targets.is_empty()
-                    && targets.iter().all(|p| store.shelves_for(p).iter().any(|s| s == &name));
+                    && targets
+                        .iter()
+                        .all(|p| store.shelves_for(p).iter().any(|s| s == &name));
                 (name, all)
             })
             .collect()
@@ -2250,12 +2284,21 @@ impl App {
         let author = first_author(&author_raw);
         // Cover search is seeded from the SAME clean title + author, not the raw
         // (possibly ID-like) metadata, so its query/results aren't junk.
-        let cover_q =
-            format!("{name} {author}").split_whitespace().collect::<Vec<_>>().join(" ");
-        let lookup = LookupForm { name, author, ..LookupForm::default() };
+        let cover_q = format!("{name} {author}")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let lookup = LookupForm {
+            name,
+            author,
+            ..LookupForm::default()
+        };
         // Snapshot the Details the searches were seeded from (the raw values, so a
         // later change — extract or manual edit — is detected on tab entry).
-        let seed_from = (values[0].clone(), values.get(1).cloned().unwrap_or_default());
+        let seed_from = (
+            values[0].clone(),
+            values.get(1).cloned().unwrap_or_default(),
+        );
         let cursor = values[0].chars().count();
         self.meta_edit = Some(MetaEdit {
             path,
@@ -2297,8 +2340,10 @@ impl App {
         }
         let name = main_title(&title);
         let author1 = first_author(&author);
-        ed.cover_search.q =
-            format!("{name} {author1}").split_whitespace().collect::<Vec<_>>().join(" ");
+        ed.cover_search.q = format!("{name} {author1}")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         ed.lookup.name = name;
         ed.lookup.author = author1;
         ed.lookup.focus = 0;
@@ -2357,7 +2402,12 @@ impl App {
             return;
         }
         // Cover tab: editing the free-text search bar.
-        if tab == EditTab::Cover && self.meta_edit.as_ref().is_some_and(|e| e.cover_search.editing) {
+        if tab == EditTab::Cover
+            && self
+                .meta_edit
+                .as_ref()
+                .is_some_and(|e| e.cover_search.editing)
+        {
             self.online_query_key(key);
             return;
         }
@@ -2421,13 +2471,19 @@ impl App {
         // Entering the Cover tab runs the cover search once, so candidates appear
         // without a manual search (uses the book's ISBN + the seeded query).
         if tab == EditTab::Cover
-            && self.meta_edit.as_ref().is_some_and(|e| e.cover_hits.is_empty() && !e.cover_search.fetching)
+            && self
+                .meta_edit
+                .as_ref()
+                .is_some_and(|e| e.cover_hits.is_empty() && !e.cover_search.fetching)
         {
             self.online_search();
         }
         // Likewise the Lookup tab auto-searches once from its seeded fields.
         if tab == EditTab::Online
-            && self.meta_edit.as_ref().is_some_and(|e| e.online.results.is_empty() && !e.online.fetching)
+            && self
+                .meta_edit
+                .as_ref()
+                .is_some_and(|e| e.online.results.is_empty() && !e.online.fetching)
         {
             self.online_search();
         }
@@ -2662,7 +2718,6 @@ impl App {
         }
     }
 
-
     /// Online/Cover tabs, browsing the results: `/` or typing opens the search
     /// bar; j/k move the selection; Enter applies (metadata on Online, the
     /// previewed cover on Cover).
@@ -2816,7 +2871,10 @@ impl App {
         if let Some(store) = &self.store {
             store.rename_book_path(old, &new);
         }
-        let _ = std::fs::rename(online::cover_cache_path(old), online::cover_cache_path(&new));
+        let _ = std::fs::rename(
+            online::cover_cache_path(old),
+            online::cover_cache_path(&new),
+        );
         RenameOutcome::Renamed
     }
 
@@ -2874,7 +2932,10 @@ impl App {
         let mut sel = self.lib_marked_base.clone();
         if !self.lib_books.is_empty() {
             let last = self.lib_books.len() - 1;
-            let (lo, hi) = (anchor.min(self.lib_sel).min(last), anchor.max(self.lib_sel).min(last));
+            let (lo, hi) = (
+                anchor.min(self.lib_sel).min(last),
+                anchor.max(self.lib_sel).min(last),
+            );
             sel.extend(self.lib_books[lo..=hi].iter().map(|b| b.path.clone()));
         }
         self.lib_marked = sel;
@@ -2985,7 +3046,10 @@ impl App {
         self.lib_exit_visual();
         self.refresh_library();
         self.lib_flash = Some(if skipped == 0 {
-            format!("renamed {renamed} book{}", if renamed == 1 { "" } else { "s" })
+            format!(
+                "renamed {renamed} book{}",
+                if renamed == 1 { "" } else { "s" }
+            )
         } else {
             format!("renamed {renamed}, skipped {skipped}")
         });
@@ -3272,7 +3336,16 @@ impl App {
         let series_index = v(4).parse::<f32>().ok();
         if let Some(store) = &self.store {
             store.update_book_meta(
-                &ed.path, v(0), v(1), year, v(3), series_index, v(5), v(6), v(7), v(8),
+                &ed.path,
+                v(0),
+                v(1),
+                year,
+                v(3),
+                series_index,
+                v(5),
+                v(6),
+                v(7),
+                v(8),
             );
         }
         if let Some(bytes) = &ed.cover {
@@ -3361,7 +3434,11 @@ impl App {
     /// The cursor ranges over the views plus the trailing "＋ New" row.
     fn lib_side_move(&mut self, delta: isize) {
         let max = self.lib_view_count(); // index of "＋ New collection"
-        let cur = if self.lib_side_new { max } else { self.lib_view_index() };
+        let cur = if self.lib_side_new {
+            max
+        } else {
+            self.lib_view_index()
+        };
         let next = (cur as isize + delta).clamp(0, max as isize) as usize;
         self.lib_set_view_index(next);
     }
@@ -3370,9 +3447,7 @@ impl App {
     fn lib_view_index(&self) -> usize {
         let n = LibrarySection::ALL.len();
         match &self.lib_view {
-            LibView::Section(s) => {
-                LibrarySection::ALL.iter().position(|x| x == s).unwrap_or(0)
-            }
+            LibView::Section(s) => LibrarySection::ALL.iter().position(|x| x == s).unwrap_or(0),
             LibView::Shelf(name) => self
                 .lib_shelves
                 .iter()
@@ -3412,15 +3487,16 @@ impl App {
     /// Persist the current reading position (best-effort).
     pub fn save_progress(&self) {
         if let (Some(store), Some(reader)) = (&self.store, &self.reader)
-            && !self.book_path.is_empty() {
-                let _ = store.save_progress(
-                    &self.book_path,
-                    reader.section,
-                    reader.within_frac(),
-                    self.config.view_mode,
-                    self.config.theme.name,
-                );
-            }
+            && !self.book_path.is_empty()
+        {
+            let _ = store.save_progress(
+                &self.book_path,
+                reader.section,
+                reader.within_frac(),
+                self.config.view_mode,
+                self.config.theme.name,
+            );
+        }
     }
 
     /// Accumulate elapsed reading time into the open book and reset the clock.
@@ -3443,7 +3519,10 @@ impl App {
     }
 
     pub fn total_read_seconds(&self) -> i64 {
-        self.store.as_ref().map(|s| s.total_read_seconds()).unwrap_or(0)
+        self.store
+            .as_ref()
+            .map(|s| s.total_read_seconds())
+            .unwrap_or(0)
     }
 
     /// Terminal image ids to delete (evicted from the reader's cache).
@@ -3558,7 +3637,10 @@ impl App {
     /// underlying popup (editor / rename / collection editor) stays open behind
     /// the prompt, so cancelling returns the user exactly where they were.
     fn ask_confirm(&mut self, question: &str, action: ConfirmAction) {
-        self.pending_confirm = Some(PendingConfirm { question: question.to_string(), action });
+        self.pending_confirm = Some(PendingConfirm {
+            question: question.to_string(),
+            action,
+        });
     }
 
     /// Answer the pending confirmation: `y`/`⏎` commits, `n`/`Esc` cancels, and
@@ -3615,14 +3697,15 @@ impl App {
             KeyCode::Enter => {
                 if let Some(text) = self.note_input.take()
                     && let (Some(store), Some(r)) = (&self.store, &self.reader)
-                        && !self.book_path.is_empty() {
-                            store.add_annotation(
-                                &self.book_path,
-                                r.section,
-                                &r.current_quote(),
-                                text.trim(),
-                            );
-                        }
+                    && !self.book_path.is_empty()
+                {
+                    store.add_annotation(
+                        &self.book_path,
+                        r.section,
+                        &r.current_quote(),
+                        text.trim(),
+                    );
+                }
             }
             KeyCode::Backspace => {
                 if let Some(s) = self.note_input.as_mut() {
@@ -3647,9 +3730,10 @@ impl App {
             KeyCode::Esc | KeyCode::Char('\'') | KeyCode::Char('q') => self.annot = None,
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(a) = self.annot.as_mut()
-                    && len > 0 {
-                        a.sel = (sel + 1).min(len - 1);
-                    }
+                    && len > 0
+                {
+                    a.sel = (sel + 1).min(len - 1);
+                }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let Some(a) = self.annot.as_mut() {
@@ -3670,7 +3754,11 @@ impl App {
                 }
             }
             KeyCode::Char('d') => {
-                let id = self.annot.as_ref().and_then(|a| a.items.get(a.sel)).map(|i| i.id);
+                let id = self
+                    .annot
+                    .as_ref()
+                    .and_then(|a| a.items.get(a.sel))
+                    .map(|i| i.id);
                 if let (Some(id), Some(store)) = (id, &self.store) {
                     store.delete_annotation(id);
                     let items = store.list_annotations(&self.book_path);
@@ -3762,7 +3850,11 @@ impl App {
         let c = &mut self.config;
         match item {
             SettingItem::Theme => {
-                c.theme = if delta > 0 { c.theme.next() } else { c.theme.prev() }
+                c.theme = if delta > 0 {
+                    c.theme.next()
+                } else {
+                    c.theme.prev()
+                }
             }
             SettingItem::ViewMode => {
                 c.view_mode = if delta > 0 {
@@ -3986,7 +4078,11 @@ impl App {
 
     /// Begin creating a new collection (inline at the "＋ New" sidebar row).
     fn lib_coll_begin_new(&mut self) {
-        self.lib_coll_edit = Some(CollInput { buf: String::new(), cursor: 0, rename_from: None });
+        self.lib_coll_edit = Some(CollInput {
+            buf: String::new(),
+            cursor: 0,
+            rename_from: None,
+        });
     }
 
     /// Begin renaming the focused sidebar collection in place.
@@ -4091,7 +4187,10 @@ impl App {
                 .map(|b| b.path.clone())
                 .collect();
             let n = targets.len();
-            (targets, format!("{n} book{}", if n == 1 { "" } else { "s" }))
+            (
+                targets,
+                format!("{n} book{}", if n == 1 { "" } else { "s" }),
+            )
         } else {
             match self.lib_books.get(self.lib_sel) {
                 Some(b) => (vec![b.path.clone()], b.title.clone()),
@@ -4328,14 +4427,15 @@ impl App {
             Action::SearchPrev => reader.search_prev(),
             Action::AddBookmark => {
                 if let Some(store) = &self.store
-                    && !self.book_path.is_empty() {
-                        store.add_annotation(
-                            &self.book_path,
-                            reader.section,
-                            &reader.current_quote(),
-                            "",
-                        );
-                    }
+                    && !self.book_path.is_empty()
+                {
+                    store.add_annotation(
+                        &self.book_path,
+                        reader.section,
+                        &reader.current_quote(),
+                        "",
+                    );
+                }
             }
             Action::AddNote => self.note_input = Some(String::new()),
             Action::OpenAnnotations => {
@@ -4351,8 +4451,12 @@ impl App {
                 self.config.code_wrap = !self.config.code_wrap;
                 reader.code_hscroll = 0;
                 reader.flash = Some(
-                    if self.config.code_wrap { "code: wrap" } else { "code: no-wrap (< > to pan)" }
-                        .to_string(),
+                    if self.config.code_wrap {
+                        "code: wrap"
+                    } else {
+                        "code: no-wrap (< > to pan)"
+                    }
+                    .to_string(),
                 );
                 save = true;
             }
@@ -4368,8 +4472,12 @@ impl App {
             Action::ToggleChapterLock => {
                 self.config.chapter_lock = !self.config.chapter_lock;
                 reader.flash = Some(
-                    if self.config.chapter_lock { "chapter lock: on" } else { "chapter lock: off" }
-                        .to_string(),
+                    if self.config.chapter_lock {
+                        "chapter lock: on"
+                    } else {
+                        "chapter lock: off"
+                    }
+                    .to_string(),
                 );
                 save = true;
             }
@@ -4381,15 +4489,16 @@ impl App {
         // Persist on chapter change or a settings change (cheap).
         if (save || reader.section != before)
             && let Some(store) = &self.store
-                && !self.book_path.is_empty() {
-                    let _ = store.save_progress(
-                        &self.book_path,
-                        reader.section,
-                        reader.within_frac(),
-                        self.config.view_mode,
-                        self.config.theme.name,
-                    );
-                }
+            && !self.book_path.is_empty()
+        {
+            let _ = store.save_progress(
+                &self.book_path,
+                reader.section,
+                reader.within_frac(),
+                self.config.view_mode,
+                self.config.theme.name,
+            );
+        }
     }
 
     pub fn on_mouse(&mut self, m: MouseEvent) {
@@ -4403,7 +4512,11 @@ impl App {
                 if self.mode != Mode::Reader {
                     return;
                 }
-                let d: isize = if matches!(m.kind, MouseEventKind::ScrollUp) { -3 } else { 3 };
+                let d: isize = if matches!(m.kind, MouseEventKind::ScrollUp) {
+                    -3
+                } else {
+                    3
+                };
                 let over_sidebar = self
                     .last_layout
                     .sidebar
@@ -4469,7 +4582,12 @@ impl App {
             self.online_begin_query(None);
             return;
         }
-        if let Some(&(idx, vstart, _)) = self.mouse.edit_fields.iter().find(|(_, _, r)| r.contains(pt)) {
+        if let Some(&(idx, vstart, _)) = self
+            .mouse
+            .edit_fields
+            .iter()
+            .find(|(_, _, r)| r.contains(pt))
+        {
             if let Some(e) = self.meta_edit.as_mut() {
                 match e.tab {
                     EditTab::Online => {
@@ -4558,7 +4676,9 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book(
+                    "/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "",
+                )
                 .unwrap();
         }
 
@@ -4572,7 +4692,11 @@ mod tests {
         app.on_key(key('v'));
         assert_eq!(app.config.library_layout, LibLayout::Grid);
         app.on_key(key('v'));
-        assert_eq!(app.config.library_layout, LibLayout::List, "v wraps back to list");
+        assert_eq!(
+            app.config.library_layout,
+            LibLayout::List,
+            "v wraps back to list"
+        );
 
         // e opens the metadata editor; Esc closes it.
         app.on_key(key('e'));
@@ -4598,7 +4722,9 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/n.epub", "N", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book(
+                    "/n.epub", "N", "Auth", None, 1, 1, 1, "", None, "", "", "", "",
+                )
                 .unwrap();
         }
 
@@ -4620,7 +4746,11 @@ mod tests {
         app.on_key(key('g'));
         assert_eq!(app.lib_view, LibView::Section(LibrarySection::Recent));
         app.on_key(key('k'));
-        assert_eq!(app.lib_view, LibView::Section(LibrarySection::Recent), "clamped at top");
+        assert_eq!(
+            app.lib_view,
+            LibView::Section(LibrarySection::Recent),
+            "clamped at top"
+        );
 
         // Enter steps into the list.
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -4685,13 +4815,31 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/k.epub", "K", "Auth", Some(1999), 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book(
+                    "/k.epub",
+                    "K",
+                    "Auth",
+                    Some(1999),
+                    1,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
                 .unwrap();
         }
 
         let mut app = App::library();
         app.on_key(key('e'));
-        assert_eq!(app.meta_edit.as_ref().unwrap().mode, EditMode::Nav, "opens in nav mode");
+        assert_eq!(
+            app.meta_edit.as_ref().unwrap().mode,
+            EditMode::Nav,
+            "opens in nav mode"
+        );
 
         // In nav mode, 'j' moves fields (does NOT type); Enter enters edit mode.
         app.on_key(key('j')); // → Author
@@ -4714,11 +4862,17 @@ mod tests {
         app.on_key(ctrl('u'));
         app.on_key(key('a'));
         app.on_key(code(KeyCode::Esc));
-        assert!(app.meta_edit.as_ref().unwrap().has_invalid(), "non-numeric year invalid");
+        assert!(
+            app.meta_edit.as_ref().unwrap().has_invalid(),
+            "non-numeric year invalid"
+        );
 
         // ^S must NOT even prompt to save while invalid.
         app.on_key(ctrl('s'));
-        assert!(app.pending_confirm.is_none(), "no save prompt while invalid");
+        assert!(
+            app.pending_confirm.is_none(),
+            "no save prompt while invalid"
+        );
         assert!(app.meta_edit.is_some(), "save blocked while invalid");
 
         // Fix the year, then ^S → confirm → save and persist.
@@ -4753,7 +4907,21 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/k.epub", "K", "Auth", Some(1999), 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book(
+                    "/k.epub",
+                    "K",
+                    "Auth",
+                    Some(1999),
+                    1,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
                 .unwrap();
         }
 
@@ -4769,7 +4937,10 @@ mod tests {
         assert!(app.pending_confirm.is_some(), "prompt up");
         // An unrelated key is ignored — the prompt is modal.
         app.on_key(code(KeyCode::Tab));
-        assert!(app.pending_confirm.is_some(), "stray key ignored, prompt stays");
+        assert!(
+            app.pending_confirm.is_some(),
+            "stray key ignored, prompt stays"
+        );
         // n cancels, the editor remains open, nothing persisted.
         app.on_key(key('n'));
         assert!(app.pending_confirm.is_none(), "n dismisses the prompt");
@@ -4779,7 +4950,10 @@ mod tests {
         // Esc also cancels the prompt (and keeps the editor).
         app.on_key(ctrl('s'));
         app.on_key(code(KeyCode::Esc));
-        assert!(app.pending_confirm.is_none() && app.meta_edit.is_some(), "Esc cancels");
+        assert!(
+            app.pending_confirm.is_none() && app.meta_edit.is_some(),
+            "Esc cancels"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4793,13 +4967,66 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         {
             let store = Store::open_default().unwrap();
-            store.upsert_book("/a.epub", "A", "x", Some(2010), 1, 1, 1, "", None, "", "", "", "").unwrap();
-            store.upsert_book("/b.epub", "B", "x", Some(1999), 1, 1, 1, "", None, "", "", "", "").unwrap();
-            store.upsert_book("/c.epub", "C", "x", Some(2001), 1, 1, 1, "", None, "", "", "", "").unwrap();
+            store
+                .upsert_book(
+                    "/a.epub",
+                    "A",
+                    "x",
+                    Some(2010),
+                    1,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
+                .unwrap();
+            store
+                .upsert_book(
+                    "/b.epub",
+                    "B",
+                    "x",
+                    Some(1999),
+                    1,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
+                .unwrap();
+            store
+                .upsert_book(
+                    "/c.epub",
+                    "C",
+                    "x",
+                    Some(2001),
+                    1,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
+                .unwrap();
         }
 
         let mut app = App::library();
-        let titles = |a: &App| a.lib_books.iter().map(|b| b.title.clone()).collect::<Vec<_>>();
+        let titles = |a: &App| {
+            a.lib_books
+                .iter()
+                .map(|b| b.title.clone())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(titles(&app), ["A", "B", "C"], "All section sorts by title");
 
         // Default → Title → Author → Year.
@@ -4827,7 +5054,21 @@ mod tests {
             let store = Store::open_default().unwrap();
             for t in ["A", "B", "C", "D", "E", "F"] {
                 store
-                    .upsert_book(&format!("/{t}.epub"), t, "x", None, 1, 1, 1, "", None, "", "", "", "")
+                    .upsert_book(
+                        &format!("/{t}.epub"),
+                        t,
+                        "x",
+                        None,
+                        1,
+                        1,
+                        1,
+                        "",
+                        None,
+                        "",
+                        "",
+                        "",
+                        "",
+                    )
                     .unwrap();
             }
         }
@@ -4868,7 +5109,21 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book(&old_str, "Clean Title", "Auth", Some(2001), 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book(
+                    &old_str,
+                    "Clean Title",
+                    "Auth",
+                    Some(2001),
+                    1,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
                 .unwrap();
             store.set_favorite(&old_str, true);
         }
@@ -4890,7 +5145,10 @@ mod tests {
             new.to_string_lossy(),
             "DB path repointed and reloaded"
         );
-        assert!(app.lib_books[0].favorite, "favorite preserved across rename");
+        assert!(
+            app.lib_books[0].favorite,
+            "favorite preserved across rename"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4909,7 +5167,21 @@ mod tests {
             std::fs::write(&p, b"x").unwrap();
             let store = Store::open_default().unwrap();
             store
-                .upsert_book(&p.to_string_lossy(), title, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book(
+                    &p.to_string_lossy(),
+                    title,
+                    "Auth",
+                    None,
+                    1,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
                 .unwrap();
         }
 
@@ -4950,10 +5222,7 @@ mod tests {
         }
         let mut app = App::library();
         // Stand in for the render that normally fills these rects.
-        app.mouse.books = vec![
-            (0, Rect::new(0, 0, 20, 1)),
-            (1, Rect::new(0, 1, 20, 1)),
-        ];
+        app.mouse.books = vec![(0, Rect::new(0, 0, 20, 1)), (1, Rect::new(0, 1, 20, 1))];
         app.on_mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
             column: 5,
@@ -4975,11 +5244,19 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book(
+                    "/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "",
+                )
                 .unwrap();
         }
         let names = |a: &App| {
-            a.store.as_ref().unwrap().all_shelves().into_iter().map(|(n, _)| n).collect::<Vec<_>>()
+            a.store
+                .as_ref()
+                .unwrap()
+                .all_shelves()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>()
         };
 
         let mut app = App::library();
@@ -5035,7 +5312,10 @@ mod tests {
         app.on_key(key(' ')); // pick C
         assert!(app.lib_marked.contains("/a.epub"));
         assert!(app.lib_marked.contains("/c.epub"));
-        assert!(!app.lib_marked.contains("/b.epub"), "B was skipped — non-contiguous");
+        assert!(
+            !app.lib_marked.contains("/b.epub"),
+            "B was skipped — non-contiguous"
+        );
         assert!(app.lib_visual.is_none(), "Space doesn't enter visual mode");
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -5074,7 +5354,10 @@ mod tests {
         let store = app.store.as_ref().unwrap();
         assert!(store.shelves_for("/a.epub").contains(&"Unread".to_string()));
         assert!(store.shelves_for("/b.epub").contains(&"Unread".to_string()));
-        assert!(app.lib_marked.is_empty(), "selection cleared after bulk file");
+        assert!(
+            app.lib_marked.is_empty(),
+            "selection cleared after bulk file"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -5092,7 +5375,10 @@ mod tests {
         assert_eq!(app.settings.as_ref().unwrap().scope, Mode::Library);
 
         let rows = settings_rows(Mode::Library);
-        assert!(matches!(rows[0], SettingRow::Section(_)), "first row is a header");
+        assert!(
+            matches!(rows[0], SettingRow::Section(_)),
+            "first row is a header"
+        );
         for _ in 0..25 {
             let row = app.settings.as_ref().unwrap().row;
             assert!(
@@ -5116,7 +5402,21 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/k.epub", "K", "Auth", Some(2010), 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book(
+                    "/k.epub",
+                    "K",
+                    "Auth",
+                    Some(2010),
+                    1,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
                 .unwrap();
         }
 
@@ -5165,7 +5465,9 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book(
+                    "/k.epub", "K", "Auth", None, 1, 1, 1, "", None, "", "", "", "",
+                )
                 .unwrap();
         }
 
@@ -5206,7 +5508,10 @@ mod tests {
         };
         assert_eq!(f.query(), "Deep Learning With Python Kissinger");
         // Useful punctuation (C++, #) survives.
-        let g = LookupForm { name: "C++ Primer".into(), ..LookupForm::default() };
+        let g = LookupForm {
+            name: "C++ Primer".into(),
+            ..LookupForm::default()
+        };
         assert_eq!(g.query(), "C++ Primer");
     }
 
@@ -5225,7 +5530,21 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book(&file.to_string_lossy(), "503392068", "Unknown", None, 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book(
+                    &file.to_string_lossy(),
+                    "503392068",
+                    "Unknown",
+                    None,
+                    1,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
                 .unwrap();
         }
 
@@ -5252,7 +5571,21 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             store
-                .upsert_book("/k.epub", "503392068", "Unknown", None, 1, 1, 1, "", None, "", "", "", "")
+                .upsert_book(
+                    "/k.epub",
+                    "503392068",
+                    "Unknown",
+                    None,
+                    1,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
                 .unwrap();
         }
 
@@ -5327,7 +5660,9 @@ mod tests {
         {
             let store = Store::open_default().unwrap();
             for (p, t) in [("/a.epub", "A"), ("/b.epub", "B")] {
-                store.upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "").unwrap();
+                store
+                    .upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                    .unwrap();
             }
         }
 

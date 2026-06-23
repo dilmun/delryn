@@ -35,10 +35,32 @@ fn is_block(node: NodeRef<Node>) -> bool {
         Node::Element(e) if e.name() == "img" => is_real_image(e),
         Node::Element(e) => matches!(
             e.name(),
-            "p" | "div" | "section" | "article" | "header" | "footer" | "main"
-                | "figure" | "figcaption" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
-                | "ul" | "ol" | "li" | "blockquote" | "pre" | "hr"
-                | "table" | "thead" | "tbody" | "tr" | "td" | "th"
+            "p" | "div"
+                | "section"
+                | "article"
+                | "header"
+                | "footer"
+                | "main"
+                | "figure"
+                | "figcaption"
+                | "h1"
+                | "h2"
+                | "h3"
+                | "h4"
+                | "h5"
+                | "h6"
+                | "ul"
+                | "ol"
+                | "li"
+                | "blockquote"
+                | "pre"
+                | "hr"
+                | "table"
+                | "thead"
+                | "tbody"
+                | "tr"
+                | "td"
+                | "th"
         ),
         _ => false,
     }
@@ -53,9 +75,11 @@ fn is_real_image(e: &scraper::node::Element) -> bool {
 
 fn is_icon_src(src: &str) -> bool {
     let s = src.to_lowercase();
-    ["warning", "info", "tip", "note", "pencil", "key", "question", "icon", "leanpub_"]
-        .iter()
-        .any(|k| s.contains(k))
+    [
+        "warning", "info", "tip", "note", "pencil", "key", "question", "icon", "leanpub_",
+    ]
+    .iter()
+    .any(|k| s.contains(k))
 }
 
 /// Iterate children, grouping loose inline content into implicit paragraphs and
@@ -212,8 +236,9 @@ fn list_item(node: NodeRef<Node>, ctx: &Ctx, marker: String, out: &mut Vec<Block
     };
     walk_children(node, &inner, &mut item);
 
-    if let Some(Block::Para { marker: m, indent, .. }) =
-        item.iter_mut().find(|b| matches!(b, Block::Para { .. }))
+    if let Some(Block::Para {
+        marker: m, indent, ..
+    }) = item.iter_mut().find(|b| matches!(b, Block::Para { .. }))
     {
         *m = Some(marker);
         *indent = ctx.indent;
@@ -233,9 +258,18 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
                     italic: true,
                     ..style
                 },
-                "strong" | "b" => Inline { bold: true, ..style },
-                "code" | "kbd" | "samp" | "tt" => Inline { code: true, ..style },
-                "a" => Inline { link: true, ..style },
+                "strong" | "b" => Inline {
+                    bold: true,
+                    ..style
+                },
+                "code" | "kbd" | "samp" | "tt" => Inline {
+                    code: true,
+                    ..style
+                },
+                "a" => Inline {
+                    link: true,
+                    ..style
+                },
                 "br" => {
                     out.push(Span::plain(" "));
                     return;
@@ -280,9 +314,15 @@ fn class_has_token(e: &scraper::node::Element, want: &str) -> bool {
 /// common publisher conventions (notably Springer/Apress `ProgramCode`).
 fn is_code_container(e: &scraper::node::Element) -> bool {
     matches!(e.name(), "div" | "section")
-        && ["ProgramCode", "SourceCode", "CodeBlock", "code", "sourceCode"]
-            .iter()
-            .any(|t| class_has_token(e, t))
+        && [
+            "ProgramCode",
+            "SourceCode",
+            "CodeBlock",
+            "code",
+            "sourceCode",
+        ]
+        .iter()
+        .any(|t| class_has_token(e, t))
 }
 
 /// Code lines from a styled code container. When the source wraps each line in a
@@ -297,7 +337,10 @@ fn code_lines(node: NodeRef<Node>) -> Vec<String> {
     if !fixed.is_empty() {
         return fixed;
     }
-    raw_text(node).split('\n').map(|l| l.trim_end().to_string()).collect()
+    raw_text(node)
+        .split('\n')
+        .map(|l| l.trim_end().to_string())
+        .collect()
 }
 
 /// Concatenate all descendant text verbatim (for `<pre>`).
@@ -324,9 +367,10 @@ fn strip_line_numbers(lines: Vec<String>) -> Vec<String> {
         }
         nonempty += 1;
         if let Some(rest) = t.strip_prefix(&(i + 1).to_string())
-            && (rest.is_empty() || rest.starts_with([' ', '\t'])) {
-                numbered += 1;
-            }
+            && (rest.is_empty() || rest.starts_with([' ', '\t']))
+        {
+            numbered += 1;
+        }
     }
     if nonempty < 2 || numbered * 4 < nonempty * 3 {
         return lines;
@@ -357,8 +401,7 @@ fn img_label(e: &scraper::node::Element) -> String {
 /// use Dingbat/Geometric/Enclosed glyphs (same blocks as `▸ • ─ │`), not emoji,
 /// which many terminal fonts render as a tofu box.
 fn aside_icon(node: NodeRef<Node>) -> Option<String> {
-    let is_aside =
-        matches!(node.value(), Node::Element(e) if e.attr("class").is_some_and(|c| c.contains("aside")));
+    let is_aside = matches!(node.value(), Node::Element(e) if e.attr("class").is_some_and(|c| c.contains("aside")));
     if !is_aside {
         return None;
     }
@@ -435,9 +478,10 @@ fn detect_lang(node: NodeRef<Node>) -> Option<String> {
     for n in node.descendants() {
         if let Node::Element(e) = n.value()
             && let Some(class) = e.attr("class")
-                && let Some(lang) = from_class(class) {
-                    return Some(lang);
-                }
+            && let Some(lang) = from_class(class)
+        {
+            return Some(lang);
+        }
     }
     None
 }

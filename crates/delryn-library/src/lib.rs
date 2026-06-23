@@ -59,9 +59,10 @@ pub fn index_fulltext(store: &Store) -> usize {
     let mut n = 0;
     for path in store.all_book_paths() {
         if let Ok(text) = epub::read_fulltext(&path)
-            && store.index_text(&path, &text).is_ok() {
-                n += 1;
-            }
+            && store.index_text(&path, &text).is_ok()
+        {
+            n += 1;
+        }
     }
     n
 }
@@ -75,10 +76,13 @@ fn scan_dir(dir: &Path, store: &Store, force: bool) -> usize {
         let path = entry.path();
         if path.is_dir() {
             indexed += scan_dir(&path, store, force);
-        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub"))
-            && index_book(&path, store, force) {
-                indexed += 1;
-            }
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
+            && index_book(&path, store, force)
+        {
+            indexed += 1;
+        }
     }
     indexed
 }
@@ -155,8 +159,14 @@ mod tests {
         let roots = vec![books.to_string_lossy().into_owned()];
         assert_eq!(prune_missing(&roots, &store), 1);
         let paths = store.all_book_paths();
-        assert!(paths.iter().any(|p| p.ends_with("real.epub")), "present kept");
-        assert!(!paths.iter().any(|p| p.ends_with("gone.epub")), "missing pruned");
+        assert!(
+            paths.iter().any(|p| p.ends_with("real.epub")),
+            "present kept"
+        );
+        assert!(
+            !paths.iter().any(|p| p.ends_with("gone.epub")),
+            "missing pruned"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -174,7 +184,10 @@ mod tests {
         // drive) is kept, not pruned.
         let offline = "/delryn_nonexistent_mount/sub/book.epub";
         upsert(&store, offline);
-        assert_eq!(prune_missing(&["/delryn_nonexistent_mount".into()], &store), 0);
+        assert_eq!(
+            prune_missing(&["/delryn_nonexistent_mount".into()], &store),
+            0
+        );
         assert!(store.all_book_paths().iter().any(|p| p == offline));
 
         let _ = std::fs::remove_dir_all(&tmp);

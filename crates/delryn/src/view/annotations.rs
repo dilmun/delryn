@@ -48,7 +48,9 @@ fn render_overlay(f: &mut Frame, app: &App) {
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
             " Bookmarks & Notes ",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().fg(theme.fg).bg(bg));
     let inner = block.inner(area);
@@ -77,7 +79,10 @@ fn render_overlay(f: &mut Frame, app: &App) {
                 };
                 Line::from(vec![
                     Span::styled(format!("{marker} "), Style::default().fg(theme.marker)),
-                    Span::styled(format!("§{} ", a.section + 1), Style::default().fg(theme.muted)),
+                    Span::styled(
+                        format!("§{} ", a.section + 1),
+                        Style::default().fg(theme.muted),
+                    ),
                     Span::styled(body, Style::default().fg(theme.fg)),
                 ])
                 .into()

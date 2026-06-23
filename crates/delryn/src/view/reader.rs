@@ -12,10 +12,10 @@ use ratatui_image::picker::Picker;
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
 use crate::app::{App, Focus, Reader};
-use crate::media::ImageBuilder;
-use crate::search::Matcher;
 use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
+use crate::media::ImageBuilder;
+use crate::search::Matcher;
 use crate::theme::Theme;
 
 const GAUGE_WIDTH: usize = 16;
@@ -96,7 +96,9 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
         .border_style(Style::default().fg(theme.muted))
         .title(Span::styled(
             "Contents",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ))
         .style(base(theme));
     let inner = block.inner(area);
@@ -129,7 +131,11 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
             let e = &reader.outline[oi];
             let indent = "  ".repeat(e.depth);
             let marker = if reader.outline_is_parent(oi) {
-                if reader.outline_collapsed(oi) { "▸ " } else { "▾ " }
+                if reader.outline_collapsed(oi) {
+                    "▸ "
+                } else {
+                    "▾ "
+                }
             } else {
                 "  "
             };
@@ -173,9 +179,15 @@ fn render_content(
     f.render_widget(header, header_area);
 
     match config.view_mode {
-        ViewMode::Center => {
-            render_column(f, body, reader, config.side_padding, config.image_max_px, theme, images)
-        }
+        ViewMode::Center => render_column(
+            f,
+            body,
+            reader,
+            config.side_padding,
+            config.image_max_px,
+            theme,
+            images,
+        ),
         // Fill: edge-to-edge text (zero side margin).
         ViewMode::Fill => render_column(f, body, reader, 0, config.image_max_px, theme, images),
         ViewMode::TwoPage => render_two_page(f, body, reader, config.image_max_px, theme, images),
@@ -222,7 +234,13 @@ fn render_column(
     // Images align to the text column and scale with it. Sync (which estimates
     // rows + dispatches background builds) must run before wrapping.
     if let Some((picker, builder)) = images {
-        reader.sync_images(builder, picker, text_area.width, text_area.height.max(1), image_max_px);
+        reader.sync_images(
+            builder,
+            picker,
+            text_area.width,
+            text_area.height.max(1),
+            image_max_px,
+        );
     }
 
     reader.ensure_wrapped(measure as usize);
@@ -230,7 +248,10 @@ fn render_column(
     reader.clamp_scroll();
 
     let lines = visible_lines(reader, reader.scroll, reader.viewport_lines, theme);
-    f.render_widget(Paragraph::new(Text::from(lines)).style(base(theme)), text_area);
+    f.render_widget(
+        Paragraph::new(Text::from(lines)).style(base(theme)),
+        text_area,
+    );
 
     // Defer the (blocking) image transmit until scrolling settles, so motion
     // stays smooth; the figure pops in when you stop.
@@ -313,8 +334,14 @@ fn render_two_page(
 
     let left = visible_lines(reader, reader.scroll, h, theme);
     let right = visible_lines(reader, reader.scroll + h, h, theme);
-    f.render_widget(Paragraph::new(Text::from(left)).style(base(theme)), left_area);
-    f.render_widget(Paragraph::new(Text::from(right)).style(base(theme)), right_area);
+    f.render_widget(
+        Paragraph::new(Text::from(left)).style(base(theme)),
+        left_area,
+    );
+    f.render_widget(
+        Paragraph::new(Text::from(right)).style(base(theme)),
+        right_area,
+    );
 
     // Images: left column shows the first `h` rows, right column the next `h`.
     // Deferred while scrolling so the heavy transmit doesn't stutter motion.
@@ -445,7 +472,11 @@ fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config, th
         parts.push(config.view_mode.label().to_string());
     }
     if sf.position {
-        parts.push(format!("{}/{}", reader.section + 1, reader.doc.section_count()));
+        parts.push(format!(
+            "{}/{}",
+            reader.section + 1,
+            reader.doc.section_count()
+        ));
     }
     if sf.percent {
         parts.push(format!("{pct}%"));

@@ -24,8 +24,8 @@ const COVER_ID: &str = "delryn-cover";
 /// place via an atomic temp-then-rename. The image format is sniffed from its
 /// magic bytes; unsupported formats are rejected. Returns the mime type written.
 pub fn embed_cover(epub_path: &Path, image: &[u8]) -> Result<String> {
-    let (mime, ext) = sniff_image(image)
-        .context("cover is not a supported image (jpeg/png/gif/webp)")?;
+    let (mime, ext) =
+        sniff_image(image).context("cover is not a supported image (jpeg/png/gif/webp)")?;
 
     let mut archive = ZipArchive::new(
         File::open(epub_path).with_context(|| format!("opening {}", epub_path.display()))?,
@@ -52,7 +52,13 @@ pub fn embed_cover(epub_path: &Path, image: &[u8]) -> Result<String> {
     // Rewrite into a sibling temp file so a failure never truncates the original.
     let tmp_path = epub_path.with_extension("delryn-tmp");
     let result = write_epub(
-        &mut archive, &tmp_path, &opf_path, &dir, &cover_entry, &new_opf, image,
+        &mut archive,
+        &tmp_path,
+        &opf_path,
+        &dir,
+        &cover_entry,
+        &new_opf,
+        image,
     );
     match result {
         Ok(()) => {
@@ -222,10 +228,19 @@ mod tests {
 
     #[test]
     fn sniffs_known_formats() {
-        assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0]), Some(("image/jpeg", "jpg")));
-        assert_eq!(sniff_image(b"\x89PNG\r\n\x1a\n....").map(|m| m.1), Some("png"));
+        assert_eq!(
+            sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some(("image/jpeg", "jpg"))
+        );
+        assert_eq!(
+            sniff_image(b"\x89PNG\r\n\x1a\n....").map(|m| m.1),
+            Some("png")
+        );
         assert_eq!(sniff_image(b"GIF89a..").map(|m| m.1), Some("gif"));
-        assert_eq!(sniff_image(b"RIFF\0\0\0\0WEBP").map(|m| m.0), Some("image/webp"));
+        assert_eq!(
+            sniff_image(b"RIFF\0\0\0\0WEBP").map(|m| m.0),
+            Some("image/webp")
+        );
         assert!(sniff_image(b"not an image").is_none());
     }
 
@@ -234,7 +249,10 @@ mod tests {
         let xml = r#"<?xml version="1.0"?><container><rootfiles>
             <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
             </rootfiles></container>"#;
-        assert_eq!(opf_path_from_container(xml).as_deref(), Some("OEBPS/content.opf"));
+        assert_eq!(
+            opf_path_from_container(xml).as_deref(),
+            Some("OEBPS/content.opf")
+        );
     }
 
     #[test]
