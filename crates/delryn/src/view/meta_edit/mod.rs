@@ -23,21 +23,12 @@ const LABEL_W: usize = 14;
 mod hits;
 mod online;
 
-/// Base fg/bg style for the popup background.
-fn base(theme: Theme) -> Style {
-    let s = Style::default().fg(theme.fg);
-    match theme.bg {
-        Some(bg) => s.bg(bg),
-        None => s,
-    }
-}
-
 pub fn render(f: &mut Frame, app: &mut App) {
     if app.meta_edit.is_none() {
         return;
     }
     let theme = app.config.theme;
-    let bg = theme.bg.unwrap_or(Color::Black);
+    let bg = theme.paper();
     let area = scaled(f.area());
 
     f.render_widget(Clear, area);
@@ -234,7 +225,9 @@ fn form_field(
         (" ", theme.muted)
     };
     let label_style = if st.invalid {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.danger)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
             .fg(if st.focused {
@@ -251,7 +244,7 @@ fn form_field(
     if st.editing {
         spans.extend(super::field_spans(value, st.cursor, value_w, theme));
     } else {
-        let c = if st.invalid { Color::Red } else { theme.fg };
+        let c = if st.invalid { theme.danger } else { theme.fg };
         let shown = super::truncate(value, value_w);
         if shown.is_empty() {
             spans.push(Span::styled("—", Style::default().fg(theme.muted)));

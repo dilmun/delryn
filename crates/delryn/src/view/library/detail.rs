@@ -106,7 +106,7 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
     f.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: true })
-            .style(base(theme)),
+            .style(theme.text_style()),
         parts[1],
     );
 }

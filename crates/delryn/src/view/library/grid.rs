@@ -15,7 +15,7 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
         } else {
             "No books in this section."
         };
-        f.render_widget(Paragraph::new(msg).style(base(theme)), area);
+        f.render_widget(Paragraph::new(msg).style(theme.text_style()), area);
         return;
     }
 
@@ -112,7 +112,7 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border))
-            .style(base(theme));
+            .style(theme.text_style());
         if !ext.is_empty() {
             frame = frame.title(Line::from(vec![
                 Span::styled("─", Style::default().fg(border)),
@@ -145,9 +145,7 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
         }
 
         let style = if selected {
-            Style::default()
-                .fg(theme.bg.unwrap_or(Color::Black))
-                .bg(theme.accent)
+            Style::default().fg(theme.on_accent()).bg(theme.accent)
         } else {
             Style::default().fg(theme.fg)
         };

@@ -19,7 +19,7 @@ pub fn render(f: &mut Frame, app: &App) {
 
     f.render_widget(Clear, area);
 
-    let bg = theme.bg.unwrap_or(ratatui::style::Color::Black);
+    let bg = theme.paper();
     let scope = match state.scope {
         Mode::Reader => "Reading",
         Mode::Library => "Library",
