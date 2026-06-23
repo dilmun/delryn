@@ -245,10 +245,11 @@ pub fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Cell size (cols, rows) for a `w`×`h` px image: fit its aspect within
-/// `avail_cols`×`max_rows` cells, then cap the displayed longest side to
-/// `max_px` pixels so the data transmitted to the terminal stays bounded.
-/// `fw`×`fh` is the terminal cell size in px. Used by both the up-front row
-/// estimate and the background build, so the two always agree (no gap).
+/// `avail_cols`×`max_rows` cells **without enlarging past native size**, then cap
+/// the displayed longest side to `max_px` pixels so the data transmitted to the
+/// terminal stays bounded. `fw`×`fh` is the terminal cell size in px. Used by
+/// both the up-front row estimate and the background build, so the two always
+/// agree (no gap).
 pub fn target_cells(
     w: u32,
     h: u32,
@@ -262,7 +263,12 @@ pub fn target_cells(
         return (1, 1);
     }
     let (wf, hf, fwf, fhf) = (w as f64, h as f64, fw as f64, fh as f64);
-    let mut scale = (avail_cols as f64 * fwf / wf).min(max_rows as f64 * fhf / hf);
+    // Fit within the box, but never upscale: a small equation rendered at native
+    // size stays proportional to the text, instead of being blown up to fill the
+    // column (which made some equations huge while wider ones looked right).
+    let mut scale = (avail_cols as f64 * fwf / wf)
+        .min(max_rows as f64 * fhf / hf)
+        .min(1.0);
     let longest = (wf * scale).max(hf * scale);
     if max_px > 0 && longest > max_px as f64 {
         scale *= max_px as f64 / longest;
