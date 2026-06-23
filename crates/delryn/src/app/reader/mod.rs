@@ -338,70 +338,78 @@ impl Reader {
             .nth(n)
     }
 
-    /// `(display-line, code-block-index)` for the first line of each code block in
-    /// the current section, in document order.
-    fn code_starts(&self) -> Vec<(usize, usize)> {
+    /// The "rich element" kind a display line belongs to (code/table/math/figure/
+    /// footnote), or `None` for prose.
+    fn element_label(kind: LineKind) -> Option<&'static str> {
+        match kind {
+            LineKind::Code(_) => Some("code"),
+            LineKind::Table => Some("table"),
+            LineKind::Math => Some("math"),
+            LineKind::Image(_) => Some("figure"),
+            LineKind::Footnote => Some("footnote"),
+            _ => None,
+        }
+    }
+
+    /// `(display-line, kind-label)` for the first line of each rich element
+    /// (code/table/math/figure/footnote) in the section, in document order.
+    fn element_starts(&self) -> Vec<(usize, &'static str)> {
         let mut starts = Vec::new();
-        let mut prev: Option<usize> = None;
+        let mut prev: Option<&'static str> = None;
         for (i, l) in self.lines.iter().enumerate() {
-            let cur = match l.kind {
-                LineKind::Code(idx) => Some(idx),
-                _ => None,
-            };
-            if let Some(idx) = cur
-                && prev != Some(idx)
+            let cur = Self::element_label(l.kind);
+            if let Some(lbl) = cur
+                && prev != Some(lbl)
             {
-                starts.push((i, idx));
+                starts.push((i, lbl));
             }
             prev = cur;
         }
         starts
     }
 
-    /// Jump to the next (`forward`) or previous code block in the chapter,
-    /// flashing the position. Returns whether it moved.
-    fn jump_code(&mut self, forward: bool) -> bool {
+    /// Jump to the next (`forward`) or previous rich element (code/table/math/
+    /// figure/footnote) in the chapter, flashing "`kind N/M`". Returns whether
+    /// it moved.
+    fn jump_element(&mut self, forward: bool) -> bool {
         self.ensure_wrapped(self.last_measure.max(1));
-        let starts = self.code_starts();
-        let target = if forward {
-            starts.iter().find(|(line, _)| *line > self.scroll).copied()
+        let starts = self.element_starts();
+        let pos = if forward {
+            starts.iter().position(|(line, _)| *line > self.scroll)
         } else {
-            starts
-                .iter()
-                .rev()
-                .find(|(line, _)| *line < self.scroll)
-                .copied()
+            starts.iter().rposition(|(line, _)| *line < self.scroll)
         };
-        match target {
-            Some((line, idx)) => {
+        match pos {
+            Some(i) => {
+                let (line, label) = starts[i];
                 self.push_history();
                 self.scroll = line;
                 self.scroll_pending = 0;
                 self.clamp_scroll();
-                self.flash = Some(format!("code {}/{}", idx + 1, starts.len()));
+                self.flash = Some(format!("{label} {}/{}", i + 1, starts.len()));
                 true
             }
             None => {
                 self.flash = Some(if starts.is_empty() {
-                    "no code blocks in this chapter".to_string()
+                    "no code/tables/figures in this chapter".to_string()
                 } else if forward {
-                    "no code below — G or J for more".to_string()
+                    "no elements below — G or J for more".to_string()
                 } else {
-                    "no code above".to_string()
+                    "no elements above".to_string()
                 });
                 false
             }
         }
     }
 
-    /// Jump to the next code block in the chapter (key `w`).
-    pub fn next_code(&mut self) -> bool {
-        self.jump_code(true)
+    /// Jump to the next rich element in the chapter (key `w`).
+    pub fn next_element(&mut self) -> bool {
+        self.jump_element(true)
     }
 
-    /// Jump to the previous code block in the chapter (key `b`).
-    pub fn prev_code(&mut self) -> bool {
-        self.jump_code(false)
+    /// Jump to the previous rich element in the chapter (key `b`).
+    pub fn prev_element(&mut self) -> bool {
+        self.jump_element(false)
     }
 
     /// Copy the code block currently in view (the topmost visible one) to the
@@ -745,39 +753,56 @@ mod tests {
         r
     }
 
-    #[test]
-    fn code_starts_finds_each_block() {
-        let r = reader_with(vec![para(), code("a"), para(), code("b"), para()]);
-        let starts = r.code_starts();
-        assert_eq!(starts.len(), 2, "two code blocks");
-        assert_eq!(starts[0].1, 0);
-        assert_eq!(starts[1].1, 1);
-        assert!(starts[0].0 < starts[1].0, "in document order");
+    fn table() -> Block {
+        Block::Table {
+            header: Some(vec![vec![Span::plain("H")]]),
+            rows: vec![vec![vec![Span::plain("r")]]],
+        }
+    }
+    fn math() -> Block {
+        Block::Math {
+            tex: r"\alpha".to_string(),
+        }
     }
 
     #[test]
-    fn next_prev_code_walks_blocks_and_stops_at_edges() {
-        let mut r = reader_with(vec![para(), code("a"), para(), code("b"), para()]);
-        let starts = r.code_starts();
-
-        assert!(r.next_code(), "to first code");
-        assert_eq!(r.scroll, starts[0].0);
-        assert!(r.next_code(), "to second code");
-        assert_eq!(r.scroll, starts[1].0);
-        assert!(!r.next_code(), "no code below");
-        assert_eq!(r.scroll, starts[1].0, "stays put at the last block");
-
-        assert!(r.prev_code(), "back to first code");
-        assert_eq!(r.scroll, starts[0].0);
-        assert!(!r.prev_code(), "no code above the first");
-    }
-
-    #[test]
-    fn code_nav_flashes_when_no_code() {
-        let mut r = reader_with(vec![para(), para()]);
-        assert!(!r.next_code());
+    fn element_starts_finds_each_rich_block() {
+        let r = reader_with(vec![para(), code("a"), para(), table(), para(), math()]);
+        let starts = r.element_starts();
+        let labels: Vec<&str> = starts.iter().map(|(_, l)| *l).collect();
+        assert_eq!(labels, ["code", "table", "math"]);
         assert!(
-            r.flash.as_deref().unwrap_or("").contains("no code blocks"),
+            starts.windows(2).all(|w| w[0].0 < w[1].0),
+            "in document order"
+        );
+    }
+
+    #[test]
+    fn next_prev_element_walks_blocks_and_stops_at_edges() {
+        let mut r = reader_with(vec![para(), code("a"), para(), math(), para()]);
+        let starts = r.element_starts();
+
+        assert!(r.next_element(), "to first element (code)");
+        assert_eq!(r.scroll, starts[0].0);
+        assert!(r.next_element(), "to second element (math)");
+        assert_eq!(r.scroll, starts[1].0);
+        assert!(!r.next_element(), "no element below");
+        assert_eq!(r.scroll, starts[1].0, "stays put at the last element");
+
+        assert!(r.prev_element(), "back to first element");
+        assert_eq!(r.scroll, starts[0].0);
+        assert!(!r.prev_element(), "no element above the first");
+    }
+
+    #[test]
+    fn element_nav_flashes_when_none() {
+        let mut r = reader_with(vec![para(), para()]);
+        assert!(!r.next_element());
+        assert!(
+            r.flash
+                .as_deref()
+                .unwrap_or("")
+                .contains("no code/tables/figures"),
             "flash: {:?}",
             r.flash
         );
