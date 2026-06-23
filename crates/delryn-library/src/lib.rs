@@ -8,6 +8,8 @@ use std::time::UNIX_EPOCH;
 use delryn_format::epub;
 use delryn_store::Store;
 
+pub mod query;
+
 /// Scan the given roots recursively, indexing new/changed EPUBs. Returns the
 /// number of books (re)indexed.
 pub fn scan(paths: &[String], store: &Store) -> usize {
