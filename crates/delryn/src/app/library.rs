@@ -105,6 +105,13 @@ impl App {
         };
         let books = if self.lib_filter.trim().is_empty() {
             match &view {
+                // Cross-format duplicate detection (ISBN, else normalized
+                // title+author) — richer than a title-only SQL match.
+                LibView::Section(LibrarySection::Duplicates) => {
+                    let all = store.all_books();
+                    let dups = crate::library::dedup::duplicate_paths(&all);
+                    all.into_iter().filter(|b| dups.contains(&b.path)).collect()
+                }
                 LibView::Section(s) => store.list_books(*s),
                 LibView::Shelf(name) => store.books_in_shelf(name),
             }

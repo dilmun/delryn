@@ -8,6 +8,7 @@ use std::time::UNIX_EPOCH;
 use delryn_format::epub;
 use delryn_store::Store;
 
+pub mod dedup;
 pub mod query;
 
 /// Scan the given roots recursively, indexing new/changed EPUBs. Returns the
