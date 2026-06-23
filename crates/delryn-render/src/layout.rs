@@ -32,6 +32,8 @@ pub enum LineKind {
     Image(usize),
     /// A footnote-definition line (rendered muted, set apart from the body).
     Footnote,
+    /// A display-math line (centred, rendered to Unicode).
+    Math,
 }
 
 /// One wrapped, styled display line.
@@ -230,8 +232,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                 code_idx += 1;
             }
             Block::Math { tex } => {
-                // Render TeX-ish source to Unicode and centre each line. (Rich
-                // inline detection + navigation land in the math task.)
+                // Render TeX-ish source to Unicode and centre each line.
                 let uni = math::latex_to_unicode(tex);
                 for line in uni.lines() {
                     let text = line.trim_end();
@@ -245,7 +246,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                             },
                             fg: None,
                         }],
-                        kind: LineKind::Body,
+                        kind: LineKind::Math,
                     });
                 }
             }
