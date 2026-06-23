@@ -5,7 +5,7 @@
 use ego_tree::NodeRef;
 use scraper::{Html, Node};
 
-use super::{Block, Inline, Span};
+use super::{Block, CalloutKind, Inline, Span};
 
 /// Parse a section's XHTML into a list of reflowable blocks.
 pub fn parse_blocks(xhtml: &str) -> Vec<Block> {
@@ -38,6 +38,7 @@ fn is_block(node: NodeRef<Node>) -> bool {
             "p" | "div"
                 | "section"
                 | "article"
+                | "aside"
                 | "header"
                 | "footer"
                 | "main"
@@ -115,6 +116,12 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
         return;
     };
     match e.name() {
+        // Admonition / callout containers (class or epub:type note/tip/warning/…),
+        // checked first so a `<blockquote class="note">` becomes a callout rather
+        // than a plain quote.
+        "div" | "section" | "aside" | "blockquote" if callout_kind(e).is_some() => {
+            emit_callout(node, callout_kind(e).unwrap(), ctx, out);
+        }
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
             let level = e.name().as_bytes()[1] - b'0';
             let mut spans = Vec::new();
@@ -182,16 +189,21 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             data: Vec::new(),
             caption: Vec::new(),
         }),
-        // Aside/callout tables (icon cell + content cell): render the content
-        // inline, prefixed with a symbol standing in for the icon.
-        "table" if aside_icon(node).is_some() => {
-            let symbol = aside_icon(node).unwrap_or_default();
+        // Aside/callout tables (icon cell + content cell): the icon image's src
+        // classifies the admonition; the content cell becomes the callout body.
+        "table" if aside_icon_src(node).is_some() => {
+            let kind = aside_kind_from_icon(&aside_icon_src(node).unwrap_or_default());
             let mut content = Vec::new();
             for cell in content_cells(node) {
                 walk_children(cell, ctx, &mut content);
             }
-            prefix_symbol(&mut content, &symbol);
-            out.append(&mut content);
+            if !content.is_empty() {
+                out.push(Block::Callout {
+                    kind,
+                    title: None,
+                    blocks: content,
+                });
+            }
         }
         // Other tables: degrade to one paragraph per cell for now (real column
         // layout is a later refinement).
@@ -398,38 +410,61 @@ fn img_label(e: &scraper::node::Element) -> String {
     }
 }
 
-/// If a table is an aside/callout, the BMP symbol for its icon. We deliberately
-/// use Dingbat/Geometric/Enclosed glyphs (same blocks as `▸ • ─ │`), not emoji,
-/// which many terminal fonts render as a tofu box.
-fn aside_icon(node: NodeRef<Node>) -> Option<String> {
+/// Classify a container as an admonition by its `class` / `epub:type` tokens.
+/// Splits on spaces, hyphens and underscores and matches each segment exactly,
+/// so `admonition-warning` is a Warning while `footnote` is *not* a Note.
+fn callout_kind(e: &scraper::node::Element) -> Option<CalloutKind> {
+    [e.attr("class"), e.attr("epub:type"), e.attr("type")]
+        .into_iter()
+        .flatten()
+        .flat_map(|a| a.split([' ', '-', '_', '\t']))
+        .find_map(CalloutKind::from_word)
+}
+
+/// Build a [`Block::Callout`] from a container's children (quote context reset —
+/// the callout's own border replaces any blockquote styling).
+fn emit_callout(node: NodeRef<Node>, kind: CalloutKind, ctx: &Ctx, out: &mut Vec<Block>) {
+    let inner_ctx = Ctx {
+        indent: ctx.indent,
+        quote: false,
+    };
+    let mut blocks = Vec::new();
+    walk_children(node, &inner_ctx, &mut blocks);
+    if !blocks.is_empty() {
+        out.push(Block::Callout {
+            kind,
+            title: None,
+            blocks,
+        });
+    }
+}
+
+/// The icon image `src` of an aside/callout table, if it is one. The src word
+/// (warning/info/tip/…) classifies the admonition in [`aside_kind_from_icon`].
+fn aside_icon_src(node: NodeRef<Node>) -> Option<String> {
     let is_aside = matches!(node.value(), Node::Element(e) if e.attr("class").is_some_and(|c| c.contains("aside")));
     if !is_aside {
         return None;
     }
     node.descendants().find_map(|n| match n.value() {
-        Node::Element(e) if e.name() == "img" => Some(icon_symbol(e)),
+        Node::Element(e) if e.name() == "img" => Some(e.attr("src").unwrap_or("").to_string()),
         _ => None,
     })
 }
 
-fn icon_symbol(e: &scraper::node::Element) -> String {
-    let src = e.attr("src").unwrap_or("").to_lowercase();
-    if src.contains("pencil") {
-        "✎" // exercise
-    } else if src.contains("warning") || src.contains("caution") {
-        "▲"
-    } else if src.contains("info") {
-        "ⓘ"
-    } else if src.contains("key") {
-        "✦" // important
-    } else if src.contains("question") {
-        "ⓠ"
-    } else if src.contains("tip") {
-        "✦"
+/// Map an aside icon's `src` filename to a callout kind (info/pencil/question and
+/// anything unrecognised fall back to Note).
+fn aside_kind_from_icon(src: &str) -> CalloutKind {
+    let s = src.to_lowercase();
+    if s.contains("warning") || s.contains("caution") || s.contains("danger") {
+        CalloutKind::Warning
+    } else if s.contains("key") || s.contains("important") {
+        CalloutKind::Important
+    } else if s.contains("tip") || s.contains("hint") {
+        CalloutKind::Tip
     } else {
-        "■"
+        CalloutKind::Note
     }
-    .to_string()
 }
 
 /// Table cells that carry text (i.e. the content cell, not the icon-only cell).
@@ -441,18 +476,6 @@ fn content_cells(node: NodeRef<Node>) -> Vec<NodeRef<Node>> {
                 .any(|d| matches!(d.value(), Node::Text(t) if !t.text.trim().is_empty()))
         })
         .collect()
-}
-
-/// Prepend the icon symbol to the first heading/paragraph of a callout.
-fn prefix_symbol(blocks: &mut [Block], symbol: &str) {
-    for b in blocks.iter_mut() {
-        let spans = match b {
-            Block::Heading { spans, .. } | Block::Para { spans, .. } => spans,
-            _ => continue,
-        };
-        spans.insert(0, Span::plain(format!("{symbol}  ")));
-        return;
-    }
 }
 
 fn trim_blank_edges(lines: impl Iterator<Item = String>) -> Vec<String> {
@@ -496,6 +519,75 @@ mod tests {
             Block::Code { lines, .. } => Some(lines),
             _ => None,
         })
+    }
+
+    fn first_callout(blocks: &[Block]) -> Option<(CalloutKind, &Vec<Block>)> {
+        blocks.iter().find_map(|b| match b {
+            Block::Callout { kind, blocks, .. } => Some((*kind, blocks)),
+            _ => None,
+        })
+    }
+
+    fn block_text(blocks: &[Block]) -> String {
+        blocks
+            .iter()
+            .map(|b| match b {
+                Block::Para { spans, .. } | Block::Heading { spans, .. } => {
+                    spans.iter().map(|s| s.text.as_str()).collect::<String>()
+                }
+                _ => String::new(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn div_class_becomes_callout() {
+        let blocks = parse_blocks(
+            r#"<html><body><div class="note"><p>remember this</p></div></body></html>"#,
+        );
+        let (kind, inner) = first_callout(&blocks).expect("a callout block");
+        assert_eq!(kind, CalloutKind::Note);
+        assert!(block_text(inner).contains("remember this"));
+    }
+
+    #[test]
+    fn epub_type_and_compound_class_classify() {
+        let warn = parse_blocks(
+            r#"<html><body><aside class="admonition-warning"><p>danger</p></aside></body></html>"#,
+        );
+        assert_eq!(first_callout(&warn).unwrap().0, CalloutKind::Warning);
+
+        let tip =
+            parse_blocks(r#"<html><body><div epub:type="tip"><p>handy</p></div></body></html>"#);
+        assert_eq!(first_callout(&tip).unwrap().0, CalloutKind::Tip);
+    }
+
+    #[test]
+    fn blockquote_with_callout_class_is_a_callout_not_a_quote() {
+        let blocks = parse_blocks(
+            r#"<html><body><blockquote class="important"><p>key point</p></blockquote></body></html>"#,
+        );
+        assert_eq!(first_callout(&blocks).unwrap().0, CalloutKind::Important);
+        // A plain blockquote stays a quote, not a callout.
+        let plain = parse_blocks(
+            r#"<html><body><blockquote><p>just a quote</p></blockquote></body></html>"#,
+        );
+        assert!(first_callout(&plain).is_none());
+        assert!(
+            plain
+                .iter()
+                .any(|b| matches!(b, Block::Para { quote: true, .. }))
+        );
+    }
+
+    #[test]
+    fn footnote_class_is_not_a_callout() {
+        // "footnote" contains "note" — must NOT be misread as a Note callout.
+        let blocks = parse_blocks(
+            r#"<html><body><div class="footnote"><p>1. a source</p></div></body></html>"#,
+        );
+        assert!(first_callout(&blocks).is_none());
     }
 
     #[test]
