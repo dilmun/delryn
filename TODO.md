@@ -65,7 +65,9 @@ the size guidelines.
       feature below. *(Citation/CrossRef are inline — they arrive with footnotes.)*
 - [ ] Code blocks: syntect highlighting, line numbers, wrap/h-scroll, copy, export,
       next/prev navigation, per-chapter code index.
-- [ ] Callouts/admonitions (NOTE/TIP/WARNING/…), block quotes.
+- [x] Callouts/admonitions (NOTE/TIP/WARNING/…), block quotes. Parser emits
+      `Block::Callout` from class/`epub:type` tokens + aside-icon tables; rendered
+      as a bordered, labelled box. Block quotes unchanged.
 - [ ] Tables: inline / h-scroll / dedicated viewer; next/prev.
 - [ ] Footnotes (jump/return/preview) + cross-references (See Chapter/Figure/…).
 - [ ] Math: Unicode rendering + inline/block detection; next/prev + index.
