@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
-use image::DynamicImage;
+use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::sliced::SlicedProtocol;
@@ -25,6 +25,178 @@ pub fn decode(bytes: &[u8]) -> Option<DynamicImage> {
         .ok()?
         .decode()
         .ok()
+}
+
+// ── Theme-aware ink rendering ────────────────────────────────────────────────
+//
+// Many EPUBs ship math equations (and other line drawings) as PNGs of black ink
+// on a transparent or white background. Painted straight onto a dark reader they
+// render black-on-black — invisible. A good reader instead recolours such
+// graphics to the page's text colour, the way macOS Books does. This module does
+// that systematically: classify a graphic as *line-art* vs *photograph* by its
+// colourfulness + sparsity (no per-publisher rules), then repaint line-art as an
+// ink-coverage matte in the theme's colours. Photographs/colour charts are left
+// untouched (but flattened onto the page colour so transparency never hides
+// them). See `DESIGN.md` §0.
+
+/// Foreground/background colours (sRGB 0–255) for recolouring an ink graphic:
+/// `ink` = the reader's text colour, `paper` = its page/background colour. Part
+/// of [`ImgKey`] so a built image is re-tinted when the theme changes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Ink {
+    pub ink: [u8; 3],
+    pub paper: [u8; 3],
+}
+
+/// The kind of background a graphic sits on, decided once per image.
+enum Background {
+    /// Has meaningful transparency — its alpha channel *is* the ink matte.
+    Alpha,
+    /// Opaque, on a near-uniform background of this (normalised) colour.
+    Solid([f32; 3]),
+}
+
+/// Fraction of transparent pixels above which we treat alpha as the ink matte.
+const TRANSPARENT_FRAC: f32 = 0.02;
+/// Per-pixel alpha below this (0–255) counts as "transparent" for the scan.
+const ALPHA_CUTOFF: u8 = 250;
+
+/// Inspect a graphic's border + alpha to decide its background.
+fn analyze_background(img: &RgbaImage) -> Background {
+    let (w, h) = img.dimensions();
+    let total = (w * h).max(1) as f32;
+    let transparent = img.pixels().filter(|p| p[3] < ALPHA_CUTOFF).count() as f32;
+    if transparent / total > TRANSPARENT_FRAC {
+        return Background::Alpha;
+    }
+    // Opaque: the background is whatever dominates the border (margins).
+    let mut sum = [0f32; 3];
+    let mut n = 0f32;
+    let mut accumulate = |p: &Rgba<u8>| {
+        for i in 0..3 {
+            sum[i] += p[i] as f32;
+        }
+        n += 1.0;
+    };
+    for x in 0..w {
+        accumulate(img.get_pixel(x, 0));
+        accumulate(img.get_pixel(x, h - 1));
+    }
+    for y in 0..h {
+        accumulate(img.get_pixel(0, y));
+        accumulate(img.get_pixel(w - 1, y));
+    }
+    let n = n.max(1.0);
+    Background::Solid([sum[0] / n / 255.0, sum[1] / n / 255.0, sum[2] / n / 255.0])
+}
+
+/// How much a pixel is "ink" (1.0) vs "background" (0.0): alpha for transparent
+/// graphics, else its colour distance from the detected background.
+fn ink_coverage(p: &Rgba<u8>, bg: &Background) -> f32 {
+    match bg {
+        Background::Alpha => p[3] as f32 / 255.0,
+        Background::Solid(b) => {
+            let d = (0..3)
+                .map(|i| (p[i] as f32 / 255.0 - b[i]).abs())
+                .fold(0f32, f32::max);
+            d.clamp(0.0, 1.0)
+        }
+    }
+}
+
+/// A pixel's chroma (max−min channel, normalised) — 0 for greys, high for
+/// saturated colours. Photographs and colour charts have high mean chroma.
+fn chroma(p: &Rgba<u8>) -> f32 {
+    let (r, g, b) = (p[0] as f32, p[1] as f32, p[2] as f32);
+    (r.max(g).max(b) - r.min(g).min(b)) / 255.0
+}
+
+// Line-art thresholds (tuned, documented — not per-publisher rules):
+const INK_FRAC_MIN: f32 = 0.0008; // some ink (not a blank/near-empty image)
+const INK_FRAC_MAX: f32 = 0.50; // sparse strokes, not a filled photo/diagram
+const INK_CHROMA_MAX: f32 = 0.12; // near-colourless ink (greyscale)
+
+/// Whether `img` is line-art (a math equation, a monochrome diagram) rather than
+/// a photograph or a colour chart: a near-uniform background with sparse,
+/// near-colourless ink. Photos/colour graphs fail this and keep their colours.
+pub fn is_line_art(img: &DynamicImage) -> bool {
+    // Decide on a thumbnail — cheap and resolution-independent.
+    let small = img.thumbnail(96, 96).to_rgba8();
+    let bg = analyze_background(&small);
+    let mut ink = 0u32;
+    let mut chroma_sum = 0f32;
+    let mut total = 0u32;
+    for p in small.pixels() {
+        total += 1;
+        if ink_coverage(p, &bg) > 0.5 {
+            ink += 1;
+            chroma_sum += chroma(p);
+        }
+    }
+    if total == 0 || ink == 0 {
+        return false;
+    }
+    let frac = ink as f32 / total as f32;
+    let mean_chroma = chroma_sum / ink as f32;
+    (INK_FRAC_MIN..INK_FRAC_MAX).contains(&frac) && mean_chroma < INK_CHROMA_MAX
+}
+
+fn lerp3(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| (x as f32 * (1.0 - t) + y as f32 * t).round() as u8;
+    [mix(a[0], b[0]), mix(a[1], b[1]), mix(a[2], b[2])]
+}
+
+/// Repaint a line-art graphic in theme colours: each pixel's ink coverage blends
+/// from `paper` (background) to `ink` (stroke), yielding an opaque image that
+/// sits seamlessly on the reader's page — the equation tracks the theme instead
+/// of rendering black-on-black.
+pub fn recolor_ink(img: &DynamicImage, colors: Ink) -> DynamicImage {
+    let src = img.to_rgba8();
+    let bg = analyze_background(&src);
+    let (w, h) = src.dimensions();
+    let mut out = RgbaImage::new(w, h);
+    for (x, y, p) in src.enumerate_pixels() {
+        let c = ink_coverage(p, &bg);
+        let px = lerp3(colors.paper, colors.ink, c);
+        out.put_pixel(x, y, Rgba([px[0], px[1], px[2], 255]));
+    }
+    DynamicImage::ImageRgba8(out)
+}
+
+/// Composite a (possibly transparent) graphic onto an opaque `paper` background,
+/// so transparent photos/figures are never invisible on a dark page. A no-op in
+/// effect for fully opaque images (their pixels pass straight through).
+pub fn flatten_onto(img: &DynamicImage, paper: [u8; 3]) -> DynamicImage {
+    let src = img.to_rgba8();
+    let (w, h) = src.dimensions();
+    let mut out = RgbaImage::new(w, h);
+    for (x, y, p) in src.enumerate_pixels() {
+        let a = p[3] as f32 / 255.0;
+        let over = |bg: u8, fg: u8| (bg as f32 * (1.0 - a) + fg as f32 * a).round() as u8;
+        out.put_pixel(
+            x,
+            y,
+            Rgba([
+                over(paper[0], p[0]),
+                over(paper[1], p[1]),
+                over(paper[2], p[2]),
+                255,
+            ]),
+        );
+    }
+    DynamicImage::ImageRgba8(out)
+}
+
+/// Apply theme-aware rendering to one decoded graphic: recolour line-art to the
+/// theme, else flatten any transparency onto the page colour. The single policy
+/// shared by inline reader images and the full-screen image viewer.
+pub fn render_for_theme(img: &DynamicImage, tint: Ink) -> DynamicImage {
+    if is_line_art(img) {
+        recolor_ink(img, tint)
+    } else {
+        flatten_onto(img, tint.paper)
+    }
 }
 
 /// A decoded cover plus its source pixel dimensions, so the renderer can size a
@@ -94,6 +266,9 @@ pub struct ImgKey {
     pub avail: u16,
     pub max_rows: u16,
     pub max_px: u16,
+    /// Theme ink/paper — part of the key so re-theming rebuilds (re-tints) the
+    /// image rather than serving a stale-coloured one from cache.
+    pub tint: Ink,
 }
 
 /// A built, ready-to-render inline image: a sliced protocol (so partial rows
@@ -125,8 +300,8 @@ fn build_plan(
     avail_cols: u16,
     max_rows: u16,
     max_px: u16,
+    tint: Ink,
 ) -> Option<ImagePlan> {
-    use image::GenericImageView;
     let img = decode(bytes)?;
     let (w, h) = img.dimensions();
     let fs = picker.font_size();
@@ -139,6 +314,9 @@ fn build_plan(
         rows as u32 * fs.height.max(1) as u32,
         image::imageops::FilterType::Triangle,
     );
+    // Recolour line-art (equations/diagrams) to the theme; flatten everything
+    // else onto the page colour so transparency never hides a figure.
+    let img = render_for_theme(&img, tint);
     let size = ratatui::layout::Size::new(cols, rows);
     let proto =
         SlicedProtocol::new_with_resize(picker, img, size, ratatui_image::Resize::Fit(None))
@@ -205,7 +383,7 @@ impl ImageBuilder {
                     }
                     continue;
                 }
-                let plan = build_plan(&picker, &req.bytes, k.avail, k.max_rows, k.max_px);
+                let plan = build_plan(&picker, &req.bytes, k.avail, k.max_rows, k.max_px, k.tint);
                 if res_tx
                     .send(BuiltImage {
                         key: k,
@@ -247,12 +425,13 @@ pub struct ImageView {
 }
 
 impl ImageView {
-    /// Build a viewer from raw image bytes; `None` if nothing decodes.
-    pub fn new(picker: &Picker, images: &[Vec<u8>]) -> Option<ImageView> {
+    /// Build a viewer from raw image bytes; `None` if nothing decodes. `tint`
+    /// applies the same theme-aware ink rendering as the inline reader.
+    pub fn new(picker: &Picker, images: &[Vec<u8>], tint: Ink) -> Option<ImageView> {
         let protocols: Vec<StatefulProtocol> = images
             .iter()
             .filter_map(|b| decode(b))
-            .map(|img| picker.new_resize_protocol(img))
+            .map(|img| picker.new_resize_protocol(render_for_theme(&img, tint)))
             .collect();
         if protocols.is_empty() {
             None
@@ -279,5 +458,90 @@ impl ImageView {
         if !self.protocols.is_empty() {
             self.sel = (self.sel + self.protocols.len() - 1) % self.protocols.len();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgba, RgbaImage};
+
+    const DARK: Ink = Ink {
+        ink: [220, 220, 220],
+        paper: [10, 12, 16],
+    };
+
+    /// An opaque image: white background with a black ink region (an equation).
+    fn opaque_ink(w: u32, h: u32, ink_rect: (u32, u32, u32, u32)) -> DynamicImage {
+        let mut img = RgbaImage::from_pixel(w, h, Rgba([255, 255, 255, 255]));
+        let (x0, y0, x1, y1) = ink_rect;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+            }
+        }
+        DynamicImage::ImageRgba8(img)
+    }
+
+    #[test]
+    fn recolor_maps_ink_to_text_and_background_to_paper() {
+        // White page, small black stroke in the centre.
+        let img = opaque_ink(20, 20, (9, 9, 11, 11));
+        let out = recolor_ink(&img, DARK).to_rgba8();
+        // A corner (background) becomes the paper colour.
+        assert_eq!(out.get_pixel(0, 0).0, [10, 12, 16, 255]);
+        // The black stroke becomes the ink (text) colour.
+        assert_eq!(out.get_pixel(10, 10).0, [220, 220, 220, 255]);
+    }
+
+    #[test]
+    fn recolor_handles_transparent_ink_via_alpha() {
+        // Fully transparent except one opaque black pixel (an alpha matte).
+        let mut img = RgbaImage::from_pixel(8, 8, Rgba([0, 0, 0, 0]));
+        img.put_pixel(4, 4, Rgba([0, 0, 0, 255]));
+        let out = recolor_ink(&DynamicImage::ImageRgba8(img), DARK).to_rgba8();
+        assert_eq!(
+            out.get_pixel(0, 0).0,
+            [10, 12, 16, 255],
+            "transparent → paper"
+        );
+        assert_eq!(out.get_pixel(4, 4).0, [220, 220, 220, 255], "opaque → ink");
+    }
+
+    #[test]
+    fn equation_is_line_art_but_photo_is_not() {
+        // Sparse black-on-white → line-art.
+        assert!(is_line_art(&opaque_ink(40, 40, (18, 18, 22, 22))));
+
+        // A saturated colour gradient (stand-in for a photo) → not line-art.
+        let mut photo = RgbaImage::new(40, 40);
+        for (x, y, p) in photo.enumerate_pixels_mut() {
+            *p = Rgba([(x * 6) as u8, (y * 6) as u8, 200, 255]);
+        }
+        assert!(!is_line_art(&DynamicImage::ImageRgba8(photo)));
+    }
+
+    #[test]
+    fn flatten_composites_transparency_onto_paper() {
+        let mut img = RgbaImage::from_pixel(4, 4, Rgba([0, 0, 0, 0]));
+        img.put_pixel(0, 0, Rgba([255, 255, 255, 255])); // opaque white passes through
+        let out = flatten_onto(&DynamicImage::ImageRgba8(img), [10, 12, 16]).to_rgba8();
+        assert_eq!(
+            out.get_pixel(1, 1).0,
+            [10, 12, 16, 255],
+            "transparent → paper"
+        );
+        assert_eq!(out.get_pixel(0, 0).0, [255, 255, 255, 255], "opaque kept");
+    }
+
+    #[test]
+    fn full_color_image_is_left_alone_by_render_for_theme() {
+        // render_for_theme on a photo flattens (opaque already) but keeps colours.
+        let mut photo = RgbaImage::new(20, 20);
+        for (x, y, p) in photo.enumerate_pixels_mut() {
+            *p = Rgba([(x * 12) as u8, (y * 12) as u8, 180, 255]);
+        }
+        let out = render_for_theme(&DynamicImage::ImageRgba8(photo.clone()), DARK).to_rgba8();
+        assert_eq!(out.get_pixel(10, 10).0, photo.get_pixel(10, 10).0);
     }
 }

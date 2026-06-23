@@ -239,6 +239,7 @@ fn render_column(
             text_area.width,
             text_area.height.max(1),
             image_max_px,
+            super::theme_ink(theme),
         );
     }
 
@@ -324,7 +325,14 @@ fn render_two_page(
     reader.last_measure = col_w as usize;
 
     if let Some((picker, builder)) = images {
-        reader.sync_images(builder, picker, col_w, h.max(1) as u16, image_max_px);
+        reader.sync_images(
+            builder,
+            picker,
+            col_w,
+            h.max(1) as u16,
+            image_max_px,
+            super::theme_ink(theme),
+        );
     }
 
     reader.ensure_wrapped(col_w as usize);
