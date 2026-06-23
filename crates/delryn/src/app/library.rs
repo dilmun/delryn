@@ -204,7 +204,7 @@ impl App {
     }
 
     /// Export the current (filtered) book list to a CSV in the config dir.
-    fn export_library(&mut self) {
+    pub(crate) fn export_library(&mut self) {
         let csv = crate::library::export::to_csv(&self.lib_books);
         let path = crate::paths::config_dir().join("delryn-export.csv");
         self.lib_flash = Some(match std::fs::write(&path, csv) {
@@ -219,7 +219,7 @@ impl App {
     }
 
     /// Open the library-statistics overlay (computed over all books).
-    fn open_stats(&mut self) {
+    pub(crate) fn open_stats(&mut self) {
         if let Some(store) = &self.store {
             let books = store.all_books();
             let secs = store.total_read_seconds();

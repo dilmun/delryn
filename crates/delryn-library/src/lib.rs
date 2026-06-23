@@ -10,6 +10,7 @@ use delryn_store::Store;
 
 pub mod dedup;
 pub mod export;
+pub mod fuzzy;
 pub mod query;
 pub mod stats;
 
