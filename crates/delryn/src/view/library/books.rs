@@ -254,10 +254,33 @@ fn title_cell(b: &BookRow, grouped: bool, theme: Theme) -> Cell<'static> {
             Span::styled(b.title.clone(), Style::default().fg(theme.fg)),
         ]));
     }
-    let mut spans = vec![Span::styled(b.title.clone(), Style::default().fg(theme.fg))];
+    let mut spans = Vec::new();
+    if let Some(badge) = format_badge(&b.path, theme) {
+        spans.push(badge);
+    }
+    spans.push(Span::styled(b.title.clone(), Style::default().fg(theme.fg)));
     let suffix = series_suffix(b);
     if !suffix.is_empty() {
         spans.push(Span::styled(suffix, Style::default().fg(theme.muted)));
     }
     Cell::from(Line::from(spans))
+}
+
+/// A leading format badge (`PDF `, `MOBI `, …) for non-EPUB library entries, so
+/// the not-yet-readable formats are visually distinct. EPUB — the readable
+/// default — gets no badge to keep the common case clean.
+fn format_badge(path: &str, theme: Theme) -> Option<Span<'static>> {
+    let fmt = crate::document::BookFormat::from_path(path);
+    if matches!(
+        fmt,
+        crate::document::BookFormat::Epub | crate::document::BookFormat::Unknown
+    ) {
+        return None;
+    }
+    Some(Span::styled(
+        format!("{} ", fmt.label()),
+        Style::default()
+            .fg(theme.marker)
+            .add_modifier(Modifier::BOLD),
+    ))
 }

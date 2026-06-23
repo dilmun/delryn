@@ -265,6 +265,16 @@ fn str_delete_at(s: &mut String, cursor: usize) {
 /// Build a reader for `path`, applying global config and any saved per-book
 /// overrides (theme, view mode, resume position).
 fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, String)> {
+    // Dispatch by file format. Only EPUB has a `Document` backend today; other
+    // recognized formats report cleanly here instead of failing deep in the EPUB
+    // parser with a cryptic error. See the Phase 5 plan in `TODO.md`.
+    let fmt = crate::document::BookFormat::from_path(path);
+    if !fmt.is_readable() {
+        anyhow::bail!(
+            "{} files aren't readable yet — only EPUB opens for now",
+            fmt.label()
+        );
+    }
     let doc = EpubDocument::open(path)?;
     let mut reader = Reader::new(Box::new(doc))?;
     let mut config = Config::load();
@@ -422,15 +432,20 @@ impl App {
             return;
         };
         self.flush_reading_time();
-        if let Ok((reader, config, book_path)) = build_reader(&path, &self.store) {
-            self.reader = Some(reader);
-            self.config = config;
-            self.book_path = book_path;
-            self.mode = Mode::Reader;
-            self.session_start = Some(Instant::now());
-            if let Some(s) = &self.store {
-                s.mark_opened(&self.book_path);
+        match build_reader(&path, &self.store) {
+            Ok((reader, config, book_path)) => {
+                self.reader = Some(reader);
+                self.config = config;
+                self.book_path = book_path;
+                self.mode = Mode::Reader;
+                self.session_start = Some(Instant::now());
+                if let Some(s) = &self.store {
+                    s.mark_opened(&self.book_path);
+                }
             }
+            // Surface the reason (e.g. an unsupported format) on the status row
+            // rather than silently doing nothing on Enter.
+            Err(e) => self.lib_flash = Some(e.to_string()),
         }
     }
 
