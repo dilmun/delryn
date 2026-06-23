@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Cell, List, ListItem, Paragraph, Row, Table, TableState, Wrap,
@@ -37,7 +37,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
     let area = f.area();
     if theme.bg.is_some() {
-        f.render_widget(Block::default().style(base(theme)), area);
+        f.render_widget(Block::default().style(theme.text_style()), area);
     }
 
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
@@ -81,14 +81,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     status::render_status(f, rows[1], app, theme);
 }
 
-fn base(theme: Theme) -> Style {
-    let s = Style::default().fg(theme.fg);
-    match theme.bg {
-        Some(bg) => s.bg(bg),
-        None => s,
-    }
-}
-
 /// A bordered pane block whose border + title turn accent when the pane is
 /// focused, else muted.
 fn pane_block(title: &str, focused: bool, theme: Theme) -> Block<'static> {
@@ -101,7 +93,7 @@ fn pane_block(title: &str, focused: bool, theme: Theme) -> Block<'static> {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border))
         .title(Span::styled(title.to_string(), title_style))
-        .style(base(theme))
+        .style(theme.text_style())
 }
 
 /// `  Foundation #2` for a series book, else empty. The leading spaces separate

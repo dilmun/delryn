@@ -13,7 +13,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
         } else {
             "No books in this section."
         };
-        f.render_widget(Paragraph::new(msg).style(base(theme)), area);
+        f.render_widget(Paragraph::new(msg).style(theme.text_style()), area);
         return;
     }
 
@@ -70,9 +70,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     // Solid highlight bar when the list is focused; a quieter accent-text
     // selection when the keyboard is elsewhere.
     let highlight = if focused {
-        Style::default()
-            .fg(theme.bg.unwrap_or(Color::Black))
-            .bg(theme.accent)
+        Style::default().fg(theme.on_accent()).bg(theme.accent)
     } else {
         Style::default()
             .fg(theme.accent)
@@ -91,7 +89,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     let mut table = Table::new(rows, widths)
         .column_spacing(1)
         .row_highlight_style(highlight)
-        .style(base(theme));
+        .style(theme.text_style());
     if !compact {
         table = table.header(header_row(app, theme));
     }

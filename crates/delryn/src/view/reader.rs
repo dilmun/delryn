@@ -48,7 +48,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     // Paint the themed background across the whole screen first.
     if theme.bg.is_some() {
-        f.render_widget(Block::default().style(base(theme)), area);
+        f.render_widget(Block::default().style(theme.text_style()), area);
     }
 
     let status_h = u16::from(show_status || reader.searching);
@@ -81,15 +81,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 }
 
-/// Base style: theme foreground, plus background if the theme paints one.
-fn base(theme: Theme) -> Style {
-    let style = Style::default().fg(theme.fg);
-    match theme.bg {
-        Some(bg) => style.bg(bg),
-        None => style,
-    }
-}
-
 fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -100,7 +91,7 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(base(theme));
+        .style(theme.text_style());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -118,7 +109,7 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
     let off = reader.sidebar_offset.min(vis.len().saturating_sub(1));
     let height = inner.height as usize;
     let hilite = Style::default()
-        .fg(theme.bg.unwrap_or(Color::Black))
+        .fg(theme.on_accent())
         .bg(theme.accent)
         .add_modifier(Modifier::BOLD);
 
@@ -153,7 +144,10 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
         })
         .collect();
 
-    f.render_widget(Paragraph::new(Text::from(lines)).style(base(theme)), inner);
+    f.render_widget(
+        Paragraph::new(Text::from(lines)).style(theme.text_style()),
+        inner,
+    );
 }
 
 fn render_content(
@@ -175,7 +169,7 @@ fn render_content(
             .add_modifier(Modifier::BOLD),
     )))
     .alignment(Alignment::Center)
-    .style(base(theme));
+    .style(theme.text_style());
     f.render_widget(header, header_area);
 
     match config.view_mode {
@@ -249,7 +243,7 @@ fn render_column(
 
     let lines = visible_lines(reader, reader.scroll, reader.viewport_lines, theme);
     f.render_widget(
-        Paragraph::new(Text::from(lines)).style(base(theme)),
+        Paragraph::new(Text::from(lines)).style(theme.text_style()),
         text_area,
     );
 
@@ -342,11 +336,11 @@ fn render_two_page(
     let left = visible_lines(reader, reader.scroll, h, theme);
     let right = visible_lines(reader, reader.scroll + h, h, theme);
     f.render_widget(
-        Paragraph::new(Text::from(left)).style(base(theme)),
+        Paragraph::new(Text::from(left)).style(theme.text_style()),
         left_area,
     );
     f.render_widget(
-        Paragraph::new(Text::from(right)).style(base(theme)),
+        Paragraph::new(Text::from(right)).style(theme.text_style()),
         right_area,
     );
 
@@ -396,7 +390,7 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, matcher: Option<&Matcher>) -> Li
 
     let hilite = Style::default()
         .bg(theme.accent)
-        .fg(theme.bg.unwrap_or(Color::Black))
+        .fg(theme.on_accent())
         .add_modifier(Modifier::BOLD);
 
     let mut spans: Vec<Span> = Vec::new();
