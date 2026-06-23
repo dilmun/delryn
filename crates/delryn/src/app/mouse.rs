@@ -1,0 +1,192 @@
+//! Mouse handling: the hit-rects captured during render and the click/scroll
+//! routing that consults them.
+
+use crossterm::event::{MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
+
+use super::{App, EditMode, EditTab, Focus, LOOKUP_FIELDS, LibPane, Mode};
+
+/// Rects from the last render, used for mouse hit-testing.
+#[derive(Default)]
+pub struct LayoutRects {
+    pub sidebar: Option<Rect>,
+    pub content: Option<Rect>,
+}
+
+/// Clickable regions captured during the last render, for mouse hit-testing.
+/// Rebuilt every frame by the view layer; consulted by `on_mouse`.
+#[derive(Default)]
+pub struct MouseHits {
+    /// Library: (book index, screen rect) for each visible row / grid cell.
+    pub books: Vec<(usize, Rect)>,
+    /// Editor tab strip: (tab, rect).
+    pub edit_tabs: Vec<(EditTab, Rect)>,
+    /// Editor Details/File fields: (row index, value-start column, rect).
+    pub edit_fields: Vec<(usize, u16, Rect)>,
+    /// Editor Online/Cover results: (result index, rect).
+    pub edit_results: Vec<(usize, Rect)>,
+    /// Editor search bar rect.
+    pub edit_search: Option<Rect>,
+}
+
+impl MouseHits {
+    pub fn clear(&mut self) {
+        self.books.clear();
+        self.edit_tabs.clear();
+        self.edit_fields.clear();
+        self.edit_results.clear();
+        self.edit_search = None;
+    }
+}
+
+impl App {
+    pub fn on_mouse(&mut self, m: MouseEvent) {
+        if !self.config.mouse_enabled {
+            return;
+        }
+        match m.kind {
+            // The wheel scrolls whichever reader pane the cursor is over: the TOC
+            // (without changing the selection) or the content.
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                if self.mode != Mode::Reader {
+                    return;
+                }
+                let d: isize = if matches!(m.kind, MouseEventKind::ScrollUp) {
+                    -3
+                } else {
+                    3
+                };
+                let over_sidebar = self
+                    .last_layout
+                    .sidebar
+                    .is_some_and(|sb| sb.contains((m.column, m.row).into()));
+                if let Some(r) = self.reader.as_mut() {
+                    if over_sidebar {
+                        r.sidebar_wheel(d);
+                    } else {
+                        r.queue_scroll(d);
+                    }
+                }
+            }
+            MouseEventKind::Down(_) => self.mouse_down(m.column, m.row),
+            _ => {}
+        }
+    }
+
+    /// Route a left-click to the active overlay / mode using the hit rects
+    /// captured during the last render.
+    fn mouse_down(&mut self, col: u16, row: u16) {
+        // A pending confirmation is modal — swallow clicks until it's answered.
+        if self.pending_confirm.is_some() {
+            return;
+        }
+        if self.meta_edit.is_some() {
+            self.editor_click(col, row);
+            return;
+        }
+        // Other overlays are keyboard-driven (no hit rects); swallow the click.
+        if self.settings.is_some()
+            || self.shelf_picker.is_some()
+            || self.bulk_rename.is_some()
+            || self.annot.is_some()
+            || self.image_view.is_some()
+            || self.note_input.is_some()
+        {
+            return;
+        }
+        match self.mode {
+            Mode::Reader => self.mouse_click(col, row),
+            Mode::Library => self.library_click(col, row),
+        }
+    }
+
+    /// Library click: select the clicked book and focus the list pane.
+    fn library_click(&mut self, col: u16, row: u16) {
+        let pt = (col, row).into();
+        if let Some(&(idx, _)) = self.mouse.books.iter().find(|(_, r)| r.contains(pt)) {
+            self.lib_sel = idx.min(self.lib_books.len().saturating_sub(1));
+            self.lib_pane = LibPane::List;
+        }
+    }
+
+    /// Editor click: switch tab, focus + edit a field (caret at the click),
+    /// open the search bar, or pick a result.
+    fn editor_click(&mut self, col: u16, row: u16) {
+        let pt = (col, row).into();
+        if let Some(&(tab, _)) = self.mouse.edit_tabs.iter().find(|(_, r)| r.contains(pt)) {
+            self.meta_edit_goto_tab(tab);
+            return;
+        }
+        if self.mouse.edit_search.is_some_and(|r| r.contains(pt)) {
+            self.online_begin_query(None);
+            return;
+        }
+        if let Some(&(idx, vstart, _)) = self
+            .mouse
+            .edit_fields
+            .iter()
+            .find(|(_, _, r)| r.contains(pt))
+        {
+            if let Some(e) = self.meta_edit.as_mut() {
+                match e.tab {
+                    EditTab::Online => {
+                        // A Lookup seed field: focus + edit it, caret at the click.
+                        e.lookup.focus = idx.min(LOOKUP_FIELDS - 1);
+                        e.lookup.editing = true;
+                        let len = e.lookup.focused_len();
+                        e.lookup.cursor = (col.saturating_sub(vstart) as usize).min(len);
+                    }
+                    _ => {
+                        e.row = idx;
+                        e.mode = EditMode::Edit;
+                        let len = e.cur_field_len();
+                        e.cursor = (col.saturating_sub(vstart) as usize).min(len);
+                    }
+                }
+            }
+            return;
+        }
+        let hit = self
+            .mouse
+            .edit_results
+            .iter()
+            .find(|(_, r)| r.contains(pt))
+            .map(|&(idx, _)| idx);
+        if let (Some(idx), Some(e)) = (hit, self.meta_edit.as_mut()) {
+            if e.tab == EditTab::Online {
+                // Move the combined focus onto the clicked result row.
+                e.lookup.editing = false;
+                e.lookup.focus = LOOKUP_FIELDS + idx;
+                e.online.row = idx;
+            } else {
+                e.search_mut().row = idx;
+            }
+        }
+    }
+
+    /// Click on a sidebar row selects and jumps to that TOC entry.
+    fn mouse_click(&mut self, col: u16, row: u16) {
+        let Some(sb) = self.last_layout.sidebar else {
+            return;
+        };
+        let in_x = col >= sb.x && col < sb.x + sb.width;
+        // Account for the sidebar's top/bottom border.
+        let first = sb.y + 1;
+        let last = sb.y + sb.height.saturating_sub(1);
+        if !in_x || row < first || row >= last {
+            return;
+        }
+        if let Some(r) = self.reader.as_mut() {
+            // Screen row → list index, accounting for the scrolled viewport.
+            let idx = r.sidebar_offset + (row - first) as usize;
+            let vis = r.outline_visible();
+            if let Some(&oi) = vis.get(idx) {
+                r.sidebar_sel = idx;
+                r.focus = Focus::Sidebar;
+                if let Some(item) = r.outline.get(oi).cloned() {
+                    r.jump_to(item.section, item.locator.as_deref());
+                }
+            }
+        }
+    }
+}
