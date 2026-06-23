@@ -10,11 +10,27 @@ pub struct Inline {
     pub link: bool,
 }
 
-/// A run of text with uniform inline styling.
+/// A navigable target attached to an inline run, so the reader can jump from a
+/// reference to where it points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Anchor {
+    /// Hyperlink — an internal `#id` or an external URL.
+    Link(String),
+    /// Footnote reference; points at the [`Block::Footnote`] with this label.
+    Footnote(String),
+    /// Cross-reference to an internal target id/locator ("see Chapter 3").
+    CrossRef(String),
+    /// Citation key into a bibliography.
+    Citation(String),
+}
+
+/// A run of text with uniform inline styling and an optional navigation anchor.
 #[derive(Debug, Clone)]
 pub struct Span {
     pub text: String,
     pub style: Inline,
+    /// A navigable target (link / footnote / cross-ref / citation), if any.
+    pub anchor: Option<Anchor>,
 }
 
 impl Span {
@@ -22,6 +38,16 @@ impl Span {
         Span {
             text: text.into(),
             style: Inline::default(),
+            anchor: None,
+        }
+    }
+
+    /// A styled run carrying a navigation [`Anchor`].
+    pub fn anchored(text: impl Into<String>, style: Inline, anchor: Anchor) -> Span {
+        Span {
+            text: text.into(),
+            style,
+            anchor: Some(anchor),
         }
     }
 }

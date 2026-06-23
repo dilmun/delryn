@@ -430,7 +430,8 @@ fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
         LineKind::Heading(_) => theme.heading,
         LineKind::Quote => theme.quote,
         LineKind::Rule => theme.muted,
-        LineKind::Code(_) => theme.muted, // gutter / unhighlighted
+        LineKind::Code(_) => theme.muted,  // gutter / unhighlighted
+        LineKind::Footnote => theme.muted, // notes set apart from the body
         LineKind::Body | LineKind::Image(_) => theme.fg,
     };
     if let Some((r, g, b)) = run.fg {
