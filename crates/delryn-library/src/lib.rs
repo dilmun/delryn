@@ -1,11 +1,13 @@
-//! Library scanning: walk configured directories for EPUBs and index their
-//! metadata into the store. Cheap-incremental — unchanged files are skipped.
-//! See `DESIGN.md` §5.
+//! Library scanning: walk configured directories for recognized book files and
+//! index their metadata into the store. Cheap-incremental — unchanged files are
+//! skipped. EPUBs are read for full metadata; other recognized formats (PDF,
+//! MOBI, AZW3) are indexed by filename so they appear in the library, pending a
+//! reader backend (see the Phase 5 plan in `TODO.md`). See `DESIGN.md` §5.
 
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use delryn_format::epub;
+use delryn_format::{BookFormat, epub};
 use delryn_store::Store;
 
 pub mod dedup;
@@ -82,9 +84,7 @@ fn scan_dir(dir: &Path, store: &Store, force: bool) -> usize {
         let path = entry.path();
         if path.is_dir() {
             indexed += scan_dir(&path, store, force);
-        } else if path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
+        } else if BookFormat::from_path(&path) != BookFormat::Unknown
             && index_book(&path, store, force)
         {
             indexed += 1;
@@ -111,6 +111,27 @@ fn index_book(path: &Path, store: &Store, force: bool) -> bool {
     if !force && !store.needs_scan(path_str, mtime, size) {
         return false;
     }
+
+    match BookFormat::from_path(path) {
+        BookFormat::Epub => index_epub(path, path_str, size, mtime, store),
+        // Recognized but not yet readable: index by filename so the book is
+        // visible/organizable in the library now and opens with a clear
+        // "coming soon" message. Backfilled with real metadata once a reader
+        // backend lands and a rescan re-reads it.
+        BookFormat::Pdf | BookFormat::Mobi | BookFormat::Azw3 => {
+            let title = title_from_filename(path);
+            let _ = store.upsert_book(
+                path_str, &title, "", None, size, 0, mtime, "", None, "", "", "", "",
+            );
+            store.set_converted(path_str, false);
+            true
+        }
+        BookFormat::Unknown => false,
+    }
+}
+
+/// Read an EPUB's embedded metadata and index it (the rich path).
+fn index_epub(path: &Path, path_str: &str, size: u64, mtime: i64, store: &Store) -> bool {
     let Ok((book, sections)) = epub::read_metadata(path) else {
         return false;
     };
@@ -135,10 +156,27 @@ fn index_book(path: &Path, store: &Store, force: bool) -> bool {
     true
 }
 
+/// A readable title from a file's stem, for formats we can't yet read metadata
+/// from: drop the extension and turn separators into spaces.
+fn title_from_filename(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Untitled");
+    let title = stem.replace(['_', '.'], " ");
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        "Untitled".to_string()
+    } else {
+        title
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::prune_missing;
+    use super::{prune_missing, scan, title_from_filename};
     use delryn_store::Store;
+    use std::path::Path;
 
     fn upsert(store: &Store, path: &str) {
         store
@@ -195,6 +233,43 @@ mod tests {
             0
         );
         assert!(store.all_book_paths().iter().any(|p| p == offline));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn title_from_filename_cleans_separators() {
+        assert_eq!(
+            title_from_filename(Path::new("/x/The_Selfish_Gene.pdf")),
+            "The Selfish Gene"
+        );
+        assert_eq!(
+            title_from_filename(Path::new("dune.part.one.mobi")),
+            "dune part one"
+        );
+        assert_eq!(title_from_filename(Path::new("a.azw3")), "a");
+    }
+
+    #[test]
+    fn scan_indexes_non_epub_by_filename() {
+        let _env = delryn_infra::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_scanfmt_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let books = tmp.join("books");
+        std::fs::create_dir_all(&books).unwrap();
+        // A PDF (recognized, not yet readable) and a non-book file (ignored).
+        std::fs::write(books.join("Great_Paper.pdf"), b"%PDF-1.4").unwrap();
+        std::fs::write(books.join("notes.txt"), b"hello").unwrap();
+
+        let store = Store::open_default().unwrap();
+        let roots = vec![books.to_string_lossy().into_owned()];
+        let n = scan(&roots, &store);
+
+        assert_eq!(n, 1, "only the PDF is indexed; the .txt is ignored");
+        let paths = store.all_book_paths();
+        assert!(paths.iter().any(|p| p.ends_with("Great_Paper.pdf")));
+        assert!(!paths.iter().any(|p| p.ends_with("notes.txt")));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
