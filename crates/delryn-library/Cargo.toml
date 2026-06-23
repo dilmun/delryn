@@ -7,5 +7,6 @@ edition.workspace = true
 # query, dedup, search orchestration, and statistics will join here.
 [dependencies]
 delryn-format = { workspace = true }
+delryn-model = { workspace = true }
 delryn-store = { workspace = true }
 delryn-infra = { workspace = true }

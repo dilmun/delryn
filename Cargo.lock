@@ -948,6 +948,7 @@ version = "0.1.0"
 dependencies = [
  "delryn-format",
  "delryn-infra",
+ "delryn-model",
  "delryn-store",
 ]
 
