@@ -203,6 +203,21 @@ impl App {
         self.refresh_library();
     }
 
+    /// Export the current (filtered) book list to a CSV in the config dir.
+    fn export_library(&mut self) {
+        let csv = crate::library::export::to_csv(&self.lib_books);
+        let path = crate::paths::config_dir().join("delryn-export.csv");
+        self.lib_flash = Some(match std::fs::write(&path, csv) {
+            Ok(()) => format!(
+                "exported {} book{} → {}",
+                self.lib_books.len(),
+                if self.lib_books.len() == 1 { "" } else { "s" },
+                path.display()
+            ),
+            Err(e) => format!("export failed: {e}"),
+        });
+    }
+
     /// Open the library-statistics overlay (computed over all books).
     fn open_stats(&mut self) {
         if let Some(store) = &self.store {
@@ -543,6 +558,8 @@ impl App {
             }
             // `i` opens the library statistics overlay.
             KeyCode::Char('i') => self.open_stats(),
+            // `X` exports the current (filtered) view to CSV.
+            KeyCode::Char('X') => self.export_library(),
             // `e` edits the current book; with a selection, edits each in turn.
             KeyCode::Char('e') => {
                 if self.lib_marked.is_empty() {
