@@ -68,7 +68,9 @@ the size guidelines.
 - [x] Callouts/admonitions (NOTE/TIP/WARNING/…), block quotes. Parser emits
       `Block::Callout` from class/`epub:type` tokens + aside-icon tables; rendered
       as a bordered, labelled box. Block quotes unchanged.
-- [ ] Tables: inline / h-scroll / dedicated viewer; next/prev.
+- [~] Tables: parse `<table>` → `Block::Table` (header from `<thead>`/all-`<th>`),
+      rendered as aligned columns + header rule. *Still to do: h-scroll for wide
+      tables, a dedicated full-screen viewer, next/prev navigation.*
 - [ ] Footnotes (jump/return/preview) + cross-references (See Chapter/Figure/…).
 - [ ] Math: Unicode rendering + inline/block detection; next/prev + index.
 
