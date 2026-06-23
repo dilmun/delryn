@@ -5,8 +5,8 @@
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use crate::document::epub;
-use crate::store::Store;
+use delryn_format::epub;
+use delryn_store::Store;
 
 /// Scan the given roots recursively, indexing new/changed EPUBs. Returns the
 /// number of books (re)indexed.
@@ -130,7 +130,7 @@ fn index_book(path: &Path, store: &Store, force: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::prune_missing;
-    use crate::store::Store;
+    use delryn_store::Store;
 
     fn upsert(store: &Store, path: &str) {
         store
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn prune_removes_missing_keeps_present() {
-        let _env = crate::test_env_guard();
+        let _env = delryn_infra::test_env_guard();
         let tmp = std::env::temp_dir().join(format!("delryn_prune_{}", std::process::id()));
         // SAFETY: serialized by `_env`; scopes the config dir to this process.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn prune_skips_offline_root() {
-        let _env = crate::test_env_guard();
+        let _env = delryn_infra::test_env_guard();
         let tmp = std::env::temp_dir().join(format!("delryn_prune2_{}", std::process::id()));
         // SAFETY: serialized by `_env`; scopes the config dir to this process.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };

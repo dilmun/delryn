@@ -11,6 +11,7 @@ delryn-online = { workspace = true }
 delryn-media = { workspace = true }
 delryn-format = { workspace = true }
 delryn-render = { workspace = true }
+delryn-library = { workspace = true }
 anyhow.workspace = true
 arboard.workspace = true
 crossterm.workspace = true

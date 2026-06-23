@@ -905,6 +905,7 @@ dependencies = [
  "crossterm",
  "delryn-format",
  "delryn-infra",
+ "delryn-library",
  "delryn-media",
  "delryn-model",
  "delryn-online",
@@ -939,6 +940,15 @@ dependencies = [
  "ratatui",
  "serde",
  "toml",
+]
+
+[[package]]
+name = "delryn-library"
+version = "0.1.0"
+dependencies = [
+ "delryn-format",
+ "delryn-infra",
+ "delryn-store",
 ]
 
 [[package]]
