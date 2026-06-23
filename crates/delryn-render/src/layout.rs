@@ -34,6 +34,8 @@ pub enum LineKind {
     Footnote,
     /// A display-math line (centred, rendered to Unicode).
     Math,
+    /// A table row (header, rule, or body), so tables are jump-navigable.
+    Table,
 }
 
 /// One wrapped, styled display line.
@@ -524,7 +526,7 @@ fn table_row(cells: &[TableCell], col_w: &[usize], bold: bool) -> DisplayLine {
             },
             fg: None,
         }],
-        kind: LineKind::Body,
+        kind: LineKind::Table,
     }
 }
 
@@ -580,7 +582,7 @@ fn wrap_table(
                 style: Inline::default(),
                 fg: None,
             }],
-            kind: LineKind::Body,
+            kind: LineKind::Table,
         });
     }
     for r in rows {

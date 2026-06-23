@@ -52,10 +52,10 @@ pub enum Action {
     ToggleChapterLock,
     NextChapter,
     PrevChapter,
-    /// Jump to the next code block in the chapter.
-    NextCode,
-    /// Jump to the previous code block in the chapter.
-    PrevCode,
+    /// Jump to the next rich element (code/table/math/figure).
+    NextElement,
+    /// Jump to the previous rich element.
+    PrevElement,
 }
 
 pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
@@ -120,8 +120,8 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('M') => Action::AddNote,
         KeyCode::Char('\'') => Action::OpenAnnotations,
         KeyCode::Char('y') => Action::CopyCode,
-        KeyCode::Char('w') => Action::NextCode,
-        KeyCode::Char('b') if !ctrl => Action::PrevCode,
+        KeyCode::Char('w') => Action::NextElement,
+        KeyCode::Char('b') if !ctrl => Action::PrevElement,
         KeyCode::Char('\\') => Action::ToggleCodeWrap,
         KeyCode::Char('<') => Action::PanLeft,
         KeyCode::Char('>') => Action::PanRight,
