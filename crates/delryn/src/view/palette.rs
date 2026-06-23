@@ -2,12 +2,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::App;
-use crate::theme::Theme;
 
 pub fn render(f: &mut Frame, app: &App) {
     let Some(p) = app.palette.as_ref() else {
@@ -28,7 +27,7 @@ pub fn render(f: &mut Frame, app: &App) {
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(base(theme));
+        .style(theme.text_style());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -51,7 +50,7 @@ pub fn render(f: &mut Frame, app: &App) {
 
     // Filtered command list; the selection gets an accent highlight.
     let hi = Style::default()
-        .fg(theme.bg.unwrap_or(Color::Black))
+        .fg(theme.on_accent())
         .bg(theme.accent)
         .add_modifier(Modifier::BOLD);
     let lines: Vec<Line> = matches
@@ -68,12 +67,4 @@ pub fn render(f: &mut Frame, app: &App) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines), rows[1]);
-}
-
-fn base(theme: Theme) -> Style {
-    let s = Style::default().fg(theme.fg);
-    match theme.bg {
-        Some(bg) => s.bg(bg),
-        None => s,
-    }
 }

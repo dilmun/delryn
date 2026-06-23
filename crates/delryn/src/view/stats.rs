@@ -8,7 +8,6 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::App;
 use crate::library::stats::fmt_duration;
-use crate::theme::Theme;
 
 pub fn render(f: &mut Frame, app: &App) {
     let Some(s) = app.stats.as_ref() else {
@@ -68,14 +67,6 @@ pub fn render(f: &mut Frame, app: &App) {
             Style::default().fg(theme.muted),
         )))
         .title_alignment(Alignment::Center)
-        .style(base(theme));
+        .style(theme.text_style());
     f.render_widget(Paragraph::new(lines).block(block), area);
-}
-
-fn base(theme: Theme) -> Style {
-    let s = Style::default().fg(theme.fg);
-    match theme.bg {
-        Some(bg) => s.bg(bg),
-        None => s,
-    }
 }

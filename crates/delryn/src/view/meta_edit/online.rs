@@ -37,7 +37,7 @@ fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
 /// selected only when the keyboard focus has moved past the seed fields into the
 /// results (and not while a field is being edited).
 fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
-    let bg = theme.bg.unwrap_or(Color::Black);
+    let bg = theme.paper();
     let mut lines: Vec<Line> = Vec::new();
     let sel = if !ed.lookup.editing && ed.lookup.focus >= LOOKUP_FIELDS {
         Some(ed.lookup.focus - LOOKUP_FIELDS)
@@ -85,7 +85,7 @@ fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
 /// Cover tab: the source-labelled cover-candidate list (Google Books, Open
 /// Library, etc.). The highlighted row drives the live preview.
 fn cover_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
-    let bg = theme.bg.unwrap_or(Color::Black);
+    let bg = theme.paper();
     let s = &ed.cover_search;
     let mut lines: Vec<Line> = Vec::new();
     for (i, h) in ed.cover_hits.iter().enumerate().take(area.height as usize) {
@@ -218,7 +218,7 @@ pub(crate) fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Them
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(border)
-                .style(base(theme)),
+                .style(theme.text_style()),
             frame,
         );
         f.render_stateful_widget(
@@ -233,7 +233,7 @@ pub(crate) fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Them
             .border_type(BorderType::Rounded)
             .border_style(border)
             .title(Span::styled("Preview", Style::default().fg(theme.muted)))
-            .style(base(theme));
+            .style(theme.text_style());
         let pinner = block.inner(pane);
         f.render_widget(block, pane);
         let msg = if app.preview_pending() {
