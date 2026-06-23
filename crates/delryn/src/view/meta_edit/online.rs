@@ -157,11 +157,13 @@ pub(crate) fn render_online(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: The
             form_field(
                 LABELS[i],
                 ed.lookup.field(i),
-                focused,
-                editing,
-                ed.lookup.cursor,
-                false,
-                false,
+                FieldState {
+                    focused,
+                    editing,
+                    cursor: ed.lookup.cursor,
+                    invalid: false,
+                    changed: false,
+                },
                 value_w,
                 theme,
             )

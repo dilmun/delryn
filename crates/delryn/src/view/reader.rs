@@ -207,7 +207,6 @@ fn measure_for(pane_width: u16, side_padding: u16) -> u16 {
 }
 
 /// A single reading column padded by `side_padding` percent on each side.
-#[allow(clippy::too_many_arguments)]
 fn render_column(
     f: &mut Frame,
     body: Rect,
