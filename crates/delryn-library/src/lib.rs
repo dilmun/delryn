@@ -9,6 +9,7 @@ use delryn_format::epub;
 use delryn_store::Store;
 
 pub mod dedup;
+pub mod export;
 pub mod query;
 pub mod stats;
 
