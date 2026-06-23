@@ -316,6 +316,7 @@ fn resolve<'a>(key: &str, b: &'a BookRow) -> Resolved<'a> {
         "path" | "file" => Resolved::Text(&b.path),
         "year" | "yr" | "y" => Resolved::Num(b.year.map(f64::from)),
         "progress" | "pct" | "percent" => Resolved::Num(Some(f64::from(b.pct))),
+        "rating" | "stars" => Resolved::Num(Some(f64::from(b.rating))),
         _ => Resolved::Unknown,
     }
 }
@@ -377,6 +378,7 @@ mod tests {
             isbn: String::new(),
             language: "en".into(),
             converted: false,
+            rating: 4,
         }
     }
 
@@ -438,6 +440,14 @@ mod tests {
     fn quoted_values_keep_spaces() {
         assert!(parse(r#"author:"donald knuth""#).matches(&book()));
         assert!(parse(r#"title:"art of computer""#).matches(&book()));
+    }
+
+    #[test]
+    fn rating_field_compares() {
+        assert!(parse("rating>=4").matches(&book()));
+        assert!(parse("rating:4").matches(&book()));
+        assert!(!parse("rating>4").matches(&book()));
+        assert!(parse("stars<5").matches(&book()));
     }
 
     #[test]

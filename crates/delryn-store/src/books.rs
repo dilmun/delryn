@@ -156,6 +156,14 @@ impl Store {
         }
     }
 
+    /// Set a book's user rating (clamped to 0..=5; 0 means unrated).
+    pub fn set_rating(&self, path: &str, rating: u8) {
+        let _ = self.conn.execute(
+            "UPDATE books SET rating = ?2 WHERE path = ?1",
+            params![path, rating.min(5)],
+        );
+    }
+
     pub fn set_favorite(&self, path: &str, favorite: bool) {
         let _ = self.conn.execute(
             "UPDATE books SET favorite = ?2 WHERE path = ?1",
