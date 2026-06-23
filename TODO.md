@@ -105,22 +105,65 @@ jump-by-type + a reader cursor.
 - [~] Reading status + **rating** (0–5 ★, keys 0–5, detail stars, sort, DSL
       `rating>=4`). *Still: a manual reading-status enum (Paused/Dropped/Reference)
       beyond the progress-derived unread/reading/finished.*
-- [ ] Duplicate detection across formats; merge/keep/remove.
+- [x] Duplicate detection: `delryn-library::dedup` (ISBN, else normalized
+      title + author surname); a "Duplicates" library section lists members.
+      *Still: explicit merge/keep/remove resolution UI.*
 - [ ] Metadata diff view (current vs remote, selective apply).
 
 ## Phase 4 — Knowledge & power tools
 
-- [ ] Highlights (colors), notes (selection/para/chapter/page), tags, backlinks.
-- [ ] Statistics: books/pages/hours/streak/speed/authors/genres.
-- [ ] Export: notes/highlights/bookmarks/metadata/stats → MD/JSON/CSV/HTML.
-- [ ] Command palette (VSCode-style).
+- [~] Highlights/notes/tags/backlinks. *(Have: bookmark + note annotations with
+      an overlay.) Still: highlight colors, selection/page-anchored notes, tags
+      (needs a `tags` table + `BookRow.tags` + DSL `tag:` wire-up), backlinks.*
+- [x] Statistics: `delryn-library::stats` + overlay (`i`) — totals, status mix,
+      ratings, reading hours, top authors.
+- [x] Export: `delryn-library::export` (`X`) — book list → CSV / JSON / Markdown.
+- [x] Command palette (`:`): `delryn-library::fuzzy` matcher + `app/palette.rs` —
+      jump to section/collection, sort, cycle layout, toggle panes, stats, export.
 
 ## Phase 5 — Formats
 
-- [ ] PDF (`delryn-format::pdf`): page model, text extraction, figures.
-- [ ] MOBI / AZW3.
+- [x] **Format recognition foundation:** `delryn-format::BookFormat` classifies
+      files by extension (`is_readable`, `label`). The scanner indexes every
+      recognized format (EPUB → full metadata; PDF/MOBI/AZW3 → by filename, so
+      they show in the library now, badged); opening a non-EPUB reports cleanly
+      on the status row. This is the seam the backends below plug into.
+- [ ] **PDF** (`delryn-format::pdf`, behind a `Document` impl):
+      - Crate: evaluate `lopdf` (pure-Rust, low-level: page tree + content
+        streams + font maps — most control, most work) vs `pdf-extract` (text
+        out of the box, heavier, less layout fidelity). Lean `lopdf` for the
+        page model + a thin text-extraction layer so figures/positions stay
+        reachable later.
+      - Page model: one `Section` per page (or per outline entry if present);
+        map the PDF outline → `TocEntry`/`OutlineItem`.
+      - Text: extract text runs with positions; group into `Block::Para` by
+        line/column gaps; detect headings by font size; preserve reading order
+        across columns (sort by column then y).
+      - Figures: extract `XObject` images → `Block::Image` (reuse the existing
+        image pipeline). Math stays rasterized (no MathML in PDF).
+      - Pagination: PDF is inherently paged — honor "book pages" mode (Phase 2).
+      - **Validation:** needs real PDFs + a graphics-capable terminal; build
+        against a corpus of varied PDFs (single/multi-column, scanned-vs-text,
+        with/without outline) before shipping. Unit-test the text-grouping and
+        outline-mapping logic on small fixtures independent of rendering.
+- [ ] **MOBI / AZW3**: parse the PalmDB/MOBI header + record stream; KF8 (AZW3)
+      is essentially zipped XHTML — reuse the existing `html` → `Block` pipeline
+      once records are decompressed (PalmDOC/HUFF-CDIC). Evaluate `mobi` crate
+      vs a minimal in-house reader. Same validation discipline as PDF.
 
 ## Phase 6 — Graphical math + deep performance
 
-- [ ] Graphical math (typst/shell → image via terminal graphics), cached.
-- [ ] Virtualized scrolling, incremental parsing, aggressive caching at scale.
+- [ ] **Graphical math**: render LaTeX/MathML → image (typst or a TeX→dvipng/
+      MathJax-node shell-out) → terminal graphics (the existing ratatui-image
+      pipeline), cached by content hash on disk. Fall back to the current
+      Unicode rendering when no renderer/graphics protocol is available. *(Needs
+      a graphics-capable terminal to validate; design the cache + fallback seam
+      so the Unicode path is never regressed.)*
+- [ ] **Deep performance** (measure first — profile before optimizing):
+      - Virtualized scrolling: wrap only the visible window + neighbors (some
+        background pre-wrap exists via `SectionLoader`); cap retained wrapped
+        lines for very long chapters.
+      - Incremental parsing: parse sections lazily on demand (mostly so today
+        via `load_section`); add an LRU of parsed `Section`s.
+      - Caching at scale: persist wrapped-layout + cover thumbnails keyed by
+        (path, mtime, width, theme) so re-opens are instant.
