@@ -390,11 +390,11 @@ impl App {
             }
             Action::NextChapter => reader.next_chapter(),
             Action::PrevChapter => reader.prev_chapter(),
-            Action::NextCode => {
-                reader.next_code();
+            Action::NextElement => {
+                reader.next_element();
             }
-            Action::PrevCode => {
-                reader.prev_code();
+            Action::PrevElement => {
+                reader.prev_element();
             }
             Action::None => {}
         }

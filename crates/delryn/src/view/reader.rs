@@ -433,6 +433,7 @@ fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
         LineKind::Code(_) => theme.muted,  // gutter / unhighlighted
         LineKind::Footnote => theme.muted, // notes set apart from the body
         LineKind::Math => theme.heading,   // display equations, accented
+        LineKind::Table => theme.fg,
         LineKind::Body | LineKind::Image(_) => theme.fg,
     };
     if let Some((r, g, b)) = run.fg {
