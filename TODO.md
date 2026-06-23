@@ -63,16 +63,25 @@ the size guidelines.
       renders all (centred Unicode math, aligned tables w/ header rule, bordered
       callouts/footnotes via a width-aware nested wrapper). Producers land per-
       feature below. *(Citation/CrossRef are inline — they arrive with footnotes.)*
-- [ ] Code blocks: syntect highlighting, line numbers, wrap/h-scroll, copy, export,
-      next/prev navigation, per-chapter code index.
+- [x] Code blocks: syntect highlight, line numbers, wrap/h-scroll, copy, and
+      next/prev navigation (`w`/`b`, "code N/M"). *Deferred: code-index overlay +
+      export → unified jump-by-type / export pass.*
 - [x] Callouts/admonitions (NOTE/TIP/WARNING/…), block quotes. Parser emits
       `Block::Callout` from class/`epub:type` tokens + aside-icon tables; rendered
       as a bordered, labelled box. Block quotes unchanged.
-- [~] Tables: parse `<table>` → `Block::Table` (header from `<thead>`/all-`<th>`),
-      rendered as aligned columns + header rule. *Still to do: h-scroll for wide
-      tables, a dedicated full-screen viewer, next/prev navigation.*
-- [ ] Footnotes (jump/return/preview) + cross-references (See Chapter/Figure/…).
-- [ ] Math: Unicode rendering + inline/block detection; next/prev + index.
+- [x] Tables: parse `<table>` → `Block::Table` (header from `<thead>`/all-`<th>`),
+      rendered as aligned columns + header rule. *Deferred: h-scroll/viewer/nav.*
+- [x] Footnotes + cross-references: `Span` carries an `Anchor` (link/footnote/
+      cross-ref/citation); parser stamps `<a>` runs and lifts footnote defs into
+      `Block::Footnote` (muted). *Deferred: ref→def jump/return/preview — needs a
+      reader cursor (Phase 2).*
+- [x] Math: inline (LaTeX-alt img → Unicode span) + display detection
+      (standalone math img/container → `Block::Math`, centred, `LineKind::Math`).
+      *Deferred: next/prev + index → jump-by-type pass.*
+
+Phase 1 content model is complete end-to-end (parse → rich `Block` → render).
+The deferred bits are all *interactive navigation*, gathered into Phase 2's
+jump-by-type + a reader cursor.
 
 ## Phase 2 — Reading experience
 
