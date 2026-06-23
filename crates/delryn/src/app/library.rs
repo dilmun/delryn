@@ -100,27 +100,38 @@ impl App {
             }
             v => v.clone(),
         };
-        let f = self.lib_filter.to_lowercase();
-        let books = if f.is_empty() {
+        let books = if self.lib_filter.trim().is_empty() {
             match &view {
                 LibView::Section(s) => store.list_books(*s),
                 LibView::Shelf(name) => store.books_in_shelf(name),
             }
         } else {
-            // Library-wide search: title/author/series/publisher substring OR
-            // full-text match (ignores the active section, by design).
-            let fts: HashSet<String> = store.fts_paths(&self.lib_filter).into_iter().collect();
-            store
-                .all_books()
-                .into_iter()
-                .filter(|b| {
-                    b.title.to_lowercase().contains(&f)
-                        || b.author.to_lowercase().contains(&f)
-                        || b.series.to_lowercase().contains(&f)
-                        || b.publisher.to_lowercase().contains(&f)
-                        || fts.contains(&b.path)
-                })
-                .collect()
+            // Library-wide search (ignores the active section, by design). A
+            // structured query (`author:knuth year>=1990`, flags, AND/OR/NOT)
+            // is evaluated field-by-field; a plain query keeps the title/author/
+            // series/publisher substring + full-text body match.
+            let q = crate::library::query::parse(&self.lib_filter);
+            if q.is_structured() {
+                store
+                    .all_books()
+                    .into_iter()
+                    .filter(|b| q.matches(b))
+                    .collect()
+            } else {
+                let f = self.lib_filter.to_lowercase();
+                let fts: HashSet<String> = store.fts_paths(&self.lib_filter).into_iter().collect();
+                store
+                    .all_books()
+                    .into_iter()
+                    .filter(|b| {
+                        b.title.to_lowercase().contains(&f)
+                            || b.author.to_lowercase().contains(&f)
+                            || b.series.to_lowercase().contains(&f)
+                            || b.publisher.to_lowercase().contains(&f)
+                            || fts.contains(&b.path)
+                    })
+                    .collect()
+            }
         };
         self.lib_shelves = shelves;
         self.lib_view = view;
