@@ -330,10 +330,29 @@ fn wrap_spans(
     kind: LineKind,
     out: &mut Vec<DisplayLine>,
 ) {
-    let words: Vec<(&str, Inline)> = spans
+    // Flatten the spans to (char, style) preserving adjacency, then split into
+    // words on *actual* whitespace. A word is a run of non-whitespace chars that
+    // may span several source spans — so adjacent spans with no whitespace
+    // between them join with no inserted space. This matters for math, which
+    // some publishers (InDesign MathTools) emit as one span per glyph
+    // (`𝔼`,`(`,`X`,`)`): the old per-span split turned that into `𝔼 ( X )`.
+    let chars = spans
         .iter()
-        .flat_map(|s| s.text.split_whitespace().map(move |w| (w, s.style)))
-        .collect();
+        .flat_map(|s| s.text.chars().map(move |c| (c, s.style)));
+    let mut words: Vec<Vec<(char, Inline)>> = Vec::new();
+    let mut cur: Vec<(char, Inline)> = Vec::new();
+    for (c, st) in chars {
+        if c.is_whitespace() {
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push((c, st));
+        }
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
     if words.is_empty() {
         return;
     }
@@ -360,8 +379,7 @@ fn wrap_spans(
         let mut len = 0usize;
         let mut placed = 0usize;
         while i < words.len() {
-            let (word, style) = words[i];
-            let wlen = word.chars().count();
+            let wlen = words[i].len();
             let need = if placed == 0 { wlen } else { 1 + wlen };
             if placed > 0 && len + need > avail {
                 break;
@@ -374,11 +392,7 @@ fn wrap_spans(
                 });
                 len += 1;
             }
-            runs.push(Run {
-                text: word.to_string(),
-                style,
-                fg: None,
-            });
+            push_word_runs(&words[i], &mut runs);
             len += wlen;
             placed += 1;
             i += 1;
@@ -386,6 +400,36 @@ fn wrap_spans(
 
         out.push(DisplayLine { runs, kind });
         first_line = false;
+    }
+}
+
+/// Append one word's chars as runs, coalescing consecutive chars of equal style
+/// (a word may mix styles, e.g. a bold glyph immediately followed by a normal
+/// one with no whitespace between the source spans).
+fn push_word_runs(word: &[(char, Inline)], runs: &mut Vec<Run>) {
+    let mut buf = String::new();
+    let mut cur_style: Option<Inline> = None;
+    for &(c, st) in word {
+        if cur_style == Some(st) {
+            buf.push(c);
+        } else {
+            if let Some(s) = cur_style {
+                runs.push(Run {
+                    text: std::mem::take(&mut buf),
+                    style: s,
+                    fg: None,
+                });
+            }
+            buf.push(c);
+            cur_style = Some(st);
+        }
+    }
+    if let Some(s) = cur_style {
+        runs.push(Run {
+            text: buf,
+            style: s,
+            fg: None,
+        });
     }
 }
 
@@ -683,6 +727,39 @@ mod tests {
         let joined = lines.join("\n");
         assert!(joined.contains("[image: diagram]"));
         assert!(joined.contains("Figure 1: the pipeline"));
+    }
+
+    #[test]
+    fn adjacent_spans_join_without_inserted_spaces() {
+        // Per-glyph spans (as InDesign MathTools emits for math) with explicit
+        // space spans only where the publisher intended them. The wrapper must
+        // join touching glyphs with no space, and honour the real spaces.
+        let glyphs = ["𝔼", "(", "X", ")", " ", "=", " ", "∑", "x"];
+        let spans: Vec<Span> = glyphs.iter().map(|g| Span::plain(*g)).collect();
+        let block = Block::Para {
+            spans,
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let joined = texts(&wrap_blocks(&[block], &WrapOpts::default(), &[])).join("\n");
+        assert!(joined.contains("𝔼(X) = ∑x"), "{joined:?}");
+        assert!(
+            !joined.contains("𝔼 ( X )"),
+            "no per-glyph spaces: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn whitespace_runs_collapse_to_single_space() {
+        let block = Block::Para {
+            spans: vec![Span::plain("a   b\tc")],
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let joined = texts(&wrap_blocks(&[block], &WrapOpts::default(), &[])).join("\n");
+        assert!(joined.contains("a b c"), "{joined:?}");
     }
 
     #[test]
