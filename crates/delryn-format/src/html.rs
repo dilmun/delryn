@@ -180,6 +180,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             src: e.attr("src").unwrap_or("").to_string(),
             alt: e.attr("alt").unwrap_or("").to_string(),
             data: Vec::new(),
+            caption: Vec::new(),
         }),
         // Aside/callout tables (icon cell + content cell): render the content
         // inline, prefixed with a symbol standing in for the icon.
