@@ -190,11 +190,13 @@ fn render_details(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
             lines.push(form_field(
                 META_FIELDS[i],
                 value,
-                focused,
-                editing,
-                ed.cursor,
-                ed.field_invalid(i),
-                ed.changed(i),
+                FieldState {
+                    focused,
+                    editing,
+                    cursor: ed.cursor,
+                    invalid: ed.field_invalid(i),
+                    changed: ed.changed(i),
+                },
                 value_w,
                 theme,
             ));
@@ -203,56 +205,65 @@ fn render_details(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
-/// A labelled form row: ` ▸ Label        value ↵`. The field is distinguished by
-/// shading the **label** (bold; accent when focused, dim otherwise), not by a
-/// background box. A leading marker flags focus (▸) or an unsaved change (•);
-/// invalid values turn red; a block cursor shows while editing.
-#[allow(clippy::too_many_arguments)]
-fn form_field(
-    label: &str,
-    value: &str,
+/// The interactive state of a form field, for rendering.
+#[derive(Clone, Copy)]
+struct FieldState {
     focused: bool,
     editing: bool,
     cursor: usize,
     invalid: bool,
     changed: bool,
+}
+
+/// A labelled form row: ` ▸ Label        value ↵`. The field is distinguished by
+/// shading the **label** (bold; accent when focused, dim otherwise), not by a
+/// background box. A leading marker flags focus (▸) or an unsaved change (•);
+/// invalid values turn red; a block cursor shows while editing.
+fn form_field(
+    label: &str,
+    value: &str,
+    st: FieldState,
     value_w: usize,
     theme: Theme,
 ) -> Line<'static> {
-    let (marker, marker_col) = if focused {
+    let (marker, marker_col) = if st.focused {
         ("▸", theme.accent)
-    } else if changed {
+    } else if st.changed {
         ("•", theme.marker)
     } else {
         (" ", theme.muted)
     };
-    let label_style = if invalid {
+    let label_style = if st.invalid {
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
-            .fg(if focused { theme.accent } else { theme.muted })
+            .fg(if st.focused {
+                theme.accent
+            } else {
+                theme.muted
+            })
             .add_modifier(Modifier::BOLD)
     };
     let mut spans = vec![
         Span::styled(format!(" {marker} "), Style::default().fg(marker_col)),
         Span::styled(format!("{label:<LABEL_W$}"), label_style),
     ];
-    if editing {
-        spans.extend(super::field_spans(value, cursor, value_w, theme));
+    if st.editing {
+        spans.extend(super::field_spans(value, st.cursor, value_w, theme));
     } else {
-        let c = if invalid { Color::Red } else { theme.fg };
+        let c = if st.invalid { Color::Red } else { theme.fg };
         let shown = super::truncate(value, value_w);
         if shown.is_empty() {
             spans.push(Span::styled("—", Style::default().fg(theme.muted)));
         } else {
-            let st = if focused {
+            let vs = if st.focused {
                 Style::default().fg(c).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(c)
             };
-            spans.push(Span::styled(shown, st));
+            spans.push(Span::styled(shown, vs));
         }
-        if focused {
+        if st.focused {
             spans.push(Span::styled("  ↵", Style::default().fg(theme.accent)));
         }
     }

@@ -21,6 +21,9 @@ impl Store {
         }
     }
 
+    // A book row is 13 descriptive/stat columns; the flat signature mirrors the
+    // `books` table 1:1 and reads clearer than a param struct that would just
+    // shadow the schema (documented scoped suppression).
     #[allow(clippy::too_many_arguments)]
     pub fn upsert_book(
         &self,
@@ -90,6 +93,8 @@ impl Store {
 
     /// Overwrite a book's descriptive metadata with hand-edited values and mark
     /// it `edited` so a future rescan won't revert it (see `upsert_book`).
+    // The editable book columns, 1:1 with the UPDATE below; a param struct would
+    // only mirror the table schema (documented scoped suppression).
     #[allow(clippy::too_many_arguments)]
     pub fn update_book_meta(
         &self,
