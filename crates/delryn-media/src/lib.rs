@@ -111,34 +111,41 @@ fn chroma(p: &Rgba<u8>) -> f32 {
     (r.max(g).max(b) - r.min(g).min(b)) / 255.0
 }
 
-// Line-art thresholds (tuned, documented — not per-publisher rules):
-const INK_FRAC_MIN: f32 = 0.0008; // some ink (not a blank/near-empty image)
-const INK_FRAC_MAX: f32 = 0.50; // sparse strokes, not a filled photo/diagram
-const INK_CHROMA_MAX: f32 = 0.12; // near-colourless ink (greyscale)
+/// Mean chroma below which ink counts as greyscale (0–1).
+const INK_CHROMA_MAX: f32 = 0.12;
 
-/// Whether `img` is line-art (a math equation, a monochrome diagram) rather than
-/// a photograph or a colour chart: a near-uniform background with sparse,
-/// near-colourless ink. Photos/colour graphs fail this and keep their colours.
+/// Whether `img` is a transparent monochrome ink graphic — a math equation or
+/// line drawing whose *transparent* background exposes the dark page, so its
+/// black ink renders invisible. These are recoloured to the theme.
+///
+/// The decisive signal is transparency, not sparsity: equations are shipped on a
+/// transparent background (confirmed across publishers), while figures, photos,
+/// and white-background diagrams are *opaque* — they carry their own background
+/// and stay legible on any theme, so they're left untouched (we never risk
+/// monochroming a real figure). Transparent *colour* graphics aren't line-art
+/// either — we keep their colours.
 pub fn is_line_art(img: &DynamicImage) -> bool {
-    // Decide on a thumbnail — cheap and resolution-independent.
-    let small = img.thumbnail(96, 96).to_rgba8();
-    let bg = analyze_background(&small);
-    let mut ink = 0u32;
-    let mut chroma_sum = 0f32;
-    let mut total = 0u32;
-    for p in small.pixels() {
-        total += 1;
-        if ink_coverage(p, &bg) > 0.5 {
-            ink += 1;
-            chroma_sum += chroma(p);
+    let rgba = img.to_rgba8();
+    transparent_frac(&rgba) > TRANSPARENT_FRAC && opaque_chroma(&rgba) < INK_CHROMA_MAX
+}
+
+/// Fraction of pixels (0–1) that are at least partly transparent.
+fn transparent_frac(img: &RgbaImage) -> f32 {
+    let total = (img.width() * img.height()).max(1) as f32;
+    img.pixels().filter(|p| p[3] < ALPHA_CUTOFF).count() as f32 / total
+}
+
+/// Mean chroma over the opaque (ink) pixels — i.e. what colour the strokes are.
+fn opaque_chroma(img: &RgbaImage) -> f32 {
+    let mut sum = 0f32;
+    let mut n = 0f32;
+    for p in img.pixels() {
+        if p[3] > 128 {
+            sum += chroma(p);
+            n += 1.0;
         }
     }
-    if total == 0 || ink == 0 {
-        return false;
-    }
-    let frac = ink as f32 / total as f32;
-    let mean_chroma = chroma_sum / ink as f32;
-    (INK_FRAC_MIN..INK_FRAC_MAX).contains(&frac) && mean_chroma < INK_CHROMA_MAX
+    if n == 0.0 { 0.0 } else { sum / n }
 }
 
 fn lerp3(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
@@ -188,11 +195,20 @@ pub fn flatten_onto(img: &DynamicImage, paper: [u8; 3]) -> DynamicImage {
     DynamicImage::ImageRgba8(out)
 }
 
-/// Apply theme-aware rendering to one decoded graphic: recolour line-art to the
-/// theme, else flatten any transparency onto the page colour. The single policy
-/// shared by inline reader images and the full-screen image viewer.
+/// Apply theme-aware rendering to one decoded graphic — the single policy shared
+/// by inline reader images and the full-screen viewer:
+/// - opaque graphics (figures, photos, white-bg diagrams) carry their own
+///   background and are legible on any theme → left untouched;
+/// - transparent monochrome ink (equations, line drawings) → recoloured to the
+///   theme so it isn't black-on-black;
+/// - transparent colour graphics → flattened onto the page colour (colours kept,
+///   transparency removed so they're never invisible).
 pub fn render_for_theme(img: &DynamicImage, tint: Ink) -> DynamicImage {
-    if is_line_art(img) {
+    let rgba = img.to_rgba8();
+    if transparent_frac(&rgba) <= TRANSPARENT_FRAC {
+        return img.clone(); // opaque: already legible, keep as-is
+    }
+    if opaque_chroma(&rgba) < INK_CHROMA_MAX {
         recolor_ink(img, tint)
     } else {
         flatten_onto(img, tint.paper)
@@ -471,13 +487,35 @@ mod tests {
         paper: [10, 12, 16],
     };
 
-    /// An opaque image: white background with a black ink region (an equation).
+    /// An opaque image: white background with a black ink region (a figure or a
+    /// white-page diagram — carries its own background).
     fn opaque_ink(w: u32, h: u32, ink_rect: (u32, u32, u32, u32)) -> DynamicImage {
-        let mut img = RgbaImage::from_pixel(w, h, Rgba([255, 255, 255, 255]));
-        let (x0, y0, x1, y1) = ink_rect;
+        fill(
+            w,
+            h,
+            Rgba([255, 255, 255, 255]),
+            ink_rect,
+            Rgba([0, 0, 0, 255]),
+        )
+    }
+
+    /// A transparent image with an opaque black ink region (a math equation).
+    fn transparent_ink(w: u32, h: u32, ink_rect: (u32, u32, u32, u32)) -> DynamicImage {
+        fill(w, h, Rgba([0, 0, 0, 0]), ink_rect, Rgba([0, 0, 0, 255]))
+    }
+
+    fn fill(
+        w: u32,
+        h: u32,
+        bg: Rgba<u8>,
+        rect: (u32, u32, u32, u32),
+        ink: Rgba<u8>,
+    ) -> DynamicImage {
+        let mut img = RgbaImage::from_pixel(w, h, bg);
+        let (x0, y0, x1, y1) = rect;
         for y in y0..y1 {
             for x in x0..x1 {
-                img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+                img.put_pixel(x, y, ink);
             }
         }
         DynamicImage::ImageRgba8(img)
@@ -509,9 +547,17 @@ mod tests {
     }
 
     #[test]
-    fn equation_is_line_art_but_photo_is_not() {
-        // Sparse black-on-white → line-art.
-        assert!(is_line_art(&opaque_ink(40, 40, (18, 18, 22, 22))));
+    fn transparent_equation_is_line_art() {
+        // Transparent background + black ink (a math equation) → line-art.
+        assert!(is_line_art(&transparent_ink(40, 40, (15, 15, 25, 25))));
+    }
+
+    #[test]
+    fn opaque_figure_is_not_line_art() {
+        // An opaque white-background diagram carries its own background → NOT
+        // line-art, so we never monochrome a figure (the real-file false
+        // positive that motivated keying on transparency).
+        assert!(!is_line_art(&opaque_ink(40, 40, (10, 10, 30, 30))));
 
         // A saturated colour gradient (stand-in for a photo) → not line-art.
         let mut photo = RgbaImage::new(40, 40);
@@ -519,6 +565,25 @@ mod tests {
             *p = Rgba([(x * 6) as u8, (y * 6) as u8, 200, 255]);
         }
         assert!(!is_line_art(&DynamicImage::ImageRgba8(photo)));
+    }
+
+    #[test]
+    fn transparent_colour_graphic_keeps_its_colours() {
+        // Transparent but colourful → not line-art → flattened, colours kept.
+        let img = fill(
+            20,
+            20,
+            Rgba([0, 0, 0, 0]),
+            (5, 5, 15, 15),
+            Rgba([220, 30, 30, 255]),
+        );
+        assert!(!is_line_art(&img));
+        let out = render_for_theme(&img, DARK).to_rgba8();
+        assert_eq!(
+            out.get_pixel(10, 10).0,
+            [220, 30, 30, 255],
+            "red stroke kept"
+        );
     }
 
     #[test]
