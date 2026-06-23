@@ -6,9 +6,7 @@
 
 pub mod app;
 pub mod clipboard;
-pub mod highlight;
 pub mod input;
-pub mod layout;
 pub mod library;
 pub mod search;
 pub mod view;
@@ -19,4 +17,5 @@ pub use delryn_format as document;
 pub use delryn_infra::{config, paths, test_env_guard, theme};
 pub use delryn_media as media;
 pub use delryn_online as online;
+pub use delryn_render::{highlight, layout};
 pub use delryn_store as store;

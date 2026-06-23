@@ -36,6 +36,7 @@ delryn-store = { path = "crates/delryn-store" }
 delryn-online = { path = "crates/delryn-online" }
 delryn-media = { path = "crates/delryn-media" }
 delryn-format = { path = "crates/delryn-format" }
+delryn-render = { path = "crates/delryn-render" }
 
 # Vendored ratatui-image patched to transmit Kitty images as PNG (f=100) rather
 # than raw RGBA (f=32), so large figures don't stall the terminal. See
