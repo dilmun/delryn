@@ -113,6 +113,16 @@ impl Reader {
         }
         self.section_images = section_images;
         self.image_rows_estimate = estimates;
+        // Make sure the whole current section fits in the cache (math chapters
+        // are one big section with dozens of equations); otherwise neighbour
+        // prefetch evicts on-screen equations and they render as blank gaps. Grow
+        // only — keep `IMAGE_CACHE_CAP` spare slots for that prefetch.
+        let needed = self.section_images.len().saturating_add(IMAGE_CACHE_CAP);
+        if self.image_cache.cap().get() < needed
+            && let Some(cap) = NonZeroUsize::new(needed)
+        {
+            self.image_cache.resize(cap);
+        }
         for (k, bytes) in requests {
             self.img_requested.insert(k);
             builder.request(k, bytes);
