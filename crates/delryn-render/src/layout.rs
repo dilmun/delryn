@@ -4,7 +4,7 @@
 //! across resizes. The view layer maps these to ratatui styles. See
 //! `DESIGN.md` §2.1, §4.
 
-use crate::document::{Block, Inline, Span};
+use delryn_model::{Block, Inline, Span};
 use crate::highlight::highlight_code;
 
 /// An RGB foreground colour (from syntax highlighting / themes).

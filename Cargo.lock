@@ -908,6 +908,7 @@ dependencies = [
  "delryn-media",
  "delryn-model",
  "delryn-online",
+ "delryn-render",
  "delryn-store",
  "image",
  "lru",
@@ -962,6 +963,14 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "delryn-render"
+version = "0.1.0"
+dependencies = [
+ "delryn-model",
+ "syntect",
 ]
 
 [[package]]
