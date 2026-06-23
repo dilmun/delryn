@@ -52,6 +52,15 @@ impl App {
             self.stats = None;
             return;
         }
+        if self.palette.is_some() {
+            self.palette_key(key);
+            return;
+        }
+        // ':' opens the command palette in the library.
+        if self.mode == Mode::Library && key.code == KeyCode::Char(':') {
+            self.open_palette();
+            return;
+        }
         if self.mode == Mode::Reader && key.code == KeyCode::Char('i') {
             self.open_images();
             return;
