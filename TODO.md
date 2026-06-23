@@ -75,9 +75,11 @@ the size guidelines.
       cross-ref/citation); parser stamps `<a>` runs and lifts footnote defs into
       `Block::Footnote` (muted). *Deferred: ref→def jump/return/preview — needs a
       reader cursor (Phase 2).*
-- [x] Math: inline (LaTeX-alt img → Unicode span) + display detection
-      (standalone math img/container → `Block::Math`, centred, `LineKind::Math`).
-      *Deferred: next/prev + index → jump-by-type pass.*
+- [x] Math: inline + display, from both **LaTeX** and **MathML** (incl. OOXML/
+      DOCX-converted EPUBs that bury MathML in an `<img alt>`). `delryn-format::
+      mathml` transcodes MathML→LaTeX-ish, then reuses `latex_to_unicode`
+      (∑ᵢ₌₁ⁿ i², fractions, roots, scripts). `LineKind::Math` for display.
+      Alt-less inline images show a quiet ▢. *Deferred: next/prev + index.*
 
 Phase 1 content model is complete end-to-end (parse → rich `Block` → render).
 The deferred bits are all *interactive navigation*, gathered into Phase 2's
