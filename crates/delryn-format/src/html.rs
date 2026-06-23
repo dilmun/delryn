@@ -338,7 +338,11 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
                 "img" => {
                     let alt = e.attr("alt").unwrap_or("");
                     let text = if delryn_model::math::is_math(alt) {
-                        delryn_model::math::latex_to_unicode(alt)
+                        delryn_model::math::latex_to_unicode(&math_to_latex(alt))
+                    } else if is_placeholder_alt(alt) {
+                        // Inline image with no useful alt (often math the converter
+                        // rasterised) — a quiet marker beats dumping "[images]".
+                        "▢".to_string()
                     } else {
                         img_label(e)
                     };
@@ -480,9 +484,26 @@ fn display_math(node: NodeRef<Node>) -> Option<String> {
         }
     }
     match tex {
-        Some(t) if !other_text || class_math => Some(t),
+        // Hand back LaTeX-ish so `Block::Math` rendering (latex_to_unicode) is
+        // uniform whether the source was LaTeX or MathML.
+        Some(t) if !other_text || class_math => Some(math_to_latex(&t)),
         _ => None,
     }
+}
+
+/// Math source (LaTeX or MathML) → LaTeX-ish for the Unicode renderer.
+fn math_to_latex(alt: &str) -> String {
+    if delryn_model::math::is_mathml(alt) {
+        crate::mathml::to_latex(alt)
+    } else {
+        alt.to_string()
+    }
+}
+
+/// An image `alt` with no useful content (empty or a generic placeholder).
+fn is_placeholder_alt(alt: &str) -> bool {
+    let a = alt.trim();
+    a.is_empty() || a.eq_ignore_ascii_case("image") || a.eq_ignore_ascii_case("images")
 }
 
 /// Build the navigation [`Anchor`] for an `<a>`: a footnote reference (epub:type
@@ -874,6 +895,39 @@ mod tests {
         );
         let tex = has_math_block(&blocks).expect("a display-math block");
         assert!(tex.contains("int"), "tex: {tex:?}");
+    }
+
+    #[test]
+    fn mathml_in_image_alt_renders_unicode_not_tags() {
+        // EPUBs converted from OOXML ship math as MathML inside an <img alt="…">,
+        // with the inner quotes escaped (scraper decodes them back).
+        let raw = r#"<mml:math xmlns:mml="http://www.w3.org/1998/Math/MathML"><mml:mi>Σ</mml:mi></mml:math>"#;
+        let alt = raw.replace('"', "&quot;");
+        // Standalone → display math block.
+        let block = parse_blocks(&format!(
+            r#"<html><body><p><img alt="{alt}" src="e.png"/></p></body></html>"#
+        ));
+        let tex = has_math_block(&block).expect("display math from MathML alt");
+        assert!(!tex.contains("<m"), "no raw MathML tags: {tex:?}");
+
+        // Inline → unicode within the paragraph, never the raw tags.
+        let inline = parse_blocks(&format!(
+            r#"<html><body><p>use the <img alt="{alt}" src="e.png"/> sum</p></body></html>"#
+        ));
+        let text: String = inline
+            .iter()
+            .filter_map(|b| match b {
+                Block::Para { spans, .. } => {
+                    Some(spans.iter().map(|s| s.text.as_str()).collect::<String>())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains('Σ'), "got: {text:?}");
+        assert!(
+            !text.contains("mml:") && !text.contains("<m"),
+            "no tags: {text:?}"
+        );
     }
 
     #[test]

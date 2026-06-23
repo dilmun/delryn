@@ -6,6 +6,7 @@
 pub mod epub;
 pub mod epub_write;
 pub mod html;
+pub mod mathml;
 
 use anyhow::Result;
 
