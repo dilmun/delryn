@@ -4,7 +4,8 @@
 //! and strips the `$$`/`\displaystyle`/`&` noise. Real math layout is out of
 //! scope for a TUI.
 
-/// Does this image alt look like LaTeX math?
+/// Does this image alt look like math — LaTeX or MathML? (EPUBs ship math as an
+/// `<img>` whose alt holds the source, in either notation.)
 pub fn is_math(alt: &str) -> bool {
     let s = alt.trim();
     s.starts_with("$$")
@@ -13,6 +14,13 @@ pub fn is_math(alt: &str) -> bool {
         || s.starts_with("\\[")
         || s.contains("\\begin{")
         || s.contains("\\displaystyle")
+        || is_mathml(s)
+}
+
+/// Does this string carry MathML markup (often serialised into an image alt by
+/// OOXML/DOCX → EPUB converters)?
+pub fn is_mathml(s: &str) -> bool {
+    s.contains("<math") || s.contains("mml:math") || s.contains("MathML")
 }
 
 pub fn latex_to_unicode(raw: &str) -> String {
