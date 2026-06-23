@@ -70,6 +70,9 @@ pub struct Reader {
     image_rows_estimate: Vec<u16>,
     /// (section, avail-cols, max-rows, max-px) the current estimates are for.
     images_key: (usize, u16, u16, u16),
+    /// Theme ink the current image builds are tinted for; a change re-requests
+    /// them so equations re-colour when the theme cycles.
+    images_tint: media::Ink,
     /// Image builds currently in flight (avoid dispatching duplicates).
     img_requested: HashSet<ImgKey>,
     /// Image builds that failed (so we stop waiting / re-requesting).
@@ -175,6 +178,10 @@ impl Reader {
             section_images: HashMap::new(),
             image_rows_estimate: Vec::new(),
             images_key: (usize::MAX, 0, 0, 0),
+            images_tint: media::Ink {
+                ink: [0, 0, 0],
+                paper: [255, 255, 255],
+            },
             img_requested: HashSet::new(),
             img_failed: HashSet::new(),
             pending_deletes: Vec::new(),
