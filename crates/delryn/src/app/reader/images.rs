@@ -1,0 +1,189 @@
+//! Reader image lifecycle: collect finished background builds, estimate rows
+//! for reflow, dispatch protocol builds, remap on section change, prefetch
+//! neighbours, and report pending builds.
+
+use super::*;
+
+impl Reader {
+    /// Collect any finished background image builds, and — when the section or
+    /// size changes — estimate each image's rows (cheaply, for reflow) and
+    /// dispatch the protocol builds to the worker. Never blocks on encoding.
+    pub fn sync_images(
+        &mut self,
+        builder: &ImageBuilder,
+        picker: &Picker,
+        avail: u16,
+        max_rows: u16,
+        max_px: u16,
+    ) {
+        // Tell the worker where we are so it can drop builds for far-away
+        // sections (avoids a fast-scroll backlog delaying the current one).
+        builder.set_current(self.section);
+
+        // 1. Move finished builds into the cache; evictions free the terminal image.
+        for done in builder.poll() {
+            self.img_requested.remove(&done.key);
+            if done.stale {
+                continue; // skipped as far-away; re-requested if it's needed again
+            }
+            match done.plan {
+                Some(plan) => {
+                    if let Some((_, evicted)) = self.image_cache.push(done.key, plan)
+                        && let Some(id) = evicted.image_id()
+                    {
+                        self.pending_deletes.push(id);
+                    }
+                }
+                None => {
+                    self.img_failed.insert(done.key);
+                }
+            }
+        }
+
+        // 2. On section/size change, remap the current section and dispatch any
+        //    builds it still needs.
+        let key = (self.section, avail, max_rows, max_px);
+        if self.images_key != key {
+            self.images_key = key;
+            self.remap_section_images(builder, picker, avail, max_rows, max_px);
+        }
+
+        // 3. Keep the visible section's images most-recently-used so they aren't
+        //    evicted while on screen.
+        let keys: Vec<ImgKey> = self.section_images.values().copied().collect();
+        for k in keys {
+            self.image_cache.get(&k);
+        }
+
+        // 4. Pre-build neighbouring sections' images once the current one is ready.
+        if !self.images_pending() {
+            self.prefetch_neighbor_images(builder, avail, max_rows, max_px);
+        }
+    }
+
+    /// Map the current section's images to cache keys, estimate their rows for
+    /// reflow, and request builds for any not already cached/in-flight/failed.
+    fn remap_section_images(
+        &mut self,
+        builder: &ImageBuilder,
+        picker: &Picker,
+        avail: u16,
+        max_rows: u16,
+        max_px: u16,
+    ) {
+        let fs = picker.font_size();
+        let (fw, fh) = (fs.width, fs.height);
+        let mut section_images = HashMap::new();
+        let mut estimates = Vec::new();
+        let mut requests: Vec<(ImgKey, Vec<u8>)> = Vec::new();
+        let mut idx = 0;
+        for block in &self.blocks {
+            if let Block::Image { data, .. } = block {
+                let key = ImgKey {
+                    section: self.section,
+                    idx,
+                    avail,
+                    max_rows,
+                    max_px,
+                };
+                let rows = if let Some(plan) = self.image_cache.peek(&key) {
+                    plan.rows
+                } else if data.is_empty() {
+                    0
+                } else {
+                    media::image_dimensions(data)
+                        .map(|(w, h)| media::target_cells(w, h, fw, fh, avail, max_rows, max_px).1)
+                        .unwrap_or(0)
+                };
+                estimates.push(rows);
+                section_images.insert(idx, key);
+                if rows > 0
+                    && !self.image_cache.contains(&key)
+                    && !self.img_requested.contains(&key)
+                    && !self.img_failed.contains(&key)
+                {
+                    requests.push((key, data.clone()));
+                }
+                idx += 1;
+            }
+        }
+        self.section_images = section_images;
+        self.image_rows_estimate = estimates;
+        for (k, bytes) in requests {
+            self.img_requested.insert(k);
+            builder.request(k, bytes);
+        }
+    }
+
+    /// Build the adjacent sections' images ahead of time (from already-prefetched
+    /// blocks) so crossing a chapter boundary is instant. Never forces a load.
+    fn prefetch_neighbor_images(
+        &mut self,
+        builder: &ImageBuilder,
+        avail: u16,
+        max_rows: u16,
+        max_px: u16,
+    ) {
+        let n = self.doc.section_count();
+        let neighbors = [self.section + 1, self.section.wrapping_sub(1)];
+        let mut requests: Vec<(ImgKey, Vec<u8>)> = Vec::new();
+        for &sec in &neighbors {
+            if sec >= n || sec == self.section {
+                continue;
+            }
+            let Some(blocks) = self.cache.get(&sec) else {
+                continue;
+            };
+            let mut idx = 0;
+            for block in blocks {
+                if let Block::Image { data, .. } = block {
+                    if !data.is_empty() {
+                        let key = ImgKey {
+                            section: sec,
+                            idx,
+                            avail,
+                            max_rows,
+                            max_px,
+                        };
+                        if !self.image_cache.contains(&key)
+                            && !self.img_requested.contains(&key)
+                            && !self.img_failed.contains(&key)
+                        {
+                            requests.push((key, data.clone()));
+                        }
+                    }
+                    idx += 1;
+                }
+            }
+        }
+        for (k, bytes) in requests {
+            self.img_requested.insert(k);
+            builder.request(k, bytes);
+        }
+    }
+
+    /// Look up a built plan for the current section's image `idx`.
+    pub fn image_plan(&self, idx: usize) -> Option<&ImagePlan> {
+        let key = self.section_images.get(&idx)?;
+        self.image_cache.peek(key)
+    }
+
+    /// Drain terminal image ids that should be deleted (evicted from cache).
+    pub fn take_image_deletes(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.pending_deletes)
+    }
+
+    /// Are any of the current section's images still building (so the loop
+    /// should keep redrawing until they pop in)?
+    pub fn images_pending(&self) -> bool {
+        self.image_rows_estimate
+            .iter()
+            .enumerate()
+            .any(|(i, &rows)| {
+                rows > 0
+                    && self.section_images.get(&i).is_some_and(|k| {
+                        !self.image_cache.contains(k) && !self.img_failed.contains(k)
+                    })
+            })
+    }
+}

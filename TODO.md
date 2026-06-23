@@ -9,9 +9,10 @@ small green commits (build + `cargo test` + `cargo clippy` clean each step).
 Migrate to a Cargo workspace and clear every dev docs violation. Done: workspace
 extracted into 8 crates; the `app` god-object and every god-file (store, epub,
 library/meta_edit views) split into focused modules; let-chains modernization;
-`cargo clippy` 0-warning workspace-wide. No source file in the core logic now
-exceeds the size guidelines bar the cohesive `editor.rs`/`reader.rs` view-models
-(noted as optional sub-splits).
+`cargo clippy` 0-warning workspace-wide. Every multi-concern file — including the
+editor and reader view-models and the App-core dispatch — is split by concern
+(modularity is first-class, not gated on size). No file in the core logic exceeds
+the size guidelines.
 
 - [x] Workspace skeleton: root `[workspace]`, crate → `crates/delryn`.
 - [x] Extract `delryn-model` (content/metadata/toc/math types + naming helpers).
@@ -33,11 +34,14 @@ exceeds the size guidelines bar the cohesive `editor.rs`/`reader.rs` view-models
       key handlers). Each a green commit. Pattern: child-module `impl App`,
       cross-module methods `pub(crate)`, types re-exported from `mod.rs`; concern
       tests stay in mod.rs (shared `key`/`ctrl`/`code` helpers).
-- [ ] (optional) Split the App-core `apply()` (~175) / `on_key()` (~210) dispatch
-      into `app/dispatch.rs` if the core grows; low priority while ~0.9k non-test.
-- [ ] Sub-split `app/editor.rs` (~1.2k): carve the background online/cover
-      execution (`online_search`/`apply_candidate`/`poll_online`/`tick_preview`/
-      previews) into `app/editor/online.rs`, leaving the editor shell + dispatch.
+- [x] Split the App-core dispatch into `app/dispatch.rs`: `on_key`, the overlay
+      key handlers (images/notes/annotations/search prompt), and `apply` — routing
+      is its own concern (mod.rs non-test core ~900 → ~500).
+- [x] Sub-split `app/editor.rs` (1172 → mod 699 + `editor/lookup.rs` 485): the
+      online metadata/cover lookup + background execution as a child module.
+- [x] Sub-split `app/reader.rs` (1044 → mod 601 + `images`/`sidebar`/`search`):
+      image lifecycle, TOC sidebar, in-book search as child modules; core loop
+      (decode/wrap/scroll/nav/history) stays in mod.rs.
 - [x] Split oversized views: `view/library` (814 → library/ dir: grid/detail/
       sections/books/status) and `view/meta_edit` (619 → meta_edit/ dir: hits +
       online), each leaving render() + shared helpers in mod.rs.
