@@ -1,18 +1,16 @@
-//! Best-effort MathML → LaTeX-ish transcoding, so [`delryn_model::math::
-//! latex_to_unicode`] can finish the job (scripts, fractions, symbols).
-//!
-//! EPUBs — especially those converted from OOXML/DOCX — ship math as MathML
-//! serialised into an `<img alt="…">`. Rather than render it as raw tags, we walk
-//! the presentation elements and emit the same `^`/`_`/`\frac` syntax the LaTeX
-//! path already understands. This won't typeset matrices, but it makes sums,
-//! products, fractions, roots, and scripted symbols readable in a terminal.
+//! Best-effort MathML → Unicode. EPUBs — especially those converted from
+//! OOXML/DOCX — ship math as MathML serialised into an `<img alt="…">`; rather
+//! than show raw tags we walk the presentation elements and render them to
+//! Unicode (super/subscripts, fractions, roots, fenced groups). This won't
+//! typeset matrices, but sums, products, fractions, and scripted symbols come
+//! out readable in a terminal: `∑_{i=1}^{N} i²` → `∑ᵢ₌₁ᴺ i²`.
 
 use ego_tree::NodeRef;
+use delryn_model::math::{subscript_str, superscript_str};
 use scraper::{Html, Node};
 
-/// Transcode a MathML string to LaTeX-ish text (feed the result through
-/// `latex_to_unicode` to get Unicode).
-pub fn to_latex(src: &str) -> String {
+/// Render a MathML string to Unicode.
+pub fn to_unicode(src: &str) -> String {
     let frag = Html::parse_fragment(src);
     let mut out = String::new();
     // `parse_fragment` wraps the content under an <html> root; walking its
@@ -28,21 +26,19 @@ fn local(name: &str) -> &str {
     name.rsplit(':').next().unwrap_or(name)
 }
 
-/// Element children only (skips text/whitespace between MathML elements).
 fn elem_children(node: NodeRef<Node>) -> Vec<NodeRef<Node>> {
     node.children()
         .filter(|c| matches!(c.value(), Node::Element(_)))
         .collect()
 }
 
-/// LaTeX-ish for a single node (used for script/fraction arguments).
+/// Rendered (trimmed) Unicode for one node — used for script/fraction arguments.
 fn part(node: NodeRef<Node>) -> String {
     let mut s = String::new();
     emit(node, &mut s);
-    s.trim().to_string()
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Concatenated text of a token element (`mi`/`mn`/`mo`/`mtext`).
 fn token_text(node: NodeRef<Node>) -> String {
     let mut s = String::new();
     for d in node.descendants() {
@@ -51,6 +47,70 @@ fn token_text(node: NodeRef<Node>) -> String {
         }
     }
     s.trim().to_string()
+}
+
+/// Render `arg` as a subscript — Unicode where every char maps, else a clean
+/// parenthesised fallback (`_(i+1)`), never raw braces.
+fn as_sub(arg: &str) -> String {
+    fallback_script(arg, true)
+}
+fn as_sup(arg: &str) -> String {
+    fallback_script(arg, false)
+}
+fn fallback_script(arg: &str, sub: bool) -> String {
+    let tight: String = arg.split_whitespace().collect();
+    let mapped = if sub {
+        subscript_str(&tight)
+    } else {
+        superscript_str(&tight)
+    };
+    match mapped {
+        Some(u) => u,
+        None if tight.chars().count() <= 1 => format!("{}{tight}", if sub { '_' } else { '^' }),
+        None => format!("{}({tight})", if sub { '_' } else { '^' }),
+    }
+}
+
+/// Operators that read better with surrounding spaces.
+fn is_spaced_op(op: &str) -> bool {
+    matches!(
+        op,
+        "=" | "≠"
+            | "≈"
+            | "≡"
+            | "≅"
+            | "<"
+            | ">"
+            | "≤"
+            | "≥"
+            | "+"
+            | "-"
+            | "−"
+            | "±"
+            | "∓"
+            | "×"
+            | "⋅"
+            | "·"
+            | "∗"
+            | "*"
+            | "/"
+            | "→"
+            | "↦"
+            | "⇒"
+            | "⇔"
+            | "∈"
+            | "∉"
+            | "⊂"
+            | "⊆"
+            | "⊃"
+            | "⊇"
+            | "∪"
+            | "∩"
+            | "∧"
+            | "∨"
+            | "∝"
+            | "∼"
+    )
 }
 
 fn emit(node: NodeRef<Node>, out: &mut String) {
@@ -65,38 +125,49 @@ fn emit(node: NodeRef<Node>, out: &mut String) {
         Node::Element(e) => {
             let kids = elem_children(node);
             match local(e.name()) {
-                "mi" | "mn" | "mo" | "mtext" | "ms" => {
-                    let t = token_text(node);
-                    if !t.is_empty() {
-                        out.push_str(&t);
+                "mi" | "mn" | "mtext" | "ms" => {
+                    out.push_str(&token_text(node));
+                }
+                "mo" => {
+                    let op = token_text(node);
+                    if op.is_empty() {
+                    } else if is_spaced_op(&op) {
                         out.push(' ');
+                        out.push_str(&op);
+                        out.push(' ');
+                    } else if op == "," || op == ";" {
+                        out.push_str(&op);
+                        out.push(' ');
+                    } else {
+                        out.push_str(&op);
                     }
                 }
                 "msubsup" | "munderover" if kids.len() >= 3 => {
                     out.push_str(&part(kids[0]));
-                    out.push_str(&format!("_{{{}}}^{{{}}} ", part(kids[1]), part(kids[2])));
+                    out.push_str(&as_sub(&part(kids[1])));
+                    out.push_str(&as_sup(&part(kids[2])));
+                    out.push(' ');
                 }
                 "msub" | "munder" if kids.len() >= 2 => {
                     out.push_str(&part(kids[0]));
-                    out.push_str(&format!("_{{{}}} ", part(kids[1])));
+                    out.push_str(&as_sub(&part(kids[1])));
+                    out.push(' ');
                 }
                 "msup" | "mover" if kids.len() >= 2 => {
                     out.push_str(&part(kids[0]));
-                    out.push_str(&format!("^{{{}}} ", part(kids[1])));
+                    out.push_str(&as_sup(&part(kids[1])));
+                    out.push(' ');
                 }
                 "mfrac" if kids.len() >= 2 => {
-                    out.push_str(&format!(
-                        "\\frac{{{}}}{{{}}} ",
-                        part(kids[0]),
-                        part(kids[1])
-                    ));
+                    out.push_str(&frac(&part(kids[0]), &part(kids[1])));
+                    out.push(' ');
                 }
                 "msqrt" => {
                     let mut inner = String::new();
                     for c in node.children() {
                         emit(c, &mut inner);
                     }
-                    out.push_str(&format!("√({}) ", inner.trim()));
+                    out.push_str(&format!("√({}) ", part_str(&inner)));
                 }
                 "mroot" if kids.len() >= 2 => {
                     out.push_str(&format!("√({}) ", part(kids[0])));
@@ -104,16 +175,17 @@ fn emit(node: NodeRef<Node>, out: &mut String) {
                 "mfenced" => {
                     let open = e.attr("open").unwrap_or("(");
                     let close = e.attr("close").unwrap_or(")");
-                    let sep = e.attr("separators").unwrap_or(",");
+                    let sep = e
+                        .attr("separators")
+                        .and_then(|s| s.chars().next())
+                        .unwrap_or(',');
                     let inner: Vec<String> = kids.iter().map(|&c| part(c)).collect();
-                    let sep = sep.chars().next().map(String::from).unwrap_or_default();
                     out.push_str(open);
                     out.push_str(&inner.join(&format!("{sep} ")));
                     out.push_str(close);
                     out.push(' ');
                 }
                 "mspace" => out.push(' '),
-                // Use the presentation child; skip the (LaTeX/MathML) annotation.
                 "semantics" => {
                     if let Some(&first) = kids.first() {
                         emit(first, out);
@@ -132,45 +204,68 @@ fn emit(node: NodeRef<Node>, out: &mut String) {
     }
 }
 
+fn part_str(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A fraction: `num/den`, parenthesising a side that is more than one token.
+fn frac(num: &str, den: &str) -> String {
+    let wrap = |s: &str| {
+        if s.chars().count() > 1 && s.chars().any(|c| !c.is_alphanumeric()) {
+            format!("({s})")
+        } else {
+            s.to_string()
+        }
+    };
+    format!("{}/{}", wrap(num), wrap(den))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use delryn_model::math::latex_to_unicode;
 
-    /// End-to-end: MathML → LaTeX-ish → Unicode.
-    fn render(src: &str) -> String {
-        latex_to_unicode(&to_latex(src))
+    #[test]
+    fn sum_with_limits_and_scripts() {
+        // ∑_{i=1}^{N} i²
+        let src = r#"<math xmlns="http://www.w3.org/1998/Math/MathML"><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><msup><mi>i</mi><mn>2</mn></msup></math>"#;
+        let out = to_unicode(src);
+        assert_eq!(out, "∑ᵢ₌₁ᴺ i²", "got: {out:?}");
     }
 
     #[test]
-    fn sum_with_limits_and_script() {
-        // ∑_{i=1}^{n} i²  (munderover on ∑, msup on i).
-        let src = r#"<math xmlns="http://www.w3.org/1998/Math/MathML"><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><msup><mi>i</mi><mn>2</mn></msup></math>"#;
-        let out = render(src);
-        assert!(out.contains('∑'), "operator kept: {out:?}");
-        // The upper limit `n` becomes a superscript.
-        assert!(
-            out.contains('ⁿ') || out.contains('n'),
-            "upper limit: {out:?}"
-        );
-        assert!(out.contains('²'), "superscript 2 → ²: {out:?}");
-        assert!(!out.contains("<m"), "no raw tags: {out:?}");
-    }
-
-    #[test]
-    fn prefixed_mml_namespace_is_handled() {
+    fn prefixed_namespace_and_single_symbol() {
         let src = r#"<mml:math xmlns:mml="http://www.w3.org/1998/Math/MathML"><mml:mi mathvariant="normal">Σ</mml:mi></mml:math>"#;
-        let out = render(src);
-        assert_eq!(out.trim(), "Σ");
+        assert_eq!(to_unicode(src), "Σ");
     }
 
     #[test]
-    fn fraction_renders() {
-        let src = r#"<math><mfrac><mn>1</mn><mn>2</mn></mfrac></math>"#;
-        let out = render(src);
-        // latex_to_unicode turns \frac{1}{2} into a slash form (or ½); either way
-        // the digits survive and there are no tags.
-        assert!(out.contains('1') && out.contains('2'), "{out:?}");
-        assert!(!out.contains("frac{"), "frac consumed: {out:?}");
+    fn subscript_with_relation_and_no_internal_spaces() {
+        // x_{100} and a relational subscript — no spaces leak inside scripts.
+        let src = r#"<math><msub><mi>x</mi><mn>100</mn></msub></math>"#;
+        assert_eq!(to_unicode(src), "x₁₀₀");
+    }
+
+    #[test]
+    fn unmappable_script_uses_paren_fallback_not_braces() {
+        // A fraction superscript can't be Unicode super → readable fallback.
+        let src =
+            r#"<math><msup><mi>e</mi><mrow><mi>x</mi><mo>+</mo><mn>1</mn></mrow></msup></math>"#;
+        let out = to_unicode(src);
+        assert_eq!(out, "eˣ⁺¹", "got: {out:?}");
+        // And one that truly can't map (contains a comma) parenthesises.
+        let src2 =
+            r#"<math><msup><mi>a</mi><mrow><mi>b</mi><mo>,</mo><mi>c</mi></mrow></msup></math>"#;
+        let out2 = to_unicode(src2);
+        assert!(
+            out2.starts_with("a^(") || out2.starts_with("aᵇ"),
+            "got: {out2:?}"
+        );
+        assert!(!out2.contains('{'), "no raw braces: {out2:?}");
+    }
+
+    #[test]
+    fn fraction_and_relation_spacing() {
+        let src = r#"<math><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>=</mo><mn>0.5</mn></math>"#;
+        assert_eq!(to_unicode(src), "1/2 = 0.5");
     }
 }

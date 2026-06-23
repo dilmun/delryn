@@ -5,7 +5,7 @@
 //! `DESIGN.md` §2.1, §4.
 
 use crate::highlight::highlight_code;
-use delryn_model::{Block, Inline, Span, TableCell, math};
+use delryn_model::{Block, Inline, Span, TableCell};
 
 /// An RGB foreground colour (from syntax highlighting / themes).
 pub type Rgb = (u8, u8, u8);
@@ -234,9 +234,9 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                 code_idx += 1;
             }
             Block::Math { tex } => {
-                // Render TeX-ish source to Unicode and centre each line.
-                let uni = math::latex_to_unicode(tex);
-                for line in uni.lines() {
+                // `tex` is already Unicode (the parser resolved LaTeX/MathML);
+                // just centre each line.
+                for line in tex.lines() {
                     let text = line.trim_end();
                     let pad = width.saturating_sub(text.chars().count()) / 2;
                     out.push(DisplayLine {
@@ -655,14 +655,19 @@ mod tests {
     }
 
     #[test]
-    fn math_renders_unicode_centered() {
+    fn math_centres_prerendered_unicode() {
+        // The parser resolves LaTeX/MathML to Unicode; layout only centres it.
         let block = Block::Math {
-            tex: r"\alpha + \beta".to_string(),
+            tex: "α + β".to_string(),
         };
         let lines = texts(&wrap_blocks(&[block], &WrapOpts::default(), &[]));
         let joined = lines.join("\n");
-        // latex_to_unicode maps \alpha/\beta to their glyphs.
-        assert!(joined.contains('α') && joined.contains('β'), "{joined:?}");
+        assert!(joined.contains("α + β"), "{joined:?}");
+        // Centred: leading padding before the equation.
+        assert!(
+            lines.iter().any(|l| l.starts_with(' ')),
+            "centred: {lines:?}"
+        );
     }
 
     #[test]

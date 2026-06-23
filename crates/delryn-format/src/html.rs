@@ -338,7 +338,7 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
                 "img" => {
                     let alt = e.attr("alt").unwrap_or("");
                     let text = if delryn_model::math::is_math(alt) {
-                        delryn_model::math::latex_to_unicode(&math_to_latex(alt))
+                        math_unicode(alt)
                     } else if is_placeholder_alt(alt) {
                         // Inline image with no useful alt (often math the converter
                         // rasterised) — a quiet marker beats dumping "[images]".
@@ -484,19 +484,19 @@ fn display_math(node: NodeRef<Node>) -> Option<String> {
         }
     }
     match tex {
-        // Hand back LaTeX-ish so `Block::Math` rendering (latex_to_unicode) is
-        // uniform whether the source was LaTeX or MathML.
-        Some(t) if !other_text || class_math => Some(math_to_latex(&t)),
+        // Hand back final Unicode (LaTeX and MathML both resolve here), so the
+        // layout just centres it — no second conversion pass.
+        Some(t) if !other_text || class_math => Some(math_unicode(&t)),
         _ => None,
     }
 }
 
-/// Math source (LaTeX or MathML) → LaTeX-ish for the Unicode renderer.
-fn math_to_latex(alt: &str) -> String {
+/// Math source (LaTeX or MathML) → final Unicode for rendering.
+fn math_unicode(alt: &str) -> String {
     if delryn_model::math::is_mathml(alt) {
-        crate::mathml::to_latex(alt)
+        crate::mathml::to_unicode(alt)
     } else {
-        alt.to_string()
+        delryn_model::math::latex_to_unicode(alt)
     }
 }
 
@@ -894,7 +894,9 @@ mod tests {
             r#"<html><body><p><img alt="\[\int_0^1 x\,dx\]" src="eq.png"/></p></body></html>"#,
         );
         let tex = has_math_block(&blocks).expect("a display-math block");
-        assert!(tex.contains("int"), "tex: {tex:?}");
+        // tex is already Unicode: \int → ∫, subscripts/superscripts applied.
+        assert!(tex.contains('∫'), "tex: {tex:?}");
+        assert!(!tex.contains("\\int"), "no raw LaTeX: {tex:?}");
     }
 
     #[test]

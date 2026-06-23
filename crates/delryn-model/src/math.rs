@@ -286,13 +286,7 @@ fn scripts(input: &str) -> String {
             } else {
                 (ch[i + 1].to_string(), 2)
             };
-            match convert_script(&arg, c == '_') {
-                Some(u) => out.push_str(&u),
-                None => {
-                    out.push(c);
-                    out.push_str(&arg);
-                }
-            }
+            out.push_str(&render_script(&arg, c == '_'));
             i += adv;
         } else {
             out.push(c);
@@ -302,24 +296,50 @@ fn scripts(input: &str) -> String {
     out
 }
 
-fn convert_script(arg: &str, sub: bool) -> Option<String> {
-    let mut out = String::new();
-    for c in arg.chars() {
-        if c.is_whitespace() {
-            out.push(c);
-            continue;
+/// Render a script argument: Unicode super/subscript when every (non-space)
+/// character maps, else a readable parenthesised fallback (`^(n+1)`), never raw
+/// `^{…}` braces.
+fn render_script(arg: &str, sub: bool) -> String {
+    let tight: String = arg.split_whitespace().collect();
+    let mapped = if sub {
+        subscript_str(&tight)
+    } else {
+        superscript_str(&tight)
+    };
+    match mapped {
+        Some(u) => u,
+        None if tight.chars().count() <= 1 => {
+            format!("{}{tight}", if sub { '_' } else { '^' })
         }
-        let mapped = if sub { subscript(c) } else { superscript(c) };
-        out.push(mapped?);
+        None => format!("{}({tight})", if sub { '_' } else { '^' }),
     }
-    Some(out)
+}
+
+/// Map a string to Unicode subscripts, or `None` if any character has no
+/// subscript form. Whitespace is dropped.
+pub fn subscript_str(s: &str) -> Option<String> {
+    let t: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if t.is_empty() {
+        return None;
+    }
+    t.chars().map(subscript).collect()
+}
+
+/// Map a string to Unicode superscripts, or `None` if any character has no
+/// superscript form. Whitespace is dropped.
+pub fn superscript_str(s: &str) -> Option<String> {
+    let t: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if t.is_empty() {
+        return None;
+    }
+    t.chars().map(superscript).collect()
 }
 
 fn subscript(c: char) -> Option<char> {
     Some(match c {
         '0'..='9' => ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉'][c as usize - '0' as usize],
         '+' => '₊',
-        '-' => '₋',
+        '-' | '−' => '₋',
         '=' => '₌',
         '(' => '₍',
         ')' => '₎',
@@ -357,13 +377,54 @@ fn superscript(c: char) -> Option<char> {
         '8' => '⁸',
         '9' => '⁹',
         '+' => '⁺',
-        '-' => '⁻',
+        '-' | '−' => '⁻',
         '=' => '⁼',
         '(' => '⁽',
         ')' => '⁾',
-        'n' => 'ⁿ',
+        'a' => 'ᵃ',
+        'b' => 'ᵇ',
+        'c' => 'ᶜ',
+        'd' => 'ᵈ',
+        'e' => 'ᵉ',
+        'f' => 'ᶠ',
+        'g' => 'ᵍ',
+        'h' => 'ʰ',
         'i' => 'ⁱ',
+        'j' => 'ʲ',
+        'k' => 'ᵏ',
+        'l' => 'ˡ',
+        'm' => 'ᵐ',
+        'n' => 'ⁿ',
+        'o' => 'ᵒ',
+        'p' => 'ᵖ',
+        'r' => 'ʳ',
+        's' => 'ˢ',
+        't' => 'ᵗ',
+        'u' => 'ᵘ',
+        'v' => 'ᵛ',
+        'w' => 'ʷ',
+        'x' => 'ˣ',
+        'y' => 'ʸ',
+        'z' => 'ᶻ',
+        'A' => 'ᴬ',
+        'B' => 'ᴮ',
+        'D' => 'ᴰ',
+        'E' => 'ᴱ',
+        'G' => 'ᴳ',
+        'H' => 'ᴴ',
+        'I' => 'ᴵ',
+        'J' => 'ᴶ',
+        'K' => 'ᴷ',
+        'L' => 'ᴸ',
+        'M' => 'ᴹ',
+        'N' => 'ᴺ',
+        'O' => 'ᴼ',
+        'P' => 'ᴾ',
+        'R' => 'ᴿ',
         'T' => 'ᵀ',
+        'U' => 'ᵁ',
+        'V' => 'ⱽ',
+        'W' => 'ᵂ',
         _ => return None,
     })
 }
