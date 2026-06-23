@@ -906,6 +906,7 @@ dependencies = [
  "ego-tree",
  "epub",
  "delryn-infra",
+ "delryn-media",
  "delryn-model",
  "delryn-online",
  "delryn-store",
@@ -927,6 +928,15 @@ dependencies = [
  "ratatui",
  "serde",
  "toml",
+]
+
+[[package]]
+name = "delryn-media"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "ratatui",
+ "ratatui-image",
 ]
 
 [[package]]

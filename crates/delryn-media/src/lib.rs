@@ -242,6 +242,10 @@ impl ImageView {
         self.protocols.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.protocols.is_empty()
+    }
+
     pub fn next(&mut self) {
         if !self.protocols.is_empty() {
             self.sel = (self.sel + 1) % self.protocols.len();
