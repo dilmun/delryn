@@ -5,7 +5,7 @@
 use ego_tree::NodeRef;
 use scraper::{Html, Node};
 
-use super::{Block, CalloutKind, Inline, Span, TableCell};
+use super::{Anchor, Block, CalloutKind, Inline, Span, TableCell};
 
 /// Parse a section's XHTML into a list of reflowable blocks.
 pub fn parse_blocks(xhtml: &str) -> Vec<Block> {
@@ -121,6 +121,23 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
         // than a plain quote.
         "div" | "section" | "aside" | "blockquote" if callout_kind(e).is_some() => {
             emit_callout(node, callout_kind(e).unwrap(), ctx, out);
+        }
+        // Footnote / endnote definitions (epub:type or class), kept as a distinct
+        // block so the renderer can set them apart and (later) jump to them.
+        "div" | "section" | "aside" | "p" | "li" if footnote_label(e).is_some() => {
+            let label = footnote_label(e).unwrap();
+            let mut blocks = Vec::new();
+            walk_children(
+                node,
+                &Ctx {
+                    indent: ctx.indent,
+                    quote: false,
+                },
+                &mut blocks,
+            );
+            if !blocks.is_empty() {
+                out.push(Block::Footnote { label, blocks });
+            }
         }
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
             let level = e.name().as_bytes()[1] - b'0';
@@ -269,8 +286,28 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
         Node::Text(t) => out.push(Span {
             text: t.text.to_string(),
             style,
+            anchor: None,
         }),
         Node::Element(e) => {
+            // Links carry a navigation anchor (footnote ref / cross-ref / URL);
+            // collect the inner runs, then stamp the anchor on each.
+            if e.name() == "a" {
+                let astyle = Inline {
+                    link: true,
+                    ..style
+                };
+                let mut inner = Vec::new();
+                for c in node.children() {
+                    collect_inline(c, astyle, &mut inner);
+                }
+                if let Some(anchor) = link_anchor(e) {
+                    for s in inner.iter_mut().filter(|s| s.anchor.is_none()) {
+                        s.anchor = Some(anchor.clone());
+                    }
+                }
+                out.append(&mut inner);
+                return;
+            }
             let style = match e.name() {
                 "em" | "i" | "cite" | "var" | "dfn" => Inline {
                     italic: true,
@@ -282,10 +319,6 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
                 },
                 "code" | "kbd" | "samp" | "tt" => Inline {
                     code: true,
-                    ..style
-                },
-                "a" => Inline {
-                    link: true,
                     ..style
                 },
                 "br" => {
@@ -308,6 +341,7 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
                             italic: true,
                             ..style
                         },
+                        anchor: None,
                     });
                     return;
                 }
@@ -413,6 +447,54 @@ fn img_label(e: &scraper::node::Element) -> String {
         Some(alt) => format!("[{alt}]"),
         None => "[image]".to_string(),
     }
+}
+
+/// Build the navigation [`Anchor`] for an `<a>`: a footnote reference (epub:type
+/// noteref, or an internal `#id` that looks like a note), an internal
+/// cross-reference, or an external link.
+fn link_anchor(e: &scraper::node::Element) -> Option<Anchor> {
+    let etype = e.attr("epub:type").unwrap_or("").to_ascii_lowercase();
+    let href = e.attr("href")?;
+    if etype.contains("noteref") {
+        return Some(Anchor::Footnote(href.trim_start_matches('#').to_string()));
+    }
+    if let Some(id) = href.strip_prefix('#') {
+        let low = id.to_ascii_lowercase();
+        if low.contains("fn") || low.contains("note") {
+            return Some(Anchor::Footnote(id.to_string()));
+        }
+        return Some(Anchor::CrossRef(id.to_string()));
+    }
+    Some(Anchor::Link(href.to_string()))
+}
+
+/// If a container is a footnote/endnote definition (by `epub:type` or `class`),
+/// its label — the digits of its `id`, else the `id`, else `note`.
+fn footnote_label(e: &scraper::node::Element) -> Option<String> {
+    let etype = e.attr("epub:type").unwrap_or("").to_ascii_lowercase();
+    let by_type = ["footnote", "endnote", "rearnote"]
+        .iter()
+        .any(|k| etype.contains(k));
+    let by_class = e.attr("class").is_some_and(|c| {
+        c.split([' ', '-', '_']).any(|t| {
+            matches!(
+                t.to_ascii_lowercase().as_str(),
+                "footnote" | "endnote" | "rearnote" | "fn"
+            )
+        })
+    });
+    if !by_type && !by_class {
+        return None;
+    }
+    let id = e.attr("id").unwrap_or("");
+    let digits: String = id.chars().filter(char::is_ascii_digit).collect();
+    Some(if !digits.is_empty() {
+        digits
+    } else if !id.is_empty() {
+        id.to_string()
+    } else {
+        "note".to_string()
+    })
 }
 
 /// Classify a container as an admonition by its `class` / `epub:type` tokens.
@@ -699,6 +781,63 @@ mod tests {
         };
         assert!(header.is_none());
         assert_eq!(rows.len(), 2);
+    }
+
+    fn first_footnote(blocks: &[Block]) -> Option<&str> {
+        blocks.iter().find_map(|b| match b {
+            Block::Footnote { label, .. } => Some(label.as_str()),
+            _ => None,
+        })
+    }
+
+    fn first_anchor(blocks: &[Block]) -> Option<&Anchor> {
+        blocks.iter().find_map(|b| match b {
+            Block::Para { spans, .. } | Block::Heading { spans, .. } => {
+                spans.iter().find_map(|s| s.anchor.as_ref())
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn footnote_definition_by_epub_type_takes_label_from_id() {
+        let blocks = parse_blocks(
+            r#"<html><body><aside epub:type="footnote" id="fn7"><p>the source</p></aside></body></html>"#,
+        );
+        assert_eq!(first_footnote(&blocks), Some("7"));
+    }
+
+    #[test]
+    fn footnote_definition_by_class() {
+        let blocks = parse_blocks(
+            r#"<html><body><div class="footnote" id="note-2"><p>see also</p></div></body></html>"#,
+        );
+        assert_eq!(first_footnote(&blocks), Some("2"));
+    }
+
+    #[test]
+    fn noteref_link_becomes_footnote_anchor() {
+        let blocks = parse_blocks(
+            r##"<html><body><p>text<a epub:type="noteref" href="#fn7">7</a></p></body></html>"##,
+        );
+        assert_eq!(first_anchor(&blocks), Some(&Anchor::Footnote("fn7".into())));
+    }
+
+    #[test]
+    fn internal_and_external_links_classify() {
+        let cross =
+            parse_blocks(r##"<html><body><p><a href="#sec2">see section 2</a></p></body></html>"##);
+        assert_eq!(first_anchor(&cross), Some(&Anchor::CrossRef("sec2".into())));
+
+        let ext = parse_blocks(r#"<html><body><p><a href="https://x.dev">x</a></p></body></html>"#);
+        assert_eq!(
+            first_anchor(&ext),
+            Some(&Anchor::Link("https://x.dev".into()))
+        );
+
+        // An internal id that looks like a note is treated as a footnote.
+        let note = parse_blocks(r##"<html><body><p><a href="#fn9">9</a></p></body></html>"##);
+        assert_eq!(first_anchor(&note), Some(&Anchor::Footnote("fn9".into())));
     }
 
     #[test]
