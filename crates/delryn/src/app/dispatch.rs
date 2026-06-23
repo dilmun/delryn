@@ -47,6 +47,11 @@ impl App {
             self.annot_key(key);
             return;
         }
+        // The stats overlay is read-only: any key dismisses it.
+        if self.stats.is_some() {
+            self.stats = None;
+            return;
+        }
         if self.mode == Mode::Reader && key.code == KeyCode::Char('i') {
             self.open_images();
             return;

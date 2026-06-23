@@ -9,6 +9,7 @@ pub mod meta_edit;
 pub mod reader;
 pub mod settings;
 pub mod shelf_picker;
+pub mod stats;
 pub mod status;
 
 use ratatui::Frame;
@@ -87,6 +88,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     if app.bulk_rename.is_some() {
         bulk_rename::render(f, app);
+    }
+    if app.stats.is_some() {
+        stats::render(f, app);
     }
     // An open overlay shows its shortcuts on the shared bottom status row,
     // drawn last so it sits above the popup (which never reaches that row).

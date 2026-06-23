@@ -10,6 +10,7 @@ use delryn_store::Store;
 
 pub mod dedup;
 pub mod query;
+pub mod stats;
 
 /// Scan the given roots recursively, indexing new/changed EPUBs. Returns the
 /// number of books (re)indexed.
