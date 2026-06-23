@@ -8,6 +8,10 @@ pub struct Inline {
     pub italic: bool,
     pub code: bool,
     pub link: bool,
+    /// The run is part of a mathematical expression (the source tagged it with a
+    /// math class/element). Not a visual style — it scopes math-only text fixups
+    /// (e.g. exponent super-scripting) so prose is never touched.
+    pub math: bool,
 }
 
 /// A navigable target attached to an inline run, so the reader can jump from a

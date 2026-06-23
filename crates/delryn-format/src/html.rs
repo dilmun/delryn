@@ -100,6 +100,7 @@ fn walk_children(parent: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
 
 fn flush(inline: &mut Vec<Span>, ctx: &Ctx, out: &mut Vec<Block>) {
     if inline.iter().any(|s| !s.text.trim().is_empty()) {
+        superscript_math_exponents(inline);
         out.push(Block::Para {
             spans: std::mem::take(inline),
             indent: ctx.indent,
@@ -167,6 +168,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 collect_inline(c, Inline::default(), &mut spans);
             }
             if spans.iter().any(|s| !s.text.trim().is_empty()) {
+                superscript_math_exponents(&mut spans);
                 out.push(Block::Para {
                     spans,
                     indent: ctx.indent,
@@ -247,6 +249,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 collect_inline(c, Inline::default(), &mut spans);
             }
             if spans.iter().any(|s| !s.text.trim().is_empty()) {
+                superscript_math_exponents(&mut spans);
                 out.push(Block::Para {
                     spans,
                     indent: ctx.indent,
@@ -363,6 +366,16 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
                 }
                 _ => style,
             };
+            // Math runs (tagged by a math class — e.g. InDesign MathTools, or any
+            // `*math*` class) carry a flag so math-only fixups stay out of prose.
+            let style = if is_math_class(e) {
+                Inline {
+                    math: true,
+                    ..style
+                }
+            } else {
+                style
+            };
             for c in node.children() {
                 collect_inline(c, style, out);
             }
@@ -376,6 +389,57 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
 fn class_has_token(e: &scraper::node::Element, want: &str) -> bool {
     e.attr("class")
         .is_some_and(|c| c.split_whitespace().any(|t| t.eq_ignore_ascii_case(want)))
+}
+
+/// Whether an element's class marks it as math content. Covers the common
+/// conventions (InDesign `…MathTools…Math_…`, MathJax/MathML wrappers, generic
+/// `math`/`equation` classes) by matching the substring — publisher-agnostic.
+fn is_math_class(e: &scraper::node::Element) -> bool {
+    e.attr("class").is_some_and(|c| {
+        let c = c.to_ascii_lowercase();
+        c.contains("math") || c.contains("equation")
+    })
+}
+
+/// Conservative, math-scoped exponent fix: a run of digits immediately following
+/// a closing `)`/`]` inside math is a power, so super-script it
+/// (`(x−μ)2` → `(x−μ)²`). Deliberately narrow — ambiguous cases like `σ2`/`μ3`
+/// (exponent vs subscript index) are left flat rather than guessed wrong, and
+/// non-math text is never touched. Publishers that flatten scripts to plain
+/// glyphs (no sub/sup tag) lose the rest irrecoverably.
+fn superscript_math_exponents(spans: &mut [Span]) {
+    // Whether the previous math glyph was a `)`/`]` (or a digit we just lifted),
+    // tracked across spans since math is emitted one glyph per span.
+    let mut after_close = false;
+    for span in spans.iter_mut() {
+        if !span.style.math {
+            after_close = false;
+            continue;
+        }
+        let chars: Vec<char> = span.text.chars().collect();
+        let mut out = String::with_capacity(span.text.len());
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if after_close && c.is_ascii_digit() {
+                let mut j = i;
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                let run: String = chars[i..j].iter().collect();
+                match delryn_model::math::superscript_str(&run) {
+                    Some(s) => out.push_str(&s),
+                    None => out.push_str(&run),
+                }
+                i = j; // a digit run keeps `after_close` true (multi-digit power)
+                continue;
+            }
+            out.push(c);
+            after_close = matches!(c, ')' | ']');
+            i += 1;
+        }
+        span.text = out;
+    }
 }
 
 /// A non-`<pre>` block that is really a code listing, by its class. Covers the
@@ -889,6 +953,35 @@ mod tests {
             Block::Image { src, alt, .. } => Some((src.as_str(), alt.as_str())),
             _ => None,
         })
+    }
+
+    #[test]
+    fn math_exponent_after_paren_is_superscripted() {
+        // InDesign-style per-glyph math spans (contiguous, as in real files): a
+        // digit right after `)` is a power.
+        let blocks = parse_blocks(
+            r#"<html><body><p><span class="_-----MathTools-_Math_Base">(</span><span class="_-----MathTools-_Math_Variable">x</span><span class="_-----MathTools-_Math_Base">)</span><span class="_-----MathTools-_Math_Number">2</span></p></body></html>"#,
+        );
+        let t = block_text(&blocks);
+        assert!(t.contains("(x)²"), "exponent superscripted: {t:?}");
+        assert!(!t.contains("(x)2"), "no flat exponent: {t:?}");
+    }
+
+    #[test]
+    fn prose_digits_after_paren_are_untouched() {
+        // No math class → the heuristic must not fire (this is plain prose).
+        let blocks = parse_blocks("<html><body><p>(see note 2)3 times</p></body></html>");
+        let t = block_text(&blocks);
+        assert!(t.contains(")3"), "prose left alone: {t:?}");
+    }
+
+    #[test]
+    fn ambiguous_variable_digit_left_flat() {
+        // `σ2` (variable then digit) is ambiguous (power vs index) → not guessed.
+        let blocks = parse_blocks(
+            r#"<html><body><p><span class="_-----MathTools-_Math_Variable">σ</span><span class="_-----MathTools-_Math_Number">2</span></p></body></html>"#,
+        );
+        assert!(block_text(&blocks).contains("σ2"), "left flat");
     }
 
     #[test]
