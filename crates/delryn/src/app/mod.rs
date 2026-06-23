@@ -13,8 +13,7 @@ use std::time::Instant;
 use lru::LruCache;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
-use ratatui::layout::Rect;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::config::{Config, LibLayout};
 use crate::document::epub::{self, EpubDocument};
@@ -33,6 +32,12 @@ use ratatui_image::picker::Picker;
 mod confirm;
 use confirm::ConfirmAction;
 pub use confirm::PendingConfirm;
+
+mod settings;
+pub use settings::{SettingItem, SettingRow, Settings, first_setting_row, settings_rows};
+
+mod mouse;
+pub use mouse::{LayoutRects, MouseHits};
 
 /// How long the library selection must hold still before the detail-pane cover
 /// is (re)built, so holding j/k stays smooth.
@@ -124,14 +129,6 @@ impl SortKey {
 pub enum Focus {
     Content,
     Sidebar,
-}
-
-/// Open settings popup state. Settings are scoped to the mode they were opened
-/// from — Reading settings in the reader, Library settings in the library — so
-/// the two never mix.
-pub struct Settings {
-    pub scope: Mode,
-    pub row: usize,
 }
 
 /// Open annotations (bookmarks/notes) overlay state.
@@ -465,175 +462,6 @@ pub struct CollInput {
     pub cursor: usize,
     /// `Some(old)` while renaming that collection; `None` while creating one.
     pub rename_from: Option<String>,
-}
-
-/// One adjustable setting (identity, not position — so section headers can be
-/// inserted freely without re-indexing the change handler).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingItem {
-    Theme,
-    ViewMode,
-    SidePadding,
-    LineSpacing,
-    ParagraphSpacing,
-    ShowSidebar,
-    ShowStatus,
-    StatusTheme,
-    StatusView,
-    StatusPosition,
-    StatusPercent,
-    StatusGauge,
-    ImageMaxPx,
-    CodeWrap,
-    ChapterLock,
-    Mouse,
-    LibLayout,
-    GridSize,
-}
-
-impl SettingItem {
-    pub fn label(self) -> &'static str {
-        match self {
-            SettingItem::Theme => "Theme",
-            SettingItem::ViewMode => "View mode",
-            SettingItem::SidePadding => "Side margin %",
-            SettingItem::LineSpacing => "Line spacing",
-            SettingItem::ParagraphSpacing => "Paragraph spacing",
-            SettingItem::ShowSidebar => "Sidebar by default",
-            SettingItem::ShowStatus => "Status bar by default",
-            SettingItem::StatusTheme => "Theme",
-            SettingItem::StatusView => "View",
-            SettingItem::StatusPosition => "Position",
-            SettingItem::StatusPercent => "Percent",
-            SettingItem::StatusGauge => "Gauge",
-            SettingItem::ImageMaxPx => "Max resolution (px)",
-            SettingItem::CodeWrap => "Wrap code blocks",
-            SettingItem::ChapterLock => "Chapter lock",
-            SettingItem::Mouse => "Mouse",
-            SettingItem::LibLayout => "Layout",
-            SettingItem::GridSize => "Cover size",
-        }
-    }
-
-    /// The current value, formatted for display.
-    pub fn value(self, c: &Config) -> String {
-        let onoff = |b: bool| if b { "on" } else { "off" }.to_string();
-        match self {
-            SettingItem::Theme => c.theme.name.to_string(),
-            SettingItem::ViewMode => c.view_mode.label().to_string(),
-            SettingItem::SidePadding => c.side_padding.to_string(),
-            SettingItem::LineSpacing => c.line_spacing.to_string(),
-            SettingItem::ParagraphSpacing => c.paragraph_spacing.to_string(),
-            SettingItem::ShowSidebar => onoff(c.show_sidebar),
-            SettingItem::ShowStatus => onoff(c.show_status),
-            SettingItem::StatusTheme => onoff(c.status.theme),
-            SettingItem::StatusView => onoff(c.status.view),
-            SettingItem::StatusPosition => onoff(c.status.position),
-            SettingItem::StatusPercent => onoff(c.status.percent),
-            SettingItem::StatusGauge => onoff(c.status.gauge),
-            SettingItem::ImageMaxPx => {
-                if c.image_max_px == 0 {
-                    "off".into()
-                } else {
-                    c.image_max_px.to_string()
-                }
-            }
-            SettingItem::CodeWrap => onoff(c.code_wrap),
-            SettingItem::ChapterLock => onoff(c.chapter_lock),
-            SettingItem::Mouse => onoff(c.mouse_enabled),
-            SettingItem::LibLayout => c.library_layout.label().to_string(),
-            SettingItem::GridSize => c.library_grid_size.label().to_string(),
-        }
-    }
-}
-
-/// A row in the settings popup: a non-selectable section header or a setting.
-pub enum SettingRow {
-    Section(&'static str),
-    Item(SettingItem),
-}
-
-/// The grouped rows for a settings scope (section headers + items). Each scope
-/// is self-contained: the reader shows only reading settings, the library only
-/// library settings (global toggles like Theme/Mouse appear in both).
-pub fn settings_rows(scope: Mode) -> Vec<SettingRow> {
-    use SettingItem::*;
-    use SettingRow::{Item as I, Section as S};
-    match scope {
-        Mode::Reader => vec![
-            S("Typography"),
-            I(Theme),
-            I(ViewMode),
-            I(SidePadding),
-            I(LineSpacing),
-            I(ParagraphSpacing),
-            S("Chrome"),
-            I(ShowSidebar),
-            I(ShowStatus),
-            S("Status bar segments"),
-            I(StatusTheme),
-            I(StatusView),
-            I(StatusPosition),
-            I(StatusPercent),
-            I(StatusGauge),
-            S("Content"),
-            I(ImageMaxPx),
-            I(CodeWrap),
-            I(ChapterLock),
-            S("Input"),
-            I(Mouse),
-        ],
-        Mode::Library => vec![
-            S("View"),
-            I(LibLayout),
-            I(GridSize),
-            S("Appearance"),
-            I(Theme),
-            S("Input"),
-            I(Mouse),
-        ],
-    }
-}
-
-/// Index of the first selectable item in a scope (skips a leading section header).
-pub fn first_setting_row(scope: Mode) -> usize {
-    settings_rows(scope)
-        .iter()
-        .position(|r| matches!(r, SettingRow::Item(_)))
-        .unwrap_or(0)
-}
-
-/// Rects from the last render, used for mouse hit-testing.
-#[derive(Default)]
-pub struct LayoutRects {
-    pub sidebar: Option<Rect>,
-    pub content: Option<Rect>,
-}
-
-/// Clickable regions captured during the last render, for mouse hit-testing.
-/// Rebuilt every frame by the view layer; consulted by `on_mouse`.
-#[derive(Default)]
-pub struct MouseHits {
-    /// Library: (book index, screen rect) for each visible row / grid cell.
-    pub books: Vec<(usize, Rect)>,
-    /// Editor tab strip: (tab, rect).
-    pub edit_tabs: Vec<(EditTab, Rect)>,
-    /// Editor Details/File fields: (row index, value-start column, rect).
-    pub edit_fields: Vec<(usize, u16, Rect)>,
-    /// Editor Online/Cover results: (result index, rect).
-    pub edit_results: Vec<(usize, Rect)>,
-    /// Editor search bar rect.
-    pub edit_search: Option<Rect>,
-}
-
-impl MouseHits {
-    pub fn clear(&mut self) {
-        self.books.clear();
-        self.edit_tabs.clear();
-        self.edit_fields.clear();
-        self.edit_results.clear();
-        self.edit_search = None;
-    }
 }
 
 /// A reading position, for the navigation (back/forward) history.
@@ -3751,114 +3579,6 @@ impl App {
         }
     }
 
-    fn settings_key(&mut self, key: KeyEvent) {
-        if self.settings.is_none() {
-            return;
-        }
-        match key.code {
-            KeyCode::Esc | KeyCode::Char(';') | KeyCode::Char('q') => {
-                self.settings = None;
-                self.config.save();
-            }
-            KeyCode::Char('j') | KeyCode::Down => self.settings_move(1),
-            KeyCode::Char('k') | KeyCode::Up => self.settings_move(-1),
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.settings_change(1),
-            KeyCode::Char('h') | KeyCode::Left => self.settings_change(-1),
-            _ => {}
-        }
-    }
-
-    /// Move the settings cursor by `delta` items, skipping section headers.
-    fn settings_move(&mut self, delta: isize) {
-        let Some(s) = self.settings.as_ref() else {
-            return;
-        };
-        let rows = settings_rows(s.scope);
-        let items: Vec<usize> = rows
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| matches!(r, SettingRow::Item(_)))
-            .map(|(i, _)| i)
-            .collect();
-        if items.is_empty() {
-            return;
-        }
-        let cur = items.iter().position(|&i| i == s.row).unwrap_or(0) as isize;
-        let next = (cur + delta).clamp(0, items.len() as isize - 1) as usize;
-        if let Some(s) = self.settings.as_mut() {
-            s.row = items[next];
-        }
-    }
-
-    fn settings_change(&mut self, delta: i32) {
-        use crate::config::{MAX_LINE_SPACING, MAX_SIDE_PADDING};
-        let Some(s) = self.settings.as_ref() else {
-            return;
-        };
-        // Resolve the focused row to a setting identity.
-        let Some(SettingRow::Item(item)) = settings_rows(s.scope).into_iter().nth(s.row) else {
-            return;
-        };
-        let c = &mut self.config;
-        match item {
-            SettingItem::Theme => {
-                c.theme = if delta > 0 {
-                    c.theme.next()
-                } else {
-                    c.theme.prev()
-                }
-            }
-            SettingItem::ViewMode => {
-                c.view_mode = if delta > 0 {
-                    c.view_mode.next()
-                } else {
-                    c.view_mode.prev()
-                }
-            }
-            SettingItem::SidePadding => {
-                c.side_padding =
-                    (c.side_padding as i32 + delta).clamp(0, MAX_SIDE_PADDING as i32) as u16
-            }
-            SettingItem::LineSpacing => {
-                c.line_spacing =
-                    (c.line_spacing as i32 + delta).clamp(0, MAX_LINE_SPACING as i32) as u8
-            }
-            SettingItem::ParagraphSpacing => {
-                c.paragraph_spacing = (c.paragraph_spacing as i32 + delta).clamp(0, 3) as u8
-            }
-            SettingItem::ShowSidebar => c.show_sidebar = !c.show_sidebar,
-            SettingItem::ShowStatus => c.show_status = !c.show_status,
-            SettingItem::StatusTheme => c.status.theme = !c.status.theme,
-            SettingItem::StatusView => c.status.view = !c.status.view,
-            SettingItem::StatusPosition => c.status.position = !c.status.position,
-            SettingItem::StatusPercent => c.status.percent = !c.status.percent,
-            SettingItem::StatusGauge => c.status.gauge = !c.status.gauge,
-            SettingItem::ImageMaxPx => {
-                // 0 = off (uncapped); otherwise step in 128px increments.
-                c.image_max_px = (c.image_max_px as i32 + delta * 128)
-                    .clamp(0, crate::config::MAX_IMAGE_PX as i32)
-                    as u16
-            }
-            SettingItem::CodeWrap => c.code_wrap = !c.code_wrap,
-            SettingItem::ChapterLock => c.chapter_lock = !c.chapter_lock,
-            SettingItem::Mouse => c.mouse_enabled = !c.mouse_enabled,
-            SettingItem::LibLayout => {
-                c.library_layout = if delta > 0 {
-                    c.library_layout.next()
-                } else {
-                    c.library_layout.prev()
-                }
-            }
-            SettingItem::GridSize => {
-                c.library_grid_size = if delta > 0 {
-                    c.library_grid_size.next()
-                } else {
-                    c.library_grid_size.prev()
-                }
-            }
-        }
-    }
-
     fn library_key(&mut self, key: KeyEvent) {
         if self.lib_filtering {
             match key.code {
@@ -4452,162 +4172,13 @@ impl App {
             );
         }
     }
-
-    pub fn on_mouse(&mut self, m: MouseEvent) {
-        if !self.config.mouse_enabled {
-            return;
-        }
-        match m.kind {
-            // The wheel scrolls whichever reader pane the cursor is over: the TOC
-            // (without changing the selection) or the content.
-            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-                if self.mode != Mode::Reader {
-                    return;
-                }
-                let d: isize = if matches!(m.kind, MouseEventKind::ScrollUp) {
-                    -3
-                } else {
-                    3
-                };
-                let over_sidebar = self
-                    .last_layout
-                    .sidebar
-                    .is_some_and(|sb| sb.contains((m.column, m.row).into()));
-                if let Some(r) = self.reader.as_mut() {
-                    if over_sidebar {
-                        r.sidebar_wheel(d);
-                    } else {
-                        r.queue_scroll(d);
-                    }
-                }
-            }
-            MouseEventKind::Down(_) => self.mouse_down(m.column, m.row),
-            _ => {}
-        }
-    }
-
-    /// Route a left-click to the active overlay / mode using the hit rects
-    /// captured during the last render.
-    fn mouse_down(&mut self, col: u16, row: u16) {
-        // A pending confirmation is modal — swallow clicks until it's answered.
-        if self.pending_confirm.is_some() {
-            return;
-        }
-        if self.meta_edit.is_some() {
-            self.editor_click(col, row);
-            return;
-        }
-        // Other overlays are keyboard-driven (no hit rects); swallow the click.
-        if self.settings.is_some()
-            || self.shelf_picker.is_some()
-            || self.bulk_rename.is_some()
-            || self.annot.is_some()
-            || self.image_view.is_some()
-            || self.note_input.is_some()
-        {
-            return;
-        }
-        match self.mode {
-            Mode::Reader => self.mouse_click(col, row),
-            Mode::Library => self.library_click(col, row),
-        }
-    }
-
-    /// Library click: select the clicked book and focus the list pane.
-    fn library_click(&mut self, col: u16, row: u16) {
-        let pt = (col, row).into();
-        if let Some(&(idx, _)) = self.mouse.books.iter().find(|(_, r)| r.contains(pt)) {
-            self.lib_sel = idx.min(self.lib_books.len().saturating_sub(1));
-            self.lib_pane = LibPane::List;
-        }
-    }
-
-    /// Editor click: switch tab, focus + edit a field (caret at the click),
-    /// open the search bar, or pick a result.
-    fn editor_click(&mut self, col: u16, row: u16) {
-        let pt = (col, row).into();
-        if let Some(&(tab, _)) = self.mouse.edit_tabs.iter().find(|(_, r)| r.contains(pt)) {
-            self.meta_edit_goto_tab(tab);
-            return;
-        }
-        if self.mouse.edit_search.is_some_and(|r| r.contains(pt)) {
-            self.online_begin_query(None);
-            return;
-        }
-        if let Some(&(idx, vstart, _)) = self
-            .mouse
-            .edit_fields
-            .iter()
-            .find(|(_, _, r)| r.contains(pt))
-        {
-            if let Some(e) = self.meta_edit.as_mut() {
-                match e.tab {
-                    EditTab::Online => {
-                        // A Lookup seed field: focus + edit it, caret at the click.
-                        e.lookup.focus = idx.min(LOOKUP_FIELDS - 1);
-                        e.lookup.editing = true;
-                        let len = e.lookup.focused_len();
-                        e.lookup.cursor = (col.saturating_sub(vstart) as usize).min(len);
-                    }
-                    _ => {
-                        e.row = idx;
-                        e.mode = EditMode::Edit;
-                        let len = e.cur_field_len();
-                        e.cursor = (col.saturating_sub(vstart) as usize).min(len);
-                    }
-                }
-            }
-            return;
-        }
-        let hit = self
-            .mouse
-            .edit_results
-            .iter()
-            .find(|(_, r)| r.contains(pt))
-            .map(|&(idx, _)| idx);
-        if let (Some(idx), Some(e)) = (hit, self.meta_edit.as_mut()) {
-            if e.tab == EditTab::Online {
-                // Move the combined focus onto the clicked result row.
-                e.lookup.editing = false;
-                e.lookup.focus = LOOKUP_FIELDS + idx;
-                e.online.row = idx;
-            } else {
-                e.search_mut().row = idx;
-            }
-        }
-    }
-
-    /// Click on a sidebar row selects and jumps to that TOC entry.
-    fn mouse_click(&mut self, col: u16, row: u16) {
-        let Some(sb) = self.last_layout.sidebar else {
-            return;
-        };
-        let in_x = col >= sb.x && col < sb.x + sb.width;
-        // Account for the sidebar's top/bottom border.
-        let first = sb.y + 1;
-        let last = sb.y + sb.height.saturating_sub(1);
-        if !in_x || row < first || row >= last {
-            return;
-        }
-        if let Some(r) = self.reader.as_mut() {
-            // Screen row → list index, accounting for the scrolled viewport.
-            let idx = r.sidebar_offset + (row - first) as usize;
-            let vis = r.outline_visible();
-            if let Some(&oi) = vis.get(idx) {
-                r.sidebar_sel = idx;
-                r.focus = Focus::Sidebar;
-                if let Some(item) = r.outline.get(oi).cloned() {
-                    r.jump_to(item.section, item.locator.as_deref());
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
