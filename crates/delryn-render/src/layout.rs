@@ -30,6 +30,8 @@ pub enum LineKind {
     Rule,
     /// A reserved row for the inline image with this section-local index.
     Image(usize),
+    /// A footnote-definition line (rendered muted, set apart from the body).
+    Footnote,
 }
 
 /// One wrapped, styled display line.
@@ -179,6 +181,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                                 italic: true,
                                 ..s.style
                             },
+                            anchor: s.anchor.clone(),
                         })
                         .collect();
                     wrap_spans(&italic, width, "", "", LineKind::Body, &mut out);
@@ -283,9 +286,9 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                         },
                         fg: None,
                     }],
-                    kind: LineKind::Body,
+                    kind: LineKind::Footnote,
                 });
-                wrap_nested(blocks, opts, "  ", LineKind::Body, &mut out);
+                wrap_nested(blocks, opts, "  ", LineKind::Footnote, &mut out);
             }
         }
 
