@@ -52,6 +52,9 @@ pub use library::{LibPane, LibView, SortKey};
 
 mod dispatch;
 
+mod palette;
+pub use palette::{Command, Palette, PaletteItem};
+
 /// How long the library selection must hold still before the detail-pane cover
 /// is (re)built, so holding j/k stays smooth.
 const COVER_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(110);
@@ -96,6 +99,8 @@ pub struct App {
     pub annot: Option<AnnotState>,
     /// Open library-statistics overlay, if any.
     pub stats: Option<crate::library::stats::LibraryStats>,
+    /// Open command palette, if any.
+    pub palette: Option<Palette>,
     /// Active note-entry buffer, if typing a note.
     pub note_input: Option<String>,
     /// Open metadata-edit form (library), if any.
@@ -297,6 +302,7 @@ impl App {
             settings: None,
             annot: None,
             stats: None,
+            palette: None,
             note_input: None,
             meta_edit: None,
             bulk_rename: None,
@@ -361,6 +367,7 @@ impl App {
             settings: None,
             annot: None,
             stats: None,
+            palette: None,
             note_input: None,
             meta_edit: None,
             bulk_rename: None,
