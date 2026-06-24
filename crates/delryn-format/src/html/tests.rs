@@ -179,6 +179,197 @@ fn noteref_link_becomes_footnote_anchor() {
 }
 
 #[test]
+fn footnotes_section_and_wrapper_are_not_definitions() {
+    // Only the inner `epub:type="footnote"` with an id is the definition — the
+    // plural `footnotes` section and the class-only `<div class="Footnote">`
+    // wrapper (no id) are containers, not nested "[note]" definitions.
+    let blocks = parse_blocks(
+        r##"<html><body>
+            <aside epub:type="footnotes"><div class="Heading">Footnotes</div>
+                <div class="Footnote"><span class="FootnoteNumber"><a href="#s1">1</a></span>
+                    <div class="FootnoteContent" epub:type="footnote" id="Fn1"><p>the note</p></div>
+                </div>
+            </aside></body></html>"##,
+    );
+    let labels: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Footnote { label, .. } => Some(label.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        labels,
+        ["1"],
+        "exactly one definition, labelled by its id: {labels:?}"
+    );
+}
+
+#[test]
+fn regenerated_markers_are_stripped() {
+    // Explicit list item numbers and footnote backref numbers are chrome we
+    // regenerate — they must not double our own marker / `[n]` label.
+    let list = parse_blocks(
+        r#"<html><body><ol><li class="ListItem">
+            <div class="ItemNumber">(1)</div>
+            <div class="ItemContent"><p>first item</p></div>
+        </li></ol></body></html>"#,
+    );
+    let t = block_text(&list);
+    assert!(t.contains("first item"), "content kept: {t:?}");
+    assert!(!t.contains("(1)"), "explicit item number dropped: {t:?}");
+
+    let foot = parse_blocks(
+        r##"<html><body><div class="Footnote">
+            <span class="FootnoteNumber"><a href="#Fn1_source">1</a></span>
+            <div class="FootnoteContent" epub:type="footnote" id="Fn1"><p>note body</p></div>
+        </div></body></html>"##,
+    );
+    // Exactly one footnote (labelled "1"), and no stray standalone backref line.
+    assert_eq!(first_footnote(&foot), Some("1"));
+    assert!(
+        !foot
+            .iter()
+            .any(|b| matches!(b, Block::Para { spans, .. } if spans.iter().map(|s| s.text.trim()).collect::<String>() == "1")),
+        "no standalone backref number paragraph"
+    );
+}
+
+#[test]
+fn printed_toc_indents_by_level_and_drops_page_numbers() {
+    let blocks = parse_blocks(
+        r##"<html><body>
+            <div class="TocChapter">
+                <div class="TocEntry"><a href="c.xhtml">11 Other</a><span class="TocPageNumber">359</span></div>
+                <div class="TocSection1">
+                    <div class="TocEntry"><a href="c.xhtml#s1">11.1 Ensemble</a><span class="TocPageNumber">359</span></div>
+                </div>
+            </div></body></html>"##,
+    );
+    let t = block_text(&blocks);
+    assert!(!t.contains("359"), "print page numbers dropped: {t:?}");
+    let indents: Vec<u8> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Para { indent, spans, .. } => {
+                let txt: String = spans.iter().map(|s| s.text.as_str()).collect();
+                (txt.contains("Other") || txt.contains("Ensemble")).then_some(*indent)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        indents,
+        vec![0, 1],
+        "chapter at depth 0, section at depth 1: {indents:?}"
+    );
+}
+
+#[test]
+fn heading_based_toc_indents_by_level() {
+    // A heading-based ToC (e.g. Packt) encodes depth in the heading level.
+    let blocks = parse_blocks(
+        r##"<html><body><div epub:type="toc">
+            <h1>Table of Contents</h1>
+            <h2><a href="c.xhtml">Chapter 1</a></h2>
+            <h3><a href="c.xhtml#s1">Section 1.1</a></h3>
+        </div></body></html>"##,
+    );
+    assert!(
+        blocks
+            .iter()
+            .any(|b| matches!(b, Block::Heading { level: 1, .. })),
+        "the ToC title stays a heading"
+    );
+    let indents: Vec<u8> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Para { indent, spans, .. } => {
+                let t: String = spans.iter().map(|s| s.text.as_str()).collect();
+                (t.contains("Chapter 1") || t.contains("Section 1.1")).then_some(*indent)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(indents, vec![0, 1], "h2→0, h3→1: {indents:?}");
+
+    // Outside a ToC, headings stay headings (not indented paragraphs).
+    let normal = parse_blocks(r#"<html><body><h2>Real Heading</h2></body></html>"#);
+    assert!(
+        normal
+            .iter()
+            .any(|b| matches!(b, Block::Heading { level: 2, .. })),
+        "a normal heading is unaffected"
+    );
+}
+
+#[test]
+fn definition_list_pairs_terms_with_descriptions() {
+    let blocks = parse_blocks(
+        r#"<html><body><dl>
+            <dt class="Term">A3C</dt><dd><p>Asynchronous Advantage Actor-Critic</p></dd>
+            <dt class="Term">ABC</dt><dd><p>Artificial Bee Colony</p></dd>
+        </dl></body></html>"#,
+    );
+    let paras: Vec<String> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Para { spans, .. } => Some(spans.iter().map(|s| s.text.as_str()).collect()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        paras.iter().any(
+            |t: &String| t.contains("A3C") && t.contains("Asynchronous Advantage Actor-Critic")
+        ),
+        "term + description on one entry: {paras:?}"
+    );
+    // Entries are separate — not run together into one blob.
+    assert!(
+        !paras
+            .iter()
+            .any(|t: &String| t.contains("A3C") && t.contains("ABC")),
+        "entries kept separate: {paras:?}"
+    );
+}
+
+#[test]
+fn biblioref_link_becomes_citation_anchor() {
+    let blocks = parse_blocks(
+        r##"<html><body><p>per<a epub:type="biblioref" href="#ref12">[12]</a></p></body></html>"##,
+    );
+    assert_eq!(
+        first_anchor(&blocks),
+        Some(&Anchor::Citation("#ref12".into())),
+        "raw href kept (may carry a file)"
+    );
+}
+
+#[test]
+fn collect_targets_maps_ids_to_leading_text() {
+    let targets = collect_targets(
+        r#"<html><body>
+            <h2 id="sec2">Chapter Two</h2>
+            <figure id="fig1"><figcaption>Figure 1: a system diagram</figcaption></figure>
+            <p>no id here</p>
+        </body></html>"#,
+    );
+    assert!(
+        targets
+            .iter()
+            .any(|(id, loc)| id == "sec2" && loc == "Chapter Two"),
+        "heading id → its text: {targets:?}"
+    );
+    assert!(
+        targets
+            .iter()
+            .any(|(id, loc)| id == "fig1" && loc.contains("Figure 1")),
+        "figure id → caption: {targets:?}"
+    );
+    assert_eq!(targets.len(), 2, "only elements with ids: {targets:?}");
+}
+
+#[test]
 fn footnote_definition_keeps_raw_id_for_resolution() {
     // The definition retains its raw `id` so a reference can resolve to it —
     // the digit `label` is for display only.
@@ -390,9 +581,22 @@ fn math_image_amid_text_stays_inline() {
 
 #[test]
 fn internal_and_external_links_classify() {
+    // Cross-refs keep the raw href (bare fragment or file#fragment) so the
+    // reader can resolve the file and id.
     let cross =
         parse_blocks(r##"<html><body><p><a href="#sec2">see section 2</a></p></body></html>"##);
-    assert_eq!(first_anchor(&cross), Some(&Anchor::CrossRef("sec2".into())));
+    assert_eq!(
+        first_anchor(&cross),
+        Some(&Anchor::CrossRef("#sec2".into()))
+    );
+
+    let xfile =
+        parse_blocks(r##"<html><body><p><a href="ch2.xhtml#fig1">Figure 1</a></p></body></html>"##);
+    assert_eq!(
+        first_anchor(&xfile),
+        Some(&Anchor::CrossRef("ch2.xhtml#fig1".into())),
+        "cross-file ref keeps its file"
+    );
 
     let ext = parse_blocks(r#"<html><body><p><a href="https://x.dev">x</a></p></body></html>"#);
     assert_eq!(

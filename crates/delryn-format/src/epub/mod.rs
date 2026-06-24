@@ -129,6 +129,28 @@ impl Document for EpubDocument {
         })
     }
 
+    fn section_for_href(&mut self, from: usize, href: &str) -> Option<usize> {
+        // Resolve `href` relative to the linking section's directory → spine index.
+        let base = self
+            .doc
+            .spine
+            .get(from)
+            .and_then(|item| self.doc.resources.get(&item.idref))
+            .and_then(|r| r.path.parent().map(Path::to_path_buf))
+            .unwrap_or_default();
+        nav::resolve_href(href, &base, &self.doc)
+    }
+
+    fn section_targets(&mut self, index: usize) -> Vec<(String, String)> {
+        if self.doc.set_current_chapter(index)
+            && let Some((xhtml, _mime)) = self.doc.get_current_str()
+        {
+            super::html::collect_targets(&xhtml)
+        } else {
+            Vec::new()
+        }
+    }
+
     fn section_images(&mut self, section: usize) -> Vec<Vec<u8>> {
         // Reuse the parsed blocks so the overlay sees exactly the figures the
         // reader renders inline (single source of truth for image selection).

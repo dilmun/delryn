@@ -47,6 +47,11 @@ pub(super) fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<S
             anchor: None,
         }),
         Node::Element(e) => {
+            // Regenerated markers (footnote backref numbers, list item numbers)
+            // are chrome — drop so they don't double our labels/markers.
+            if is_marker_chrome(e) {
+                return;
+            }
             // Links carry a navigation anchor (footnote ref / cross-ref / URL);
             // collect the inner runs, then stamp the anchor on each.
             if e.name() == "a" {
@@ -166,12 +171,23 @@ pub(super) fn link_anchor(e: &scraper::node::Element) -> Option<Anchor> {
     if etype.contains("noteref") || role.contains("doc-noteref") {
         return Some(Anchor::Footnote(href.trim_start_matches('#').to_string()));
     }
-    if let Some(id) = href.strip_prefix('#') {
-        let low = id.to_ascii_lowercase();
-        if low.contains("fn") || low.contains("note") {
-            return Some(Anchor::Footnote(id.to_string()));
-        }
-        return Some(Anchor::CrossRef(id.to_string()));
+    // A bibliography citation: `epub:type="biblioref"` / `role="doc-biblioref"`.
+    // Keep the raw href — it may carry a file (`references.xhtml#ref12`).
+    if etype.contains("biblioref") || role.contains("doc-biblioref") {
+        return Some(Anchor::Citation(href.to_string()));
     }
-    Some(Anchor::Link(href.to_string()))
+    // An external link (has a URL scheme) is copied, not navigated.
+    if href.contains("://") || href.starts_with("mailto:") {
+        return Some(Anchor::Link(href.to_string()));
+    }
+    // A bare same-file fragment that looks like a note → footnote.
+    if let Some(frag) = href.strip_prefix('#') {
+        let low = frag.to_ascii_lowercase();
+        if low.contains("fn") || low.contains("note") {
+            return Some(Anchor::Footnote(frag.to_string()));
+        }
+    }
+    // Any other internal reference: a bare `#frag`, a `file#frag`, or a `file`.
+    // The raw href is kept so the reader can resolve its file/fragment.
+    Some(Anchor::CrossRef(href.to_string()))
 }
