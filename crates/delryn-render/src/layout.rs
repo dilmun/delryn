@@ -552,8 +552,45 @@ fn wrap_nested(
 }
 
 /// Plain concatenated text of a table cell (for width measurement / rendering).
+/// Allocate `budget` columns across table columns of the given natural widths,
+/// max-min fair: narrow columns keep their full width, and wide columns split
+/// whatever's left. This keeps a short column (e.g. a yes/no flag) readable
+/// instead of letting a proportional shrink starve it to one character while a
+/// long prose column hogs the space.
+fn fit_columns(natural: &[usize], budget: usize) -> Vec<usize> {
+    let mut out = vec![0usize; natural.len()];
+    let mut remaining = budget;
+    let mut pending: Vec<usize> = (0..natural.len()).collect();
+    while !pending.is_empty() {
+        let share = (remaining / pending.len()).max(1);
+        // Columns that fit within an equal share take their natural width; the
+        // freed space then redistributes among the still-too-wide columns.
+        let fits: Vec<usize> = pending
+            .iter()
+            .copied()
+            .filter(|&i| natural[i] <= share)
+            .collect();
+        if fits.is_empty() {
+            for &i in &pending {
+                out[i] = share;
+            }
+            break;
+        }
+        for &i in &fits {
+            out[i] = natural[i];
+            remaining = remaining.saturating_sub(natural[i]);
+        }
+        pending.retain(|i| !fits.contains(i));
+    }
+    out
+}
+
 fn table_cell_text(cell: &[Span]) -> String {
-    cell.iter().map(|s| s.text.as_str()).collect()
+    // Cells often hold `<p>`/whitespace, so the raw text carries newlines and
+    // runs of spaces. Collapse to a single line — otherwise an embedded newline
+    // breaks the row mid-render and the column separators stop lining up.
+    let raw: String = cell.iter().map(|s| s.text.as_str()).collect();
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Truncate (with `…`) or right-pad `s` to exactly `w` display columns.
@@ -625,15 +662,11 @@ fn wrap_table(
         note(r);
     }
 
-    // Fit to the pane: reserve " │ " (3 cols) between columns, then shrink
-    // proportionally if the natural widths overflow.
+    // Fit to the pane: reserve " │ " (3 cols) between columns, then allocate the
+    // remaining budget max-min fair if the natural widths overflow.
     let budget = width.saturating_sub(3 * ncols.saturating_sub(1)).max(ncols);
-    let natural: usize = col_w.iter().sum();
-    if natural > budget {
-        let scale = budget as f64 / natural as f64;
-        for w in &mut col_w {
-            *w = ((*w as f64 * scale).floor() as usize).max(1);
-        }
+    if col_w.iter().sum::<usize>() > budget {
+        col_w = fit_columns(&col_w, budget);
     }
 
     if let Some(h) = header {
@@ -747,6 +780,49 @@ mod tests {
             lines
                 .iter()
                 .any(|l| l.contains("Apples") && l.contains("12"))
+        );
+    }
+
+    #[test]
+    fn table_cell_newlines_dont_break_alignment() {
+        // Cells holding `<p>`/whitespace carry newlines; rows must stay one line
+        // each with the column separators in a fixed position.
+        let cell = |s: &str| vec![Span::plain(s)];
+        let block = Block::Table {
+            header: Some(vec![cell("\nName\n"), cell(" Qty ")]),
+            rows: vec![vec![cell("Ap\nples"), cell("12")]],
+        };
+        let table: Vec<String> = wrap_blocks(&[block], &WrapOpts::default(), &[])
+            .into_iter()
+            .filter(|l| matches!(l.kind, LineKind::Table))
+            .map(|l| l.text())
+            .collect();
+        let sep = |t: &str| -> Vec<usize> {
+            t.chars()
+                .enumerate()
+                .filter(|(_, c)| *c == '│' || *c == '┼')
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let positions: Vec<Vec<usize>> = table.iter().map(|t| sep(t)).collect();
+        for t in &table {
+            assert!(!t.contains('\n'), "row is one line: {t:?}");
+        }
+        assert!(
+            positions.windows(2).all(|w| w[0] == w[1]),
+            "separators aligned across rows: {positions:?}"
+        );
+    }
+
+    #[test]
+    fn fit_columns_keeps_narrow_columns_readable() {
+        // A short flag column shouldn't be starved by a long prose column.
+        let w = fit_columns(&[5, 9, 80], 40);
+        assert_eq!(w[0], 5, "narrow kept");
+        assert_eq!(w[1], 9, "flag column kept");
+        assert!(
+            w[2] >= 20 && w.iter().sum::<usize>() <= 40,
+            "rest to prose: {w:?}"
         );
     }
 
