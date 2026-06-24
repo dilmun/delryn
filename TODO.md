@@ -141,14 +141,14 @@ only framed/matted to sit in the theme.
       hardcoded `Color::Black/Red` fallbacks and the 5 duplicated `base()` helpers.
 - [x] Equation/line-art images recoloured to theme (alpha/luminance matte); photos
       kept faithful (flattened onto paper). *(shipped earlier)*
-- [ ] **Image policy + smart-invert option** (the next piece): a setting with
-      modes — **Auto** (current: recolour ink, keep pictures), **Invert
-      backgrounds** (lightness-invert opaque light-bg figures so white-bg charts
-      go dark with detail kept; leave true photos), **Faithful** (never touch).
-      Use **lightness inversion (flip L in HSL/Lab, keep hue+sat)**, NOT naive
-      `255−RGB` (which negates photos). Scope by the existing ink/picture
-      classifier; covers always faithful. Optional reader keybind to flip the
-      current view.
+- [x] **Image policy + smart-invert** (Settings → Content → "Image mode",
+      persisted): **Auto** (recolour ink, keep pictures), **Invert backgrounds**
+      (lightness-invert opaque light-bg figures, detail kept; photos with light
+      backgrounds invert too — the trade), **Faithful** (only flatten
+      transparency). Uses **lightness inversion (flip L in HSL, keep hue+sat)**,
+      not naive `255−RGB`. `media::RenderPolicy { tint, mode }` is part of the
+      image cache key, so changing theme/mode re-renders live. Covers untouched.
+      *Optional reader keybind to flip the current view — deferred.*
 - [ ] **Code-block blending:** background = reader paper, syntax palette tuned to
       sit on it (kills the mismatched-rectangle look). Biggest remaining gap.
 - [ ] **Figure framing:** consistent themed border + padding (and optional soft
