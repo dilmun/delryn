@@ -221,14 +221,19 @@ pub fn flatten_onto(img: &DynamicImage, paper: [u8; 3]) -> DynamicImage {
     DynamicImage::ImageRgba8(out)
 }
 
-/// Whether an opaque graphic sits on a light background (a white-page chart,
-/// diagram, or screenshot) — the kind that `InvertBackgrounds` flips to dark.
-fn is_light_background(img: &RgbaImage) -> bool {
-    match analyze_background(img) {
-        // bg is normalised 0–1; weight by luminance.
-        Background::Solid(bg) => 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2] > 0.6,
-        Background::Alpha => false,
+/// Whether an opaque graphic is predominantly light (a white-page chart, a light
+/// dialog or screenshot) — the kind `InvertBackgrounds` flips to dark. Uses the
+/// *whole-image* mean luminance, not just the border, so screenshots with a dark
+/// window frame or title bar at the edges still count as light.
+fn is_predominantly_light(img: &RgbaImage) -> bool {
+    let mut sum = 0f32;
+    let mut n = 0f32;
+    for p in img.pixels() {
+        let a = p[3] as f32 / 255.0;
+        sum += a * (0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32);
+        n += a.max(0.001);
     }
+    n > 0.0 && sum / n > 128.0
 }
 
 /// Theme-aware lightness inversion for a light-background figure: white↔black is
@@ -341,8 +346,8 @@ pub fn render_for_theme(img: &DynamicImage, tint: Ink, mode: ImageMode) -> Dynam
         };
     }
     // Opaque graphic: carries its own background.
-    if mode == ImageMode::InvertBackgrounds && is_light_background(&rgba) {
-        theme_invert(img, tint) // light-bg figure → theme-matched dark, detail kept
+    if mode == ImageMode::InvertBackgrounds && is_predominantly_light(&rgba) {
+        theme_invert(img, tint) // light figure/screenshot → theme-matched dark
     } else {
         img.clone()
     }
