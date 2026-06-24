@@ -136,6 +136,7 @@ fn is_block(node: NodeRef<Node>) -> bool {
                 | "ul"
                 | "ol"
                 | "li"
+                | "dl"
                 | "blockquote"
                 | "pre"
                 | "hr"
@@ -242,6 +243,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             }
         }
         ElementRole::Quote => walk_children(node, &ctx.with_quote(true), out),
+        ElementRole::DefList => emit_deflist(node, ctx, out),
         ElementRole::Rule => out.push(Block::Rule),
         ElementRole::Image => out.push(Block::Image {
             src: e.attr("src").unwrap_or("").to_string(),
@@ -319,6 +321,77 @@ fn list_item(node: NodeRef<Node>, ctx: &Ctx, marker: String, out: &mut Vec<Block
         *indent = ctx.indent;
     }
     out.append(&mut item);
+}
+
+/// Render a definition list (`<dl>`): pair each `<dt>` term with the following
+/// `<dd>` description(s), as "**term**  description" on one entry (the term in
+/// bold, then the description), so terms and definitions don't run together.
+fn emit_deflist(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
+    let mut term: Vec<Span> = Vec::new();
+    for child in node.children() {
+        let Node::Element(e) = child.value() else {
+            continue;
+        };
+        match e.name() {
+            "dt" => term = inline_spans(child),
+            "dd" => {
+                emit_def_entry(std::mem::take(&mut term), child, ctx, out);
+            }
+            _ => {}
+        }
+    }
+    // A trailing `<dt>` with no `<dd>` (rare) still shows.
+    if term.iter().any(|s| !s.text.trim().is_empty()) {
+        out.push(Block::Para {
+            spans: bold_spans(term),
+            indent: ctx.indent,
+            quote: ctx.quote,
+            marker: None,
+        });
+    }
+}
+
+/// Emit one `<dt>`/`<dd>` entry: the bold term prefixed onto the description's
+/// first paragraph (a hanging indent), with any further description blocks kept.
+fn emit_def_entry(term: Vec<Span>, dd: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
+    let mut blocks = Vec::new();
+    walk_children(dd, ctx, &mut blocks);
+    let mut prefix = bold_spans(term);
+    if let Some(Block::Para { spans, .. }) =
+        blocks.iter_mut().find(|b| matches!(b, Block::Para { .. }))
+    {
+        if !prefix.is_empty() {
+            prefix.push(Span::plain("  "));
+            spans.splice(0..0, prefix);
+        }
+    } else {
+        // No description paragraph: the term on its own line.
+        blocks.insert(
+            0,
+            Block::Para {
+                spans: prefix,
+                indent: ctx.indent,
+                quote: ctx.quote,
+                marker: None,
+            },
+        );
+    }
+    out.append(&mut blocks);
+}
+
+/// Re-style spans as bold (for definition-list terms).
+fn bold_spans(spans: Vec<Span>) -> Vec<Span> {
+    spans
+        .into_iter()
+        .map(|s| Span {
+            text: s.text,
+            style: Inline {
+                bold: true,
+                ..s.style
+            },
+            anchor: s.anchor,
+        })
+        .collect()
 }
 
 #[cfg(test)]

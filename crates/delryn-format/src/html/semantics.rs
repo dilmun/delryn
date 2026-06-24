@@ -31,6 +31,8 @@ pub(super) enum ElementRole {
     Quote,
     Rule,
     Image,
+    /// A definition list (`<dl>`): `<dt>` terms paired with `<dd>` descriptions.
+    DefList,
     /// An aside/callout laid out as an icon-cell + content-cell table.
     AsideIconTable(CalloutKind),
     Table,
@@ -82,6 +84,7 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
                 .unwrap_or(1),
         },
         "blockquote" => ElementRole::Quote,
+        "dl" => ElementRole::DefList,
         "hr" => ElementRole::Rule,
         "img" => ElementRole::Image,
         "table" if aside_icon_src(node).is_some() => ElementRole::AsideIconTable(
