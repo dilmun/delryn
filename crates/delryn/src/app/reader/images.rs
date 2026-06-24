@@ -15,7 +15,7 @@ impl Reader {
         avail: u16,
         max_rows: u16,
         max_px: u16,
-        tint: media::Ink,
+        policy: media::RenderPolicy,
     ) {
         // Tell the worker where we are so it can drop builds for far-away
         // sections (avoids a fast-scroll backlog delaying the current one).
@@ -44,10 +44,10 @@ impl Reader {
         // 2. On section/size change, remap the current section and dispatch any
         //    builds it still needs.
         let key = (self.section, avail, max_rows, max_px);
-        if self.images_key != key || self.images_tint != tint {
+        if self.images_key != key || self.images_policy != policy {
             self.images_key = key;
-            self.images_tint = tint;
-            self.remap_section_images(builder, picker, avail, max_rows, max_px, tint);
+            self.images_policy = policy;
+            self.remap_section_images(builder, picker, avail, max_rows, max_px, policy);
         }
 
         // 3. Keep the visible section's images most-recently-used so they aren't
@@ -59,7 +59,7 @@ impl Reader {
 
         // 4. Pre-build neighbouring sections' images once the current one is ready.
         if !self.images_pending() {
-            self.prefetch_neighbor_images(builder, avail, max_rows, max_px, tint);
+            self.prefetch_neighbor_images(builder, avail, max_rows, max_px, policy);
         }
     }
 
@@ -72,7 +72,7 @@ impl Reader {
         avail: u16,
         max_rows: u16,
         max_px: u16,
-        tint: media::Ink,
+        policy: media::RenderPolicy,
     ) {
         let fs = picker.font_size();
         let (fw, fh) = (fs.width, fs.height);
@@ -88,7 +88,7 @@ impl Reader {
                     avail,
                     max_rows,
                     max_px,
-                    tint,
+                    policy,
                 };
                 let rows = if let Some(plan) = self.image_cache.peek(&key) {
                     plan.rows
@@ -137,7 +137,7 @@ impl Reader {
         avail: u16,
         max_rows: u16,
         max_px: u16,
-        tint: media::Ink,
+        policy: media::RenderPolicy,
     ) {
         let n = self.doc.section_count();
         let neighbors = [self.section + 1, self.section.wrapping_sub(1)];
@@ -159,7 +159,7 @@ impl Reader {
                             avail,
                             max_rows,
                             max_px,
-                            tint,
+                            policy,
                         };
                         if !self.image_cache.contains(&key)
                             && !self.img_requested.contains(&key)

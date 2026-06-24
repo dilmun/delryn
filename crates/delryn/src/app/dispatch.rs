@@ -100,12 +100,15 @@ impl App {
 
     /// Open the image viewer on the current section's images.
     fn open_images(&mut self) {
-        let tint = crate::view::theme_ink(self.config.theme);
+        let policy = crate::media::RenderPolicy {
+            tint: crate::view::theme_ink(self.config.theme),
+            mode: self.config.image_mode,
+        };
         let (Some(picker), Some(reader)) = (self.picker.as_ref(), self.reader.as_mut()) else {
             return;
         };
         let images = reader.doc.section_images(reader.section);
-        self.image_view = ImageView::new(picker, &images, tint);
+        self.image_view = ImageView::new(picker, &images, policy);
     }
 
     fn image_key(&mut self, key: KeyEvent) {
