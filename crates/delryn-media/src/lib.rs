@@ -235,9 +235,11 @@ fn is_light_background(img: &RgbaImage) -> bool {
 /// swapped, but mapped *into the theme*, so the result sits on the reader's page
 /// instead of a hardcoded black box.
 ///
-/// - **Neutral** pixels (the white background, black axes/text) → the exact theme
-///   `paper`↔`ink` by inverted lightness, so the background matches the page on
-///   any theme (not just black ones).
+/// - **Near-white** pixels (the background and its JPEG ringing/halo) → snapped to
+///   the exact page colour, so lossy-compression noise around edges collapses into
+///   the background instead of becoming coloured specks on the dark page.
+/// - **Neutral** pixels (black axes/text) → the exact theme `paper`↔`ink` by
+///   inverted lightness, so they match the page/text colour on any theme.
 /// - **Coloured** pixels (a red curve, blue lines) → keep their hue + saturation,
 ///   with lightness inverted and remapped into the theme's `paper…ink` band so
 ///   they stay vivid and visible on the dark page.
@@ -254,8 +256,11 @@ pub fn theme_invert(img: &DynamicImage, colors: Ink) -> DynamicImage {
     for (x, y, p) in src.enumerate_pixels() {
         let (hue, sat, lit) = rgb_to_hsl(p[0], p[1], p[2]);
         let inv = 1.0 - lit;
-        let px = if sat < 0.15 {
-            // Neutral → exact theme colours (background becomes the page colour).
+        let px = if lit >= NEAR_WHITE_L {
+            // Background + compression halo → clean page colour (kills the speckle).
+            colors.paper
+        } else if sat < 0.15 {
+            // Neutral → exact theme colours by inverted lightness.
             lerp3(colors.paper, colors.ink, inv)
         } else {
             // Colour → keep hue/sat, map inverted lightness into the theme band.
@@ -265,6 +270,10 @@ pub fn theme_invert(img: &DynamicImage, colors: Ink) -> DynamicImage {
     }
     DynamicImage::ImageRgba8(out)
 }
+
+/// Lightness at/above which a pixel counts as the (light) figure background — incl.
+/// the faint JPEG ringing around edges that would otherwise invert into specks.
+const NEAR_WHITE_L: f32 = 0.86;
 
 fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
     let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
