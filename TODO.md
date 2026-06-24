@@ -149,12 +149,16 @@ only framed/matted to sit in the theme.
       not naive `255−RGB`. `media::RenderPolicy { tint, mode }` is part of the
       image cache key, so changing theme/mode re-renders live. Covers untouched.
       *Optional reader keybind to flip the current view — deferred.*
-- [ ] **Code-block blending:** background = reader paper, syntax palette tuned to
-      sit on it (kills the mismatched-rectangle look). Biggest remaining gap.
+- [x] **Code blocks** already render on the reader page (highlight.rs takes only
+      syntect *foreground*, never its background — no mismatched rectangle). Added
+      a faint `Theme::code_surface()` panel (page nudged ~8% toward ink; padded to
+      width for a clean rectangle) so code reads as a distinct surface.
+- [x] **Icons → themed glyphs:** callout headers lead with a monochrome,
+      single-width Unicode glyph per kind (ⓘ/✲/◆/△/▲), text-presentation so the
+      theme tints them — no raster admonition icons.
 - [ ] **Figure framing:** consistent themed border + padding (and optional soft
-      scrim on very dark themes) so pictures read as intentional cards.
-- [ ] **Icons → themed glyphs:** extend callout-icon handling — map common
-      publisher icons (note/tip/warning/✓/•) to Unicode glyphs in theme colours.
+      scrim on very dark themes) so pictures read as intentional cards. *(Lower
+      priority — figures already look clean floating on the page.)*
 
 ## Phase 5 — Formats
 
