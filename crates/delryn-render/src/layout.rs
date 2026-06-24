@@ -212,6 +212,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                                 fg: None,
                             }];
                             full.append(&mut line_runs);
+                            pad_to_width(&mut full, width);
                             out.push(DisplayLine {
                                 runs: full,
                                 kind: LineKind::Code(code_idx),
@@ -225,6 +226,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                             fg: None,
                         }];
                         full.extend(shift_runs(runs, opts.code_hscroll, avail));
+                        pad_to_width(&mut full, width);
                         out.push(DisplayLine {
                             runs: full,
                             kind: LineKind::Code(code_idx),
@@ -258,7 +260,13 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                 title,
                 blocks,
             } => {
-                let head = title.clone().unwrap_or_else(|| kind.label().to_string());
+                // A themed glyph leads the header, then the label/title — a clean
+                // icon in place of the publisher's raster admonition icon.
+                let head = format!(
+                    "{} {}",
+                    kind.glyph(),
+                    title.clone().unwrap_or_else(|| kind.label().to_string())
+                );
                 out.push(DisplayLine {
                     runs: vec![
                         Run {
@@ -400,6 +408,20 @@ fn wrap_spans(
 
         out.push(DisplayLine { runs, kind });
         first_line = false;
+    }
+}
+
+/// Pad a line's runs with trailing spaces so it spans `width` columns. Used for
+/// code blocks so their surface panel fills the column as a clean rectangle (the
+/// filler inherits the line's `kind` background at render time).
+fn pad_to_width(runs: &mut Vec<Run>, width: usize) {
+    let len: usize = runs.iter().map(|r| r.text.chars().count()).sum();
+    if len < width {
+        runs.push(Run {
+            text: " ".repeat(width - len),
+            style: Inline::default(),
+            fg: None,
+        });
     }
 }
 
@@ -662,6 +684,10 @@ mod tests {
         let lines = wrap_blocks(&[block], &WrapOpts::default(), &[]);
         let joined = texts(&lines).join("\n");
         assert!(joined.contains("WARNING"), "header label: {joined:?}");
+        assert!(
+            joined.contains(CalloutKind::Warning.glyph()),
+            "themed glyph in header: {joined:?}"
+        );
         assert!(joined.contains("be careful"), "bordered body: {joined:?}");
         assert!(
             lines.iter().any(|l| l.text().starts_with('▌')),
@@ -675,6 +701,32 @@ mod tests {
         };
         let t = texts(&wrap_blocks(&[titled], &WrapOpts::default(), &[])).join("\n");
         assert!(t.contains("Heads up") && !t.contains("NOTE"));
+    }
+
+    #[test]
+    fn code_lines_are_padded_to_width_for_a_clean_panel() {
+        let block = Block::Code {
+            lang: Some("text".into()),
+            lines: vec!["x = 1".into()],
+        };
+        let opts = WrapOpts {
+            width: 40,
+            ..Default::default()
+        };
+        let lines = wrap_blocks(&[block], &opts, &[]);
+        let code: Vec<&DisplayLine> = lines
+            .iter()
+            .filter(|l| matches!(l.kind, LineKind::Code(_)))
+            .collect();
+        assert!(!code.is_empty(), "produced a code line");
+        for l in code {
+            assert_eq!(
+                l.text().chars().count(),
+                40,
+                "code line padded to width: {:?}",
+                l.text()
+            );
+        }
     }
 
     #[test]

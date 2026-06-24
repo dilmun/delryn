@@ -81,6 +81,21 @@ impl CalloutKind {
         }
     }
 
+    /// A monochrome, single-width Unicode glyph for the callout header, in place
+    /// of a raster icon. Chosen from text-presentation code points (no emoji
+    /// variants), so terminals render them tinted by the theme rather than as
+    /// wide colour emoji: outline triangle for warning, filled for the harsher
+    /// caution.
+    pub fn glyph(self) -> char {
+        match self {
+            CalloutKind::Note => 'ⓘ',
+            CalloutKind::Tip => '✲',
+            CalloutKind::Important => '◆',
+            CalloutKind::Warning => '△',
+            CalloutKind::Caution => '▲',
+        }
+    }
+
     /// Classify a leading keyword (case-insensitive, punctuation-tolerant) into a
     /// callout kind; `None` when the word isn't a recognised admonition.
     pub fn from_word(word: &str) -> Option<CalloutKind> {
