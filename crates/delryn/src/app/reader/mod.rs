@@ -78,6 +78,9 @@ pub struct Reader {
     anchors: Vec<AnchorHit>,
     /// Footnote id → its definition's first display line (rebuilt on re-wrap).
     footnote_def_line: HashMap<String, usize>,
+    /// Cross-reference/citation targets for one section: `(section, id→locator)`,
+    /// cached so repeated lookups in the current section don't re-parse it.
+    targets_cache: Option<(usize, Vec<(String, String)>)>,
     /// Link-cursor position: index into `anchors`, set in link-follow mode.
     anchor_sel: Option<usize>,
     /// Built image protocols, reused across sections (revisiting a section
@@ -102,6 +105,9 @@ pub struct Reader {
     pending_deletes: Vec<u32>,
     /// Text queued to be copied to the system clipboard by the main loop.
     pending_clipboard: Option<String>,
+    /// An external link the user activated, awaiting the app's open-in-browser
+    /// confirmation.
+    pending_open: Option<String>,
     /// A transient status-bar message (e.g. "copied"), cleared on next key.
     pub flash: Option<String>,
     /// images_key the current `lines` were wrapped against.
@@ -209,6 +215,7 @@ impl Reader {
             heading_lines: Vec::new(),
             anchors: Vec::new(),
             footnote_def_line: HashMap::new(),
+            targets_cache: None,
             anchor_sel: None,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
             section_images: HashMap::new(),
@@ -225,6 +232,7 @@ impl Reader {
             img_failed: HashSet::new(),
             pending_deletes: Vec::new(),
             pending_clipboard: None,
+            pending_open: None,
             flash: None,
             wrap_images_key: (usize::MAX, 0, 0, 0),
             scroll: 0,
@@ -378,24 +386,33 @@ impl Reader {
     /// freshly wrapped lines. Done once per re-wrap.
     fn recompute_anchors(&mut self) {
         // Anchors in reading order, merging adjacent runs that share one anchor
-        // (e.g. a multi-glyph link) into a single followable target.
+        // (e.g. a multi-word link "Chapter 3") into a single followable target,
+        // even across the whitespace runs that wrapping inserts between words.
         let mut hits: Vec<AnchorHit> = Vec::new();
         for (li, line) in self.lines.iter().enumerate() {
             let mut col = 0usize;
+            // Whether everything since the last anchor run on this line was blank,
+            // so a same-anchor run after a space still merges into one target.
+            let mut gap_blank = false;
             for run in &line.runs {
                 let len = run.text.chars().count();
-                if let Some(a) = &run.anchor {
-                    match hits.last_mut() {
-                        Some(last) if last.line == li && last.end == col && last.anchor == *a => {
-                            last.end += len;
+                match &run.anchor {
+                    Some(a) => {
+                        match hits.last_mut() {
+                            Some(last) if last.line == li && last.anchor == *a && gap_blank => {
+                                last.end = col + len;
+                            }
+                            _ => hits.push(AnchorHit {
+                                line: li,
+                                start: col,
+                                end: col + len,
+                                anchor: a.clone(),
+                            }),
                         }
-                        _ => hits.push(AnchorHit {
-                            line: li,
-                            start: col,
-                            end: col + len,
-                            anchor: a.clone(),
-                        }),
+                        gap_blank = true;
                     }
+                    // Non-anchor run keeps the run mergeable only if it's blank.
+                    None => gap_blank = gap_blank && run.text.trim().is_empty(),
                 }
                 col += len;
             }
@@ -500,20 +517,24 @@ impl Reader {
         match hit.anchor.clone() {
             Anchor::Footnote(target) => self.follow_footnote(&target),
             Anchor::Link(url) => {
-                let shown: String = if url.chars().count() > 48 {
-                    format!("{}…", url.chars().take(47).collect::<String>())
-                } else {
-                    url.clone()
-                };
-                self.pending_clipboard = Some(url);
+                // Surfaced to the app, which confirms before opening it in the
+                // browser (an outward action).
+                self.pending_open = Some(url);
                 self.anchor_sel = None;
-                self.flash = Some(format!("copied link: {shown}"));
             }
             Anchor::CrossRef(id) => {
-                self.flash = Some(format!("cross-reference → #{id} (jump not yet supported)"));
+                if self.goto_target(&id) {
+                    self.flash = Some("→ cross-reference (Ctrl+o to return)".to_string());
+                } else {
+                    self.flash = Some(format!("cross-reference target #{id} not found"));
+                }
             }
             Anchor::Citation(key) => {
-                self.flash = Some(format!("citation [{key}] (no bibliography yet)"));
+                if self.goto_target(&key) {
+                    self.flash = Some("→ citation (Ctrl+o to return)".to_string());
+                } else {
+                    self.flash = Some(format!("citation [{key}] not found"));
+                }
             }
         }
         true
@@ -561,8 +582,92 @@ impl Reader {
             .find(|&sec| sec != here && find_footnote(&self.fetch_blocks(sec), target).is_some())
     }
 
+    /// The text locator for element `id` (`#`-fragment) in section `sec`, caching
+    /// the last section's targets so repeated current-section lookups are cheap.
+    fn target_locator(&mut self, sec: usize, frag: &str) -> Option<String> {
+        if self.targets_cache.as_ref().map(|(s, _)| *s) != Some(sec) {
+            self.targets_cache = Some((sec, self.doc.section_targets(sec)));
+        }
+        let (_, list) = self.targets_cache.as_ref()?;
+        list.iter()
+            .find(|(id, _)| id == frag)
+            .map(|(_, l)| l.clone())
+    }
+
+    /// The first *other* section that defines element `frag` — only used when a
+    /// reference targets another file (the current section is tried first, since
+    /// EPUB fragment ids are file-scoped and a bare `#id` is always local).
+    fn find_target_section(&mut self, frag: &str) -> Option<usize> {
+        let here = self.section;
+        (0..self.doc.section_count()).find(|&sec| {
+            sec != here
+                && self
+                    .doc
+                    .section_targets(sec)
+                    .iter()
+                    .any(|(id, _)| id == frag)
+        })
+    }
+
+    /// Jump to a cross-reference / citation target `href` (`#frag`, `file#frag`,
+    /// or `file`), pushing history for return. A bare `#frag` is local (EPUB ids
+    /// are file-scoped); a `file#frag` resolves the file to its spine section
+    /// (not by scanning the colliding id), then the fragment within it.
+    fn goto_target(&mut self, href: &str) -> bool {
+        let file = href.split('#').next().unwrap_or("").trim();
+        let frag = href
+            .split('#')
+            .nth(1)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        if file.is_empty() {
+            // Same-file fragment → current section; the id must exist here.
+            let Some(loc) = frag.and_then(|f| self.target_locator(self.section, f)) else {
+                return false;
+            };
+            self.push_history();
+            if let Some(line) = find_target_line(&self.lines, &loc) {
+                self.scroll = line;
+                self.scroll_pending = 0;
+                self.clamp_scroll();
+            }
+            self.anchor_sel = None;
+            return true;
+        }
+
+        // Cross-file: resolve the file to its section (fall back to an id scan
+        // only if the path doesn't resolve), then locate the fragment within it.
+        let Some(sec) = self
+            .doc
+            .section_for_href(self.section, href)
+            .or_else(|| frag.and_then(|f| self.find_target_section(f)))
+        else {
+            return false;
+        };
+        self.push_history();
+        if sec != self.section {
+            self.load(sec);
+            self.ensure_wrapped(self.last_measure.max(1));
+        }
+        let line = frag
+            .and_then(|f| self.target_locator(sec, f))
+            .and_then(|loc| find_target_line(&self.lines, &loc))
+            .unwrap_or(0);
+        self.scroll = line;
+        self.scroll_pending = 0;
+        self.clamp_scroll();
+        self.anchor_sel = None;
+        true
+    }
+
     pub fn take_clipboard(&mut self) -> Option<String> {
         self.pending_clipboard.take()
+    }
+
+    /// An external link the user just activated (to confirm + open in browser).
+    pub fn take_pending_open(&mut self) -> Option<String> {
+        self.pending_open.take()
     }
 
     /// Raw lines of the `n`-th code block in the current section.
@@ -878,6 +983,29 @@ impl Reader {
 
 /// First wrapped line whose normalized text matches `needle`. Prefers a line
 /// that *is* the heading before falling back to a substring match, so a short
+/// Find the display line a cross-reference / citation locator points at: the
+/// first line equal to it, else the first line containing its leading words.
+/// Unlike [`find_line`] (tuned for short TOC headings), it never matches a tiny
+/// early line as a substring of a long locator, and tolerates a locator that
+/// wraps across lines by matching only its first few words.
+fn find_target_line(lines: &[DisplayLine], locator: &str) -> Option<usize> {
+    let n = loose_key(locator);
+    if n.is_empty() {
+        return None;
+    }
+    if let Some(i) = lines.iter().position(|l| loose_key(&l.text()) == n) {
+        return Some(i);
+    }
+    let prefix: String = n.split(' ').take(6).collect::<Vec<_>>().join(" ");
+    if prefix.len() < 3 {
+        return None; // too generic to match reliably
+    }
+    lines.iter().position(|l| {
+        let ll = loose_key(&l.text());
+        !ll.is_empty() && ll.contains(&prefix)
+    })
+}
+
 /// A short label for the link cursor's status flash, by anchor kind.
 fn anchor_kind_label(a: &Anchor) -> &'static str {
     match a {

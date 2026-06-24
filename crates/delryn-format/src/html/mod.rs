@@ -43,19 +43,75 @@ pub fn parse_blocks(xhtml: &str) -> Vec<Block> {
     out
 }
 
+/// Every element `id` in a section → a short text locator (its leading visible
+/// text), in document order, first id winning on duplicates. The reader builds a
+/// book-wide index from these so a cross-reference / citation can be followed to
+/// the element it targets (resolved to a display line by the locator text).
+pub fn collect_targets(xhtml: &str) -> Vec<(String, String)> {
+    let xhtml = expand_self_closing(xhtml);
+    let doc = Html::parse_document(&xhtml);
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for node in doc.tree.root().descendants() {
+        if let Node::Element(e) = node.value()
+            && let Some(id) = e.attr("id")
+            && !id.is_empty()
+            && seen.insert(id.to_string())
+        {
+            out.push((id.to_string(), leading_text(node, 60)));
+        }
+    }
+    out
+}
+
+/// The leading visible text of `node`, whitespace-collapsed and capped to `max`
+/// chars — enough for `find_line` to locate the element without walking a whole
+/// subtree.
+fn leading_text(node: NodeRef<Node>, max: usize) -> String {
+    let mut buf = String::new();
+    for d in node.descendants() {
+        if let Node::Text(t) = d.value() {
+            buf.push_str(&t.text);
+            if buf.len() > max * 2 {
+                break; // enough raw text to fill `max` after collapsing
+            }
+        }
+    }
+    buf.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect()
+}
+
 #[derive(Default, Clone)]
 struct Ctx {
     indent: u8,
     quote: bool,
+    /// Pack paragraphs tight (no blank line between them) — for list-like
+    /// regions: tables of contents and definition lists.
+    tight: bool,
 }
 
 impl Ctx {
     /// A copy at the same indent with `quote` set (for blockquotes/footnotes).
     fn with_quote(&self, quote: bool) -> Ctx {
+        Ctx { quote, ..*self }
+    }
+
+    /// A copy that packs paragraphs tight (ToC / definition-list entries).
+    fn tightened(&self) -> Ctx {
         Ctx {
-            indent: self.indent,
-            quote,
+            tight: true,
+            ..*self
         }
+    }
+
+    /// The marker that makes a paragraph count as a tight list item (empty text,
+    /// no visible glyph) when `tight`, else none.
+    fn item_marker(&self) -> Option<String> {
+        self.tight.then(String::new)
     }
 }
 
@@ -75,6 +131,7 @@ fn is_block(node: NodeRef<Node>) -> bool {
                 | "header"
                 | "footer"
                 | "main"
+                | "nav"
                 | "figure"
                 | "figcaption"
                 | "h1"
@@ -86,6 +143,7 @@ fn is_block(node: NodeRef<Node>) -> bool {
                 | "ul"
                 | "ol"
                 | "li"
+                | "dl"
                 | "blockquote"
                 | "pre"
                 | "hr"
@@ -105,6 +163,10 @@ fn is_block(node: NodeRef<Node>) -> bool {
 fn walk_children(parent: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
     let mut inline: Vec<Span> = Vec::new();
     for child in parent.children() {
+        // Drop regenerated markers (list item numbers, footnote backrefs).
+        if matches!(child.value(), Node::Element(e) if is_marker_chrome(e)) {
+            continue;
+        }
         if is_block(child) {
             flush(&mut inline, ctx, out);
             block_element(child, ctx, out);
@@ -122,7 +184,7 @@ fn flush(inline: &mut Vec<Span>, ctx: &Ctx, out: &mut Vec<Block>) {
             spans: std::mem::take(inline),
             indent: ctx.indent,
             quote: ctx.quote,
-            marker: None,
+            marker: ctx.item_marker(),
         });
     } else {
         inline.clear();
@@ -169,7 +231,20 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
         ElementRole::Heading(level) => {
             let spans = inline_spans(node);
             if spans.iter().any(|s| !s.text.trim().is_empty()) {
-                out.push(Block::Heading { level, spans });
+                // A heading-based ToC (Packt et al.) encodes depth in the heading
+                // level; render those entries indented instead of as flat headings.
+                if level >= 2 && in_toc(node) {
+                    out.push(Block::Para {
+                        spans,
+                        indent: level - 2,
+                        quote: ctx.quote,
+                        // Empty marker → counts as a list item, so consecutive ToC
+                        // entries pack tight (no blank line between rows).
+                        marker: Some(String::new()),
+                    });
+                } else {
+                    out.push(Block::Heading { level, spans });
+                }
             }
         }
         ElementRole::Paragraph | ElementRole::Cell => emit_paragraph(node, ctx, out),
@@ -188,6 +263,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             }
         }
         ElementRole::Quote => walk_children(node, &ctx.with_quote(true), out),
+        ElementRole::DefList => emit_deflist(node, &ctx.tightened(), out),
         ElementRole::Rule => out.push(Block::Rule),
         ElementRole::Image => out.push(Block::Image {
             src: e.attr("src").unwrap_or("").to_string(),
@@ -213,7 +289,17 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 out.push(table);
             }
         }
-        ElementRole::Container => walk_children(node, ctx, out),
+        ElementRole::Container => {
+            // A ToC region (or a Springer ToC-level div) indents to its level and
+            // packs entries tight; the flag flows to all descendants.
+            let toc = is_toc_root(e) || toc_level(e).is_some();
+            let c = Ctx {
+                indent: toc_level(e).unwrap_or(ctx.indent),
+                quote: ctx.quote,
+                tight: ctx.tight || toc,
+            };
+            walk_children(node, &c, out);
+        }
     }
 }
 
@@ -237,7 +323,7 @@ fn emit_paragraph(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             spans,
             indent: ctx.indent,
             quote: ctx.quote,
-            marker: None,
+            marker: ctx.item_marker(),
         });
     }
 }
@@ -248,7 +334,7 @@ fn list_item(node: NodeRef<Node>, ctx: &Ctx, marker: String, out: &mut Vec<Block
     let mut item: Vec<Block> = Vec::new();
     let inner = Ctx {
         indent: ctx.indent + 1,
-        quote: ctx.quote,
+        ..*ctx
     };
     walk_children(node, &inner, &mut item);
 
@@ -260,6 +346,77 @@ fn list_item(node: NodeRef<Node>, ctx: &Ctx, marker: String, out: &mut Vec<Block
         *indent = ctx.indent;
     }
     out.append(&mut item);
+}
+
+/// Render a definition list (`<dl>`): pair each `<dt>` term with the following
+/// `<dd>` description(s), as "**term**  description" on one entry (the term in
+/// bold, then the description), so terms and definitions don't run together.
+fn emit_deflist(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
+    let mut term: Vec<Span> = Vec::new();
+    for child in node.children() {
+        let Node::Element(e) = child.value() else {
+            continue;
+        };
+        match e.name() {
+            "dt" => term = inline_spans(child),
+            "dd" => {
+                emit_def_entry(std::mem::take(&mut term), child, ctx, out);
+            }
+            _ => {}
+        }
+    }
+    // A trailing `<dt>` with no `<dd>` (rare) still shows.
+    if term.iter().any(|s| !s.text.trim().is_empty()) {
+        out.push(Block::Para {
+            spans: bold_spans(term),
+            indent: ctx.indent,
+            quote: ctx.quote,
+            marker: ctx.item_marker(),
+        });
+    }
+}
+
+/// Emit one `<dt>`/`<dd>` entry: the bold term prefixed onto the description's
+/// first paragraph (a hanging indent), with any further description blocks kept.
+fn emit_def_entry(term: Vec<Span>, dd: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
+    let mut blocks = Vec::new();
+    walk_children(dd, ctx, &mut blocks);
+    let mut prefix = bold_spans(term);
+    if let Some(Block::Para { spans, .. }) =
+        blocks.iter_mut().find(|b| matches!(b, Block::Para { .. }))
+    {
+        if !prefix.is_empty() {
+            prefix.push(Span::plain("  "));
+            spans.splice(0..0, prefix);
+        }
+    } else {
+        // No description paragraph: the term on its own line.
+        blocks.insert(
+            0,
+            Block::Para {
+                spans: prefix,
+                indent: ctx.indent,
+                quote: ctx.quote,
+                marker: ctx.item_marker(),
+            },
+        );
+    }
+    out.append(&mut blocks);
+}
+
+/// Re-style spans as bold (for definition-list terms).
+fn bold_spans(spans: Vec<Span>) -> Vec<Span> {
+    spans
+        .into_iter()
+        .map(|s| Span {
+            text: s.text,
+            style: Inline {
+                bold: true,
+                ..s.style
+            },
+            anchor: s.anchor,
+        })
+        .collect()
 }
 
 #[cfg(test)]

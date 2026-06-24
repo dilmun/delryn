@@ -190,7 +190,9 @@ pub const TERMINAL: Theme = Theme {
     bg: None,
     fg: Color::Reset,
     heading: Color::Reset,
-    quote: Color::DarkGray,
+    // A readable slate (DarkGray was too dim on a dark terminal); the ▎ bar +
+    // italic already set quotes apart, so it only needs to be legible.
+    quote: Color::Rgb(0x9d, 0xa5, 0xb4),
     link: Color::Rgb(88, 160, 255),
     muted: Color::DarkGray,
     marker: Color::Rgb(229, 192, 123),
