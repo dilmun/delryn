@@ -105,6 +105,12 @@ pub struct Reader {
     pub page_lines: usize,
     /// Wrap width used by the last render; used to locate jump targets.
     pub last_measure: usize,
+    /// Region an open overlay/popup covers this frame, if any. An inline image
+    /// whose *left edge* falls under it is skipped: the kitty protocol keeps each
+    /// row's placeholder in its first cell, so a clobbered left edge kills the
+    /// image and leaves its right side (Skip cells) as a black box. Images whose
+    /// left edge is clear render fine — the opaque popup just covers their edge.
+    pub overlay_occlude: Option<ratatui::layout::Rect>,
     /// A saved within-section fraction to restore on the next draw (resume).
     pub pending_frac: Option<f32>,
     /// Collapsed parent rows (outline indices) in the sidebar tree.
@@ -207,6 +213,7 @@ impl Reader {
             page_lines: 1,
             last_measure: 72,
             pending_frac: None,
+            overlay_occlude: None,
             collapsed: HashSet::new(),
             back_stack: Vec::new(),
             fwd_stack: Vec::new(),
