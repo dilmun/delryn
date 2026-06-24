@@ -56,6 +56,12 @@ pub enum Action {
     NextElement,
     /// Jump to the previous rich element.
     PrevElement,
+    /// Move the link cursor to the next inline reference (footnote/cross-ref/link).
+    NextAnchor,
+    /// Move the link cursor to the previous inline reference.
+    PrevAnchor,
+    /// Dismiss the link cursor.
+    ClearAnchor,
 }
 
 pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
@@ -122,6 +128,9 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('y') => Action::CopyCode,
         KeyCode::Char('w') => Action::NextElement,
         KeyCode::Char('b') if !ctrl => Action::PrevElement,
+        KeyCode::Char('e') => Action::NextAnchor,
+        KeyCode::Char('E') => Action::PrevAnchor,
+        KeyCode::Esc => Action::ClearAnchor,
         KeyCode::Char('\\') => Action::ToggleCodeWrap,
         KeyCode::Char('<') => Action::PanLeft,
         KeyCode::Char('>') => Action::PanRight,

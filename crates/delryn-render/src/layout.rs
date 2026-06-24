@@ -5,7 +5,7 @@
 //! `DESIGN.md` §2.1, §4.
 
 use crate::highlight::highlight_code;
-use delryn_model::{Block, Inline, Span, TableCell};
+use delryn_model::{Anchor, Block, Inline, Span, TableCell};
 
 /// An RGB foreground colour (from syntax highlighting / themes).
 pub type Rgb = (u8, u8, u8);
@@ -17,6 +17,10 @@ pub struct Run {
     pub style: Inline,
     /// Explicit foreground colour, if any (syntax highlighting).
     pub fg: Option<Rgb>,
+    /// Navigation target carried from the source span (footnote ref / cross-ref /
+    /// link), so the reader's link cursor can locate and follow it. `None` for
+    /// ordinary text and all non-prose runs (code, table, prefixes…).
+    pub anchor: Option<Anchor>,
 }
 
 /// What a display line represents, so the view can style it by theme.
@@ -30,8 +34,10 @@ pub enum LineKind {
     Rule,
     /// A reserved row for the inline image with this section-local index.
     Image(usize),
-    /// A footnote-definition line (rendered muted, set apart from the body).
-    Footnote,
+    /// A footnote-definition line (rendered muted, set apart from the body),
+    /// tagged with the footnote's section-local index so the reader can map a
+    /// reference to its definition's first line.
+    Footnote(usize),
     /// A display-math line (centred, rendered to Unicode).
     Math,
     /// A table row (header, rule, or body), so tables are jump-navigable.
@@ -106,6 +112,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
     let mut first = true;
     let mut img_idx = 0usize;
     let mut code_idx = 0usize;
+    let mut footnote_idx = 0usize;
 
     for block in blocks {
         let is_item = matches!(
@@ -132,6 +139,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                     text: "─".repeat(width),
                     style: Inline::default(),
                     fg: None,
+                    anchor: None,
                 }],
                 kind: LineKind::Rule,
             }),
@@ -178,6 +186,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                             text: label,
                             style: Inline::default(),
                             fg: None,
+                            anchor: None,
                         }],
                         kind: LineKind::Body,
                     });
@@ -217,6 +226,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                                 text: gutter,
                                 style: Inline::default(),
                                 fg: None,
+                                anchor: None,
                             }];
                             full.append(&mut line_runs);
                             pad_to_width(&mut full, width);
@@ -231,6 +241,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                             text: num,
                             style: Inline::default(),
                             fg: None,
+                            anchor: None,
                         }];
                         full.extend(shift_runs(runs, opts.code_hscroll, avail));
                         pad_to_width(&mut full, width);
@@ -256,6 +267,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                                 ..Inline::default()
                             },
                             fg: None,
+                            anchor: None,
                         }],
                         kind: LineKind::Math,
                     });
@@ -282,6 +294,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                             text: "▌ ".to_string(),
                             style: Inline::default(),
                             fg: None,
+                            anchor: None,
                         },
                         Run {
                             text: head,
@@ -290,6 +303,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                                 ..Inline::default()
                             },
                             fg: None,
+                            anchor: None,
                         },
                     ],
                     kind: LineKind::Quote,
@@ -305,10 +319,18 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                             ..Inline::default()
                         },
                         fg: None,
+                        anchor: None,
                     }],
-                    kind: LineKind::Footnote,
+                    kind: LineKind::Footnote(footnote_idx),
                 });
-                wrap_nested(blocks, opts, "  ", LineKind::Footnote, &mut out);
+                wrap_nested(
+                    blocks,
+                    opts,
+                    "  ",
+                    LineKind::Footnote(footnote_idx),
+                    &mut out,
+                );
+                footnote_idx += 1;
             }
         }
 
@@ -414,16 +436,16 @@ fn wrap_spans(
     // (`𝔼`,`(`,`X`,`)`): the old per-span split turned that into `𝔼 ( X )`.
     let chars = spans
         .iter()
-        .flat_map(|s| s.text.chars().map(move |c| (c, s.style)));
-    let mut words: Vec<Vec<(char, Inline)>> = Vec::new();
-    let mut cur: Vec<(char, Inline)> = Vec::new();
-    for (c, st) in chars {
+        .flat_map(|s| s.text.chars().map(move |c| (c, s.style, s.anchor.clone())));
+    let mut words: Vec<Vec<(char, Inline, Option<Anchor>)>> = Vec::new();
+    let mut cur: Vec<(char, Inline, Option<Anchor>)> = Vec::new();
+    for (c, st, an) in chars {
         if c.is_whitespace() {
             if !cur.is_empty() {
                 words.push(std::mem::take(&mut cur));
             }
         } else {
-            cur.push((c, st));
+            cur.push((c, st, an));
         }
     }
     if !cur.is_empty() {
@@ -452,6 +474,7 @@ fn wrap_spans(
                 text: prefix.to_string(),
                 style: Inline::default(),
                 fg: None,
+                anchor: None,
             });
         }
         for k in 0..count {
@@ -460,6 +483,7 @@ fn wrap_spans(
                     text: " ".to_string(),
                     style: Inline::default(),
                     fg: None,
+                    anchor: None,
                 });
             }
             push_word_runs(&words[i], &mut runs);
@@ -479,36 +503,41 @@ fn pad_to_width(runs: &mut Vec<Run>, width: usize) {
             text: " ".repeat(width - len),
             style: Inline::default(),
             fg: None,
+            anchor: None,
         });
     }
 }
 
 /// Append one word's chars as runs, coalescing consecutive chars of equal style
-/// (a word may mix styles, e.g. a bold glyph immediately followed by a normal
-/// one with no whitespace between the source spans).
-fn push_word_runs(word: &[(char, Inline)], runs: &mut Vec<Run>) {
+/// *and* anchor (a word may mix styles — a bold glyph next to a normal one with
+/// no whitespace between source spans — or carry a navigation anchor on part of
+/// it, e.g. a footnote-ref superscript).
+fn push_word_runs(word: &[(char, Inline, Option<Anchor>)], runs: &mut Vec<Run>) {
     let mut buf = String::new();
-    let mut cur_style: Option<Inline> = None;
-    for &(c, st) in word {
-        if cur_style == Some(st) {
-            buf.push(c);
+    let mut cur: Option<(Inline, Option<Anchor>)> = None;
+    for (c, st, an) in word {
+        let key = (*st, an.clone());
+        if cur.as_ref() == Some(&key) {
+            buf.push(*c);
         } else {
-            if let Some(s) = cur_style {
+            if let Some((s, a)) = cur.take() {
                 runs.push(Run {
                     text: std::mem::take(&mut buf),
                     style: s,
                     fg: None,
+                    anchor: a,
                 });
             }
-            buf.push(c);
-            cur_style = Some(st);
+            buf.push(*c);
+            cur = Some(key);
         }
     }
-    if let Some(s) = cur_style {
+    if let Some((s, a)) = cur {
         runs.push(Run {
             text: buf,
             style: s,
             fg: None,
+            anchor: a,
         });
     }
 }
@@ -541,6 +570,7 @@ fn shift_runs(runs: Vec<Run>, skip: usize, avail: usize) -> Vec<Run> {
                 text,
                 style: run.style,
                 fg: run.fg,
+                anchor: None,
             });
         }
     }
@@ -567,6 +597,7 @@ fn pack_runs(runs: Vec<Run>, avail: usize) -> Vec<Vec<Run>> {
                 text: chars[idx..idx + take].iter().collect(),
                 style: run.style,
                 fg: run.fg,
+                anchor: None,
             });
             len += take;
             idx += take;
@@ -604,6 +635,7 @@ fn wrap_nested(
             text: border.to_string(),
             style: Inline::default(),
             fg: None,
+            anchor: None,
         });
         runs.extend(line.runs);
         out.push(DisplayLine { runs, kind });
@@ -709,6 +741,7 @@ fn table_row(
                         ..Inline::default()
                     },
                     fg: None,
+                    anchor: None,
                 }],
                 kind: LineKind::Table { shaded },
             }
@@ -764,6 +797,7 @@ fn wrap_table(
                     .join("─┼─"),
                 style: Inline::default(),
                 fg: None,
+                anchor: None,
             }],
             kind: LineKind::Table { shaded: false },
         });
@@ -1018,6 +1052,67 @@ mod tests {
             shaded,
             vec![false, false, false, true, false],
             "header/rule never shaded; body rows alternate"
+        );
+    }
+
+    #[test]
+    fn anchors_survive_wrapping_onto_their_run() {
+        // A footnote-ref span must reach the view as a Run carrying its Anchor,
+        // so the reader's link cursor can locate and follow it.
+        let spans = vec![
+            Span::plain("see "),
+            Span {
+                text: "7".to_string(),
+                style: Inline::default(),
+                anchor: Some(Anchor::Footnote("fn7".to_string())),
+            },
+            Span::plain(" for details"),
+        ];
+        let block = Block::Para {
+            spans,
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let lines = wrap_blocks(&[block], &WrapOpts::default(), &[]);
+        let anchored: Vec<(&str, &Anchor)> = lines
+            .iter()
+            .flat_map(|l| &l.runs)
+            .filter_map(|r| r.anchor.as_ref().map(|a| (r.text.as_str(), a)))
+            .collect();
+        assert_eq!(anchored.len(), 1, "exactly the ref run is anchored");
+        assert_eq!(anchored[0].0, "7");
+        assert_eq!(anchored[0].1, &Anchor::Footnote("fn7".to_string()));
+    }
+
+    #[test]
+    fn footnote_definitions_are_indexed_per_section() {
+        let cell = |s: &str| vec![Span::plain(s)];
+        let foot = |id: &str, label: &str, body: &str| Block::Footnote {
+            id: id.to_string(),
+            label: label.to_string(),
+            blocks: vec![Block::Para {
+                spans: cell(body),
+                indent: 0,
+                quote: false,
+                marker: None,
+            }],
+        };
+        let lines = wrap_blocks(
+            &[foot("fn1", "1", "first"), foot("fn2", "2", "second")],
+            &WrapOpts::default(),
+            &[],
+        );
+        // Each definition's lines carry its own section-local index.
+        assert!(
+            lines
+                .iter()
+                .any(|l| matches!(l.kind, LineKind::Footnote(0)))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| matches!(l.kind, LineKind::Footnote(1)))
         );
     }
 

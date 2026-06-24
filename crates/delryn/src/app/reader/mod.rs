@@ -16,6 +16,7 @@ use crate::layout::{DisplayLine, LineKind, WrapOpts, wrap_blocks};
 use crate::media::{self, ImageBuilder, ImagePlan, ImgKey};
 use crate::search::{Matcher, SearchMode};
 use crate::theme;
+use delryn_model::{Anchor, find_footnote};
 use ratatui_image::picker::Picker;
 
 use super::{CACHE_CAP, Focus, IMAGE_CACHE_CAP};
@@ -31,6 +32,16 @@ mod sidebar;
 struct Pos {
     section: usize,
     scroll: usize,
+}
+
+/// A followable inline anchor located in the wrapped lines (reading order). The
+/// link cursor steps through these; the view highlights the selected one.
+pub struct AnchorHit {
+    pub line: usize,
+    /// Column range within the line, in display chars `[start, end)`.
+    pub start: usize,
+    pub end: usize,
+    pub anchor: Anchor,
 }
 
 pub struct Reader {
@@ -63,6 +74,12 @@ pub struct Reader {
     /// Cached (outline index, line) for the current section's entries, recomputed
     /// on re-wrap; drives the TOC scroll-spy cheaply.
     heading_lines: Vec<(usize, usize)>,
+    /// Followable inline anchors in reading order (rebuilt on re-wrap).
+    anchors: Vec<AnchorHit>,
+    /// Footnote id → its definition's first display line (rebuilt on re-wrap).
+    footnote_def_line: HashMap<String, usize>,
+    /// Link-cursor position: index into `anchors`, set in link-follow mode.
+    anchor_sel: Option<usize>,
     /// Built image protocols, reused across sections (revisiting a section
     /// reuses the already-uploaded image instead of re-transmitting). LRU.
     image_cache: LruCache<ImgKey, ImagePlan>,
@@ -190,6 +207,9 @@ impl Reader {
             wrap_table_wrap: true,
             chapter_lock: false,
             heading_lines: Vec::new(),
+            anchors: Vec::new(),
+            footnote_def_line: HashMap::new(),
+            anchor_sel: None,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
             section_images: HashMap::new(),
             image_rows_estimate: Vec::new(),
@@ -333,6 +353,7 @@ impl Reader {
             self.wrap_table_wrap = self.table_wrap;
             self.wrap_images_key = self.images_key;
             self.recompute_heading_lines();
+            self.recompute_anchors();
         }
     }
 
@@ -351,6 +372,193 @@ impl Reader {
             hl.push((oi, line));
         }
         self.heading_lines = hl;
+    }
+
+    /// Rebuild the inline-anchor index and footnote definition map from the
+    /// freshly wrapped lines. Done once per re-wrap.
+    fn recompute_anchors(&mut self) {
+        // Anchors in reading order, merging adjacent runs that share one anchor
+        // (e.g. a multi-glyph link) into a single followable target.
+        let mut hits: Vec<AnchorHit> = Vec::new();
+        for (li, line) in self.lines.iter().enumerate() {
+            let mut col = 0usize;
+            for run in &line.runs {
+                let len = run.text.chars().count();
+                if let Some(a) = &run.anchor {
+                    match hits.last_mut() {
+                        Some(last) if last.line == li && last.end == col && last.anchor == *a => {
+                            last.end += len;
+                        }
+                        _ => hits.push(AnchorHit {
+                            line: li,
+                            start: col,
+                            end: col + len,
+                            anchor: a.clone(),
+                        }),
+                    }
+                }
+                col += len;
+            }
+        }
+        self.anchors = hits;
+        self.anchor_sel = self.anchor_sel.filter(|&i| i < self.anchors.len());
+
+        // Footnote definitions: first display line per section-local index, then
+        // id → line via the blocks (same top-level order the layout numbered them).
+        let mut idx_line: HashMap<usize, usize> = HashMap::new();
+        for (li, l) in self.lines.iter().enumerate() {
+            if let LineKind::Footnote(k) = l.kind {
+                idx_line.entry(k).or_insert(li);
+            }
+        }
+        let mut map = HashMap::new();
+        let mut k = 0usize;
+        for b in &self.blocks {
+            if let Block::Footnote { id, .. } = b {
+                if let Some(&line) = idx_line.get(&k)
+                    && !id.is_empty()
+                {
+                    map.insert(id.clone(), line);
+                }
+                k += 1;
+            }
+        }
+        self.footnote_def_line = map;
+    }
+
+    /// Step the link cursor to the next/previous inline anchor and scroll it into
+    /// view. With no selection yet, starts from the viewport.
+    pub fn next_anchor(&mut self) {
+        self.step_anchor(true);
+    }
+
+    pub fn prev_anchor(&mut self) {
+        self.step_anchor(false);
+    }
+
+    fn step_anchor(&mut self, forward: bool) {
+        self.ensure_wrapped(self.last_measure.max(1));
+        if self.anchors.is_empty() {
+            self.flash = Some("no links or footnotes in this chapter".to_string());
+            return;
+        }
+        let n = self.anchors.len();
+        let next = match self.anchor_sel {
+            Some(i) if forward => (i + 1) % n,
+            Some(i) => (i + n - 1) % n,
+            None if forward => self
+                .anchors
+                .iter()
+                .position(|a| a.line >= self.scroll)
+                .unwrap_or(0),
+            None => self
+                .anchors
+                .iter()
+                .rposition(|a| a.line < self.scroll + self.page_lines.max(1))
+                .unwrap_or(n - 1),
+        };
+        self.anchor_sel = Some(next);
+        self.scroll_into_view(self.anchors[next].line);
+        let kind = anchor_kind_label(&self.anchors[next].anchor);
+        self.flash = Some(format!("{kind} {}/{n} · Enter to follow", next + 1));
+    }
+
+    /// Scroll so `line` is within the visible page (top if above, half-page from
+    /// the top if below).
+    fn scroll_into_view(&mut self, line: usize) {
+        let page = self.page_lines.max(1);
+        if line < self.scroll {
+            self.scroll = line;
+        } else if line >= self.scroll + page {
+            self.scroll = line.saturating_sub(page / 2);
+        }
+        self.scroll_pending = 0;
+        self.clamp_scroll();
+    }
+
+    /// The anchor the link cursor is on, for the view to highlight.
+    pub fn selected_anchor(&self) -> Option<&AnchorHit> {
+        self.anchor_sel.and_then(|i| self.anchors.get(i))
+    }
+
+    /// Clear the link cursor; returns whether anything was selected (so the key
+    /// is "consumed" only when it actually dismissed the cursor).
+    pub fn clear_anchor(&mut self) -> bool {
+        self.anchor_sel.take().is_some()
+    }
+
+    /// Follow the selected anchor: footnote ref → its definition (with history for
+    /// return); link → copy the URL; cross-ref/citation → a status note (jump
+    /// targets aren't indexed yet). Returns whether an anchor was selected.
+    pub fn activate_anchor(&mut self) -> bool {
+        let Some(i) = self.anchor_sel else {
+            return false;
+        };
+        let Some(hit) = self.anchors.get(i) else {
+            return false;
+        };
+        match hit.anchor.clone() {
+            Anchor::Footnote(target) => self.follow_footnote(&target),
+            Anchor::Link(url) => {
+                let shown: String = if url.chars().count() > 48 {
+                    format!("{}…", url.chars().take(47).collect::<String>())
+                } else {
+                    url.clone()
+                };
+                self.pending_clipboard = Some(url);
+                self.anchor_sel = None;
+                self.flash = Some(format!("copied link: {shown}"));
+            }
+            Anchor::CrossRef(id) => {
+                self.flash = Some(format!("cross-reference → #{id} (jump not yet supported)"));
+            }
+            Anchor::Citation(key) => {
+                self.flash = Some(format!("citation [{key}] (no bibliography yet)"));
+            }
+        }
+        true
+    }
+
+    /// Jump to a footnote definition for reference `target`: current section
+    /// first, then any other section (endnotes collected elsewhere), pushing
+    /// history so Ctrl+o returns to the reference.
+    fn follow_footnote(&mut self, target: &str) {
+        if let Some(line) = self.footnote_line_here(target) {
+            self.push_history();
+            self.scroll = line;
+            self.scroll_pending = 0;
+            self.clamp_scroll();
+            self.anchor_sel = None;
+            self.flash = Some("→ footnote (Ctrl+o to return)".to_string());
+        } else if let Some(sec) = self.find_footnote_section(target) {
+            self.push_history();
+            self.load(sec);
+            self.ensure_wrapped(self.last_measure.max(1));
+            let line = self.footnote_line_here(target).unwrap_or(0);
+            self.scroll = line;
+            self.scroll_pending = 0;
+            self.clamp_scroll();
+            self.anchor_sel = None;
+            self.flash = Some("→ endnote (Ctrl+o to return)".to_string());
+        } else {
+            self.flash = Some("footnote definition not found".to_string());
+        }
+    }
+
+    /// The definition line in the *current* section for a footnote `target`.
+    fn footnote_line_here(&self, target: &str) -> Option<usize> {
+        match find_footnote(&self.blocks, target)? {
+            Block::Footnote { id, .. } => self.footnote_def_line.get(id).copied(),
+            _ => None,
+        }
+    }
+
+    /// The first other section whose blocks define footnote `target` (endnotes).
+    /// Decodes sections on demand — only when the footnote isn't defined locally.
+    fn find_footnote_section(&mut self, target: &str) -> Option<usize> {
+        let here = self.section;
+        (0..self.doc.section_count())
+            .find(|&sec| sec != here && find_footnote(&self.fetch_blocks(sec), target).is_some())
     }
 
     pub fn take_clipboard(&mut self) -> Option<String> {
@@ -376,7 +584,7 @@ impl Reader {
             LineKind::Table { .. } => Some("table"),
             LineKind::Math => Some("math"),
             LineKind::Image(_) => Some("figure"),
-            LineKind::Footnote => Some("footnote"),
+            LineKind::Footnote(_) => Some("footnote"),
             _ => None,
         }
     }
@@ -487,6 +695,7 @@ impl Reader {
         self.section = section;
         self.blocks = self.fetch_blocks(section);
         self.scroll = 0;
+        self.anchor_sel = None; // a new section has a different anchor set
         self.wrap_width = 0; // force a re-wrap on next draw
         self.prefetch_neighbors();
     }
@@ -669,6 +878,16 @@ impl Reader {
 
 /// First wrapped line whose normalized text matches `needle`. Prefers a line
 /// that *is* the heading before falling back to a substring match, so a short
+/// A short label for the link cursor's status flash, by anchor kind.
+fn anchor_kind_label(a: &Anchor) -> &'static str {
+    match a {
+        Anchor::Footnote(_) => "footnote ref",
+        Anchor::CrossRef(_) => "cross-ref",
+        Anchor::Link(_) => "link",
+        Anchor::Citation(_) => "citation",
+    }
+}
+
 /// heading like "Linux" lands on the header rather than an earlier mention.
 fn find_line(lines: &[DisplayLine], needle: &str) -> Option<usize> {
     let n = loose_key(needle);
