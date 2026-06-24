@@ -97,9 +97,12 @@ jump-by-type + a reader cursor.
 - [ ] Reading modes: Continuous, Page, Chapter, Focus, Study, Research, Presentation.
       *(Have: Center/Fill/TwoPage view modes, focus mode, chapter-lock.)*
 - [ ] Pagination models: continuous / virtual pages / book pages (PDF) / reflowed.
-- [~] Navigation: reading history + back/forward (pre-existing) and **jump-by-type**
-      done — `w`/`b` cycle code/table/math/figure/footnote ("kind N/M"). *Still:
-      a reader cursor for footnote ref→def jump/return + cross-ref/citation jump.*
+- [x] Navigation: reading history + back/forward, **jump-by-type** (`w`/`b` cycle
+      code/table/math/figure/footnote), and a **link cursor** — `e`/`E` step
+      through inline references (footnote/cross-ref/link), Enter follows (footnote
+      ref→def, same section then cross-section endnotes, Ctrl+o returns; link→copy
+      URL), Esc clears. *Deferred: cross-ref/citation jump targets (not indexed at
+      parse yet).*
 - [ ] Bookmarks: named, quick, folders. *(Have: bookmark/note annotations + overlay.)*
 
 ## Phase 3 — Library platform
