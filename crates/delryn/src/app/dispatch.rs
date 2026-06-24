@@ -333,7 +333,15 @@ impl App {
             Action::Activate => {
                 if reader.focus == Focus::Sidebar {
                     reader.sidebar_activate();
+                } else {
+                    // In the text pane, Enter follows the link cursor's anchor.
+                    reader.activate_anchor();
                 }
+            }
+            Action::NextAnchor => reader.next_anchor(),
+            Action::PrevAnchor => reader.prev_anchor(),
+            Action::ClearAnchor => {
+                reader.clear_anchor();
             }
             Action::Expand => {
                 if reader.focus == Focus::Sidebar {
