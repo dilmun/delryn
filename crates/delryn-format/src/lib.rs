@@ -49,4 +49,10 @@ pub trait Document {
     fn section_images(&mut self, _section: usize) -> Vec<Vec<u8>> {
         Vec::new()
     }
+    /// Cross-reference / citation jump targets in section `index`: each element's
+    /// `id` paired with a short text locator. Empty by default (formats without
+    /// internal id anchors).
+    fn section_targets(&mut self, _index: usize) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }

@@ -78,6 +78,9 @@ pub struct Reader {
     anchors: Vec<AnchorHit>,
     /// Footnote id → its definition's first display line (rebuilt on re-wrap).
     footnote_def_line: HashMap<String, usize>,
+    /// Cross-reference/citation targets for one section: `(section, id→locator)`,
+    /// cached so repeated lookups in the current section don't re-parse it.
+    targets_cache: Option<(usize, Vec<(String, String)>)>,
     /// Link-cursor position: index into `anchors`, set in link-follow mode.
     anchor_sel: Option<usize>,
     /// Built image protocols, reused across sections (revisiting a section
@@ -209,6 +212,7 @@ impl Reader {
             heading_lines: Vec::new(),
             anchors: Vec::new(),
             footnote_def_line: HashMap::new(),
+            targets_cache: None,
             anchor_sel: None,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
             section_images: HashMap::new(),
@@ -510,10 +514,18 @@ impl Reader {
                 self.flash = Some(format!("copied link: {shown}"));
             }
             Anchor::CrossRef(id) => {
-                self.flash = Some(format!("cross-reference → #{id} (jump not yet supported)"));
+                if self.goto_target(&id) {
+                    self.flash = Some("→ cross-reference (Ctrl+o to return)".to_string());
+                } else {
+                    self.flash = Some(format!("cross-reference target #{id} not found"));
+                }
             }
             Anchor::Citation(key) => {
-                self.flash = Some(format!("citation [{key}] (no bibliography yet)"));
+                if self.goto_target(&key) {
+                    self.flash = Some("→ citation (Ctrl+o to return)".to_string());
+                } else {
+                    self.flash = Some(format!("citation [{key}] not found"));
+                }
             }
         }
         true
@@ -559,6 +571,70 @@ impl Reader {
         let here = self.section;
         (0..self.doc.section_count())
             .find(|&sec| sec != here && find_footnote(&self.fetch_blocks(sec), target).is_some())
+    }
+
+    /// The text locator for element `id` (`#`-fragment) in section `sec`, caching
+    /// the last section's targets so repeated current-section lookups are cheap.
+    fn target_locator(&mut self, sec: usize, frag: &str) -> Option<String> {
+        if self.targets_cache.as_ref().map(|(s, _)| *s) != Some(sec) {
+            self.targets_cache = Some((sec, self.doc.section_targets(sec)));
+        }
+        let (_, list) = self.targets_cache.as_ref()?;
+        list.iter()
+            .find(|(id, _)| id == frag)
+            .map(|(_, l)| l.clone())
+    }
+
+    /// The first *other* section that defines element `frag` — only used when a
+    /// reference targets another file (the current section is tried first, since
+    /// EPUB fragment ids are file-scoped and a bare `#id` is always local).
+    fn find_target_section(&mut self, frag: &str) -> Option<usize> {
+        let here = self.section;
+        (0..self.doc.section_count()).find(|&sec| {
+            sec != here
+                && self
+                    .doc
+                    .section_targets(sec)
+                    .iter()
+                    .any(|(id, _)| id == frag)
+        })
+    }
+
+    /// Jump to a cross-reference / citation target `href` (`#frag`, `file#frag`,
+    /// or `file`). Resolves the current section first (file-scoped ids), then any
+    /// other section; pushes history for return. Returns whether it resolved.
+    fn goto_target(&mut self, href: &str) -> bool {
+        let frag = href.rsplit('#').next().unwrap_or(href).trim();
+        if frag.is_empty() {
+            return false;
+        }
+        // Current section first — a bare `#id` is always local.
+        if let Some(loc) = self.target_locator(self.section, frag) {
+            self.push_history();
+            if let Some(line) = find_target_line(&self.lines, &loc) {
+                self.scroll = line;
+                self.scroll_pending = 0;
+                self.clamp_scroll();
+            }
+            self.anchor_sel = None;
+            return true;
+        }
+        // Otherwise, a cross-file reference: find the section that defines it.
+        if let Some(sec) = self.find_target_section(frag) {
+            self.push_history();
+            self.load(sec);
+            self.ensure_wrapped(self.last_measure.max(1));
+            let line = self
+                .target_locator(sec, frag)
+                .and_then(|loc| find_target_line(&self.lines, &loc))
+                .unwrap_or(0);
+            self.scroll = line;
+            self.scroll_pending = 0;
+            self.clamp_scroll();
+            self.anchor_sel = None;
+            return true;
+        }
+        false
     }
 
     pub fn take_clipboard(&mut self) -> Option<String> {
@@ -878,6 +954,29 @@ impl Reader {
 
 /// First wrapped line whose normalized text matches `needle`. Prefers a line
 /// that *is* the heading before falling back to a substring match, so a short
+/// Find the display line a cross-reference / citation locator points at: the
+/// first line equal to it, else the first line containing its leading words.
+/// Unlike [`find_line`] (tuned for short TOC headings), it never matches a tiny
+/// early line as a substring of a long locator, and tolerates a locator that
+/// wraps across lines by matching only its first few words.
+fn find_target_line(lines: &[DisplayLine], locator: &str) -> Option<usize> {
+    let n = loose_key(locator);
+    if n.is_empty() {
+        return None;
+    }
+    if let Some(i) = lines.iter().position(|l| loose_key(&l.text()) == n) {
+        return Some(i);
+    }
+    let prefix: String = n.split(' ').take(6).collect::<Vec<_>>().join(" ");
+    if prefix.len() < 3 {
+        return None; // too generic to match reliably
+    }
+    lines.iter().position(|l| {
+        let ll = loose_key(&l.text());
+        !ll.is_empty() && ll.contains(&prefix)
+    })
+}
+
 /// A short label for the link cursor's status flash, by anchor kind.
 fn anchor_kind_label(a: &Anchor) -> &'static str {
     match a {

@@ -179,6 +179,42 @@ fn noteref_link_becomes_footnote_anchor() {
 }
 
 #[test]
+fn biblioref_link_becomes_citation_anchor() {
+    let blocks = parse_blocks(
+        r##"<html><body><p>per<a epub:type="biblioref" href="#ref12">[12]</a></p></body></html>"##,
+    );
+    assert_eq!(
+        first_anchor(&blocks),
+        Some(&Anchor::Citation("#ref12".into())),
+        "raw href kept (may carry a file)"
+    );
+}
+
+#[test]
+fn collect_targets_maps_ids_to_leading_text() {
+    let targets = collect_targets(
+        r#"<html><body>
+            <h2 id="sec2">Chapter Two</h2>
+            <figure id="fig1"><figcaption>Figure 1: a system diagram</figcaption></figure>
+            <p>no id here</p>
+        </body></html>"#,
+    );
+    assert!(
+        targets
+            .iter()
+            .any(|(id, loc)| id == "sec2" && loc == "Chapter Two"),
+        "heading id → its text: {targets:?}"
+    );
+    assert!(
+        targets
+            .iter()
+            .any(|(id, loc)| id == "fig1" && loc.contains("Figure 1")),
+        "figure id → caption: {targets:?}"
+    );
+    assert_eq!(targets.len(), 2, "only elements with ids: {targets:?}");
+}
+
+#[test]
 fn footnote_definition_keeps_raw_id_for_resolution() {
     // The definition retains its raw `id` so a reference can resolve to it —
     // the digit `label` is for display only.
@@ -390,9 +426,22 @@ fn math_image_amid_text_stays_inline() {
 
 #[test]
 fn internal_and_external_links_classify() {
+    // Cross-refs keep the raw href (bare fragment or file#fragment) so the
+    // reader can resolve the file and id.
     let cross =
         parse_blocks(r##"<html><body><p><a href="#sec2">see section 2</a></p></body></html>"##);
-    assert_eq!(first_anchor(&cross), Some(&Anchor::CrossRef("sec2".into())));
+    assert_eq!(
+        first_anchor(&cross),
+        Some(&Anchor::CrossRef("#sec2".into()))
+    );
+
+    let xfile =
+        parse_blocks(r##"<html><body><p><a href="ch2.xhtml#fig1">Figure 1</a></p></body></html>"##);
+    assert_eq!(
+        first_anchor(&xfile),
+        Some(&Anchor::CrossRef("ch2.xhtml#fig1".into())),
+        "cross-file ref keeps its file"
+    );
 
     let ext = parse_blocks(r#"<html><body><p><a href="https://x.dev">x</a></p></body></html>"#);
     assert_eq!(

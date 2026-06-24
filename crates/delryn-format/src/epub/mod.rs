@@ -129,6 +129,16 @@ impl Document for EpubDocument {
         })
     }
 
+    fn section_targets(&mut self, index: usize) -> Vec<(String, String)> {
+        if self.doc.set_current_chapter(index)
+            && let Some((xhtml, _mime)) = self.doc.get_current_str()
+        {
+            super::html::collect_targets(&xhtml)
+        } else {
+            Vec::new()
+        }
+    }
+
     fn section_images(&mut self, section: usize) -> Vec<Vec<u8>> {
         // Reuse the parsed blocks so the overlay sees exactly the figures the
         // reader renders inline (single source of truth for image selection).
