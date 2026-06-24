@@ -376,23 +376,36 @@ fn visible_lines(reader: &Reader, start: usize, count: usize, theme: Theme) -> V
     let start = start.min(reader.lines.len());
     let end = (start + count).min(reader.lines.len());
     let matcher = reader.search_matcher.as_ref().filter(|m| !m.is_empty());
+    let sel = reader.selected_anchor();
     reader.lines[start..end]
         .iter()
-        .map(|l| to_ratatui(l, theme, matcher))
+        .enumerate()
+        .map(|(off, l)| {
+            // The link cursor's highlight range, if it falls on this line.
+            let cursor = sel
+                .filter(|h| h.line == start + off)
+                .map(|h| (h.start, h.end));
+            to_ratatui(l, theme, matcher, cursor)
+        })
         .collect()
 }
 
-fn to_ratatui(line: &DisplayLine, theme: Theme, matcher: Option<&Matcher>) -> Line<'static> {
-    let Some(m) = matcher else {
+fn to_ratatui(
+    line: &DisplayLine,
+    theme: Theme,
+    matcher: Option<&Matcher>,
+    cursor: Option<(usize, usize)>,
+) -> Line<'static> {
+    if matcher.is_none() && cursor.is_none() {
         let spans: Vec<Span> = line
             .runs
             .iter()
             .map(|r| Span::styled(r.text.clone(), run_style(r, line.kind, theme)))
             .collect();
         return Line::from(spans);
-    };
+    }
 
-    // Expand to per-char styles, mark search-match ranges, then regroup.
+    // Expand to per-char styles, mark search-match + link-cursor ranges, regroup.
     let mut chars: Vec<(char, Style)> = Vec::new();
     for run in &line.runs {
         let style = run_style(run, line.kind, theme);
@@ -401,10 +414,12 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, matcher: Option<&Matcher>) -> Li
         }
     }
     let mut matched = vec![false; chars.len()];
-    let text: String = chars.iter().map(|(c, _)| *c).collect();
-    for (s, e) in m.highlight_ranges(&text) {
-        for flag in matched.iter_mut().take(e.min(chars.len())).skip(s) {
-            *flag = true;
+    if let Some(m) = matcher {
+        let text: String = chars.iter().map(|(c, _)| *c).collect();
+        for (s, e) in m.highlight_ranges(&text) {
+            for flag in matched.iter_mut().take(e.min(chars.len())).skip(s) {
+                *flag = true;
+            }
         }
     }
 
@@ -412,12 +427,21 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, matcher: Option<&Matcher>) -> Li
         .bg(theme.accent)
         .fg(theme.on_accent())
         .add_modifier(Modifier::BOLD);
+    // The link cursor stands out from search via reverse video (theme-agnostic).
+    let cursor_style = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let (cs, ce) = cursor.unwrap_or((usize::MAX, usize::MAX));
 
     let mut spans: Vec<Span> = Vec::new();
     let mut buf = String::new();
     let mut buf_style: Option<Style> = None;
     for (idx, (c, st)) in chars.iter().enumerate() {
-        let style = if matched[idx] { hilite } else { *st };
+        let style = if idx >= cs && idx < ce {
+            cursor_style
+        } else if matched[idx] {
+            hilite
+        } else {
+            *st
+        };
         if buf_style == Some(style) {
             buf.push(*c);
         } else {
@@ -458,9 +482,9 @@ fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
         LineKind::Heading(_) => theme.heading,
         LineKind::Quote => theme.quote,
         LineKind::Rule => theme.muted,
-        LineKind::Code(_) => theme.muted,  // gutter / unhighlighted
-        LineKind::Footnote => theme.muted, // notes set apart from the body
-        LineKind::Math => theme.heading,   // display equations, accented
+        LineKind::Code(_) => theme.muted, // gutter / unhighlighted
+        LineKind::Footnote(_) => theme.muted, // notes set apart from the body
+        LineKind::Math => theme.heading,  // display equations, accented
         LineKind::Table { .. } => theme.fg,
         LineKind::Body | LineKind::Image(_) => theme.fg,
     };

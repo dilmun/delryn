@@ -59,6 +59,7 @@ pub fn highlight_code(lines: &[String], lang: Option<&str>, theme_name: &str) ->
                             math: false,
                         },
                         fg: Some((c.r, c.g, c.b)),
+                        anchor: None,
                     });
                 }
             }
@@ -69,6 +70,7 @@ pub fn highlight_code(lines: &[String], lang: Option<&str>, theme_name: &str) ->
                     ..Inline::default()
                 },
                 fg: None,
+                anchor: None,
             }),
         }
         out.push(runs);
