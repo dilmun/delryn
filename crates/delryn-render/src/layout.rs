@@ -311,25 +311,36 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                 wrap_nested(blocks, opts, "▌ ", LineKind::Quote, &mut out);
             }
             Block::Footnote { label, blocks, .. } => {
-                out.push(DisplayLine {
-                    runs: vec![Run {
-                        text: format!("[{label}]"),
-                        style: Inline {
-                            bold: true,
-                            ..Inline::default()
-                        },
-                        fg: None,
-                        anchor: None,
-                    }],
-                    kind: LineKind::Footnote(footnote_idx),
-                });
+                // Render "[label] body" on one line: wrap the body indented by the
+                // label's width, then drop the bold label onto its first line.
+                let tag = format!("[{label}] ");
+                let pad = " ".repeat(tag.chars().count());
+                let start = out.len();
                 wrap_nested(
                     blocks,
                     opts,
-                    "  ",
+                    &pad,
                     LineKind::Footnote(footnote_idx),
                     &mut out,
                 );
+                let label_run = Run {
+                    text: tag,
+                    style: Inline {
+                        bold: true,
+                        ..Inline::default()
+                    },
+                    fg: None,
+                    anchor: None,
+                };
+                match out.get_mut(start).and_then(|l| l.runs.first_mut()) {
+                    // Replace the first body line's indent prefix with the label.
+                    Some(prefix) => *prefix = label_run,
+                    // Empty body → just the label.
+                    None => out.push(DisplayLine {
+                        runs: vec![label_run],
+                        kind: LineKind::Footnote(footnote_idx),
+                    }),
+                }
                 footnote_idx += 1;
             }
         }

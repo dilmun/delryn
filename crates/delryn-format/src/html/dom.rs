@@ -16,17 +16,35 @@ pub(super) fn class_has_token(e: &Element, want: &str) -> bool {
     attr_has_token(e, "class", want)
 }
 
-/// Whether an element is a *marker* the reader regenerates itself — an explicit
-/// list item number (`class="ItemNumber"`) or a footnote number/backref
-/// (`class="FootnoteNumber"`). Like code line numbers, these are chrome: dropped
-/// so we don't double them with our own list markers / `[n]` footnote labels.
+/// Whether an element is print/marker chrome the reflowable reader doesn't want:
+/// a list item number (`ItemNumber`) or footnote backref (`FootnoteNumber`) we
+/// regenerate, or a print page number (`TocPageNumber`/`PageNumber`) that means
+/// nothing without fixed pages. Dropped like code line numbers.
 pub(super) fn is_marker_chrome(e: &Element) -> bool {
     e.attr("class").is_some_and(|c| {
-        c.split([' ', '-', '_']).any(|t| {
-            matches!(
-                t.to_ascii_lowercase().as_str(),
-                "itemnumber" | "footnotenumber" | "footnotemark"
-            )
-        })
+        let lc = c.to_ascii_lowercase();
+        lc.contains("pagenumber")
+            || c.split([' ', '-', '_']).any(|t| {
+                matches!(
+                    t.to_ascii_lowercase().as_str(),
+                    "itemnumber" | "footnotenumber" | "footnotemark"
+                )
+            })
+    })
+}
+
+/// For a printed table-of-contents entry, its nesting depth from the level class
+/// (`TocChapter`/`TocPart` = 0, `TocSection1` = 1, `TocSection2` = 2, …) so the
+/// otherwise-flat ToC page indents like the hierarchy it represents. `None` for
+/// non-ToC elements.
+pub(super) fn toc_level(e: &Element) -> Option<u8> {
+    e.attr("class")?.split_whitespace().find_map(|c| {
+        let c = c.to_ascii_lowercase();
+        if matches!(c.as_str(), "tocchapter" | "tocpart" | "tocfrontmatter") {
+            Some(0)
+        } else {
+            c.strip_prefix("tocsection")
+                .and_then(|n| n.parse::<u8>().ok())
+        }
     })
 }

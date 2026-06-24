@@ -236,6 +236,36 @@ fn regenerated_markers_are_stripped() {
 }
 
 #[test]
+fn printed_toc_indents_by_level_and_drops_page_numbers() {
+    let blocks = parse_blocks(
+        r##"<html><body>
+            <div class="TocChapter">
+                <div class="TocEntry"><a href="c.xhtml">11 Other</a><span class="TocPageNumber">359</span></div>
+                <div class="TocSection1">
+                    <div class="TocEntry"><a href="c.xhtml#s1">11.1 Ensemble</a><span class="TocPageNumber">359</span></div>
+                </div>
+            </div></body></html>"##,
+    );
+    let t = block_text(&blocks);
+    assert!(!t.contains("359"), "print page numbers dropped: {t:?}");
+    let indents: Vec<u8> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Para { indent, spans, .. } => {
+                let txt: String = spans.iter().map(|s| s.text.as_str()).collect();
+                (txt.contains("Other") || txt.contains("Ensemble")).then_some(*indent)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        indents,
+        vec![0, 1],
+        "chapter at depth 0, section at depth 1: {indents:?}"
+    );
+}
+
+#[test]
 fn biblioref_link_becomes_citation_anchor() {
     let blocks = parse_blocks(
         r##"<html><body><p>per<a epub:type="biblioref" href="#ref12">[12]</a></p></body></html>"##,
