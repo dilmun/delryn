@@ -206,6 +206,36 @@ fn footnotes_section_and_wrapper_are_not_definitions() {
 }
 
 #[test]
+fn regenerated_markers_are_stripped() {
+    // Explicit list item numbers and footnote backref numbers are chrome we
+    // regenerate — they must not double our own marker / `[n]` label.
+    let list = parse_blocks(
+        r#"<html><body><ol><li class="ListItem">
+            <div class="ItemNumber">(1)</div>
+            <div class="ItemContent"><p>first item</p></div>
+        </li></ol></body></html>"#,
+    );
+    let t = block_text(&list);
+    assert!(t.contains("first item"), "content kept: {t:?}");
+    assert!(!t.contains("(1)"), "explicit item number dropped: {t:?}");
+
+    let foot = parse_blocks(
+        r##"<html><body><div class="Footnote">
+            <span class="FootnoteNumber"><a href="#Fn1_source">1</a></span>
+            <div class="FootnoteContent" epub:type="footnote" id="Fn1"><p>note body</p></div>
+        </div></body></html>"##,
+    );
+    // Exactly one footnote (labelled "1"), and no stray standalone backref line.
+    assert_eq!(first_footnote(&foot), Some("1"));
+    assert!(
+        !foot
+            .iter()
+            .any(|b| matches!(b, Block::Para { spans, .. } if spans.iter().map(|s| s.text.trim()).collect::<String>() == "1")),
+        "no standalone backref number paragraph"
+    );
+}
+
+#[test]
 fn biblioref_link_becomes_citation_anchor() {
     let blocks = parse_blocks(
         r##"<html><body><p>per<a epub:type="biblioref" href="#ref12">[12]</a></p></body></html>"##,

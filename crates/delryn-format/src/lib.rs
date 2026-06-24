@@ -55,4 +55,9 @@ pub trait Document {
     fn section_targets(&mut self, _index: usize) -> Vec<(String, String)> {
         Vec::new()
     }
+    /// The spine index an `href` (relative to section `from`) points at, e.g. a
+    /// cross-file `chapter5.xhtml#sec` reference. `None` if it doesn't resolve.
+    fn section_for_href(&mut self, _from: usize, _href: &str) -> Option<usize> {
+        None
+    }
 }
