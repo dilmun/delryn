@@ -99,6 +99,14 @@ impl Ctx {
             quote,
         }
     }
+
+    /// A copy at a specific indent level (for printed-ToC depth).
+    fn with_indent(&self, indent: u8) -> Ctx {
+        Ctx {
+            indent,
+            quote: self.quote,
+        }
+    }
 }
 
 fn is_block(node: NodeRef<Node>) -> bool {
@@ -259,7 +267,12 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 out.push(table);
             }
         }
-        ElementRole::Container => walk_children(node, ctx, out),
+        ElementRole::Container => match toc_level(e) {
+            // A printed ToC entry: indent it to its level so the page reads as a
+            // hierarchy rather than a flat list.
+            Some(lvl) => walk_children(node, &ctx.with_indent(lvl), out),
+            None => walk_children(node, ctx, out),
+        },
     }
 }
 
