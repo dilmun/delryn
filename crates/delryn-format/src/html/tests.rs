@@ -266,6 +266,44 @@ fn printed_toc_indents_by_level_and_drops_page_numbers() {
 }
 
 #[test]
+fn heading_based_toc_indents_by_level() {
+    // A heading-based ToC (e.g. Packt) encodes depth in the heading level.
+    let blocks = parse_blocks(
+        r##"<html><body><div epub:type="toc">
+            <h1>Table of Contents</h1>
+            <h2><a href="c.xhtml">Chapter 1</a></h2>
+            <h3><a href="c.xhtml#s1">Section 1.1</a></h3>
+        </div></body></html>"##,
+    );
+    assert!(
+        blocks
+            .iter()
+            .any(|b| matches!(b, Block::Heading { level: 1, .. })),
+        "the ToC title stays a heading"
+    );
+    let indents: Vec<u8> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Para { indent, spans, .. } => {
+                let t: String = spans.iter().map(|s| s.text.as_str()).collect();
+                (t.contains("Chapter 1") || t.contains("Section 1.1")).then_some(*indent)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(indents, vec![0, 1], "h2→0, h3→1: {indents:?}");
+
+    // Outside a ToC, headings stay headings (not indented paragraphs).
+    let normal = parse_blocks(r#"<html><body><h2>Real Heading</h2></body></html>"#);
+    assert!(
+        normal
+            .iter()
+            .any(|b| matches!(b, Block::Heading { level: 2, .. })),
+        "a normal heading is unaffected"
+    );
+}
+
+#[test]
 fn definition_list_pairs_terms_with_descriptions() {
     let blocks = parse_blocks(
         r#"<html><body><dl>

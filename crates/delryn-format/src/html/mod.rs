@@ -125,6 +125,7 @@ fn is_block(node: NodeRef<Node>) -> bool {
                 | "header"
                 | "footer"
                 | "main"
+                | "nav"
                 | "figure"
                 | "figcaption"
                 | "h1"
@@ -224,7 +225,18 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
         ElementRole::Heading(level) => {
             let spans = inline_spans(node);
             if spans.iter().any(|s| !s.text.trim().is_empty()) {
-                out.push(Block::Heading { level, spans });
+                // A heading-based ToC (Packt et al.) encodes depth in the heading
+                // level; render those entries indented instead of as flat headings.
+                if level >= 2 && in_toc(node) {
+                    out.push(Block::Para {
+                        spans,
+                        indent: level - 2,
+                        quote: ctx.quote,
+                        marker: None,
+                    });
+                } else {
+                    out.push(Block::Heading { level, spans });
+                }
             }
         }
         ElementRole::Paragraph | ElementRole::Cell => emit_paragraph(node, ctx, out),

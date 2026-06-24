@@ -96,6 +96,19 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
     }
 }
 
+/// Whether `node` sits inside a table-of-contents region — a `<nav>`, or an
+/// element marked `epub:type="toc"` / `role="doc-toc"`. Used to indent ToC
+/// entries (heading-based ToCs render flat otherwise).
+pub(super) fn in_toc(node: NodeRef<Node>) -> bool {
+    node.ancestors().any(|a| {
+        a.value().as_element().is_some_and(|e| {
+            e.name() == "nav"
+                || attr_has_token(e, "epub:type", "toc")
+                || attr_has_token(e, "role", "doc-toc")
+        })
+    })
+}
+
 /// If a container is a footnote/endnote definition, its `(id, label)`:
 /// - `id` is the raw anchor id (the key a reference resolves against);
 /// - `label` is the number shown — the digits of the `id`, else the `id`, else `note`.
