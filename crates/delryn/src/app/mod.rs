@@ -503,6 +503,20 @@ impl App {
         self.reader.as_mut().and_then(|r| r.take_clipboard())
     }
 
+    /// Whether any blocking overlay/popup is currently open. The main loop forces
+    /// a full repaint when this toggles, so a closed popup's cells (which may sit
+    /// over an inline image) don't leave a ghost the cell-diff misses.
+    pub fn any_overlay_open(&self) -> bool {
+        self.settings.is_some()
+            || self.annot.is_some()
+            || self.stats.is_some()
+            || self.palette.is_some()
+            || self.meta_edit.is_some()
+            || self.bulk_rename.is_some()
+            || self.shelf_picker.is_some()
+            || self.image_view.is_some()
+    }
+
     /// Is a smooth scroll in progress, or are inline images still building (so
     /// the loop should keep drawing until things settle)?
     pub fn animating(&self) -> bool {

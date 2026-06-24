@@ -74,6 +74,12 @@ impl Reader {
         max_px: u16,
         policy: media::RenderPolicy,
     ) {
+        // A failed build is only blacklisted until the next remap (section change,
+        // resize, theme/mode toggle): clear it so a *transient* failure (e.g. the
+        // protocol upload losing under load) recovers on its own instead of
+        // staying blank until the app is restarted.
+        self.img_failed.clear();
+
         let fs = picker.font_size();
         let (fw, fh) = (fs.width, fs.height);
         let mut section_images = HashMap::new();
