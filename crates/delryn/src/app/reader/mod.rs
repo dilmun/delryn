@@ -386,24 +386,33 @@ impl Reader {
     /// freshly wrapped lines. Done once per re-wrap.
     fn recompute_anchors(&mut self) {
         // Anchors in reading order, merging adjacent runs that share one anchor
-        // (e.g. a multi-glyph link) into a single followable target.
+        // (e.g. a multi-word link "Chapter 3") into a single followable target,
+        // even across the whitespace runs that wrapping inserts between words.
         let mut hits: Vec<AnchorHit> = Vec::new();
         for (li, line) in self.lines.iter().enumerate() {
             let mut col = 0usize;
+            // Whether everything since the last anchor run on this line was blank,
+            // so a same-anchor run after a space still merges into one target.
+            let mut gap_blank = false;
             for run in &line.runs {
                 let len = run.text.chars().count();
-                if let Some(a) = &run.anchor {
-                    match hits.last_mut() {
-                        Some(last) if last.line == li && last.end == col && last.anchor == *a => {
-                            last.end += len;
+                match &run.anchor {
+                    Some(a) => {
+                        match hits.last_mut() {
+                            Some(last) if last.line == li && last.anchor == *a && gap_blank => {
+                                last.end = col + len;
+                            }
+                            _ => hits.push(AnchorHit {
+                                line: li,
+                                start: col,
+                                end: col + len,
+                                anchor: a.clone(),
+                            }),
                         }
-                        _ => hits.push(AnchorHit {
-                            line: li,
-                            start: col,
-                            end: col + len,
-                            anchor: a.clone(),
-                        }),
+                        gap_blank = true;
                     }
+                    // Non-anchor run keeps the run mergeable only if it's blank.
+                    None => gap_blank = gap_blank && run.text.trim().is_empty(),
                 }
                 col += len;
             }
