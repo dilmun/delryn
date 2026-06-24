@@ -418,7 +418,12 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, matcher: Option<&Matcher>) -> Li
 /// keep their explicit colour; semantic roles use the theme palette.
 fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
     let mut style = Style::default();
-    if let Some(bg) = theme.bg {
+    // Code blocks sit on a faint "surface" panel; everything else on the page.
+    let bg = match kind {
+        LineKind::Code(_) => theme.code_surface().or(theme.bg),
+        _ => theme.bg,
+    };
+    if let Some(bg) = bg {
         style = style.bg(bg);
     }
     if run.style.bold || matches!(kind, LineKind::Heading(_)) {
