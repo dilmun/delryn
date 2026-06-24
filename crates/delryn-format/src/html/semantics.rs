@@ -16,6 +16,8 @@ pub(super) enum ElementRole {
     /// Display math backed by an image: `(src, unicode-alt)`.
     DisplayMathImage(String, String),
     CodeBlock,
+    /// A native `<math display="block">` display equation.
+    DisplayMath,
     Heading(u8),
     Paragraph,
     List {
@@ -63,8 +65,9 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
     if is_code_block(e, node) {
         return ElementRole::CodeBlock;
     }
-    // 5. Headings, then the structural element.
+    // 5. Native display math, headings, then the structural element.
     match name {
+        "math" => ElementRole::DisplayMath,
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => ElementRole::Heading(name.as_bytes()[1] - b'0'),
         "p" => ElementRole::Paragraph,
         "ul" | "ol" => ElementRole::List {

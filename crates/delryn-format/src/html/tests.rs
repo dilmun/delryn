@@ -399,3 +399,69 @@ fn plain_divs_are_not_code() {
     let xhtml = r#"<html><body><div class="Para">just a paragraph</div></body></html>"#;
     assert!(code_lines_of(&parse_blocks(xhtml)).is_none());
 }
+
+/// First `Block::Math`'s rendered text, if any.
+fn first_math(blocks: &[Block]) -> Option<&str> {
+    blocks.iter().find_map(|b| match b {
+        Block::Math { tex } => Some(tex.as_str()),
+        _ => None,
+    })
+}
+
+#[test]
+fn native_display_mathml_becomes_a_math_block() {
+    // `<math display="block">` is a display equation → a Block::Math, never prose.
+    let blocks = parse_blocks(
+        r#"<html><body><math display="block"><msup><mi>x</mi><mn>2</mn></msup></math></body></html>"#,
+    );
+    let tex = first_math(&blocks).expect("a math block");
+    assert!(
+        tex.contains("x²") || tex.contains('x'),
+        "transcoded: {tex:?}"
+    );
+    // No raw MathML token names leak into the output.
+    assert!(
+        !tex.contains("msup") && !tex.contains("<m"),
+        "no tags: {tex:?}"
+    );
+}
+
+#[test]
+fn native_math_prefers_authored_tex() {
+    // `alttext` (LaTeX) is authored and exact — use it over walking presentation.
+    let blocks = parse_blocks(
+        r#"<html><body><math display="block" alttext="\int_0^1 x\,dx"><mrow><mi>noise</mi></mrow></math></body></html>"#,
+    );
+    let tex = first_math(&blocks).expect("a math block");
+    assert!(tex.contains('∫'), "alttext LaTeX → unicode: {tex:?}");
+    assert!(!tex.contains("\\int"), "no raw LaTeX: {tex:?}");
+
+    // `<annotation encoding="application/x-tex">` is the embedded-LaTeX form.
+    let annotated = parse_blocks(
+        r#"<html><body><math display="block"><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">\alpha</annotation></math></body></html>"#,
+    );
+    assert_eq!(
+        first_math(&annotated),
+        Some("α"),
+        "annotation TeX → unicode"
+    );
+}
+
+#[test]
+fn native_inline_mathml_stays_in_the_paragraph() {
+    // Inline `<math>` (no display="block") renders as Unicode within its prose,
+    // not as a standalone Block::Math.
+    let blocks = parse_blocks(
+        r#"<html><body><p>let <math alttext="\alpha"><mi>α</mi></math> be small</p></body></html>"#,
+    );
+    assert!(first_math(&blocks).is_none(), "inline math is not a block");
+    let text = block_text(&blocks);
+    assert!(
+        text.contains("let") && text.contains('α') && text.contains("small"),
+        "got: {text:?}"
+    );
+    assert!(
+        !text.contains("<m") && !text.contains("alttext"),
+        "no tags: {text:?}"
+    );
+}
