@@ -151,14 +151,19 @@ impl Reader {
             }
         });
 
-        let first = doc.load_section(0).unwrap_or_default().blocks;
+        // Open at the body-matter start (skipping front matter) when the book
+        // declares it; saved progress, if any, overrides this afterwards.
+        let start = doc
+            .start_section()
+            .min(doc.section_count().saturating_sub(1));
+        let first = doc.load_section(start).unwrap_or_default().blocks;
         let mut cache = HashMap::new();
-        cache.insert(0usize, first.clone());
+        cache.insert(start, first.clone());
 
         let mut reader = Self {
             doc,
             outline,
-            section: 0,
+            section: start,
             blocks: first,
             lines: Vec::new(),
             wrap_width: 0,

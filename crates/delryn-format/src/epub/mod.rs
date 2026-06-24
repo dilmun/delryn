@@ -6,11 +6,12 @@ use std::io::BufReader;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
-use epub::doc::{EpubDoc, NavPoint};
+use epub::doc::EpubDoc;
 
 use super::{Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry};
 
 mod content_meta;
+mod nav;
 use content_meta::title_from_html;
 pub use content_meta::{ExtractedMeta, extract_book_metadata};
 
@@ -24,6 +25,7 @@ pub struct EpubDocument {
     metadata: Metadata,
     toc: Vec<TocEntry>,
     outline: Vec<OutlineItem>,
+    start_section: usize,
 }
 
 impl EpubDocument {
@@ -34,36 +36,16 @@ impl EpubDocument {
             EpubDoc::new(path).with_context(|| format!("opening EPUB {}", path.display()))?;
 
         let metadata = extract_metadata(&mut doc, size);
-        let toc: Vec<TocEntry> = doc
-            .toc
-            .iter()
-            .map(|np| convert_navpoint(np, &doc))
-            .collect();
-
-        // The navigable outline mirrors the book's own table of contents,
-        // preserving its hierarchy (e.g. Part → Chapter → section). Works for
-        // both multi-file books and single-file books (where every entry points
-        // into one section at a different anchor).
-        let mut outline = Vec::new();
-        build_outline(&toc, 0, 0, &mut outline);
-        if outline.is_empty() {
-            // No usable TOC: fall back to one entry per spine section.
-            outline = (0..doc.get_num_chapters())
-                .map(|s| OutlineItem {
-                    label: format!("Section {}", s + 1),
-                    depth: 0,
-                    section: s,
-                    locator: None,
-                })
-                .collect();
-        }
+        // Navigation prefers the EPUB 3 nav document, falling back to NCX/spine.
+        let navigation = nav::build(&mut doc);
 
         Ok(Self {
             doc,
             path: path.to_path_buf(),
             metadata,
-            toc,
-            outline,
+            toc: navigation.toc,
+            outline: navigation.outline,
+            start_section: navigation.start_section,
         })
     }
 }
@@ -134,6 +116,10 @@ impl Document for EpubDocument {
 
     fn section_count(&self) -> usize {
         self.doc.get_num_chapters()
+    }
+
+    fn start_section(&self) -> usize {
+        self.start_section
     }
 
     fn load_section(&mut self, index: usize) -> Result<Section> {
@@ -448,62 +434,6 @@ fn parse_year(date: &str) -> Option<i32> {
         .map(|(i, _)| i)
         .unwrap_or(s.len());
     s[..end].parse().ok()
-}
-
-fn convert_navpoint(np: &NavPoint, doc: &EpubDoc<BufReader<File>>) -> TocEntry {
-    TocEntry {
-        label: np.label.clone(),
-        section: resolve_section(&np.content, doc),
-        children: np
-            .children
-            .iter()
-            .map(|c| convert_navpoint(c, doc))
-            .collect(),
-    }
-}
-
-/// Map a navpoint resource path to a spine index, tolerating `#fragment`s and
-/// base-path mismatches by falling back to a file-name match.
-fn resolve_section(content: &Path, doc: &EpubDoc<BufReader<File>>) -> Option<usize> {
-    let raw = content.to_string_lossy();
-    let raw = raw.split('#').next().unwrap_or(&raw);
-    let path = PathBuf::from(raw);
-
-    if let Some(i) = doc.resource_uri_to_chapter(&path) {
-        return Some(i);
-    }
-
-    let target = path.file_name()?;
-    doc.spine.iter().position(|item| {
-        doc.resources
-            .get(&item.idref)
-            .is_some_and(|res| res.path.file_name() == Some(target))
-    })
-}
-
-/// Flatten the book's TOC tree into a depth-tagged outline, preserving its
-/// hierarchy. Each entry carries the label as a locator so the reader can scroll
-/// to the matching heading within the (possibly shared) section; entries with no
-/// resolved section inherit their parent's.
-fn build_outline(
-    entries: &[TocEntry],
-    depth: usize,
-    parent_section: usize,
-    out: &mut Vec<OutlineItem>,
-) {
-    for e in entries {
-        let section = e.section.unwrap_or(parent_section);
-        out.push(OutlineItem {
-            label: e.label.clone(),
-            depth,
-            section,
-            // Locate the entry's heading text within its section (handles
-            // single-file books where many entries share one section). Falls
-            // back to the section top when the text isn't found.
-            locator: Some(e.label.clone()),
-        });
-        build_outline(&e.children, depth + 1, section, out);
-    }
 }
 
 #[cfg(test)]

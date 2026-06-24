@@ -37,6 +37,11 @@ pub trait Document {
     fn loader(&self) -> Box<dyn SectionLoader>;
     /// Number of ordered sections (spine length).
     fn section_count(&self) -> usize;
+    /// Spine index to open at on first read — the start of the body matter
+    /// (skipping front matter) when the book declares it, else 0.
+    fn start_section(&self) -> usize {
+        0
+    }
     /// Load and reflow-prepare one section's content.
     fn load_section(&mut self, index: usize) -> Result<Section>;
     /// Raw encoded bytes of the renderable images in a section (covers,
