@@ -55,6 +55,9 @@ pub struct Reader {
     pub code_hscroll: usize,
     wrap_code_wrap: bool,
     wrap_code_hscroll: usize,
+    /// Word-wrap table cells (set each render from config).
+    pub table_wrap: bool,
+    wrap_table_wrap: bool,
     /// Keep scrolling within the current chapter (set each render from config).
     pub chapter_lock: bool,
     /// Cached (outline index, line) for the current section's entries, recomputed
@@ -183,6 +186,8 @@ impl Reader {
             code_hscroll: 0,
             wrap_code_wrap: true,
             wrap_code_hscroll: 0,
+            table_wrap: true,
+            wrap_table_wrap: true,
             chapter_lock: false,
             heading_lines: Vec::new(),
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
@@ -303,6 +308,7 @@ impl Reader {
             || self.paragraph_spacing != self.wrap_para_spacing
             || self.code_wrap != self.wrap_code_wrap
             || self.code_hscroll != self.wrap_code_hscroll
+            || self.table_wrap != self.wrap_table_wrap
             || self.images_key != self.wrap_images_key
         {
             self.lines = wrap_blocks(
@@ -314,6 +320,7 @@ impl Reader {
                     para_spacing: self.paragraph_spacing,
                     code_wrap: self.code_wrap,
                     code_hscroll: self.code_hscroll,
+                    table_wrap: self.table_wrap,
                 },
                 &self.image_rows_estimate,
             );
@@ -323,6 +330,7 @@ impl Reader {
             self.wrap_para_spacing = self.paragraph_spacing;
             self.wrap_code_wrap = self.code_wrap;
             self.wrap_code_hscroll = self.code_hscroll;
+            self.wrap_table_wrap = self.table_wrap;
             self.wrap_images_key = self.images_key;
             self.recompute_heading_lines();
         }
@@ -365,7 +373,7 @@ impl Reader {
     fn element_label(kind: LineKind) -> Option<&'static str> {
         match kind {
             LineKind::Code(_) => Some("code"),
-            LineKind::Table => Some("table"),
+            LineKind::Table { .. } => Some("table"),
             LineKind::Math => Some("math"),
             LineKind::Image(_) => Some("figure"),
             LineKind::Footnote => Some("footnote"),

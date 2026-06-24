@@ -39,6 +39,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.line_spacing = config.line_spacing;
     reader.paragraph_spacing = config.paragraph_spacing;
     reader.code_wrap = config.code_wrap;
+    reader.table_wrap = config.table_wrap;
     reader.chapter_lock = config.chapter_lock;
     let area = f.area();
 
@@ -437,9 +438,10 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, matcher: Option<&Matcher>) -> Li
 /// keep their explicit colour; semantic roles use the theme palette.
 fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
     let mut style = Style::default();
-    // Code blocks sit on a faint "surface" panel; everything else on the page.
+    // Code blocks and alternating (shaded) table rows sit on a faint "surface"
+    // panel; everything else on the page.
     let bg = match kind {
-        LineKind::Code(_) => theme.code_surface().or(theme.bg),
+        LineKind::Code(_) | LineKind::Table { shaded: true } => theme.code_surface().or(theme.bg),
         _ => theme.bg,
     };
     if let Some(bg) = bg {
@@ -459,7 +461,7 @@ fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
         LineKind::Code(_) => theme.muted,  // gutter / unhighlighted
         LineKind::Footnote => theme.muted, // notes set apart from the body
         LineKind::Math => theme.heading,   // display equations, accented
-        LineKind::Table => theme.fg,
+        LineKind::Table { .. } => theme.fg,
         LineKind::Body | LineKind::Image(_) => theme.fg,
     };
     if let Some((r, g, b)) = run.fg {
