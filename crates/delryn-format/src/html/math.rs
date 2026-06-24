@@ -93,6 +93,64 @@ pub(super) fn math_unicode(alt: &str) -> String {
     }
 }
 
+/// Whether an element is a native MathML `<math>`.
+pub(super) fn is_math_element(e: &scraper::node::Element) -> bool {
+    e.name() == "math"
+}
+
+/// Whether a `<math>` is a *display* (block) equation (`display="block"`), as
+/// opposed to inline math.
+pub(super) fn is_display_math(e: &scraper::node::Element) -> bool {
+    e.attr("display")
+        .is_some_and(|d| d.eq_ignore_ascii_case("block"))
+}
+
+/// Convert a native `<math>` element to Unicode. Prefers the authored text
+/// equivalents (`alttext` / `<annotation encoding="…tex">`, which carry LaTeX and
+/// aren't otherwise rendered), then walks the presentation MathML.
+pub(super) fn native_math_unicode(node: NodeRef<Node>) -> String {
+    let Some(e) = node.value().as_element() else {
+        return String::new();
+    };
+    // 1. alttext attribute (usually LaTeX, e.g. from LaTeXML).
+    if let Some(alt) = e.attr("alttext")
+        && !alt.trim().is_empty()
+    {
+        return delryn_model::math::latex_to_unicode(alt);
+    }
+    // 2. <annotation encoding="application/x-tex"> embedded LaTeX.
+    if let Some(tex) = annotation_tex(node) {
+        return delryn_model::math::latex_to_unicode(&tex);
+    }
+    // 3. Walk the presentation MathML (serialise the subtree, then transcode).
+    match scraper::ElementRef::wrap(node) {
+        Some(el) => crate::mathml::to_unicode(&el.html()),
+        None => String::new(),
+    }
+}
+
+/// The text of a `<math>`'s TeX `<annotation>`, if present.
+fn annotation_tex(node: NodeRef<Node>) -> Option<String> {
+    node.descendants()
+        .filter_map(|n| n.value().as_element().map(|e| (n, e)))
+        .filter(|(_, e)| e.name() == "annotation")
+        .find(|(_, e)| {
+            e.attr("encoding")
+                .is_some_and(|enc| enc.to_ascii_lowercase().contains("tex"))
+        })
+        .map(|(n, _)| {
+            n.descendants()
+                .filter_map(|d| match d.value() {
+                    Node::Text(t) => Some(t.text.as_ref()),
+                    _ => None,
+                })
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+}
+
 /// An image `alt` with no useful content (empty or a generic placeholder).
 pub(super) fn is_placeholder_alt(alt: &str) -> bool {
     let a = alt.trim();

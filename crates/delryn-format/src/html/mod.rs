@@ -64,6 +64,8 @@ fn is_block(node: NodeRef<Node>) -> bool {
         // Real figure/cover images render block-level; math/icon images stay
         // inline (handled in collect_inline).
         Node::Element(e) if e.name() == "img" => is_real_image(e),
+        // Display (block) MathML is a block; inline math stays inline.
+        Node::Element(e) if is_math_element(e) => is_display_math(e),
         Node::Element(e) => matches!(
             e.name(),
             "p" | "div"
@@ -156,6 +158,12 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                     lang: detect_lang(node),
                     lines,
                 });
+            }
+        }
+        ElementRole::DisplayMath => {
+            let tex = native_math_unicode(node);
+            if !tex.trim().is_empty() {
+                out.push(Block::Math { tex });
             }
         }
         ElementRole::Heading(level) => {

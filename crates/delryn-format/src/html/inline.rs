@@ -112,6 +112,19 @@ pub(super) fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<S
                     });
                     return;
                 }
+                // Native inline MathML → Unicode (block math is handled at the
+                // block level). Don't recurse, or the raw token text leaks out.
+                "math" => {
+                    out.push(Span {
+                        text: native_math_unicode(node),
+                        style: Inline {
+                            math: true,
+                            ..style
+                        },
+                        anchor: None,
+                    });
+                    return;
+                }
                 _ => style,
             };
             // Math runs (tagged by a math class — e.g. InDesign MathTools, or any
