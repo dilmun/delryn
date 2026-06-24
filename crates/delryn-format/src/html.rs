@@ -2,14 +2,18 @@
 //! formats) to drive the rich typography engine. Produces headings, styled
 //! paragraphs, lists, blockquotes, and code blocks rather than flat text.
 
+use std::sync::OnceLock;
+
 use ego_tree::NodeRef;
+use regex::Regex;
 use scraper::{Html, Node};
 
 use super::{Anchor, Block, CalloutKind, Inline, Span, TableCell};
 
 /// Parse a section's XHTML into a list of reflowable blocks.
 pub fn parse_blocks(xhtml: &str) -> Vec<Block> {
-    let doc = Html::parse_document(xhtml);
+    let xhtml = expand_self_closing(xhtml);
+    let doc = Html::parse_document(&xhtml);
     let body = doc
         .tree
         .root()
@@ -20,6 +24,48 @@ pub fn parse_blocks(xhtml: &str) -> Vec<Block> {
     let root = body.unwrap_or_else(|| doc.tree.root());
     walk_children(root, &Ctx::default(), &mut out);
     out
+}
+
+/// EPUB content is XHTML, where `<span id="x"/>` is self-closing. The HTML5
+/// parser instead reads it as an *unclosed* `<span>` that swallows every
+/// following sibling — collapsing whole sections (headings, paragraphs, code)
+/// into one inline blob. Rewrite self-closing tags of non-void elements to
+/// explicit empty pairs so the document structure survives. Void elements
+/// (`<br/>`, `<img/>`, …) are valid self-closing in HTML and left as-is.
+fn expand_self_closing(xhtml: &str) -> std::borrow::Cow<'_, str> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        // <name attrs… /> — attrs may hold quoted `>`/`/`, so consume quotes whole.
+        Regex::new(r#"<([A-Za-z][\w:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)\s*/>"#).unwrap()
+    });
+    re.replace_all(xhtml, |c: &regex::Captures| {
+        let name = &c[1];
+        if is_void_element(name) {
+            c[0].to_string()
+        } else {
+            format!("<{name}{}></{name}>", &c[2])
+        }
+    })
+}
+
+fn is_void_element(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    )
 }
 
 #[derive(Default, Clone)]
@@ -152,6 +198,20 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 caption: Vec::new(),
             });
         }
+        // Code listings — `<pre>`, a styled code container (lstlisting /
+        // ProgramCode / …), or a block holding a multi-line `<code>` whose lines
+        // are split by `<br/>` (e.g. `<p class="Code"><code>…<br/>…</code></p>`).
+        // Recognised before the paragraph/heading handling so the line structure
+        // survives instead of collapsing into flowing prose.
+        _ if is_code_block(e, node) => {
+            let lines = strip_line_numbers(trim_blank_edges(code_lines(node).into_iter()));
+            if !lines.is_empty() {
+                out.push(Block::Code {
+                    lang: detect_lang(node),
+                    lines,
+                });
+            }
+        }
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
             let level = e.name().as_bytes()[1] - b'0';
             let mut spans = Vec::new();
@@ -202,17 +262,6 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             };
             walk_children(node, &inner, out);
         }
-        "pre" => {
-            let text = raw_text(node);
-            let lines = trim_blank_edges(text.split('\n').map(|l| l.trim_end().to_string()));
-            let lines = strip_line_numbers(lines);
-            if !lines.is_empty() {
-                out.push(Block::Code {
-                    lang: detect_lang(node),
-                    lines,
-                });
-            }
-        }
         "hr" => out.push(Block::Rule),
         "img" => out.push(Block::Image {
             src: e.attr("src").unwrap_or("").to_string(),
@@ -255,19 +304,6 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                     indent: ctx.indent,
                     quote: ctx.quote,
                     marker: None,
-                });
-            }
-        }
-        // Code blocks marked up as styled containers rather than <pre>/<code>
-        // (e.g. Springer/Apress `<div class="ProgramCode">` with per-line
-        // `<div class="FixedLine">`). Render them as real code.
-        _ if is_code_container(e) => {
-            let lines = trim_blank_edges(code_lines(node).into_iter());
-            let lines = strip_line_numbers(lines);
-            if !lines.is_empty() {
-                out.push(Block::Code {
-                    lang: detect_lang(node),
-                    lines,
                 });
             }
         }
@@ -445,16 +481,38 @@ fn superscript_math_exponents(spans: &mut [Span]) {
 /// A non-`<pre>` block that is really a code listing, by its class. Covers the
 /// common publisher conventions (notably Springer/Apress `ProgramCode`).
 fn is_code_container(e: &scraper::node::Element) -> bool {
-    matches!(e.name(), "div" | "section")
+    matches!(e.name(), "div" | "section" | "p")
         && [
             "ProgramCode",
             "SourceCode",
             "CodeBlock",
             "code",
             "sourceCode",
+            // LaTeX `listings` package + DocBook program listings.
+            "lstlisting",
+            "listing",
+            "programlisting",
         ]
         .iter()
         .any(|t| class_has_token(e, t))
+}
+
+/// Whether an element should render as a code block: a `<pre>`, a styled code
+/// container (by class), or a block holding a multi-line `<code>`.
+fn is_code_block(e: &scraper::node::Element, node: NodeRef<Node>) -> bool {
+    e.name() == "pre" || is_code_container(e) || has_multiline_code(node)
+}
+
+/// A block whose direct `<code>` child spans several lines (its lines split by
+/// `<br/>`) — a code listing written without `<pre>`, e.g.
+/// `<p class="Code"><code>line1<br/>line2</code></p>`. The `<br/>` requirement
+/// keeps short inline `<code>` snippets out.
+fn has_multiline_code(node: NodeRef<Node>) -> bool {
+    node.children().any(|c| {
+        matches!(c.value(), Node::Element(e) if e.name() == "code")
+            && c.descendants()
+                .any(|d| matches!(d.value(), Node::Element(e) if e.name() == "br"))
+    })
 }
 
 /// Code lines from a styled code container. When the source wraps each line in a
@@ -464,23 +522,41 @@ fn code_lines(node: NodeRef<Node>) -> Vec<String> {
     let fixed: Vec<String> = node
         .descendants()
         .filter(|n| matches!(n.value(), Node::Element(e) if class_has_token(e, "FixedLine")))
-        .map(|n| raw_text(n).trim_end().to_string())
+        .map(code_text)
         .collect();
-    if !fixed.is_empty() {
-        return fixed;
+    let raw = if fixed.is_empty() {
+        code_text(node)
+    } else {
+        fixed.join("\n")
+    };
+    // Normalise the spacing publishers use in code: non-breaking spaces for
+    // indentation back to real spaces, and drop zero-width spaces.
+    let normalized = raw.replace('\u{a0}', " ").replace('\u{200b}', "");
+    // Collapse runs of blank lines (publishers often emit several `<br/>` between
+    // code lines) down to a single blank.
+    let mut out = Vec::new();
+    let mut prev_blank = false;
+    for l in normalized.split('\n') {
+        let l = l.trim_end().to_string();
+        let blank = l.is_empty();
+        if blank && prev_blank {
+            continue;
+        }
+        prev_blank = blank;
+        out.push(l);
     }
-    raw_text(node)
-        .split('\n')
-        .map(|l| l.trim_end().to_string())
-        .collect()
+    out
 }
 
-/// Concatenate all descendant text verbatim (for `<pre>`).
-fn raw_text(node: NodeRef<Node>) -> String {
+/// Concatenate descendant text, turning `<br/>` into a newline — so code laid out
+/// with `<br/>` line breaks (instead of `<pre>`) keeps its line structure.
+fn code_text(node: NodeRef<Node>) -> String {
     let mut s = String::new();
     for d in node.descendants() {
-        if let Node::Text(t) = d.value() {
-            s.push_str(&t.text);
+        match d.value() {
+            Node::Text(t) => s.push_str(&t.text),
+            Node::Element(e) if e.name() == "br" => s.push('\n'),
+            _ => {}
         }
     }
     s
@@ -953,6 +1029,57 @@ mod tests {
             Block::Image { src, alt, .. } => Some((src.as_str(), alt.as_str())),
             _ => None,
         })
+    }
+
+    /// First `Block::Code`'s lines, if any.
+    fn first_code(blocks: &[Block]) -> Option<&[String]> {
+        blocks.iter().find_map(|b| match b {
+            Block::Code { lines, .. } => Some(lines.as_slice()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn self_closing_span_does_not_swallow_following_blocks() {
+        // EPUB XHTML marker spans (`<span id=…/>`) must not collapse the section.
+        let blocks = parse_blocks(
+            r#"<html><body><section><span id="m"/><h2>Head</h2><p>Body text.</p></section></body></html>"#,
+        );
+        assert!(
+            matches!(blocks.first(), Some(Block::Heading { .. })),
+            "heading kept separate: {blocks:?}"
+        );
+        assert!(
+            blocks.iter().any(|b| matches!(b, Block::Para { .. })),
+            "paragraph kept separate"
+        );
+    }
+
+    #[test]
+    fn multiline_code_in_p_becomes_a_code_block() {
+        // `<p class="Code"><code>…<br/>…</code></p>` (no <pre>) → real code block.
+        let blocks = parse_blocks(
+            r#"<html><body><p class="Code"><code>#include &lt;iostream&gt;<br/>int main() {<br/>  return 0;<br/>}</code></p></body></html>"#,
+        );
+        let lines = first_code(&blocks).expect("a code block");
+        assert_eq!(lines.len(), 4, "one line per <br/>: {lines:?}");
+        assert_eq!(lines[0], "#include <iostream>");
+        assert_eq!(lines[3], "}");
+    }
+
+    #[test]
+    fn lstlisting_div_is_code_and_blank_runs_collapse() {
+        // LaTeX listings: <div class="lstlisting"> with <br/> breaks + nbsp spaces.
+        let blocks = parse_blocks(
+            "<html><body><div class=\"lstlisting\">int\u{a0}x\u{a0}=\u{a0}1;<br/><br/><br/>return\u{a0}x;</div></body></html>",
+        );
+        let lines = first_code(&blocks).expect("a code block");
+        assert_eq!(lines[0], "int x = 1;", "nbsp → space");
+        assert_eq!(
+            lines,
+            ["int x = 1;", "", "return x;"],
+            "blank run collapsed"
+        );
     }
 
     #[test]
