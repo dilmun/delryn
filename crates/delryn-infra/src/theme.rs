@@ -5,7 +5,24 @@
 //! No renderer should hardcode a colour or a fallback — go through a `Theme`.
 //! See `DESIGN.md` §7.
 
+use std::sync::OnceLock;
+
 use ratatui::style::{Color, Style};
+
+/// The terminal's real background colour, queried once at startup (OSC 11). The
+/// `terminal` theme uses no colours of its own, so without this it would recolour
+/// images against a white-paper fallback; with it, equations and inverted figures
+/// match the actual backdrop.
+static TERMINAL_BG: OnceLock<[u8; 3]> = OnceLock::new();
+
+/// Record the detected terminal background (best-effort; ignored if already set).
+pub fn set_terminal_background(rgb: [u8; 3]) {
+    let _ = TERMINAL_BG.set(rgb);
+}
+
+fn terminal_background() -> Option<[u8; 3]> {
+    TERMINAL_BG.get().copied()
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
@@ -73,8 +90,19 @@ impl Theme {
     /// black ink on a white page — the publisher's intent — and the two are
     /// forced apart if they'd be too close to read.
     pub fn image_ink(&self) -> ([u8; 3], [u8; 3]) {
+        self.resolve_image_ink(terminal_background())
+    }
+
+    /// As [`image_ink`](Self::image_ink), but with the terminal-background fallback
+    /// passed in (so it's testable without the process-global). For the `terminal`
+    /// theme (no `bg` of its own), `term_bg` becomes the page colour.
+    fn resolve_image_ink(&self, term_bg: Option<[u8; 3]>) -> ([u8; 3], [u8; 3]) {
         let ink = rgb_of(self.fg).unwrap_or([0, 0, 0]);
-        let paper = self.bg.and_then(rgb_of).unwrap_or([255, 255, 255]);
+        let paper = self
+            .bg
+            .and_then(rgb_of)
+            .or(term_bg)
+            .unwrap_or([255, 255, 255]);
         let lum = |c: [u8; 3]| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
         if (lum(ink) - lum(paper)).abs() < 64.0 {
             let opposite = if lum(paper) < 128.0 {
@@ -318,8 +346,24 @@ mod tests {
 
     #[test]
     fn terminal_theme_inks_black_on_white() {
-        // Reset fg + no bg → the publisher's intended dark-on-light page.
-        assert_eq!(TERMINAL.image_ink(), ([0, 0, 0], [255, 255, 255]));
+        // Reset fg + no bg, no detected terminal colour → the publisher's intended
+        // dark-on-light page.
+        assert_eq!(
+            TERMINAL.resolve_image_ink(None),
+            ([0, 0, 0], [255, 255, 255])
+        );
+    }
+
+    #[test]
+    fn terminal_theme_uses_detected_background() {
+        // With a detected dark terminal background, the page becomes that colour
+        // and the ink is snapped light for contrast.
+        let (ink, paper) = TERMINAL.resolve_image_ink(Some([20, 22, 26]));
+        assert_eq!(paper, [20, 22, 26], "page = real terminal bg");
+        let lum = |c: [u8; 3]| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
+        assert!(lum(ink) > 128.0, "ink snapped light on a dark bg: {ink:?}");
+        // A concrete theme ignores the terminal fallback.
+        assert_eq!(OLED.resolve_image_ink(Some([20, 22, 26])).1, [0, 0, 0]);
     }
 
     #[test]
