@@ -264,16 +264,23 @@ impl App {
                 self.mode = Mode::Library;
                 save = true;
             }
+            // In paged mode, vertical content navigation flips whole pages.
             Action::Down(n) => match reader.focus {
+                Focus::Content if self.config.paged => reader.page_forward(),
                 Focus::Content => reader.queue_scroll(n as isize),
                 Focus::Sidebar => reader.sidebar_move(n as isize),
             },
             Action::Up(n) => match reader.focus {
+                Focus::Content if self.config.paged => reader.page_backward(),
                 Focus::Content => reader.queue_scroll(-(n as isize)),
                 Focus::Sidebar => reader.sidebar_move(-(n as isize)),
             },
+            Action::HalfDown if self.config.paged => reader.page_forward(),
+            Action::HalfUp if self.config.paged => reader.page_backward(),
             Action::HalfDown => reader.scroll_down(reader.page_lines.max(2) / 2),
             Action::HalfUp => reader.scroll_up(reader.page_lines.max(2) / 2),
+            Action::PageDown if self.config.paged => reader.page_forward(),
+            Action::PageUp if self.config.paged => reader.page_backward(),
             Action::PageDown => reader.scroll_down(reader.page_lines.max(1)),
             Action::PageUp => reader.scroll_up(reader.page_lines.max(1)),
             Action::Top => {
@@ -417,6 +424,21 @@ impl App {
                         "chapter lock: on"
                     } else {
                         "chapter lock: off"
+                    }
+                    .to_string(),
+                );
+                save = true;
+            }
+            Action::TogglePaged => {
+                self.config.paged = !self.config.paged;
+                if self.config.paged {
+                    reader.snap_to_page(); // start on a clean page boundary
+                }
+                reader.flash = Some(
+                    if self.config.paged {
+                        "page mode: on"
+                    } else {
+                        "page mode: off (continuous)"
                     }
                     .to_string(),
                 );
