@@ -32,6 +32,7 @@ pub enum SettingItem {
     ImageMaxPx,
     ImageMode,
     CodeWrap,
+    TableWrap,
     ChapterLock,
     Mouse,
     LibLayout,
@@ -56,6 +57,7 @@ impl SettingItem {
             SettingItem::ImageMaxPx => "Max resolution (px)",
             SettingItem::ImageMode => "Image mode",
             SettingItem::CodeWrap => "Wrap code blocks",
+            SettingItem::TableWrap => "Wrap tables",
             SettingItem::ChapterLock => "Chapter lock",
             SettingItem::Mouse => "Mouse",
             SettingItem::LibLayout => "Layout",
@@ -88,6 +90,7 @@ impl SettingItem {
             }
             SettingItem::ImageMode => c.image_mode.label().to_string(),
             SettingItem::CodeWrap => onoff(c.code_wrap),
+            SettingItem::TableWrap => onoff(c.table_wrap),
             SettingItem::ChapterLock => onoff(c.chapter_lock),
             SettingItem::Mouse => onoff(c.mouse_enabled),
             SettingItem::LibLayout => c.library_layout.label().to_string(),
@@ -129,6 +132,7 @@ pub fn settings_rows(scope: Mode) -> Vec<SettingRow> {
             I(ImageMaxPx),
             I(ImageMode),
             I(CodeWrap),
+            I(TableWrap),
             I(ChapterLock),
             S("Input"),
             I(Mouse),
@@ -250,6 +254,7 @@ impl App {
                 }
             }
             SettingItem::CodeWrap => c.code_wrap = !c.code_wrap,
+            SettingItem::TableWrap => c.table_wrap = !c.table_wrap,
             SettingItem::ChapterLock => c.chapter_lock = !c.chapter_lock,
             SettingItem::Mouse => c.mouse_enabled = !c.mouse_enabled,
             SettingItem::LibLayout => {
