@@ -138,12 +138,14 @@ fingerprints**, then generic heuristics — routed by **toolchain, not publisher
 + a survey of the real library (O'Reilly/Apress/No Starch/Manning/Wiley/Packt/
 Pearson/self-pub). See `docs/parsing.md`.
 
-- [ ] **Phase A — semantics-first refactor.** Split `html.rs` (1276-line god-file)
-      into `html/`: `mod` (orchestrator), `normalize`, `dom`, `toolchain`
-      (detect + `ToolchainProfile` registry), `semantics` (`ElementRole`
-      classifier, priority-ordered), `inline`, `code`, `table`, `callout`, `math`.
-      Split `BookFormat` → `format.rs`. Consolidate all existing ad-hoc detection
-      into the classifier + registry. No behaviour loss (tests stay green).
+- [x] **Phase A — semantics-first refactor.** `html.rs` (1276 lines) → `html/`:
+      `mod` (orchestrator, 257), `normalize`, `dom`, `toolchain` (`ToolchainProfile`
+      registry), `semantics` (`ElementRole` + `classify`), `inline`, `code`,
+      `table`, `callout`, `math`, `tests`; `BookFormat` → `format.rs`.
+      `block_element` is pure dispatch on `classify()`; detection consolidated;
+      class/keyword data in the registry. Behaviour identical (43 tests +
+      real-book verified). Per-document toolchain *routing* is a documented seam
+      (not built until ≥2 profiles diverge — no premature abstraction).
 - [ ] **Phase B — EPUB3 navigation.** `epub/nav.rs`: parse the EPUB3 nav document
       (TOC/landmarks/page-list) via `get_nav_id`; TOC source nav → NCX → spine;
       start at the `bodymatter` landmark; surface real page numbers; honor spine
