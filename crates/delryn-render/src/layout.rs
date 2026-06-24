@@ -35,7 +35,11 @@ pub enum LineKind {
     /// A display-math line (centred, rendered to Unicode).
     Math,
     /// A table row (header, rule, or body), so tables are jump-navigable.
-    Table,
+    /// `shaded` marks alternating body rows for zebra striping (header/rule are
+    /// never shaded).
+    Table {
+        shaded: bool,
+    },
 }
 
 /// One wrapped, styled display line.
@@ -72,6 +76,8 @@ pub struct WrapOpts<'a> {
     /// horizontally by `code_hscroll` (false).
     pub code_wrap: bool,
     pub code_hscroll: usize,
+    /// Word-wrap table cells to their column (true) vs. truncate with `…` (false).
+    pub table_wrap: bool,
 }
 
 impl Default for WrapOpts<'_> {
@@ -83,6 +89,7 @@ impl Default for WrapOpts<'_> {
             para_spacing: 1,
             code_wrap: true,
             code_hscroll: 0,
+            table_wrap: true,
         }
     }
 }
@@ -254,7 +261,9 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                     });
                 }
             }
-            Block::Table { header, rows } => wrap_table(header.as_deref(), rows, width, &mut out),
+            Block::Table { header, rows } => {
+                wrap_table(header.as_deref(), rows, width, opts.table_wrap, &mut out)
+            }
             Block::Callout {
                 kind,
                 title,
@@ -587,6 +596,7 @@ fn wrap_nested(
         para_spacing: opts.para_spacing,
         code_wrap: true,
         code_hscroll: 0,
+        table_wrap: opts.table_wrap,
     };
     for line in wrap_blocks(blocks, &inner, &[]) {
         let mut runs = Vec::with_capacity(line.runs.len() + 1);
@@ -658,16 +668,28 @@ fn fit(s: &str, w: usize) -> String {
     }
 }
 
-/// One logical table row → one or more display lines: each cell word-wraps to
-/// its column width, the row is as tall as its tallest cell, and the " │ "
-/// separators stay aligned on every wrapped line (blank where a cell ran out).
-fn table_row(cells: &[TableCell], col_w: &[usize], bold: bool) -> Vec<DisplayLine> {
+/// One logical table row → display lines. When `wrap`, each cell word-wraps to
+/// its column width and the row is as tall as its tallest cell; otherwise each
+/// cell is truncated to a single line. Either way the " │ " separators stay
+/// aligned on every line (blank where a cell ran out). `shaded` zebra-stripes
+/// the whole logical row (all its wrapped lines share the band).
+fn table_row(
+    cells: &[TableCell],
+    col_w: &[usize],
+    bold: bool,
+    wrap: bool,
+    shaded: bool,
+) -> Vec<DisplayLine> {
     let wrapped: Vec<Vec<String>> = col_w
         .iter()
         .enumerate()
         .map(|(i, w)| {
             let raw = cells.get(i).map(|c| table_cell_text(c)).unwrap_or_default();
-            wrap_text(&raw, *w)
+            if wrap {
+                wrap_text(&raw, *w)
+            } else {
+                vec![fit(&raw, *w)]
+            }
         })
         .collect();
     let height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
@@ -688,7 +710,7 @@ fn table_row(cells: &[TableCell], col_w: &[usize], bold: bool) -> Vec<DisplayLin
                     },
                     fg: None,
                 }],
-                kind: LineKind::Table,
+                kind: LineKind::Table { shaded },
             }
         })
         .collect()
@@ -699,6 +721,7 @@ fn wrap_table(
     header: Option<&[TableCell]>,
     rows: &[Vec<TableCell>],
     width: usize,
+    wrap: bool,
     out: &mut Vec<DisplayLine>,
 ) {
     let mut ncols = header.map_or(0, <[_]>::len);
@@ -731,7 +754,7 @@ fn wrap_table(
     }
 
     if let Some(h) = header {
-        out.extend(table_row(h, &col_w, true));
+        out.extend(table_row(h, &col_w, true, wrap, false));
         out.push(DisplayLine {
             runs: vec![Run {
                 text: col_w
@@ -742,11 +765,12 @@ fn wrap_table(
                 style: Inline::default(),
                 fg: None,
             }],
-            kind: LineKind::Table,
+            kind: LineKind::Table { shaded: false },
         });
     }
-    for r in rows {
-        out.extend(table_row(r, &col_w, false));
+    // Zebra-stripe body rows (every other logical row) for readability.
+    for (i, r) in rows.iter().enumerate() {
+        out.extend(table_row(r, &col_w, false, wrap, i % 2 == 1));
     }
 }
 
@@ -855,7 +879,7 @@ mod tests {
         };
         let table: Vec<String> = wrap_blocks(&[block], &WrapOpts::default(), &[])
             .into_iter()
-            .filter(|l| matches!(l.kind, LineKind::Table))
+            .filter(|l| matches!(l.kind, LineKind::Table { .. }))
             .map(|l| l.text())
             .collect();
         let sep = |t: &str| -> Vec<usize> {
@@ -911,7 +935,7 @@ mod tests {
         };
         let table: Vec<String> = wrap_blocks(&[block], &opts, &[])
             .into_iter()
-            .filter(|l| matches!(l.kind, LineKind::Table))
+            .filter(|l| matches!(l.kind, LineKind::Table { .. }))
             .map(|l| l.text())
             .collect();
         // header + rule + a data row that wrapped to several lines.
@@ -940,6 +964,60 @@ mod tests {
         assert!(
             positions.windows(2).all(|w| w[0] == w[1]),
             "separators aligned: {positions:?}"
+        );
+    }
+
+    #[test]
+    fn table_truncates_when_wrap_is_disabled() {
+        let cell = |s: &str| vec![Span::plain(s)];
+        let block = Block::Table {
+            header: Some(vec![cell("Name"), cell("Notes")]),
+            rows: vec![vec![
+                cell("Apples"),
+                cell("a long description that would otherwise wrap"),
+            ]],
+        };
+        let opts = WrapOpts {
+            width: 30,
+            table_wrap: false,
+            ..WrapOpts::default()
+        };
+        let table: Vec<String> = wrap_blocks(&[block], &opts, &[])
+            .into_iter()
+            .filter(|l| matches!(l.kind, LineKind::Table { .. }))
+            .map(|l| l.text())
+            .collect();
+        // Wrap off → header + rule + exactly one line per row, truncated with `…`.
+        assert_eq!(table.len(), 3, "one line per row: {table:?}");
+        assert!(
+            table.iter().any(|t| t.contains('…')),
+            "truncated: {table:?}"
+        );
+    }
+
+    #[test]
+    fn table_body_rows_zebra_stripe() {
+        let cell = |s: &str| vec![Span::plain(s)];
+        let block = Block::Table {
+            header: Some(vec![cell("A"), cell("B")]),
+            rows: vec![
+                vec![cell("1"), cell("2")],
+                vec![cell("3"), cell("4")],
+                vec![cell("5"), cell("6")],
+            ],
+        };
+        let shaded: Vec<bool> = wrap_blocks(&[block], &WrapOpts::default(), &[])
+            .into_iter()
+            .filter_map(|l| match l.kind {
+                LineKind::Table { shaded } => Some(shaded),
+                _ => None,
+            })
+            .collect();
+        // header, rule, then body rows alternating (1st body unshaded).
+        assert_eq!(
+            shaded,
+            vec![false, false, false, true, false],
+            "header/rule never shaded; body rows alternate"
         );
     }
 

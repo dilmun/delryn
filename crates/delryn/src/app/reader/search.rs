@@ -74,9 +74,10 @@ impl Reader {
                         code_theme: &self.code_theme,
                         line_spacing: self.line_spacing,
                         para_spacing: self.paragraph_spacing,
-                        // Search always wraps code so no matches are hidden off-screen.
+                        // Search always wraps code/tables so no matches are hidden off-screen.
                         code_wrap: true,
                         code_hscroll: 0,
+                        table_wrap: true,
                     },
                     &[],
                 );
