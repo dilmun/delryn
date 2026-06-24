@@ -146,13 +146,18 @@ Pearson/self-pub). See `docs/parsing.md`.
       class/keyword data in the registry. Behaviour identical (43 tests +
       real-book verified). Per-document toolchain *routing* is a documented seam
       (not built until ≥2 profiles diverge — no premature abstraction).
-- [ ] **Phase B — EPUB3 navigation.** `epub/nav.rs`: parse the EPUB3 nav document
-      (TOC/landmarks/page-list) via `get_nav_id`; TOC source nav → NCX → spine;
-      start at the `bodymatter` landmark; surface real page numbers; honor spine
-      `linear="no"`. *(We currently read NCX only.)*
-- [ ] **Phase C — math recovery.** Native `<math>` in the body (alttext/annotation
-      LaTeX, else presentation walk → Unicode) + MathML/LaTeX escaped in `<img alt>`
-      (Packt-NLP ×511, Apress `$$…$$`). *(Today only MathML-in-alt is handled.)*
+- [x] **Phase B — EPUB3 navigation.** `epub/nav.rs`: parse the EPUB3 nav document
+      via `get_nav_id`; TOC source **nav → NCX → spine**; `start_section` from the
+      `bodymatter` landmark (first open skips front matter; saved progress
+      overrides). Verified on real books. *Deferred (low impact per survey):
+      page-list go-to-page + honoring spine `linear="no"` (index-remap risk).*
+- [x] **Phase C — math recovery.** Native `<math>` in the body now transcodes:
+      inline `<math>`→Unicode span (math-styled, in-prose); `<math display="block">`
+      →`Block::Math`. Source priority **`alttext` LaTeX → `<annotation …tex>` →
+      presentation-MathML walk** (`native_math_unicode`). `is_block` gates `<math>`
+      on `display="block"` so inline math stays inline. Plus the prior MathML/LaTeX
+      escaped in `<img alt>`. 3 new tests; no native-`<math>` book in the local
+      library, so verified with synthetic fixtures (inline, display, authored-TeX).
 - [ ] **Phase D — footnote semantics.** `noteref`↔`footnote` (epub:type + doc-*
       roles) for ref→def→back jump; capture ids/anchors at parse. *(Needs the
       reader cursor.)*
