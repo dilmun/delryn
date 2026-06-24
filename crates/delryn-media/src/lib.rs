@@ -17,7 +17,24 @@ use ratatui_image::sliced::SlicedProtocol;
 /// `None` if there's no tty or detection fails (then images are unavailable).
 /// Call before entering the alternate screen / raw mode.
 pub fn detect_picker() -> Option<Picker> {
-    Picker::from_query_stdio().ok()
+    // Enable the OSC 11 background-colour query so the `terminal` theme can match
+    // its real backdrop (read back via [`terminal_background`]). The query ends in
+    // a Device Status Report every terminal answers, so it never hangs.
+    let opts = ratatui_image::picker::cap_parser::QueryStdioOptions {
+        terminal_background_color_osc: true,
+        ..Default::default()
+    };
+    Picker::from_query_stdio_with_options(opts).ok()
+}
+
+/// The terminal's background colour, if it answered the OSC 11 query during
+/// [`detect_picker`]. Lets the `terminal` theme — which has no colours of its own
+/// — recolour/invert images against the real backdrop instead of white paper.
+pub fn terminal_background(picker: &Picker) -> Option<[u8; 3]> {
+    picker.capabilities().iter().find_map(|c| match c {
+        ratatui_image::picker::Capability::Background(r, g, b) => Some([*r, *g, *b]),
+        _ => None,
+    })
 }
 
 pub fn decode(bytes: &[u8]) -> Option<DynamicImage> {

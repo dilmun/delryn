@@ -79,8 +79,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Detect the terminal's image protocol before entering the alt screen.
+    // Detect the terminal's image protocol before entering the alt screen. The
+    // same query reports the terminal's background colour, which the `terminal`
+    // theme uses to recolour/invert images against the real backdrop.
     let picker = delryn::media::detect_picker();
+    if let Some(p) = &picker
+        && let Some(bg) = delryn::media::terminal_background(p)
+    {
+        delryn::theme::set_terminal_background(bg);
+    }
 
     let mut app = match args.first() {
         Some(path) => App::open_book(path)?,
