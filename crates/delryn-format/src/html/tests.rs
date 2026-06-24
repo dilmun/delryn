@@ -179,6 +179,33 @@ fn noteref_link_becomes_footnote_anchor() {
 }
 
 #[test]
+fn footnotes_section_and_wrapper_are_not_definitions() {
+    // Only the inner `epub:type="footnote"` with an id is the definition — the
+    // plural `footnotes` section and the class-only `<div class="Footnote">`
+    // wrapper (no id) are containers, not nested "[note]" definitions.
+    let blocks = parse_blocks(
+        r##"<html><body>
+            <aside epub:type="footnotes"><div class="Heading">Footnotes</div>
+                <div class="Footnote"><span class="FootnoteNumber"><a href="#s1">1</a></span>
+                    <div class="FootnoteContent" epub:type="footnote" id="Fn1"><p>the note</p></div>
+                </div>
+            </aside></body></html>"##,
+    );
+    let labels: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Footnote { label, .. } => Some(label.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        labels,
+        ["1"],
+        "exactly one definition, labelled by its id: {labels:?}"
+    );
+}
+
+#[test]
 fn biblioref_link_becomes_citation_anchor() {
     let blocks = parse_blocks(
         r##"<html><body><p>per<a epub:type="biblioref" href="#ref12">[12]</a></p></body></html>"##,

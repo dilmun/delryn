@@ -85,6 +85,14 @@ impl App {
                 }
                 let action = input::map_key(key, &mut self.pending);
                 self.apply(action);
+                // An activated external link asks for confirmation before opening.
+                if let Some(url) = self.reader.as_mut().and_then(|r| r.take_pending_open()) {
+                    let shown = crate::view::truncate(&url, 60);
+                    self.ask_confirm(
+                        &format!("Open in browser: {shown}?"),
+                        super::confirm::ConfirmAction::OpenUrl(url),
+                    );
+                }
                 // Returning to the library (Back) should reflect the latest state.
                 if self.mode == Mode::Library {
                     self.refresh_library();
