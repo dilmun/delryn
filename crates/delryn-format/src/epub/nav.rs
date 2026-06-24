@@ -186,9 +186,14 @@ fn build_outline(entries: &[TocEntry], depth: usize, parent: usize, out: &mut Ve
 
 // ── Resolution helpers ───────────────────────────────────────────────────────
 
-/// Resolve a nav `href` (relative to the nav document's directory) to a spine
-/// index, tolerating `#fragment`s and base-path mismatches.
-fn resolve_href(href: &str, nav_dir: &Path, doc: &EpubDoc<BufReader<File>>) -> Option<usize> {
+/// Resolve an `href` (relative to `nav_dir`) to a spine index, tolerating
+/// `#fragment`s and base-path mismatches. Shared by nav parsing and the reader's
+/// cross-reference / citation jumps.
+pub(super) fn resolve_href(
+    href: &str,
+    nav_dir: &Path,
+    doc: &EpubDoc<BufReader<File>>,
+) -> Option<usize> {
     let raw = href.split('#').next().unwrap_or(href);
     resolve_path(&super::normalize_path(&nav_dir.join(raw)), doc)
 }

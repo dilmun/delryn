@@ -47,6 +47,11 @@ pub(super) fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<S
             anchor: None,
         }),
         Node::Element(e) => {
+            // Regenerated markers (footnote backref numbers, list item numbers)
+            // are chrome — drop so they don't double our labels/markers.
+            if is_marker_chrome(e) {
+                return;
+            }
             // Links carry a navigation anchor (footnote ref / cross-ref / URL);
             // collect the inner runs, then stamp the anchor on each.
             if e.name() == "a" {

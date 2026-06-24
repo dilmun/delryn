@@ -147,6 +147,10 @@ fn is_block(node: NodeRef<Node>) -> bool {
 fn walk_children(parent: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
     let mut inline: Vec<Span> = Vec::new();
     for child in parent.children() {
+        // Drop regenerated markers (list item numbers, footnote backrefs).
+        if matches!(child.value(), Node::Element(e) if is_marker_chrome(e)) {
+            continue;
+        }
         if is_block(child) {
             flush(&mut inline, ctx, out);
             block_element(child, ctx, out);

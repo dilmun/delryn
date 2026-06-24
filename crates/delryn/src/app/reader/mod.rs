@@ -601,15 +601,22 @@ impl Reader {
     }
 
     /// Jump to a cross-reference / citation target `href` (`#frag`, `file#frag`,
-    /// or `file`). Resolves the current section first (file-scoped ids), then any
-    /// other section; pushes history for return. Returns whether it resolved.
+    /// or `file`), pushing history for return. A bare `#frag` is local (EPUB ids
+    /// are file-scoped); a `file#frag` resolves the file to its spine section
+    /// (not by scanning the colliding id), then the fragment within it.
     fn goto_target(&mut self, href: &str) -> bool {
-        let frag = href.rsplit('#').next().unwrap_or(href).trim();
-        if frag.is_empty() {
-            return false;
-        }
-        // Current section first — a bare `#id` is always local.
-        if let Some(loc) = self.target_locator(self.section, frag) {
+        let file = href.split('#').next().unwrap_or("").trim();
+        let frag = href
+            .split('#')
+            .nth(1)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        if file.is_empty() {
+            // Same-file fragment → current section; the id must exist here.
+            let Some(loc) = frag.and_then(|f| self.target_locator(self.section, f)) else {
+                return false;
+            };
             self.push_history();
             if let Some(line) = find_target_line(&self.lines, &loc) {
                 self.scroll = line;
@@ -619,22 +626,30 @@ impl Reader {
             self.anchor_sel = None;
             return true;
         }
-        // Otherwise, a cross-file reference: find the section that defines it.
-        if let Some(sec) = self.find_target_section(frag) {
-            self.push_history();
+
+        // Cross-file: resolve the file to its section (fall back to an id scan
+        // only if the path doesn't resolve), then locate the fragment within it.
+        let Some(sec) = self
+            .doc
+            .section_for_href(self.section, href)
+            .or_else(|| frag.and_then(|f| self.find_target_section(f)))
+        else {
+            return false;
+        };
+        self.push_history();
+        if sec != self.section {
             self.load(sec);
             self.ensure_wrapped(self.last_measure.max(1));
-            let line = self
-                .target_locator(sec, frag)
-                .and_then(|loc| find_target_line(&self.lines, &loc))
-                .unwrap_or(0);
-            self.scroll = line;
-            self.scroll_pending = 0;
-            self.clamp_scroll();
-            self.anchor_sel = None;
-            return true;
         }
-        false
+        let line = frag
+            .and_then(|f| self.target_locator(sec, f))
+            .and_then(|loc| find_target_line(&self.lines, &loc))
+            .unwrap_or(0);
+        self.scroll = line;
+        self.scroll_pending = 0;
+        self.clamp_scroll();
+        self.anchor_sel = None;
+        true
     }
 
     pub fn take_clipboard(&mut self) -> Option<String> {

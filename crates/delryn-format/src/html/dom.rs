@@ -15,3 +15,18 @@ pub(super) fn attr_has_token(e: &Element, attr: &str, want: &str) -> bool {
 pub(super) fn class_has_token(e: &Element, want: &str) -> bool {
     attr_has_token(e, "class", want)
 }
+
+/// Whether an element is a *marker* the reader regenerates itself — an explicit
+/// list item number (`class="ItemNumber"`) or a footnote number/backref
+/// (`class="FootnoteNumber"`). Like code line numbers, these are chrome: dropped
+/// so we don't double them with our own list markers / `[n]` footnote labels.
+pub(super) fn is_marker_chrome(e: &Element) -> bool {
+    e.attr("class").is_some_and(|c| {
+        c.split([' ', '-', '_']).any(|t| {
+            matches!(
+                t.to_ascii_lowercase().as_str(),
+                "itemnumber" | "footnotenumber" | "footnotemark"
+            )
+        })
+    })
+}
