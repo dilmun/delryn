@@ -287,7 +287,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                 });
                 wrap_nested(blocks, opts, "▌ ", LineKind::Quote, &mut out);
             }
-            Block::Footnote { label, blocks } => {
+            Block::Footnote { label, blocks, .. } => {
                 out.push(DisplayLine {
                     runs: vec![Run {
                         text: format!("[{label}]"),
@@ -893,6 +893,7 @@ mod tests {
     #[test]
     fn footnote_renders_label_and_body() {
         let block = Block::Footnote {
+            id: "fn1".into(),
             label: "1".into(),
             blocks: vec![para("the cited source")],
         };

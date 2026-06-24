@@ -9,6 +9,6 @@ pub mod metadata;
 pub mod naming;
 pub mod toc;
 
-pub use content::{Anchor, Block, CalloutKind, Inline, Section, Span, TableCell};
+pub use content::{Anchor, Block, CalloutKind, Inline, Section, Span, TableCell, find_footnote};
 pub use metadata::Metadata;
 pub use toc::{OutlineItem, TocEntry};
