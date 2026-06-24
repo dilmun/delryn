@@ -173,18 +173,18 @@ fn render_content(
     f.render_widget(header, header_area);
 
     match config.view_mode {
-        ViewMode::Center => render_column(
-            f,
-            body,
-            reader,
-            config.side_padding,
-            config.image_max_px,
-            theme,
-            images,
-        ),
+        ViewMode::Center => render_column(f, body, reader, config, config.side_padding, images),
         // Fill: edge-to-edge text (zero side margin).
-        ViewMode::Fill => render_column(f, body, reader, 0, config.image_max_px, theme, images),
-        ViewMode::TwoPage => render_two_page(f, body, reader, config.image_max_px, theme, images),
+        ViewMode::Fill => render_column(f, body, reader, config, 0, images),
+        ViewMode::TwoPage => render_two_page(f, body, reader, config, images),
+    }
+}
+
+/// The image render policy for the current frame: theme tint + adaptation mode.
+fn image_policy(config: &Config) -> crate::media::RenderPolicy {
+    crate::media::RenderPolicy {
+        tint: super::theme_ink(config.theme),
+        mode: config.image_mode,
     }
 }
 
@@ -205,11 +205,11 @@ fn render_column(
     f: &mut Frame,
     body: Rect,
     reader: &mut Reader,
+    config: &Config,
     side_padding: u16,
-    image_max_px: u16,
-    theme: Theme,
     images: Images,
 ) {
+    let theme = config.theme;
     let measure = measure_for(body.width, side_padding);
     let left_pad = body.width.saturating_sub(measure) / 2;
     let cols = Layout::horizontal([
@@ -232,8 +232,8 @@ fn render_column(
             picker,
             text_area.width,
             text_area.height.max(1),
-            image_max_px,
-            super::theme_ink(theme),
+            config.image_max_px,
+            image_policy(config),
         );
     }
 
@@ -293,10 +293,10 @@ fn render_two_page(
     f: &mut Frame,
     body: Rect,
     reader: &mut Reader,
-    image_max_px: u16,
-    theme: Theme,
+    config: &Config,
     images: Images,
 ) {
+    let theme = config.theme;
     const GAP: u16 = 3;
     // Each column takes half the pane (minus the gap); a thin outer margin.
     let usable = body.width.saturating_sub(GAP + 4).max(2);
@@ -324,8 +324,8 @@ fn render_two_page(
             picker,
             col_w,
             h.max(1) as u16,
-            image_max_px,
-            super::theme_ink(theme),
+            config.image_max_px,
+            image_policy(config),
         );
     }
 

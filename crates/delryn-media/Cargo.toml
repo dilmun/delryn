@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+delryn-infra = { workspace = true }
 image.workspace = true
 ratatui.workspace = true
 ratatui-image.workspace = true

@@ -175,6 +175,60 @@ impl GridSize {
     }
 }
 
+/// How book images are adapted to the active theme. See `DESIGN.md` §7 and the
+/// "Theming & content coherence" plan. The mode is part of the image cache key,
+/// so changing it re-renders on the fly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ImageMode {
+    /// Smart, per-content: recolour line-art/equations to the theme, keep
+    /// pictures faithful (transparency flattened onto the page). The best general
+    /// default.
+    #[default]
+    Auto,
+    /// Auto, plus lightness-invert opaque light-background figures (charts,
+    /// diagrams, screenshots) so they're dark-friendly with detail intact. True
+    /// photos that happen to be light-backed invert too — the trade for comfort.
+    InvertBackgrounds,
+    /// Never recolour or invert; only flatten transparency onto the page so
+    /// nothing is invisible. Original colours preserved (equations keep their ink
+    /// colour, which may be faint on a dark theme).
+    Faithful,
+}
+
+impl ImageMode {
+    pub fn next(self) -> Self {
+        match self {
+            ImageMode::Auto => ImageMode::InvertBackgrounds,
+            ImageMode::InvertBackgrounds => ImageMode::Faithful,
+            ImageMode::Faithful => ImageMode::Auto,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            ImageMode::Auto => ImageMode::Faithful,
+            ImageMode::InvertBackgrounds => ImageMode::Auto,
+            ImageMode::Faithful => ImageMode::InvertBackgrounds,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ImageMode::Auto => "auto",
+            ImageMode::InvertBackgrounds => "invert",
+            ImageMode::Faithful => "faithful",
+        }
+    }
+
+    pub fn from_label(s: &str) -> ImageMode {
+        match s {
+            "invert" => ImageMode::InvertBackgrounds,
+            "faithful" => ImageMode::Faithful,
+            _ => ImageMode::Auto,
+        }
+    }
+}
+
 /// Bounds for the per-side text padding (percent of the content pane width).
 pub const MAX_SIDE_PADDING: u16 = 40;
 /// Smallest text column we'll ever wrap to, so heavy padding on a narrow
@@ -213,6 +267,8 @@ pub struct Config {
     /// Max inline-image resolution (longest side, px). Caps the data sent to the
     /// terminal so big figures don't stall scrolling.
     pub image_max_px: u16,
+    /// How book images adapt to the theme (recolour / invert / faithful).
+    pub image_mode: ImageMode,
     /// Directories scanned for the library.
     pub library_paths: Vec<String>,
     /// How the library lists books (table / dense table / cover grid).
@@ -237,6 +293,7 @@ impl Default for Config {
             mouse_enabled: true,
             status: StatusFields::default(),
             image_max_px: 0, // no cap by default — images fill the text column
+            image_mode: ImageMode::default(),
             library_paths: Vec::new(),
             library_layout: LibLayout::List,
             library_grid_size: GridSize::Medium,
@@ -260,6 +317,7 @@ struct ConfigFile {
     mouse_enabled: bool,
     status: StatusFields,
     image_max_px: u16,
+    image_mode: String,
     library_paths: Vec<String>,
     library_layout: String,
     library_grid_size: String,
@@ -281,6 +339,7 @@ impl Default for ConfigFile {
             mouse_enabled: c.mouse_enabled,
             status: c.status,
             image_max_px: c.image_max_px,
+            image_mode: c.image_mode.label().to_string(),
             library_paths: c.library_paths,
             library_layout: c.library_layout.label().to_string(),
             library_grid_size: c.library_grid_size.label().to_string(),
@@ -316,6 +375,7 @@ impl Config {
         c.mouse_enabled = cf.mouse_enabled;
         c.status = cf.status;
         c.image_max_px = cf.image_max_px.min(MAX_IMAGE_PX);
+        c.image_mode = ImageMode::from_label(&cf.image_mode);
         c.library_paths = cf.library_paths;
         c.library_layout = LibLayout::from_label(&cf.library_layout);
         c.library_grid_size = GridSize::from_label(&cf.library_grid_size);
@@ -337,6 +397,7 @@ impl Config {
             mouse_enabled: self.mouse_enabled,
             status: self.status,
             image_max_px: self.image_max_px,
+            image_mode: self.image_mode.label().to_string(),
             library_paths: self.library_paths.clone(),
             library_layout: self.library_layout.label().to_string(),
             library_grid_size: self.library_grid_size.label().to_string(),

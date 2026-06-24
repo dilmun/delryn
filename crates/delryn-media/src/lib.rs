@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
+pub use delryn_infra::config::ImageMode;
 use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
@@ -46,6 +47,14 @@ pub fn decode(bytes: &[u8]) -> Option<DynamicImage> {
 pub struct Ink {
     pub ink: [u8; 3],
     pub paper: [u8; 3],
+}
+
+/// How to render a graphic for the current frame: the theme `tint` plus the
+/// adaptation `mode`. Part of [`ImgKey`], so changing either re-renders.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RenderPolicy {
+    pub tint: Ink,
+    pub mode: ImageMode,
 }
 
 /// The kind of background a graphic sits on, decided once per image.
@@ -195,23 +204,102 @@ pub fn flatten_onto(img: &DynamicImage, paper: [u8; 3]) -> DynamicImage {
     DynamicImage::ImageRgba8(out)
 }
 
-/// Apply theme-aware rendering to one decoded graphic — the single policy shared
-/// by inline reader images and the full-screen viewer:
-/// - opaque graphics (figures, photos, white-bg diagrams) carry their own
-///   background and are legible on any theme → left untouched;
-/// - transparent monochrome ink (equations, line drawings) → recoloured to the
-///   theme so it isn't black-on-black;
-/// - transparent colour graphics → flattened onto the page colour (colours kept,
-///   transparency removed so they're never invisible).
-pub fn render_for_theme(img: &DynamicImage, tint: Ink) -> DynamicImage {
-    let rgba = img.to_rgba8();
-    if transparent_frac(&rgba) <= TRANSPARENT_FRAC {
-        return img.clone(); // opaque: already legible, keep as-is
+/// Whether an opaque graphic sits on a light background (a white-page chart,
+/// diagram, or screenshot) — the kind that `InvertBackgrounds` flips to dark.
+fn is_light_background(img: &RgbaImage) -> bool {
+    match analyze_background(img) {
+        // bg is normalised 0–1; weight by luminance.
+        Background::Solid(bg) => 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2] > 0.6,
+        Background::Alpha => false,
     }
-    if opaque_chroma(&rgba) < INK_CHROMA_MAX {
-        recolor_ink(img, tint)
+}
+
+/// Invert a graphic's *lightness* while preserving hue and saturation: white↔black
+/// swap, but red stays red. Unlike a naive `255−RGB` negate (which turns photos
+/// into colour negatives), this keeps a chart's colours readable on a dark page
+/// and is detail-preserving. Alpha is kept.
+pub fn lightness_invert(img: &DynamicImage) -> DynamicImage {
+    let src = img.to_rgba8();
+    let (w, h) = src.dimensions();
+    let mut out = RgbaImage::new(w, h);
+    for (x, y, p) in src.enumerate_pixels() {
+        let (hue, sat, lit) = rgb_to_hsl(p[0], p[1], p[2]);
+        let [r, g, b] = hsl_to_rgb(hue, sat, 1.0 - lit);
+        out.put_pixel(x, y, Rgba([r, g, b, p[3]]));
+    }
+    DynamicImage::ImageRgba8(out)
+}
+
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d < 1e-6 {
+        return (0.0, 0.0, l); // greyscale: hue/sat undefined
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs());
+    let h = 60.0
+        * if (max - r).abs() < 1e-6 {
+            ((g - b) / d).rem_euclid(6.0)
+        } else if (max - g).abs() < 1e-6 {
+            (b - r) / d + 2.0
+        } else {
+            (r - g) / d + 4.0
+        };
+    (h, s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
+    if s < 1e-6 {
+        let v = (l * 255.0).round() as u8;
+        return [v, v, v];
+    }
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h / 60.0;
+    let x = c * (1.0 - (hp.rem_euclid(2.0) - 1.0).abs());
+    let (r1, g1, b1) = match hp as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let to = |v: f32| ((v + m).clamp(0.0, 1.0) * 255.0).round() as u8;
+    [to(r1), to(g1), to(b1)]
+}
+
+/// Apply theme-aware rendering to one decoded graphic — the single policy shared
+/// by inline reader images and the full-screen viewer. The `mode` selects how:
+/// - **Auto**: recolour transparent monochrome ink (equations/line drawings) to
+///   the theme; flatten transparent colour graphics onto the page; opaque
+///   graphics (figures, photos, white-bg diagrams) carry their own background and
+///   are left untouched.
+/// - **InvertBackgrounds**: as Auto, but opaque *light-background* figures are
+///   lightness-inverted so they're dark-friendly with detail intact.
+/// - **Faithful**: never recolour or invert — only flatten transparency onto the
+///   page so nothing is invisible; original colours preserved.
+pub fn render_for_theme(img: &DynamicImage, tint: Ink, mode: ImageMode) -> DynamicImage {
+    let rgba = img.to_rgba8();
+    if mode == ImageMode::Faithful {
+        return flatten_onto(img, tint.paper);
+    }
+    if transparent_frac(&rgba) > TRANSPARENT_FRAC {
+        // Transparent ink graphic.
+        return if opaque_chroma(&rgba) < INK_CHROMA_MAX {
+            recolor_ink(img, tint) // equation/line-art → theme matte
+        } else {
+            flatten_onto(img, tint.paper) // transparent colour → composite
+        };
+    }
+    // Opaque graphic: carries its own background.
+    if mode == ImageMode::InvertBackgrounds && is_light_background(&rgba) {
+        lightness_invert(img) // light-bg figure → dark, detail kept
     } else {
-        flatten_onto(img, tint.paper)
+        img.clone()
     }
 }
 
@@ -288,9 +376,9 @@ pub struct ImgKey {
     pub avail: u16,
     pub max_rows: u16,
     pub max_px: u16,
-    /// Theme ink/paper — part of the key so re-theming rebuilds (re-tints) the
-    /// image rather than serving a stale-coloured one from cache.
-    pub tint: Ink,
+    /// Theme tint + adaptation mode — part of the key so re-theming or changing
+    /// the mode rebuilds the image rather than serving a stale one from cache.
+    pub policy: RenderPolicy,
 }
 
 /// A built, ready-to-render inline image: a sliced protocol (so partial rows
@@ -322,7 +410,7 @@ fn build_plan(
     avail_cols: u16,
     max_rows: u16,
     max_px: u16,
-    tint: Ink,
+    policy: RenderPolicy,
 ) -> Option<ImagePlan> {
     let img = decode(bytes)?;
     let (w, h) = img.dimensions();
@@ -336,9 +424,8 @@ fn build_plan(
         rows as u32 * fs.height.max(1) as u32,
         image::imageops::FilterType::Triangle,
     );
-    // Recolour line-art (equations/diagrams) to the theme; flatten everything
-    // else onto the page colour so transparency never hides a figure.
-    let img = render_for_theme(&img, tint);
+    // Adapt the graphic to the theme (recolour ink / flatten / invert) per mode.
+    let img = render_for_theme(&img, policy.tint, policy.mode);
     let size = ratatui::layout::Size::new(cols, rows);
     let proto =
         SlicedProtocol::new_with_resize(picker, img, size, ratatui_image::Resize::Fit(None))
@@ -405,7 +492,7 @@ impl ImageBuilder {
                     }
                     continue;
                 }
-                let plan = build_plan(&picker, &req.bytes, k.avail, k.max_rows, k.max_px, k.tint);
+                let plan = build_plan(&picker, &req.bytes, k.avail, k.max_rows, k.max_px, k.policy);
                 if res_tx
                     .send(BuiltImage {
                         key: k,
@@ -447,13 +534,13 @@ pub struct ImageView {
 }
 
 impl ImageView {
-    /// Build a viewer from raw image bytes; `None` if nothing decodes. `tint`
-    /// applies the same theme-aware ink rendering as the inline reader.
-    pub fn new(picker: &Picker, images: &[Vec<u8>], tint: Ink) -> Option<ImageView> {
+    /// Build a viewer from raw image bytes; `None` if nothing decodes. `policy`
+    /// applies the same theme-aware rendering as the inline reader.
+    pub fn new(picker: &Picker, images: &[Vec<u8>], policy: RenderPolicy) -> Option<ImageView> {
         let protocols: Vec<StatefulProtocol> = images
             .iter()
             .filter_map(|b| decode(b))
-            .map(|img| picker.new_resize_protocol(render_for_theme(&img, tint)))
+            .map(|img| picker.new_resize_protocol(render_for_theme(&img, policy.tint, policy.mode)))
             .collect();
         if protocols.is_empty() {
             None
@@ -584,11 +671,66 @@ mod tests {
             Rgba([220, 30, 30, 255]),
         );
         assert!(!is_line_art(&img));
-        let out = render_for_theme(&img, DARK).to_rgba8();
+        let out = render_for_theme(&img, DARK, ImageMode::Auto).to_rgba8();
         assert_eq!(
             out.get_pixel(10, 10).0,
             [220, 30, 30, 255],
             "red stroke kept"
+        );
+    }
+
+    #[test]
+    fn lightness_invert_swaps_light_dark_keeps_hue() {
+        let img = fill(
+            4,
+            4,
+            Rgba([255, 255, 255, 255]),
+            (0, 0, 1, 1),
+            Rgba([255, 0, 0, 255]),
+        );
+        let out = lightness_invert(&img).to_rgba8();
+        // White background → black; red stays red (hue preserved).
+        assert_eq!(out.get_pixel(3, 3).0, [0, 0, 0, 255], "white → black");
+        assert_eq!(out.get_pixel(0, 0).0, [255, 0, 0, 255], "red kept");
+    }
+
+    #[test]
+    fn invert_mode_flips_light_bg_figure_but_auto_keeps_it() {
+        // Opaque white-bg figure with a black mark.
+        let fig = opaque_ink(10, 10, (4, 4, 6, 6));
+        // Auto leaves opaque figures untouched.
+        let auto = render_for_theme(&fig, DARK, ImageMode::Auto).to_rgba8();
+        assert_eq!(
+            auto.get_pixel(0, 0).0,
+            [255, 255, 255, 255],
+            "auto keeps white bg"
+        );
+        // Invert flips the light background dark.
+        let inv = render_for_theme(&fig, DARK, ImageMode::InvertBackgrounds).to_rgba8();
+        assert_eq!(
+            inv.get_pixel(0, 0).0,
+            [0, 0, 0, 255],
+            "invert darkens white bg"
+        );
+    }
+
+    #[test]
+    fn faithful_mode_never_recolours_equations() {
+        // A transparent black equation: Auto recolours to theme ink; Faithful
+        // only composites onto paper (keeps the original black ink).
+        let eq = transparent_ink(10, 10, (4, 4, 6, 6));
+        let faithful = render_for_theme(&eq, DARK, ImageMode::Faithful).to_rgba8();
+        assert_eq!(faithful.get_pixel(5, 5).0, [0, 0, 0, 255], "ink kept black");
+        assert_eq!(
+            faithful.get_pixel(0, 0).0,
+            [10, 12, 16, 255],
+            "transparent → paper"
+        );
+        let auto = render_for_theme(&eq, DARK, ImageMode::Auto).to_rgba8();
+        assert_eq!(
+            auto.get_pixel(5, 5).0,
+            [220, 220, 220, 255],
+            "auto recolours to ink"
         );
     }
 
@@ -612,7 +754,12 @@ mod tests {
         for (x, y, p) in photo.enumerate_pixels_mut() {
             *p = Rgba([(x * 12) as u8, (y * 12) as u8, 180, 255]);
         }
-        let out = render_for_theme(&DynamicImage::ImageRgba8(photo.clone()), DARK).to_rgba8();
+        let out = render_for_theme(
+            &DynamicImage::ImageRgba8(photo.clone()),
+            DARK,
+            ImageMode::Auto,
+        )
+        .to_rgba8();
         assert_eq!(out.get_pixel(10, 10).0, photo.get_pixel(10, 10).0);
     }
 }

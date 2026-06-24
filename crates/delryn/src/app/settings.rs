@@ -30,6 +30,7 @@ pub enum SettingItem {
     StatusPercent,
     StatusGauge,
     ImageMaxPx,
+    ImageMode,
     CodeWrap,
     ChapterLock,
     Mouse,
@@ -53,6 +54,7 @@ impl SettingItem {
             SettingItem::StatusPercent => "Percent",
             SettingItem::StatusGauge => "Gauge",
             SettingItem::ImageMaxPx => "Max resolution (px)",
+            SettingItem::ImageMode => "Image mode",
             SettingItem::CodeWrap => "Wrap code blocks",
             SettingItem::ChapterLock => "Chapter lock",
             SettingItem::Mouse => "Mouse",
@@ -84,6 +86,7 @@ impl SettingItem {
                     c.image_max_px.to_string()
                 }
             }
+            SettingItem::ImageMode => c.image_mode.label().to_string(),
             SettingItem::CodeWrap => onoff(c.code_wrap),
             SettingItem::ChapterLock => onoff(c.chapter_lock),
             SettingItem::Mouse => onoff(c.mouse_enabled),
@@ -124,6 +127,7 @@ pub fn settings_rows(scope: Mode) -> Vec<SettingRow> {
             I(StatusGauge),
             S("Content"),
             I(ImageMaxPx),
+            I(ImageMode),
             I(CodeWrap),
             I(ChapterLock),
             S("Input"),
@@ -237,6 +241,13 @@ impl App {
                 c.image_max_px = (c.image_max_px as i32 + delta * 128)
                     .clamp(0, crate::config::MAX_IMAGE_PX as i32)
                     as u16
+            }
+            SettingItem::ImageMode => {
+                c.image_mode = if delta > 0 {
+                    c.image_mode.next()
+                } else {
+                    c.image_mode.prev()
+                }
             }
             SettingItem::CodeWrap => c.code_wrap = !c.code_wrap,
             SettingItem::ChapterLock => c.chapter_lock = !c.chapter_lock,
