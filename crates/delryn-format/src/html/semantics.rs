@@ -1,0 +1,116 @@
+//! The semantic classifier: given a block-level element, decide what it *is* —
+//! in one priority-ordered place. This is the single decision the orchestrator
+//! dispatches on, so detection logic never scatters across the extractors.
+//!
+//! Priority (most-standard first): admonition/footnote/display-math containers
+//! (by `epub:type`/`role`/class) → code → heading → the structural HTML element.
+
+use super::*;
+
+/// What a block-level element resolves to. Variants carry the data the
+/// classifier already computed, so extractors don't re-detect.
+pub(super) enum ElementRole {
+    Callout(CalloutKind),
+    /// Footnote/endnote definition, with its label.
+    Footnote(String),
+    /// Display math backed by an image: `(src, unicode-alt)`.
+    DisplayMathImage(String, String),
+    CodeBlock,
+    Heading(u8),
+    Paragraph,
+    List {
+        ordered: bool,
+        start: usize,
+    },
+    Quote,
+    Rule,
+    Image,
+    /// An aside/callout laid out as an icon-cell + content-cell table.
+    AsideIconTable(CalloutKind),
+    Table,
+    /// A stray `<td>`/`<th>` outside a recognised table → degrade to a paragraph.
+    Cell,
+    /// Anything else: a generic container to recurse into.
+    Container,
+}
+
+/// Classify a block-level element. The order mirrors the detection priority:
+/// semantic containers before the plain structural element, so a
+/// `<blockquote class="note">` becomes a callout rather than a quote, and a
+/// `<p class="Code"><code>…<br>…` becomes code rather than a paragraph.
+pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> ElementRole {
+    let name = e.name();
+
+    // 1. Admonition / callout containers (class or epub:type note/tip/warning/…).
+    if matches!(name, "div" | "section" | "aside" | "blockquote")
+        && let Some(kind) = callout_kind(e)
+    {
+        return ElementRole::Callout(kind);
+    }
+    // 2. Footnote / endnote definitions.
+    if matches!(name, "div" | "section" | "aside" | "p" | "li")
+        && let Some(label) = footnote_label(e)
+    {
+        return ElementRole::Footnote(label);
+    }
+    // 3. Display (block) math backed by an image — render the image, alt as fallback.
+    if matches!(name, "p" | "div")
+        && let Some((src, alt)) = display_math_image(node)
+    {
+        return ElementRole::DisplayMathImage(src, alt);
+    }
+    // 4. Code listings (<pre>, styled container, or multi-line <code>).
+    if is_code_block(e, node) {
+        return ElementRole::CodeBlock;
+    }
+    // 5. Headings, then the structural element.
+    match name {
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => ElementRole::Heading(name.as_bytes()[1] - b'0'),
+        "p" => ElementRole::Paragraph,
+        "ul" | "ol" => ElementRole::List {
+            ordered: name == "ol",
+            start: e
+                .attr("start")
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(1),
+        },
+        "blockquote" => ElementRole::Quote,
+        "hr" => ElementRole::Rule,
+        "img" => ElementRole::Image,
+        "table" if aside_icon_src(node).is_some() => ElementRole::AsideIconTable(
+            aside_kind_from_icon(&aside_icon_src(node).unwrap_or_default()),
+        ),
+        "table" => ElementRole::Table,
+        "td" | "th" => ElementRole::Cell,
+        _ => ElementRole::Container,
+    }
+}
+
+/// If a container is a footnote/endnote definition (by `epub:type` or `class`),
+/// its label — the digits of its `id`, else the `id`, else `note`.
+pub(super) fn footnote_label(e: &scraper::node::Element) -> Option<String> {
+    let etype = e.attr("epub:type").unwrap_or("").to_ascii_lowercase();
+    let by_type = ["footnote", "endnote", "rearnote"]
+        .iter()
+        .any(|k| etype.contains(k));
+    let by_class = e.attr("class").is_some_and(|c| {
+        c.split([' ', '-', '_']).any(|t| {
+            matches!(
+                t.to_ascii_lowercase().as_str(),
+                "footnote" | "endnote" | "rearnote" | "fn"
+            )
+        })
+    });
+    if !by_type && !by_class {
+        return None;
+    }
+    let id = e.attr("id").unwrap_or("");
+    let digits: String = id.chars().filter(char::is_ascii_digit).collect();
+    Some(if !digits.is_empty() {
+        digits
+    } else if !id.is_empty() {
+        id.to_string()
+    } else {
+        "note".to_string()
+    })
+}
