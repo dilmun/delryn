@@ -128,6 +128,37 @@ jump-by-type + a reader cursor.
 - [x] Command palette (`:`): `delryn-library::fuzzy` matcher + `app/palette.rs` —
       jump to section/collection, sort, cycle layout, toggle panes, stats, export.
 
+## Parsing architecture — semantics-first (delryn-format)
+
+Goal: stop per-book whack-a-mole. Detect content from **standardized semantics**
+first (`epub:type`/`role`, `data-type`, real HTML5), then **stable toolchain
+fingerprints**, then generic heuristics — routed by **toolchain, not publisher**
+(Packt/Manning each ship two markup families). Adding a publisher must become
+*one data entry*, not edits in five places. Researched against the EPUB 3.3 spec
++ a survey of the real library (O'Reilly/Apress/No Starch/Manning/Wiley/Packt/
+Pearson/self-pub). See `docs/parsing.md`.
+
+- [ ] **Phase A — semantics-first refactor.** Split `html.rs` (1276-line god-file)
+      into `html/`: `mod` (orchestrator), `normalize`, `dom`, `toolchain`
+      (detect + `ToolchainProfile` registry), `semantics` (`ElementRole`
+      classifier, priority-ordered), `inline`, `code`, `table`, `callout`, `math`.
+      Split `BookFormat` → `format.rs`. Consolidate all existing ad-hoc detection
+      into the classifier + registry. No behaviour loss (tests stay green).
+- [ ] **Phase B — EPUB3 navigation.** `epub/nav.rs`: parse the EPUB3 nav document
+      (TOC/landmarks/page-list) via `get_nav_id`; TOC source nav → NCX → spine;
+      start at the `bodymatter` landmark; surface real page numbers; honor spine
+      `linear="no"`. *(We currently read NCX only.)*
+- [ ] **Phase C — math recovery.** Native `<math>` in the body (alttext/annotation
+      LaTeX, else presentation walk → Unicode) + MathML/LaTeX escaped in `<img alt>`
+      (Packt-NLP ×511, Apress `$$…$$`). *(Today only MathML-in-alt is handled.)*
+- [ ] **Phase D — footnote semantics.** `noteref`↔`footnote` (epub:type + doc-*
+      roles) for ref→def→back jump; capture ids/anchors at parse. *(Needs the
+      reader cursor.)*
+
+Honest limits (won't fake): image-only books (Pearson — every figure/table/eq is
+a PNG with identical `alt="images"`) and font-class-only inline code (self-pub
+"Practical Guide") get graceful placeholders, not reconstruction.
+
 ## Theming & content coherence
 
 Goal: the active theme is the **single source of truth** that colourises every

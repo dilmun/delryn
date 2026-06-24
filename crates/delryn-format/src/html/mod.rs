@@ -1,0 +1,258 @@
+//! XHTML → structured block model. Used by EPUB (and future HTML-based
+//! formats) to drive the rich typography engine. Produces headings, styled
+//! paragraphs, lists, blockquotes, and code blocks rather than flat text.
+
+use ego_tree::NodeRef;
+use scraper::{Html, Node};
+
+use super::{Anchor, Block, CalloutKind, Inline, Span, TableCell};
+
+mod callout;
+mod code;
+mod dom;
+mod inline;
+mod math;
+mod normalize;
+mod semantics;
+mod table;
+mod toolchain;
+
+use callout::*;
+use code::*;
+use dom::*;
+use inline::*;
+use math::*;
+use normalize::*;
+use semantics::*;
+use table::*;
+use toolchain::*;
+
+/// Parse a section's XHTML into a list of reflowable blocks.
+pub fn parse_blocks(xhtml: &str) -> Vec<Block> {
+    let xhtml = expand_self_closing(xhtml);
+    let doc = Html::parse_document(&xhtml);
+    let body = doc
+        .tree
+        .root()
+        .descendants()
+        .find(|n| matches!(n.value(), Node::Element(e) if e.name() == "body"));
+
+    let mut out = Vec::new();
+    let root = body.unwrap_or_else(|| doc.tree.root());
+    walk_children(root, &Ctx::default(), &mut out);
+    out
+}
+
+#[derive(Default, Clone)]
+struct Ctx {
+    indent: u8,
+    quote: bool,
+}
+
+impl Ctx {
+    /// A copy at the same indent with `quote` set (for blockquotes/footnotes).
+    fn with_quote(&self, quote: bool) -> Ctx {
+        Ctx {
+            indent: self.indent,
+            quote,
+        }
+    }
+}
+
+fn is_block(node: NodeRef<Node>) -> bool {
+    match node.value() {
+        // Real figure/cover images render block-level; math/icon images stay
+        // inline (handled in collect_inline).
+        Node::Element(e) if e.name() == "img" => is_real_image(e),
+        Node::Element(e) => matches!(
+            e.name(),
+            "p" | "div"
+                | "section"
+                | "article"
+                | "aside"
+                | "header"
+                | "footer"
+                | "main"
+                | "figure"
+                | "figcaption"
+                | "h1"
+                | "h2"
+                | "h3"
+                | "h4"
+                | "h5"
+                | "h6"
+                | "ul"
+                | "ol"
+                | "li"
+                | "blockquote"
+                | "pre"
+                | "hr"
+                | "table"
+                | "thead"
+                | "tbody"
+                | "tr"
+                | "td"
+                | "th"
+        ),
+        _ => false,
+    }
+}
+
+/// Iterate children, grouping loose inline content into implicit paragraphs and
+/// recursing into block-level elements.
+fn walk_children(parent: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
+    let mut inline: Vec<Span> = Vec::new();
+    for child in parent.children() {
+        if is_block(child) {
+            flush(&mut inline, ctx, out);
+            block_element(child, ctx, out);
+        } else {
+            collect_inline(child, Inline::default(), &mut inline);
+        }
+    }
+    flush(&mut inline, ctx, out);
+}
+
+fn flush(inline: &mut Vec<Span>, ctx: &Ctx, out: &mut Vec<Block>) {
+    if inline.iter().any(|s| !s.text.trim().is_empty()) {
+        superscript_math_exponents(inline);
+        out.push(Block::Para {
+            spans: std::mem::take(inline),
+            indent: ctx.indent,
+            quote: ctx.quote,
+            marker: None,
+        });
+    } else {
+        inline.clear();
+    }
+}
+
+/// Turn a classified block-level element into `Block`s. Pure dispatch — every
+/// "what is this?" decision lives in [`semantics::classify`]; this maps each
+/// role to its extractor.
+fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
+    let Node::Element(e) = node.value() else {
+        return;
+    };
+    match classify(e, node) {
+        ElementRole::Callout(kind) => emit_callout(node, kind, ctx, out),
+        ElementRole::Footnote(label) => {
+            let mut blocks = Vec::new();
+            walk_children(node, &ctx.with_quote(false), &mut blocks);
+            if !blocks.is_empty() {
+                out.push(Block::Footnote { label, blocks });
+            }
+        }
+        ElementRole::DisplayMathImage(src, alt) => out.push(Block::Image {
+            src,
+            alt,
+            data: Vec::new(),
+            caption: Vec::new(),
+        }),
+        ElementRole::CodeBlock => {
+            let lines = strip_line_numbers(trim_blank_edges(code_lines(node).into_iter()));
+            if !lines.is_empty() {
+                out.push(Block::Code {
+                    lang: detect_lang(node),
+                    lines,
+                });
+            }
+        }
+        ElementRole::Heading(level) => {
+            let spans = inline_spans(node);
+            if spans.iter().any(|s| !s.text.trim().is_empty()) {
+                out.push(Block::Heading { level, spans });
+            }
+        }
+        ElementRole::Paragraph | ElementRole::Cell => emit_paragraph(node, ctx, out),
+        ElementRole::List { ordered, start } => {
+            let mut n = start;
+            for c in node.children() {
+                if matches!(c.value(), Node::Element(le) if le.name() == "li") {
+                    let marker = if ordered {
+                        format!("{n}. ")
+                    } else {
+                        "• ".to_string()
+                    };
+                    n += 1;
+                    list_item(c, ctx, marker, out);
+                }
+            }
+        }
+        ElementRole::Quote => walk_children(node, &ctx.with_quote(true), out),
+        ElementRole::Rule => out.push(Block::Rule),
+        ElementRole::Image => out.push(Block::Image {
+            src: e.attr("src").unwrap_or("").to_string(),
+            alt: e.attr("alt").unwrap_or("").to_string(),
+            data: Vec::new(),
+            caption: Vec::new(),
+        }),
+        ElementRole::AsideIconTable(kind) => {
+            let mut content = Vec::new();
+            for cell in content_cells(node) {
+                walk_children(cell, ctx, &mut content);
+            }
+            if !content.is_empty() {
+                out.push(Block::Callout {
+                    kind,
+                    title: None,
+                    blocks: content,
+                });
+            }
+        }
+        ElementRole::Table => {
+            if let Some(table) = parse_table(node) {
+                out.push(table);
+            }
+        }
+        ElementRole::Container => walk_children(node, ctx, out),
+    }
+}
+
+/// Collect an element's children as inline spans.
+fn inline_spans(node: NodeRef<Node>) -> Vec<Span> {
+    let mut spans = Vec::new();
+    for c in node.children() {
+        collect_inline(c, Inline::default(), &mut spans);
+    }
+    spans
+}
+
+/// Emit a paragraph from an element's inline content (with math exponent fix-up),
+/// dropping it if there's no visible text. List markers are attached separately
+/// by [`list_item`].
+fn emit_paragraph(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
+    let mut spans = inline_spans(node);
+    if spans.iter().any(|s| !s.text.trim().is_empty()) {
+        superscript_math_exponents(&mut spans);
+        out.push(Block::Para {
+            spans,
+            indent: ctx.indent,
+            quote: ctx.quote,
+            marker: None,
+        });
+    }
+}
+
+fn list_item(node: NodeRef<Node>, ctx: &Ctx, marker: String, out: &mut Vec<Block>) {
+    // Collect the item's content (handles `<li>text`, `<li><p>…`, `<li><div>…`,
+    // and nested lists) then attach the marker to its first paragraph.
+    let mut item: Vec<Block> = Vec::new();
+    let inner = Ctx {
+        indent: ctx.indent + 1,
+        quote: ctx.quote,
+    };
+    walk_children(node, &inner, &mut item);
+
+    if let Some(Block::Para {
+        marker: m, indent, ..
+    }) = item.iter_mut().find(|b| matches!(b, Block::Para { .. }))
+    {
+        *m = Some(marker);
+        *indent = ctx.indent;
+    }
+    out.append(&mut item);
+}
+
+#[cfg(test)]
+mod tests;
