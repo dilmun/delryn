@@ -266,6 +266,36 @@ fn printed_toc_indents_by_level_and_drops_page_numbers() {
 }
 
 #[test]
+fn definition_list_pairs_terms_with_descriptions() {
+    let blocks = parse_blocks(
+        r#"<html><body><dl>
+            <dt class="Term">A3C</dt><dd><p>Asynchronous Advantage Actor-Critic</p></dd>
+            <dt class="Term">ABC</dt><dd><p>Artificial Bee Colony</p></dd>
+        </dl></body></html>"#,
+    );
+    let paras: Vec<String> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Para { spans, .. } => Some(spans.iter().map(|s| s.text.as_str()).collect()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        paras.iter().any(
+            |t: &String| t.contains("A3C") && t.contains("Asynchronous Advantage Actor-Critic")
+        ),
+        "term + description on one entry: {paras:?}"
+    );
+    // Entries are separate — not run together into one blob.
+    assert!(
+        !paras
+            .iter()
+            .any(|t: &String| t.contains("A3C") && t.contains("ABC")),
+        "entries kept separate: {paras:?}"
+    );
+}
+
+#[test]
 fn biblioref_link_becomes_citation_anchor() {
     let blocks = parse_blocks(
         r##"<html><body><p>per<a epub:type="biblioref" href="#ref12">[12]</a></p></body></html>"##,
