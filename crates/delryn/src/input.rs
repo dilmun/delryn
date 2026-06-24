@@ -56,6 +56,8 @@ pub enum Action {
     NextElement,
     /// Jump to the previous rich element.
     PrevElement,
+    /// Toggle paginated (page-flip) reading vs continuous scrolling.
+    TogglePaged,
     /// Move the link cursor to the next inline reference (footnote/cross-ref/link).
     NextAnchor,
     /// Move the link cursor to the previous inline reference.
@@ -128,6 +130,7 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('y') => Action::CopyCode,
         KeyCode::Char('w') => Action::NextElement,
         KeyCode::Char('b') if !ctrl => Action::PrevElement,
+        KeyCode::Char('p') => Action::TogglePaged,
         KeyCode::Char('e') => Action::NextAnchor,
         KeyCode::Char('E') => Action::PrevAnchor,
         KeyCode::Esc => Action::ClearAnchor,

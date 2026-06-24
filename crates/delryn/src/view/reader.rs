@@ -40,6 +40,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.paragraph_spacing = config.paragraph_spacing;
     reader.code_wrap = config.code_wrap;
     reader.table_wrap = config.table_wrap;
+    reader.paged = config.paged;
     reader.chapter_lock = config.chapter_lock;
     let area = f.area();
 
@@ -524,6 +525,13 @@ fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config, th
     }
     if sf.view {
         parts.push(config.view_mode.label().to_string());
+    }
+    if reader.paged {
+        parts.push(format!(
+            "p {}/{}",
+            reader.current_page(),
+            reader.page_count()
+        ));
     }
     if sf.position {
         parts.push(format!(
