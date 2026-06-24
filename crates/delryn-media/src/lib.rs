@@ -214,18 +214,37 @@ fn is_light_background(img: &RgbaImage) -> bool {
     }
 }
 
-/// Invert a graphic's *lightness* while preserving hue and saturation: white↔black
-/// swap, but red stays red. Unlike a naive `255−RGB` negate (which turns photos
-/// into colour negatives), this keeps a chart's colours readable on a dark page
-/// and is detail-preserving. Alpha is kept.
-pub fn lightness_invert(img: &DynamicImage) -> DynamicImage {
+/// Theme-aware lightness inversion for a light-background figure: white↔black is
+/// swapped, but mapped *into the theme*, so the result sits on the reader's page
+/// instead of a hardcoded black box.
+///
+/// - **Neutral** pixels (the white background, black axes/text) → the exact theme
+///   `paper`↔`ink` by inverted lightness, so the background matches the page on
+///   any theme (not just black ones).
+/// - **Coloured** pixels (a red curve, blue lines) → keep their hue + saturation,
+///   with lightness inverted and remapped into the theme's `paper…ink` band so
+///   they stay vivid and visible on the dark page.
+///
+/// Unlike a naive `255−RGB` negate, this never turns a photo into a colour
+/// negative and tracks the active theme. On a pure black/white theme the band is
+/// the full `[0,1]`, so it reduces to a plain lightness invert.
+pub fn theme_invert(img: &DynamicImage, colors: Ink) -> DynamicImage {
+    let (_, _, paper_l) = rgb_to_hsl(colors.paper[0], colors.paper[1], colors.paper[2]);
+    let (_, _, ink_l) = rgb_to_hsl(colors.ink[0], colors.ink[1], colors.ink[2]);
     let src = img.to_rgba8();
     let (w, h) = src.dimensions();
     let mut out = RgbaImage::new(w, h);
     for (x, y, p) in src.enumerate_pixels() {
         let (hue, sat, lit) = rgb_to_hsl(p[0], p[1], p[2]);
-        let [r, g, b] = hsl_to_rgb(hue, sat, 1.0 - lit);
-        out.put_pixel(x, y, Rgba([r, g, b, p[3]]));
+        let inv = 1.0 - lit;
+        let px = if sat < 0.15 {
+            // Neutral → exact theme colours (background becomes the page colour).
+            lerp3(colors.paper, colors.ink, inv)
+        } else {
+            // Colour → keep hue/sat, map inverted lightness into the theme band.
+            hsl_to_rgb(hue, sat, paper_l + (ink_l - paper_l) * inv)
+        };
+        out.put_pixel(x, y, Rgba([px[0], px[1], px[2], p[3]]));
     }
     DynamicImage::ImageRgba8(out)
 }
@@ -297,7 +316,7 @@ pub fn render_for_theme(img: &DynamicImage, tint: Ink, mode: ImageMode) -> Dynam
     }
     // Opaque graphic: carries its own background.
     if mode == ImageMode::InvertBackgrounds && is_light_background(&rgba) {
-        lightness_invert(img) // light-bg figure → dark, detail kept
+        theme_invert(img, tint) // light-bg figure → theme-matched dark, detail kept
     } else {
         img.clone()
     }
@@ -680,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn lightness_invert_swaps_light_dark_keeps_hue() {
+    fn theme_invert_maps_background_to_paper_keeps_hue() {
         let img = fill(
             4,
             4,
@@ -688,14 +707,21 @@ mod tests {
             (0, 0, 1, 1),
             Rgba([255, 0, 0, 255]),
         );
-        let out = lightness_invert(&img).to_rgba8();
-        // White background → black; red stays red (hue preserved).
-        assert_eq!(out.get_pixel(3, 3).0, [0, 0, 0, 255], "white → black");
-        assert_eq!(out.get_pixel(0, 0).0, [255, 0, 0, 255], "red kept");
+        let out = theme_invert(&img, DARK).to_rgba8();
+        // White background → the theme paper (not pure black), so it matches the
+        // page on any theme.
+        assert_eq!(
+            out.get_pixel(3, 3).0,
+            [10, 12, 16, 255],
+            "white → theme paper"
+        );
+        // The red stays reddish (hue preserved).
+        let red = out.get_pixel(0, 0).0;
+        assert!(red[0] > red[1] && red[0] > red[2], "stays reddish: {red:?}");
     }
 
     #[test]
-    fn invert_mode_flips_light_bg_figure_but_auto_keeps_it() {
+    fn invert_mode_maps_light_bg_to_paper_but_auto_keeps_it() {
         // Opaque white-bg figure with a black mark.
         let fig = opaque_ink(10, 10, (4, 4, 6, 6));
         // Auto leaves opaque figures untouched.
@@ -705,12 +731,12 @@ mod tests {
             [255, 255, 255, 255],
             "auto keeps white bg"
         );
-        // Invert flips the light background dark.
+        // Invert maps the light background to the theme's paper colour.
         let inv = render_for_theme(&fig, DARK, ImageMode::InvertBackgrounds).to_rgba8();
         assert_eq!(
             inv.get_pixel(0, 0).0,
-            [0, 0, 0, 255],
-            "invert darkens white bg"
+            [10, 12, 16, 255],
+            "invert → theme paper"
         );
     }
 
