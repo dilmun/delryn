@@ -129,6 +129,30 @@ fn is_icon_src(src: &str) -> bool {
     .any(|k| s.contains(k))
 }
 
+/// Map a small inline UI icon (by its `alt`/`src`) to a themed, single-width
+/// Unicode glyph — so list checks and admonition markers (Tip / Warning /
+/// Remember / Technical Stuff …) render as a symbol rather than `[tip]` text.
+/// Text-presentation code points only (no colour emoji). `None` for non-icons.
+fn icon_glyph(alt: &str, src: &str) -> Option<char> {
+    let key = format!("{} {}", alt, src.rsplit('/').next().unwrap_or(src)).to_ascii_lowercase();
+    let has = |w: &str| key.contains(w);
+    Some(if has("check") || has("tick") {
+        '✓'
+    } else if has("warning") || has("caution") || has("danger") {
+        '△'
+    } else if has("tip") || has("hint") {
+        '✲'
+    } else if has("remember") {
+        '⚑'
+    } else if has("technical") || has("geek") || has("nerd") {
+        '※'
+    } else if has("note") || has("info") {
+        'ⓘ'
+    } else {
+        return None;
+    })
+}
+
 /// Iterate children, grouping loose inline content into implicit paragraphs and
 /// recursing into block-level elements.
 fn walk_children(parent: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
@@ -381,7 +405,12 @@ fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
                 // icons/figures aren't silently dropped.
                 "img" => {
                     let alt = e.attr("alt").unwrap_or("");
-                    let text = if delryn_model::math::is_math(alt) {
+                    let src = e.attr("src").unwrap_or("");
+                    let text = if let Some(g) = icon_glyph(alt, src) {
+                        // A small UI icon (check / tip / warning / remember / …)
+                        // shown as a themed glyph instead of "[tip]" text.
+                        g.to_string()
+                    } else if delryn_model::math::is_math(alt) {
                         math_unicode(alt)
                     } else if is_placeholder_alt(alt) {
                         // Inline image with no useful alt (often math the converter
@@ -1037,6 +1066,24 @@ mod tests {
             Block::Code { lines, .. } => Some(lines.as_slice()),
             _ => None,
         })
+    }
+
+    #[test]
+    fn icon_images_become_glyphs_not_labels() {
+        // Dummies-style marker icons render as a symbol, not "[tip]"/"[check]".
+        let blocks = parse_blocks(
+            r#"<html><body><p><img alt="check" src="images/check.png"/> Item one</p>
+               <p><img alt="" src="images/tip.png"/> A handy tip</p>
+               <p><img alt="warning" src="x/warning.png"/> Be careful</p></body></html>"#,
+        );
+        let text = block_text(&blocks);
+        assert!(text.contains('✓'), "check → ✓: {text:?}");
+        assert!(text.contains('✲'), "tip → ✲: {text:?}");
+        assert!(text.contains('△'), "warning → △: {text:?}");
+        assert!(
+            !text.contains("[check]") && !text.contains("[tip]"),
+            "no label text"
+        );
     }
 
     #[test]
