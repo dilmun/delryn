@@ -323,31 +323,34 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
 }
 
 /// Apply theme-aware rendering to one decoded graphic — the single policy shared
-/// by inline reader images and the full-screen viewer. The `mode` selects how:
-/// - **Auto**: recolour transparent monochrome ink (equations/line drawings) to
-///   the theme; flatten transparent colour graphics onto the page; opaque
-///   graphics (figures, photos, white-bg diagrams) carry their own background and
-///   are left untouched.
-/// - **InvertBackgrounds**: as Auto, but opaque *light-background* figures are
-///   lightness-inverted so they're dark-friendly with detail intact.
-/// - **Faithful**: never recolour or invert — only flatten transparency onto the
-///   page so nothing is invisible; original colours preserved.
+/// by inline reader images and the full-screen viewer.
+///
+/// Transparent monochrome line-art (equations, line drawings) is *text rendered
+/// as an image*: it has no background of its own, so on a dark page its black ink
+/// is invisible. It is therefore **always** recoloured to the theme ink, in every
+/// mode — an invisible equation is never what the reader wants. The `mode` only
+/// governs real *pictures* (figures, photos, screenshots that carry their own
+/// background):
+/// - **Auto** / **Faithful**: keep pictures as authored (just composite any
+///   transparency onto the page so nothing is hidden).
+/// - **InvertBackgrounds**: additionally lightness-invert opaque *light-background*
+///   pictures so they're dark-friendly with detail intact.
 pub fn render_for_theme(img: &DynamicImage, tint: Ink, mode: ImageMode) -> DynamicImage {
     let rgba = img.to_rgba8();
-    if mode == ImageMode::Faithful {
-        return flatten_onto(img, tint.paper);
-    }
     if transparent_frac(&rgba) > TRANSPARENT_FRAC {
-        // Transparent ink graphic.
+        // Transparent graphic. Monochrome ink is line-art/equations (text) →
+        // recolour to the theme so it's legible on any background, in all modes;
+        // a transparent *colour* graphic keeps its colours, composited onto the page.
         return if opaque_chroma(&rgba) < INK_CHROMA_MAX {
-            recolor_ink(img, tint) // equation/line-art → theme matte
+            recolor_ink(img, tint)
         } else {
-            flatten_onto(img, tint.paper) // transparent colour → composite
+            flatten_onto(img, tint.paper)
         };
     }
-    // Opaque graphic: carries its own background.
+    // Opaque picture: carries its own background. Invert mode flips light ones to
+    // match a dark page; Auto/Faithful leave them as authored.
     if mode == ImageMode::InvertBackgrounds && is_predominantly_light(&rgba) {
-        theme_invert(img, tint) // light figure/screenshot → theme-matched dark
+        theme_invert(img, tint)
     } else {
         img.clone()
     }
@@ -772,23 +775,56 @@ mod tests {
     }
 
     #[test]
-    fn faithful_mode_never_recolours_equations() {
-        // A transparent black equation: Auto recolours to theme ink; Faithful
-        // only composites onto paper (keeps the original black ink).
+    fn equations_stay_legible_in_every_mode() {
+        // A transparent black equation is text-as-image: it must be recoloured to
+        // the theme ink in ALL modes (an invisible equation is never wanted), so
+        // Faithful — which preserves *pictures* — still makes equations legible.
         let eq = transparent_ink(10, 10, (4, 4, 6, 6));
-        let faithful = render_for_theme(&eq, DARK, ImageMode::Faithful).to_rgba8();
-        assert_eq!(faithful.get_pixel(5, 5).0, [0, 0, 0, 255], "ink kept black");
+        for mode in [
+            ImageMode::Auto,
+            ImageMode::InvertBackgrounds,
+            ImageMode::Faithful,
+        ] {
+            let out = render_for_theme(&eq, DARK, mode).to_rgba8();
+            assert_eq!(
+                out.get_pixel(5, 5).0,
+                [220, 220, 220, 255],
+                "{mode:?}: ink → theme ink (legible)"
+            );
+            assert_eq!(
+                out.get_pixel(0, 0).0,
+                [10, 12, 16, 255],
+                "{mode:?}: transparent → theme paper"
+            );
+        }
+    }
+
+    #[test]
+    fn faithful_keeps_opaque_pictures_as_authored() {
+        // An opaque light-bg figure: Faithful preserves it; only Invert flips it.
+        let fig = opaque_ink(10, 10, (4, 4, 6, 6));
+        let faithful = render_for_theme(&fig, DARK, ImageMode::Faithful).to_rgba8();
         assert_eq!(
             faithful.get_pixel(0, 0).0,
-            [10, 12, 16, 255],
-            "transparent → paper"
+            [255, 255, 255, 255],
+            "faithful keeps the white background"
         );
-        let auto = render_for_theme(&eq, DARK, ImageMode::Auto).to_rgba8();
-        assert_eq!(
-            auto.get_pixel(5, 5).0,
-            [220, 220, 220, 255],
-            "auto recolours to ink"
-        );
+    }
+
+    #[test]
+    fn image_never_wider_than_the_text_column() {
+        // A very wide image must be scaled to fit — its cell width can never
+        // exceed the available text width, in single-page or two-page layout.
+        for avail in [20u16, 48, 96, 200] {
+            let (cols, _rows) = target_cells(4000, 600, 8, 16, avail, 40, 0);
+            assert!(
+                cols <= avail,
+                "avail={avail}: cols={cols} must not exceed it"
+            );
+        }
+        // A small image is shown at native size, never upscaled past the column.
+        let (cols, _) = target_cells(80, 40, 8, 16, 200, 40, 0);
+        assert!(cols <= 10, "native ~10 cols, not stretched to fill: {cols}");
     }
 
     #[test]
