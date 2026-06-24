@@ -23,6 +23,27 @@ pub(crate) enum ConfirmAction {
     Rename,
     /// Commit the inline collection editor (rename, or delete on a cleared name).
     Collection,
+    /// Open an external link in the default browser.
+    OpenUrl(String),
+}
+
+/// Open `url` in the OS default browser (best-effort, non-blocking). `url` is a
+/// single argument (no shell), so it can't inject a command.
+pub(crate) fn open_in_browser(url: &str) {
+    let mut cmd = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg(url);
+        c
+    } else if cfg!(target_os = "windows") {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", "", url]);
+        c
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    let _ = cmd.spawn();
 }
 
 impl App {
@@ -55,6 +76,12 @@ impl App {
             ConfirmAction::SaveMeta => self.save_meta_edit(),
             ConfirmAction::Rename => self.apply_bulk_rename(),
             ConfirmAction::Collection => self.lib_coll_commit(),
+            ConfirmAction::OpenUrl(url) => {
+                open_in_browser(&url);
+                if let Some(r) = self.reader.as_mut() {
+                    r.flash = Some("opened link in browser".to_string());
+                }
+            }
         }
     }
 }

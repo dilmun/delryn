@@ -101,14 +101,16 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
 /// (`footnote`/`endnote`/`rearnote`), the equivalent DPUB-ARIA `role`
 /// (`doc-footnote`/`doc-endnote`), or a conventional `class`.
 pub(super) fn footnote_def(e: &scraper::node::Element) -> Option<(String, String)> {
+    // Exact-token match (not substring): a `footnotes` *section* must not be read
+    // as a `footnote`, and a wrapper isn't a definition just for containing one.
     let etype = e.attr("epub:type").unwrap_or("").to_ascii_lowercase();
-    let by_type = ["footnote", "endnote", "rearnote"]
-        .iter()
-        .any(|k| etype.contains(k));
+    let by_type = etype
+        .split_whitespace()
+        .any(|t| matches!(t, "footnote" | "endnote" | "rearnote"));
     let role = e.attr("role").unwrap_or("").to_ascii_lowercase();
-    let by_role = ["doc-footnote", "doc-endnote", "doc-rearnote"]
-        .iter()
-        .any(|k| role.contains(k));
+    let by_role = role
+        .split_whitespace()
+        .any(|t| matches!(t, "doc-footnote" | "doc-endnote" | "doc-rearnote"));
     let by_class = e.attr("class").is_some_and(|c| {
         c.split([' ', '-', '_']).any(|t| {
             matches!(
@@ -117,10 +119,14 @@ pub(super) fn footnote_def(e: &scraper::node::Element) -> Option<(String, String
             )
         })
     });
-    if !by_type && !by_role && !by_class {
+    let id = e.attr("id").unwrap_or("");
+    // Precise semantics (epub:type / DPUB role) mark a definition on their own; a
+    // class-only match must carry an `id` (a real, referenceable definition), so
+    // section/wrapper containers (`class="FootnoteSection"`, `<div class="Footnote">`)
+    // around the actual definition aren't themselves mistaken for one.
+    if !(by_type || by_role || (by_class && !id.is_empty())) {
         return None;
     }
-    let id = e.attr("id").unwrap_or("");
     let digits: String = id.chars().filter(char::is_ascii_digit).collect();
     let label = if !digits.is_empty() {
         digits

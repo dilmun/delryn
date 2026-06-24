@@ -105,6 +105,9 @@ pub struct Reader {
     pending_deletes: Vec<u32>,
     /// Text queued to be copied to the system clipboard by the main loop.
     pending_clipboard: Option<String>,
+    /// An external link the user activated, awaiting the app's open-in-browser
+    /// confirmation.
+    pending_open: Option<String>,
     /// A transient status-bar message (e.g. "copied"), cleared on next key.
     pub flash: Option<String>,
     /// images_key the current `lines` were wrapped against.
@@ -229,6 +232,7 @@ impl Reader {
             img_failed: HashSet::new(),
             pending_deletes: Vec::new(),
             pending_clipboard: None,
+            pending_open: None,
             flash: None,
             wrap_images_key: (usize::MAX, 0, 0, 0),
             scroll: 0,
@@ -504,14 +508,10 @@ impl Reader {
         match hit.anchor.clone() {
             Anchor::Footnote(target) => self.follow_footnote(&target),
             Anchor::Link(url) => {
-                let shown: String = if url.chars().count() > 48 {
-                    format!("{}…", url.chars().take(47).collect::<String>())
-                } else {
-                    url.clone()
-                };
-                self.pending_clipboard = Some(url);
+                // Surfaced to the app, which confirms before opening it in the
+                // browser (an outward action).
+                self.pending_open = Some(url);
                 self.anchor_sel = None;
-                self.flash = Some(format!("copied link: {shown}"));
             }
             Anchor::CrossRef(id) => {
                 if self.goto_target(&id) {
@@ -639,6 +639,11 @@ impl Reader {
 
     pub fn take_clipboard(&mut self) -> Option<String> {
         self.pending_clipboard.take()
+    }
+
+    /// An external link the user just activated (to confirm + open in browser).
+    pub fn take_pending_open(&mut self) -> Option<String> {
+        self.pending_open.take()
     }
 
     /// Raw lines of the `n`-th code block in the current section.
