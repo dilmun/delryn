@@ -63,6 +63,33 @@ pub fn cover_image_rect(area: Rect, font: (u16, u16), dims: (u32, u32)) -> Rect 
     }
 }
 
+/// The exact screen rect an open blocking overlay covers this frame, if any —
+/// matched to each popup's own `centered(...)` geometry (keep in sync with the
+/// corresponding `*::render`). The full-screen image viewer covers everything.
+fn overlay_occlusion(area: Rect, app: &App) -> Option<Rect> {
+    if app.image_view.is_some() {
+        return Some(area);
+    }
+    if app.settings.is_some() {
+        return Some(centered(area, 64, 28));
+    }
+    if let Some(p) = app.palette.as_ref() {
+        let visible = p.filtered().len().min(10) as u16;
+        return Some(centered(area, 56, visible + 3));
+    }
+    if let Some(s) = app.stats.as_ref() {
+        return Some(centered(
+            area,
+            46,
+            (10 + s.top_authors.len() as u16).min(22),
+        ));
+    }
+    if app.annot.is_some() {
+        return Some(centered(area, 72, 18));
+    }
+    None
+}
+
 /// A centered rect of at most `w`×`h`, clamped to `area` (shared by the popups).
 pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width.saturating_sub(2)).max(1);
@@ -78,6 +105,13 @@ pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
 pub fn render(f: &mut Frame, app: &mut App) {
     // Hit rects are rebuilt every frame by the renderers below.
     app.mouse.clear();
+    // Tell the reader which region an open overlay covers, so it can skip inline
+    // images whose left edge the popup would clobber (they'd otherwise leave a
+    // black box). Computed before the reader draws.
+    let occlude = overlay_occlusion(f.area(), app);
+    if let Some(r) = app.reader.as_mut() {
+        r.overlay_occlude = occlude;
+    }
     match app.mode {
         Mode::Reader => reader::render(f, app),
         Mode::Library => library::render(f, app),

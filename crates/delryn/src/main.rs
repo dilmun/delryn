@@ -122,6 +122,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
     draw(terminal, app, sync)?;
     let mut last_draw = Instant::now();
     let mut dirty = false;
+    // Tracks overlay open/closed so a toggle can force a full repaint — a closed
+    // popup over an inline image otherwise leaves a ghost the cell-diff skips.
+    let mut overlay_open = app.any_overlay_open();
     // Native system clipboard (reliable across terminals); OSC 52 is the
     // fallback when it's unavailable (e.g. SSH/headless).
     let mut clipboard = arboard::Clipboard::new().ok();
@@ -199,6 +202,16 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
             if !copied {
                 let _ = execute!(io::stdout(), Print(delryn::clipboard::osc52(&text)));
             }
+        }
+
+        // A popup opening or closing forces a full repaint: terminal graphics
+        // don't compose with the cell-diff, so a stale image/popup region would
+        // otherwise linger until the next content change.
+        let overlay_now = app.any_overlay_open();
+        if overlay_now != overlay_open {
+            overlay_open = overlay_now;
+            terminal.clear()?;
+            dirty = true;
         }
 
         if dirty && last_draw.elapsed() >= FRAME {
