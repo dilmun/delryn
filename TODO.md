@@ -99,10 +99,11 @@ jump-by-type + a reader cursor.
 - [ ] Pagination models: continuous / virtual pages / book pages (PDF) / reflowed.
 - [x] Navigation: reading history + back/forward, **jump-by-type** (`w`/`b` cycle
       code/table/math/figure/footnote), and a **link cursor** — `e`/`E` step
-      through inline references (footnote/cross-ref/link), Enter follows (footnote
-      ref→def, same section then cross-section endnotes, Ctrl+o returns; link→copy
-      URL), Esc clears. *Deferred: cross-ref/citation jump targets (not indexed at
-      parse yet).*
+      through inline references (footnote/cross-ref/link/citation), Enter follows,
+      Esc clears, Ctrl+o returns. Footnote ref→def (same section then cross-section
+      endnotes); link→copy URL; **cross-ref/citation → their target** via a
+      book-wide id→(section, locator) index (`Document::section_targets` +
+      `html::collect_targets`), resolved to a line by the locator text.
 - [ ] Bookmarks: named, quick, folders. *(Have: bookmark/note annotations + overlay.)*
 
 ## Phase 3 — Library platform

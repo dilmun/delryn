@@ -43,6 +43,48 @@ pub fn parse_blocks(xhtml: &str) -> Vec<Block> {
     out
 }
 
+/// Every element `id` in a section → a short text locator (its leading visible
+/// text), in document order, first id winning on duplicates. The reader builds a
+/// book-wide index from these so a cross-reference / citation can be followed to
+/// the element it targets (resolved to a display line by the locator text).
+pub fn collect_targets(xhtml: &str) -> Vec<(String, String)> {
+    let xhtml = expand_self_closing(xhtml);
+    let doc = Html::parse_document(&xhtml);
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for node in doc.tree.root().descendants() {
+        if let Node::Element(e) = node.value()
+            && let Some(id) = e.attr("id")
+            && !id.is_empty()
+            && seen.insert(id.to_string())
+        {
+            out.push((id.to_string(), leading_text(node, 60)));
+        }
+    }
+    out
+}
+
+/// The leading visible text of `node`, whitespace-collapsed and capped to `max`
+/// chars — enough for `find_line` to locate the element without walking a whole
+/// subtree.
+fn leading_text(node: NodeRef<Node>, max: usize) -> String {
+    let mut buf = String::new();
+    for d in node.descendants() {
+        if let Node::Text(t) = d.value() {
+            buf.push_str(&t.text);
+            if buf.len() > max * 2 {
+                break; // enough raw text to fill `max` after collapsing
+            }
+        }
+    }
+    buf.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect()
+}
+
 #[derive(Default, Clone)]
 struct Ctx {
     indent: u8,
