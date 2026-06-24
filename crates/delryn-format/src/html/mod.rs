@@ -138,11 +138,11 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
     };
     match classify(e, node) {
         ElementRole::Callout(kind) => emit_callout(node, kind, ctx, out),
-        ElementRole::Footnote(label) => {
+        ElementRole::Footnote { id, label } => {
             let mut blocks = Vec::new();
             walk_children(node, &ctx.with_quote(false), &mut blocks);
             if !blocks.is_empty() {
-                out.push(Block::Footnote { label, blocks });
+                out.push(Block::Footnote { id, label, blocks });
             }
         }
         ElementRole::DisplayMathImage(src, alt) => out.push(Block::Image {

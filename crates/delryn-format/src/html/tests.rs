@@ -178,6 +178,35 @@ fn noteref_link_becomes_footnote_anchor() {
     assert_eq!(first_anchor(&blocks), Some(&Anchor::Footnote("fn7".into())));
 }
 
+#[test]
+fn footnote_definition_keeps_raw_id_for_resolution() {
+    // The definition retains its raw `id` so a reference can resolve to it —
+    // the digit `label` is for display only.
+    let blocks = parse_blocks(
+        r#"<html><body><aside epub:type="footnote" id="fn7"><p>the source</p></aside></body></html>"#,
+    );
+    let def = delryn_model::find_footnote(&blocks, "#fn7").expect("resolves by id");
+    assert!(matches!(def, Block::Footnote { id, label, .. } if id == "fn7" && label == "7"));
+}
+
+#[test]
+fn dpub_aria_roles_classify_ref_and_def() {
+    // DPUB-ARIA semantics (no epub:type): role="doc-noteref" / role="doc-footnote".
+    let refs = parse_blocks(
+        r##"<html><body><p>see<a role="doc-noteref" href="#n3">3</a></p></body></html>"##,
+    );
+    assert_eq!(first_anchor(&refs), Some(&Anchor::Footnote("n3".into())));
+
+    let defs = parse_blocks(
+        r#"<html><body><aside role="doc-footnote" id="n3"><p>a source</p></aside></body></html>"#,
+    );
+    assert_eq!(first_footnote(&defs), Some("3"));
+    assert!(
+        delryn_model::find_footnote(&defs, "n3").is_some(),
+        "doc-footnote def is resolvable"
+    );
+}
+
 /// The `(src, alt)` of a display-math image block, if any.
 fn display_math_img(blocks: &[Block]) -> Option<(&str, &str)> {
     blocks.iter().find_map(|b| match b {

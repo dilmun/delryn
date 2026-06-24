@@ -11,8 +11,12 @@ use super::*;
 /// classifier already computed, so extractors don't re-detect.
 pub(super) enum ElementRole {
     Callout(CalloutKind),
-    /// Footnote/endnote definition, with its label.
-    Footnote(String),
+    /// Footnote/endnote definition: its raw anchor `id` (match key) and the
+    /// `label` shown at the foot of the section.
+    Footnote {
+        id: String,
+        label: String,
+    },
     /// Display math backed by an image: `(src, unicode-alt)`.
     DisplayMathImage(String, String),
     CodeBlock,
@@ -51,9 +55,9 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
     }
     // 2. Footnote / endnote definitions.
     if matches!(name, "div" | "section" | "aside" | "p" | "li")
-        && let Some(label) = footnote_label(e)
+        && let Some((id, label)) = footnote_def(e)
     {
-        return ElementRole::Footnote(label);
+        return ElementRole::Footnote { id, label };
     }
     // 3. Display (block) math backed by an image — render the image, alt as fallback.
     if matches!(name, "p" | "div")
@@ -89,13 +93,22 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
     }
 }
 
-/// If a container is a footnote/endnote definition (by `epub:type` or `class`),
-/// its label — the digits of its `id`, else the `id`, else `note`.
-pub(super) fn footnote_label(e: &scraper::node::Element) -> Option<String> {
+/// If a container is a footnote/endnote definition, its `(id, label)`:
+/// - `id` is the raw anchor id (the key a reference resolves against);
+/// - `label` is the number shown — the digits of the `id`, else the `id`, else `note`.
+///
+/// Detected by the standardised semantics: EPUB `epub:type`
+/// (`footnote`/`endnote`/`rearnote`), the equivalent DPUB-ARIA `role`
+/// (`doc-footnote`/`doc-endnote`), or a conventional `class`.
+pub(super) fn footnote_def(e: &scraper::node::Element) -> Option<(String, String)> {
     let etype = e.attr("epub:type").unwrap_or("").to_ascii_lowercase();
     let by_type = ["footnote", "endnote", "rearnote"]
         .iter()
         .any(|k| etype.contains(k));
+    let role = e.attr("role").unwrap_or("").to_ascii_lowercase();
+    let by_role = ["doc-footnote", "doc-endnote", "doc-rearnote"]
+        .iter()
+        .any(|k| role.contains(k));
     let by_class = e.attr("class").is_some_and(|c| {
         c.split([' ', '-', '_']).any(|t| {
             matches!(
@@ -104,16 +117,17 @@ pub(super) fn footnote_label(e: &scraper::node::Element) -> Option<String> {
             )
         })
     });
-    if !by_type && !by_class {
+    if !by_type && !by_role && !by_class {
         return None;
     }
     let id = e.attr("id").unwrap_or("");
     let digits: String = id.chars().filter(char::is_ascii_digit).collect();
-    Some(if !digits.is_empty() {
+    let label = if !digits.is_empty() {
         digits
     } else if !id.is_empty() {
         id.to_string()
     } else {
         "note".to_string()
-    })
+    };
+    Some((id.to_string(), label))
 }

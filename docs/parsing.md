@@ -46,7 +46,10 @@ toolchain class (`admonitionblock`, `packt_tip`, Wiley `Normal-w-icon` + icon
 `alt`) → generic `*note|tip|warning|callout*` substring.
 
 **Footnotes:** `epub:type="noteref|footnote"` + `role="doc-noteref|doc-footnote"`
-(reliably authored — high value).
+(reliably authored — high value). The definition keeps its raw `id`; a reference
+resolves to it by exact id, then a digit-normalized fallback
+(`Block::footnote_matches` / `find_footnote`). *Ref→def→back jump + preview is
+reader-cursor work; the anchors and resolver are ready for it.*
 
 **Math:** native `<math>` (`alttext`/`<annotation>` LaTeX, else presentation
 walk) → MathML/LaTeX escaped in `<img alt>` → descriptive alt → placeholder.

@@ -158,9 +158,15 @@ Pearson/self-pub). See `docs/parsing.md`.
       on `display="block"` so inline math stays inline. Plus the prior MathML/LaTeX
       escaped in `<img alt>`. 3 new tests; no native-`<math>` book in the local
       library, so verified with synthetic fixtures (inline, display, authored-TeX).
-- [ ] **Phase D — footnote semantics.** `noteref`↔`footnote` (epub:type + doc-*
-      roles) for ref→def→back jump; capture ids/anchors at parse. *(Needs the
-      reader cursor.)*
+- [x] **Phase D — footnote semantics (parse layer).** References and definitions
+      now classify by the full standard set: `epub:type="noteref|footnote|endnote|
+      rearnote"` **and** DPUB-ARIA `role="doc-noteref|doc-footnote|doc-endnote"`.
+      `Block::Footnote` carries the raw `id` (match key) beside the display
+      `label`; `Block::footnote_matches` / `find_footnote` resolve a reference to
+      its definition (exact id → digit-normalized fallback). 6 new tests (model +
+      parser). *Deferred to the reader-cursor task (Phase 2): the interactive
+      ref→def→back jump, footnote preview popup, and cross-section endnote scan —
+      the anchors + resolver are in place and ready for it.*
 
 Honest limits (won't fake): image-only books (Pearson — every figure/table/eq is
 a PNG with identical `alt="images"`) and font-class-only inline code (self-pub
