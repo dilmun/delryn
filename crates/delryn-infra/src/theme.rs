@@ -85,6 +85,26 @@ impl Theme {
         self.paper()
     }
 
+    /// A faint panel colour for code blocks — the page nudged ~8% toward the text
+    /// colour, so code reads as a distinct surface that still matches the theme.
+    /// `None` for the `terminal` theme when its real background is unknown (no
+    /// detection), so code keeps rendering on the terminal's own backdrop.
+    pub fn code_surface(&self) -> Option<Color> {
+        let paper = self.bg.and_then(rgb_of).or_else(terminal_background)?;
+        let lum = |c: [u8; 3]| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
+        let ink = rgb_of(self.fg).unwrap_or(if lum(paper) < 128.0 {
+            [235, 235, 235]
+        } else {
+            [20, 20, 20]
+        });
+        let mix = |a: u8, b: u8| (a as f32 * 0.92 + b as f32 * 0.08).round() as u8;
+        Some(Color::Rgb(
+            mix(paper[0], ink[0]),
+            mix(paper[1], ink[1]),
+            mix(paper[2], ink[2]),
+        ))
+    }
+
     /// The (ink, paper) sRGB pair used to recolour monochrome/line-art images to
     /// match the theme. Terminal-relative colours (`Reset`, no `bg`) fall back to
     /// black ink on a white page — the publisher's intent — and the two are
@@ -364,6 +384,23 @@ mod tests {
         assert!(lum(ink) > 128.0, "ink snapped light on a dark bg: {ink:?}");
         // A concrete theme ignores the terminal fallback.
         assert_eq!(OLED.resolve_image_ink(Some([20, 22, 26])).1, [0, 0, 0]);
+    }
+
+    #[test]
+    fn code_surface_is_a_faint_shift_from_the_page() {
+        // A concrete dark theme: surface is slightly lighter than the page.
+        let lum = |c: Color| match c {
+            Color::Rgb(r, g, b) => 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32,
+            _ => 0.0,
+        };
+        let surface = OLED.code_surface().expect("concrete theme has a surface");
+        assert!(
+            lum(surface) > 0.0 && lum(surface) < 40.0,
+            "subtle lift off black: {surface:?}"
+        );
+        // The terminal theme without a detected background has no surface (code
+        // keeps rendering on the terminal's own backdrop).
+        assert_eq!(TERMINAL.code_surface(), None);
     }
 
     #[test]
