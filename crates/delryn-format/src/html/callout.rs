@@ -23,8 +23,8 @@ pub(super) fn emit_callout(
     out: &mut Vec<Block>,
 ) {
     let inner_ctx = Ctx {
-        indent: ctx.indent,
         quote: false,
+        ..*ctx
     };
     let mut blocks = Vec::new();
     walk_children(node, &inner_ctx, &mut blocks);

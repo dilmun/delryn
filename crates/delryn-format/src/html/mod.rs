@@ -89,23 +89,29 @@ fn leading_text(node: NodeRef<Node>, max: usize) -> String {
 struct Ctx {
     indent: u8,
     quote: bool,
+    /// Pack paragraphs tight (no blank line between them) — for list-like
+    /// regions: tables of contents and definition lists.
+    tight: bool,
 }
 
 impl Ctx {
     /// A copy at the same indent with `quote` set (for blockquotes/footnotes).
     fn with_quote(&self, quote: bool) -> Ctx {
+        Ctx { quote, ..*self }
+    }
+
+    /// A copy that packs paragraphs tight (ToC / definition-list entries).
+    fn tightened(&self) -> Ctx {
         Ctx {
-            indent: self.indent,
-            quote,
+            tight: true,
+            ..*self
         }
     }
 
-    /// A copy at a specific indent level (for printed-ToC depth).
-    fn with_indent(&self, indent: u8) -> Ctx {
-        Ctx {
-            indent,
-            quote: self.quote,
-        }
+    /// The marker that makes a paragraph count as a tight list item (empty text,
+    /// no visible glyph) when `tight`, else none.
+    fn item_marker(&self) -> Option<String> {
+        self.tight.then(String::new)
     }
 }
 
@@ -178,7 +184,7 @@ fn flush(inline: &mut Vec<Span>, ctx: &Ctx, out: &mut Vec<Block>) {
             spans: std::mem::take(inline),
             indent: ctx.indent,
             quote: ctx.quote,
-            marker: None,
+            marker: ctx.item_marker(),
         });
     } else {
         inline.clear();
@@ -232,7 +238,9 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                         spans,
                         indent: level - 2,
                         quote: ctx.quote,
-                        marker: None,
+                        // Empty marker → counts as a list item, so consecutive ToC
+                        // entries pack tight (no blank line between rows).
+                        marker: Some(String::new()),
                     });
                 } else {
                     out.push(Block::Heading { level, spans });
@@ -255,7 +263,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             }
         }
         ElementRole::Quote => walk_children(node, &ctx.with_quote(true), out),
-        ElementRole::DefList => emit_deflist(node, ctx, out),
+        ElementRole::DefList => emit_deflist(node, &ctx.tightened(), out),
         ElementRole::Rule => out.push(Block::Rule),
         ElementRole::Image => out.push(Block::Image {
             src: e.attr("src").unwrap_or("").to_string(),
@@ -281,12 +289,17 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 out.push(table);
             }
         }
-        ElementRole::Container => match toc_level(e) {
-            // A printed ToC entry: indent it to its level so the page reads as a
-            // hierarchy rather than a flat list.
-            Some(lvl) => walk_children(node, &ctx.with_indent(lvl), out),
-            None => walk_children(node, ctx, out),
-        },
+        ElementRole::Container => {
+            // A ToC region (or a Springer ToC-level div) indents to its level and
+            // packs entries tight; the flag flows to all descendants.
+            let toc = is_toc_root(e) || toc_level(e).is_some();
+            let c = Ctx {
+                indent: toc_level(e).unwrap_or(ctx.indent),
+                quote: ctx.quote,
+                tight: ctx.tight || toc,
+            };
+            walk_children(node, &c, out);
+        }
     }
 }
 
@@ -310,7 +323,7 @@ fn emit_paragraph(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             spans,
             indent: ctx.indent,
             quote: ctx.quote,
-            marker: None,
+            marker: ctx.item_marker(),
         });
     }
 }
@@ -321,7 +334,7 @@ fn list_item(node: NodeRef<Node>, ctx: &Ctx, marker: String, out: &mut Vec<Block
     let mut item: Vec<Block> = Vec::new();
     let inner = Ctx {
         indent: ctx.indent + 1,
-        quote: ctx.quote,
+        ..*ctx
     };
     walk_children(node, &inner, &mut item);
 
@@ -358,7 +371,7 @@ fn emit_deflist(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             spans: bold_spans(term),
             indent: ctx.indent,
             quote: ctx.quote,
-            marker: None,
+            marker: ctx.item_marker(),
         });
     }
 }
@@ -384,7 +397,7 @@ fn emit_def_entry(term: Vec<Span>, dd: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<B
                 spans: prefix,
                 indent: ctx.indent,
                 quote: ctx.quote,
-                marker: None,
+                marker: ctx.item_marker(),
             },
         );
     }
