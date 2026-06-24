@@ -20,7 +20,8 @@ pub struct Inline {
 pub enum Anchor {
     /// Hyperlink — an internal `#id` or an external URL.
     Link(String),
-    /// Footnote reference; points at the [`Block::Footnote`] with this label.
+    /// Footnote reference; holds the target anchor id, matched against a
+    /// [`Block::Footnote`]'s `id` (see [`Block::footnote_matches`]).
     Footnote(String),
     /// Cross-reference to an internal target id/locator ("see Chapter 3").
     CrossRef(String),
@@ -155,9 +156,11 @@ pub enum Block {
         title: Option<String>,
         blocks: Vec<Block>,
     },
-    /// A footnote definition, anchored by `label`; collected for jump/return and
-    /// foot-of-section rendering.
+    /// A footnote/endnote definition. `id` is the raw source anchor id (the
+    /// match key a reference's [`Anchor::Footnote`] points at); `label` is the
+    /// number shown at the foot of the section. Collected for jump/return.
     Footnote {
+        id: String,
         label: String,
         blocks: Vec<Block>,
     },
@@ -174,6 +177,39 @@ pub enum Block {
     Rule,
     /// Vertical spacing between blocks.
     Blank,
+}
+
+impl Block {
+    /// Whether this is the footnote definition a reference's [`Anchor::Footnote`]
+    /// `target` points at. Matches the raw `id` first (the canonical, unique
+    /// document anchor); falls back to comparing digit-only forms so a
+    /// `noteref href="#fn7"` still resolves to an `id="footnote-7"` definition
+    /// when a publisher uses different id conventions for the ref and the def.
+    pub fn footnote_matches(&self, target: &str) -> bool {
+        let Block::Footnote { id, .. } = self else {
+            return false;
+        };
+        let target = target.trim_start_matches('#');
+        if id == target {
+            return true;
+        }
+        let id_digits = digits(id);
+        !id_digits.is_empty() && id_digits == digits(target)
+    }
+}
+
+/// Find the footnote definition a reference points at, among `blocks`. Scans the
+/// top level — which is where the parser emits definitions (as siblings, even
+/// when grouped under a `<section epub:type="footnotes">`). Cross-section
+/// resolution (endnotes in a later file) is composed by the caller, scanning
+/// each section's blocks in turn.
+pub fn find_footnote<'a>(blocks: &'a [Block], target: &str) -> Option<&'a Block> {
+    blocks.iter().find(|b| b.footnote_matches(target))
+}
+
+/// The ASCII digits of `s`, in order (e.g. `"footnote-7a"` → `"7"`).
+fn digits(s: &str) -> String {
+    s.chars().filter(char::is_ascii_digit).collect()
 }
 
 /// One spine item (chapter) as reflowable content, ready for the layout pass.
@@ -208,5 +244,43 @@ mod tests {
     fn callout_kind_labels_are_uppercase() {
         assert_eq!(CalloutKind::Important.label(), "IMPORTANT");
         assert_eq!(CalloutKind::Caution.label(), "CAUTION");
+    }
+
+    fn note(id: &str) -> Block {
+        Block::Footnote {
+            id: id.to_string(),
+            label: "1".to_string(),
+            blocks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn footnote_matches_by_exact_id_then_digits() {
+        let n = note("fn7");
+        // Exact id (with or without a leading '#').
+        assert!(n.footnote_matches("fn7"));
+        assert!(n.footnote_matches("#fn7"));
+        // Digit-normalized fallback across differing id conventions.
+        assert!(n.footnote_matches("footnote-7"));
+        // Different number must not match.
+        assert!(!n.footnote_matches("fn8"));
+        // A non-footnote block never matches.
+        assert!(!Block::Rule.footnote_matches("fn7"));
+    }
+
+    #[test]
+    fn footnote_digit_fallback_needs_digits_on_both_sides() {
+        // No digits in the id → only an exact-id match, never a loose one.
+        let n = note("note-intro");
+        assert!(n.footnote_matches("note-intro"));
+        assert!(!n.footnote_matches("note-summary"));
+    }
+
+    #[test]
+    fn find_footnote_picks_the_matching_definition() {
+        let blocks = vec![note("fn1"), Block::Rule, note("fn2")];
+        let found = find_footnote(&blocks, "#fn2").expect("a match");
+        assert!(matches!(found, Block::Footnote { id, .. } if id == "fn2"));
+        assert!(find_footnote(&blocks, "fn3").is_none());
     }
 }

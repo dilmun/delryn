@@ -154,13 +154,16 @@ pub(super) fn img_label(e: &scraper::node::Element) -> String {
     }
 }
 
-/// Build the navigation [`Anchor`] for an `<a>`: a footnote reference (epub:type
-/// noteref, or an internal `#id` that looks like a note), an internal
-/// cross-reference, or an external link.
+/// Build the navigation [`Anchor`] for an `<a>`: a footnote reference (`epub:type`
+/// noteref or DPUB-ARIA `role="doc-noteref"`, or an internal `#id` that looks
+/// like a note), an internal cross-reference, or an external link.
 pub(super) fn link_anchor(e: &scraper::node::Element) -> Option<Anchor> {
     let etype = e.attr("epub:type").unwrap_or("").to_ascii_lowercase();
+    let role = e.attr("role").unwrap_or("").to_ascii_lowercase();
     let href = e.attr("href")?;
-    if etype.contains("noteref") {
+    // A note reference by standardised semantics: EPUB `epub:type="noteref"` or
+    // the DPUB-ARIA `role="doc-noteref"`.
+    if etype.contains("noteref") || role.contains("doc-noteref") {
         return Some(Anchor::Footnote(href.trim_start_matches('#').to_string()));
     }
     if let Some(id) = href.strip_prefix('#') {
