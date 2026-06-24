@@ -494,8 +494,8 @@ fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
         fg = theme.code_fg; // inline code
     }
     if run.style.link {
+        // Links read as their theme colour — no underline (it's noisy in a TUI).
         fg = theme.link;
-        style = style.add_modifier(Modifier::UNDERLINED);
     }
     style.fg(fg)
 }
