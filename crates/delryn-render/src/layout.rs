@@ -328,6 +328,65 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
     spaced
 }
 
+/// Greedy line packing — the one word-wrap algorithm shared by every wrapper.
+/// Given each word's display width and the available width per line (line index
+/// → columns), return how many words land on each line, joining adjacent words
+/// with one space. At least one word is placed per line: a word wider than the
+/// line takes its own line and overflows (callers that must not overflow, like
+/// fixed-width table cells, hard-break such words *before* calling).
+fn pack_words(widths: &[usize], avail: impl Fn(usize) -> usize) -> Vec<usize> {
+    let mut counts = Vec::new();
+    let mut i = 0;
+    while i < widths.len() {
+        let cap = avail(counts.len()).max(1);
+        let (mut used, mut n) = (0usize, 0usize);
+        while i < widths.len() {
+            let need = if n == 0 { widths[i] } else { 1 + widths[i] };
+            if n > 0 && used + need > cap {
+                break;
+            }
+            used += need;
+            n += 1;
+            i += 1;
+        }
+        counts.push(n);
+    }
+    counts
+}
+
+/// Word-wrap plain text to `width` columns, hard-breaking any word longer than
+/// the column so no line overflows. Always returns at least one (possibly empty)
+/// line. The shared plain-text wrapper — table cells today, reusable by any
+/// fixed-width text (status lines, popups, captions…).
+pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    // Split on whitespace, hard-breaking any word wider than the column so the
+    // greedy packer never has to overflow.
+    let mut words: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        let mut chars: Vec<char> = word.chars().collect();
+        while chars.len() > width {
+            words.push(chars.drain(..width).collect());
+        }
+        if !chars.is_empty() {
+            words.push(chars.into_iter().collect());
+        }
+    }
+    if words.is_empty() {
+        return vec![String::new()];
+    }
+    let widths: Vec<usize> = words.iter().map(|w| w.chars().count()).collect();
+    let mut lines = Vec::new();
+    let mut i = 0;
+    for n in pack_words(&widths, |_| width) {
+        lines.push(words[i..i + n].join(" "));
+        i += n;
+    }
+    lines
+}
+
 /// Word-wrap styled spans into display lines, with a prefix on the first line
 /// and a (usually padding) prefix on continuations.
 fn wrap_spans(
@@ -365,16 +424,19 @@ fn wrap_spans(
         return;
     }
 
-    let mut i = 0;
-    let mut first_line = true;
-    while i < words.len() {
-        let prefix = if first_line {
-            first_prefix
-        } else {
-            cont_prefix
-        };
-        let avail = width.saturating_sub(prefix.chars().count()).max(1);
+    // Pack words into lines with the shared greedy wrapper; the available width
+    // shrinks by the first/continuation prefix.
+    let prefix_for = |line: usize| if line == 0 { first_prefix } else { cont_prefix };
+    let widths: Vec<usize> = words.iter().map(Vec::len).collect();
+    let counts = pack_words(&widths, |line| {
+        width
+            .saturating_sub(prefix_for(line).chars().count())
+            .max(1)
+    });
 
+    let mut i = 0;
+    for (line, &count) in counts.iter().enumerate() {
+        let prefix = prefix_for(line);
         let mut runs: Vec<Run> = Vec::new();
         if !prefix.is_empty() {
             runs.push(Run {
@@ -383,31 +445,18 @@ fn wrap_spans(
                 fg: None,
             });
         }
-
-        let mut len = 0usize;
-        let mut placed = 0usize;
-        while i < words.len() {
-            let wlen = words[i].len();
-            let need = if placed == 0 { wlen } else { 1 + wlen };
-            if placed > 0 && len + need > avail {
-                break;
-            }
-            if placed > 0 {
+        for k in 0..count {
+            if k > 0 {
                 runs.push(Run {
                     text: " ".to_string(),
                     style: Inline::default(),
                     fg: None,
                 });
-                len += 1;
             }
             push_word_runs(&words[i], &mut runs);
-            len += wlen;
-            placed += 1;
             i += 1;
         }
-
         out.push(DisplayLine { runs, kind });
-        first_line = false;
     }
 }
 
@@ -609,28 +658,40 @@ fn fit(s: &str, w: usize) -> String {
     }
 }
 
-/// One table row: each cell fitted to its column width, joined by " │ ".
-fn table_row(cells: &[TableCell], col_w: &[usize], bold: bool) -> DisplayLine {
-    let text = col_w
+/// One logical table row → one or more display lines: each cell word-wraps to
+/// its column width, the row is as tall as its tallest cell, and the " │ "
+/// separators stay aligned on every wrapped line (blank where a cell ran out).
+fn table_row(cells: &[TableCell], col_w: &[usize], bold: bool) -> Vec<DisplayLine> {
+    let wrapped: Vec<Vec<String>> = col_w
         .iter()
         .enumerate()
         .map(|(i, w)| {
             let raw = cells.get(i).map(|c| table_cell_text(c)).unwrap_or_default();
-            fit(&raw, *w)
+            wrap_text(&raw, *w)
         })
-        .collect::<Vec<_>>()
-        .join(" │ ");
-    DisplayLine {
-        runs: vec![Run {
-            text,
-            style: Inline {
-                bold,
-                ..Inline::default()
-            },
-            fg: None,
-        }],
-        kind: LineKind::Table,
-    }
+        .collect();
+    let height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
+    (0..height)
+        .map(|line| {
+            let text = col_w
+                .iter()
+                .enumerate()
+                .map(|(i, w)| fit(wrapped[i].get(line).map_or("", String::as_str), *w))
+                .collect::<Vec<_>>()
+                .join(" │ ");
+            DisplayLine {
+                runs: vec![Run {
+                    text,
+                    style: Inline {
+                        bold,
+                        ..Inline::default()
+                    },
+                    fg: None,
+                }],
+                kind: LineKind::Table,
+            }
+        })
+        .collect()
 }
 
 /// Render a table to aligned text rows (header bold + a rule), fitting `width`.
@@ -670,7 +731,7 @@ fn wrap_table(
     }
 
     if let Some(h) = header {
-        out.push(table_row(h, &col_w, true));
+        out.extend(table_row(h, &col_w, true));
         out.push(DisplayLine {
             runs: vec![Run {
                 text: col_w
@@ -685,7 +746,7 @@ fn wrap_table(
         });
     }
     for r in rows {
-        out.push(table_row(r, &col_w, false));
+        out.extend(table_row(r, &col_w, false));
     }
 }
 
@@ -811,6 +872,74 @@ mod tests {
         assert!(
             positions.windows(2).all(|w| w[0] == w[1]),
             "separators aligned across rows: {positions:?}"
+        );
+    }
+
+    #[test]
+    fn wrap_text_wraps_on_words_and_hard_breaks_long_tokens() {
+        // Greedy word wrap to the column.
+        assert_eq!(
+            wrap_text("the quick brown fox", 9),
+            ["the quick", "brown fox"]
+        );
+        // A token longer than the column is hard-broken, never overflowed.
+        assert_eq!(
+            wrap_text("supercalifragilistic", 6),
+            ["superc", "alifra", "gilist", "ic"]
+        );
+        // No line ever exceeds the width.
+        for line in wrap_text("a verylongunbreakable word here", 7) {
+            assert!(line.chars().count() <= 7, "within width: {line:?}");
+        }
+        // Always at least one line.
+        assert_eq!(wrap_text("", 5), [""]);
+    }
+
+    #[test]
+    fn table_cells_wrap_to_aligned_lines_instead_of_truncating() {
+        let cell = |s: &str| vec![Span::plain(s)];
+        let block = Block::Table {
+            header: Some(vec![cell("Name"), cell("Notes")]),
+            rows: vec![vec![
+                cell("Apples"),
+                cell("a long description that must wrap across several lines"),
+            ]],
+        };
+        let opts = WrapOpts {
+            width: 30,
+            ..WrapOpts::default()
+        };
+        let table: Vec<String> = wrap_blocks(&[block], &opts, &[])
+            .into_iter()
+            .filter(|l| matches!(l.kind, LineKind::Table))
+            .map(|l| l.text())
+            .collect();
+        // header + rule + a data row that wrapped to several lines.
+        assert!(table.len() > 3, "data row wrapped: {table:?}");
+        // Wraps rather than truncating, and never exceeds the width.
+        assert!(
+            !table.iter().any(|t| t.contains('…')),
+            "no truncation: {table:?}"
+        );
+        for t in &table {
+            assert!(t.chars().count() <= 30, "within width: {t:?}");
+        }
+        assert!(
+            table.concat().contains("description") && table.concat().contains("lines"),
+            "full text preserved: {table:?}"
+        );
+        // Column separators stay aligned on every wrapped line.
+        let sep = |t: &str| -> Vec<usize> {
+            t.chars()
+                .enumerate()
+                .filter(|(_, c)| *c == '│' || *c == '┼')
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let positions: Vec<Vec<usize>> = table.iter().map(|t| sep(t)).collect();
+        assert!(
+            positions.windows(2).all(|w| w[0] == w[1]),
+            "separators aligned: {positions:?}"
         );
     }
 
