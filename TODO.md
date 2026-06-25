@@ -120,11 +120,16 @@ jump-by-type + a reader cursor.
       bookmarked lines in the page margin (Center & TwoPage). `annotations` gains
       `name`/`folder`/`kind` columns (`kind` reserves notes for Phase 4) +
       migration. `--export-annotations` is folder-aware.
-- [~] Image viewer (`i`): figure **sidebar** (caption→alt→"Figure N" names),
-      large image **fitted + centered with equal padding**, **details** (chapter,
-      dimensions) + caption, **jump to source** (⏎), **filter** (`/`), **save to
-      disk** (`s`), and a chapter↔**whole-book** scope toggle (`w`). *Still: zoom
-      (fit↔actual) + pan, via the SlicedImage path.*
+- [~] Image viewer (`i`): figure **sidebar** (real figures only — equation/math
+      images excluded via `Block::Image.math`), large image **scaled + centered
+      with equal padding** (faithful colours on a white page, no theme recolour),
+      **details** (book chapter label + dimensions) + caption, **jump to the
+      figure** (⏎ → `jump_to_image`), **filter** (`/`), **save** (`s`), chapter↔
+      **whole-book** scope (`w`). *Still: zoom (fit↔actual) + pan (SlicedImage).*
+- [~] **Responsive layout standard**: shared `view::sidebar_split` (percentage
+      width, clamped, collapses on a narrow window). Applied to the image viewer
+      and reader TOC sidebar. *Still: convert the library's resizable panes
+      (sidebar/detail) from fixed cells to the same percentage model + collapse.*
 
 ## Phase 3 — Library platform
 
