@@ -84,6 +84,23 @@ pub struct AnnotState {
     pub sel: usize,
 }
 
+/// What a one-line text prompt's typed text becomes when committed.
+pub enum PromptKind {
+    /// A note attached to a fresh bookmark dropped at the reading position.
+    Note,
+    /// The custom name of annotation `id` (empty clears it back to the quote).
+    Name(i64),
+    /// The folder annotation `id` belongs to (empty = ungrouped).
+    Folder(i64),
+}
+
+/// A one-line text prompt shown at the bottom of the reader (note / rename /
+/// file-into-folder). Generalises the former note-only input.
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub buffer: String,
+}
+
 pub struct App {
     pub mode: Mode,
     pub config: Config,
@@ -101,8 +118,8 @@ pub struct App {
     pub stats: Option<crate::library::stats::LibraryStats>,
     /// Open command palette, if any.
     pub palette: Option<Palette>,
-    /// Active note-entry buffer, if typing a note.
-    pub note_input: Option<String>,
+    /// Active bottom-row text prompt (note / rename bookmark / file in folder).
+    pub prompt: Option<Prompt>,
     /// Open metadata-edit form (library), if any.
     pub meta_edit: Option<MetaEdit>,
     /// Open bulk-rename popup (template applied to the marked books), if any.
@@ -313,7 +330,7 @@ impl App {
             annot: None,
             stats: None,
             palette: None,
-            note_input: None,
+            prompt: None,
             meta_edit: None,
             bulk_rename: None,
             lib_coll_edit: None,
@@ -378,7 +395,7 @@ impl App {
             annot: None,
             stats: None,
             palette: None,
-            note_input: None,
+            prompt: None,
             meta_edit: None,
             bulk_rename: None,
             lib_coll_edit: None,

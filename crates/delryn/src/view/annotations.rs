@@ -6,18 +6,18 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
-use crate::app::App;
+use crate::app::{App, Prompt, PromptKind};
 
 pub fn render(f: &mut Frame, app: &App) {
-    if let Some(text) = &app.note_input {
-        render_note_prompt(f, app, text);
+    if let Some(prompt) = &app.prompt {
+        render_prompt(f, app, prompt);
     }
     if app.annot.is_some() {
         render_overlay(f, app);
     }
 }
 
-fn render_note_prompt(f: &mut Frame, app: &App, text: &str) {
+fn render_prompt(f: &mut Frame, app: &App, prompt: &Prompt) {
     let theme = app.config.theme;
     let area = f.area();
     let row = Rect {
@@ -28,8 +28,13 @@ fn render_note_prompt(f: &mut Frame, app: &App, text: &str) {
     };
     f.render_widget(Clear, row);
     let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
+    let label = match prompt.kind {
+        PromptKind::Note => "note",
+        PromptKind::Name(_) => "name",
+        PromptKind::Folder(_) => "folder",
+    };
     f.render_widget(
-        Paragraph::new(Line::raw(format!("note: {text}"))).style(style),
+        Paragraph::new(Line::raw(format!("{label}: {}", prompt.buffer))).style(style),
         row,
     );
 }
@@ -67,34 +72,59 @@ fn render_overlay(f: &mut Frame, app: &App) {
             rows[0],
         );
     } else {
-        let items: Vec<ListItem> = state
-            .items
-            .iter()
-            .map(|a| {
-                let marker = if a.note.is_empty() { "•" } else { "✎" };
-                let body = if a.note.is_empty() {
-                    a.quote.clone()
+        // Build the rendered rows, inserting a non-selectable header whenever the
+        // folder changes (items arrive folder-grouped from the store). `row_of`
+        // maps each item index to its rendered row so the cursor lands right.
+        let mut list_items: Vec<ListItem> = Vec::new();
+        let mut row_of: Vec<usize> = Vec::with_capacity(state.items.len());
+        let mut current_folder: Option<&str> = None;
+        for a in &state.items {
+            if current_folder != Some(a.folder.as_str()) {
+                current_folder = Some(a.folder.as_str());
+                let title = if a.folder.is_empty() {
+                    "Bookmarks"
                 } else {
-                    format!("{}  — {}", a.quote, a.note)
+                    a.folder.as_str()
                 };
+                list_items.push(
+                    Line::from(Span::styled(
+                        format!("▾ {title}"),
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .into(),
+                );
+            }
+            row_of.push(list_items.len());
+            let marker = if a.note.is_empty() { "•" } else { "✎" };
+            // A custom name wins over the auto-captured quote as the label.
+            let label = if a.name.is_empty() { &a.quote } else { &a.name };
+            let body = if a.note.is_empty() {
+                label.clone()
+            } else {
+                format!("{label}  — {}", a.note)
+            };
+            list_items.push(
                 Line::from(vec![
-                    Span::styled(format!("{marker} "), Style::default().fg(theme.marker)),
+                    Span::styled(format!("  {marker} "), Style::default().fg(theme.marker)),
                     Span::styled(
                         format!("§{} ", a.section + 1),
                         Style::default().fg(theme.muted),
                     ),
                     Span::styled(body, Style::default().fg(theme.fg)),
                 ])
-                .into()
-            })
-            .collect();
+                .into(),
+            );
+        }
         let highlight = Style::default()
             .fg(bg)
             .bg(theme.accent)
             .add_modifier(Modifier::BOLD);
-        let list = List::new(items).highlight_style(highlight);
+        let list = List::new(list_items).highlight_style(highlight);
         let mut st = ListState::default();
-        st.select(Some(state.sel.min(state.items.len().saturating_sub(1))));
+        let sel = state.sel.min(state.items.len() - 1);
+        st.select(Some(row_of[sel]));
         f.render_stateful_widget(list, rows[0], &mut st);
     }
     // Shortcuts live in the bottom status bar (see view::status).

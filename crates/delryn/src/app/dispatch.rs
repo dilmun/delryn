@@ -3,6 +3,8 @@
 //! `Action` dispatcher (`apply`). Routing only — the work lives in the concern
 //! modules; child of `app`, so it calls their methods directly.
 
+use crossterm::event::KeyModifiers;
+
 use super::*;
 
 impl App {
@@ -19,8 +21,8 @@ impl App {
             self.settings_key(key);
             return;
         }
-        if self.note_input.is_some() {
-            self.note_key(key);
+        if self.prompt.is_some() {
+            self.prompt_key(key);
             return;
         }
         if self.meta_edit.is_some() {
@@ -136,33 +138,70 @@ impl App {
         }
     }
 
-    fn note_key(&mut self, key: KeyEvent) {
+    fn prompt_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => self.note_input = None,
-            KeyCode::Enter => {
-                if let Some(text) = self.note_input.take()
-                    && let (Some(store), Some(r)) = (&self.store, &self.reader)
-                    && !self.book_path.is_empty()
-                {
-                    store.add_annotation(
-                        &self.book_path,
-                        r.section,
-                        &r.current_quote(),
-                        text.trim(),
-                    );
+            KeyCode::Esc => self.prompt = None,
+            KeyCode::Enter => self.prompt_commit(),
+            KeyCode::Backspace => {
+                if let Some(p) = self.prompt.as_mut() {
+                    p.buffer.pop();
                 }
             }
-            KeyCode::Backspace => {
-                if let Some(s) = self.note_input.as_mut() {
-                    s.pop();
+            // Ctrl-U clears the line (handy for a prefilled rename/folder field).
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(p) = self.prompt.as_mut() {
+                    p.buffer.clear();
                 }
             }
             KeyCode::Char(c) => {
-                if let Some(s) = self.note_input.as_mut() {
-                    s.push(c);
+                if let Some(p) = self.prompt.as_mut() {
+                    p.buffer.push(c);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Apply the committed prompt text to its target (new note / rename / file),
+    /// then dismiss the prompt. Rename/file refresh the open overlay in place.
+    fn prompt_commit(&mut self) {
+        let Some(p) = self.prompt.take() else {
+            return;
+        };
+        let text = p.buffer.trim().to_string();
+        match p.kind {
+            PromptKind::Note => {
+                if let (Some(store), Some(r)) = (&self.store, &self.reader)
+                    && !self.book_path.is_empty()
+                {
+                    store.add_annotation(&self.book_path, r.section, &r.current_quote(), &text);
+                }
+            }
+            PromptKind::Name(id) => {
+                if let Some(store) = &self.store {
+                    store.set_annotation_name(id, &text);
+                }
+                self.refresh_annotations(id);
+            }
+            PromptKind::Folder(id) => {
+                if let Some(store) = &self.store {
+                    store.set_annotation_folder(id, &text);
+                }
+                self.refresh_annotations(id);
+            }
+        }
+    }
+
+    /// Reload the open annotations overlay, keeping the cursor on annotation
+    /// `keep_id` (whose position may have shifted when its folder changed).
+    fn refresh_annotations(&mut self, keep_id: i64) {
+        if let (Some(store), Some(a)) = (&self.store, self.annot.as_mut()) {
+            a.items = store.list_annotations(&self.book_path);
+            if let Some(pos) = a.items.iter().position(|i| i.id == keep_id) {
+                a.sel = pos;
+            } else if a.sel >= a.items.len() {
+                a.sel = a.items.len().saturating_sub(1);
+            }
         }
     }
 
@@ -196,6 +235,24 @@ impl App {
                         r.jump_to(section, Some(&quote));
                     }
                     self.annot = None;
+                }
+            }
+            // Name (or rename) the selected entry; prefilled with its current name.
+            KeyCode::Char('r') => {
+                if let Some(i) = self.annot.as_ref().and_then(|a| a.items.get(a.sel)) {
+                    self.prompt = Some(Prompt {
+                        kind: PromptKind::Name(i.id),
+                        buffer: i.name.clone(),
+                    });
+                }
+            }
+            // File the selected entry into a folder; prefilled with its current one.
+            KeyCode::Char('f') => {
+                if let Some(i) = self.annot.as_ref().and_then(|a| a.items.get(a.sel)) {
+                    self.prompt = Some(Prompt {
+                        kind: PromptKind::Folder(i.id),
+                        buffer: i.folder.clone(),
+                    });
                 }
             }
             KeyCode::Char('d') => {
@@ -385,7 +442,12 @@ impl App {
                     );
                 }
             }
-            Action::AddNote => self.note_input = Some(String::new()),
+            Action::AddNote => {
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::Note,
+                    buffer: String::new(),
+                });
+            }
             Action::OpenAnnotations => {
                 if let Some(store) = &self.store {
                     let items = store.list_annotations(&self.book_path);
