@@ -85,7 +85,7 @@ fn overlay_occlusion(area: Rect, app: &App) -> Option<Rect> {
         ));
     }
     if app.annot.is_some() {
-        return Some(centered(area, 72, 18));
+        return Some(centered(area, 74, 20));
     }
     None
 }
