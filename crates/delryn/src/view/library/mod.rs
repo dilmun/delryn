@@ -91,6 +91,7 @@ fn pane_block(title: &str, focused: bool, theme: Theme) -> Block<'static> {
     }
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border))
         .title(Span::styled(title.to_string(), title_style))
         .style(theme.text_style())

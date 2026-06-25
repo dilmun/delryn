@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use ratatui_image::picker::Picker;
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
@@ -90,6 +90,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.muted))
         .title(Span::styled(
             "Contents",
@@ -365,7 +366,7 @@ fn render_two_page(
     images: Images,
 ) {
     let theme = config.theme;
-    const GAP: u16 = 3;
+    const GAP: u16 = 5;
     // Each column takes half the pane (minus the gap); the outer margin keeps a
     // gutter (plus a cell of breathing room) on each side for bookmark ribbons.
     let usable = body

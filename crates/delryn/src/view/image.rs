@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Clear};
+use ratatui::widgets::{Block, BorderType, Borders, Clear};
 use ratatui_image::{Resize, StatefulImage};
 
 use crate::app::App;
@@ -22,6 +22,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let title = format!(" Image {}/{} ", view.sel + 1, view.protocols.len());
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
         .title(Line::styled(
             title,
