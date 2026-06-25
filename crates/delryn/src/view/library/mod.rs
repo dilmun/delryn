@@ -17,8 +17,9 @@ use crate::config::LibLayout;
 use crate::store::{BookRow, LibrarySection};
 use crate::theme::Theme;
 
-/// Minimum body width before the detail pane is shown.
-const DETAIL_MIN_WIDTH: u16 = 90;
+/// Smallest book-list width to keep when sizing the side panes (they collapse to
+/// preserve it on a narrow window).
+const MIN_LIST: u16 = 30;
 
 /// Title rows under each grid cover.
 const LABEL_H: u16 = 2;
@@ -44,39 +45,30 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let body = rows[0];
 
     let grid = app.config.library_layout == LibLayout::Grid;
-    let show_sidebar = app.lib_show_sidebar;
-    // Detail pane: only for the list views, when wanted and there's room (the
-    // grid is itself a cover view, so it takes the full width).
-    let show_detail = !grid && app.lib_detail && body.width >= DETAIL_MIN_WIDTH;
-    // Clamp pane widths so the list always keeps a usable middle.
-    let cap = (body.width / 3).max(1);
-    let sidebar_w = app.lib_sidebar_w.min(cap);
-    let detail_w = app.lib_detail_w.min(cap);
+    // Sidebar (left) + detail (right) are responsive percentage panes that
+    // collapse on a narrow window (shared app-standard split). The grid view is
+    // itself a cover wall, so it skips the detail pane.
+    let (sidebar, rest) = if app.lib_show_sidebar {
+        super::sidebar_split(body, app.lib_sidebar_pct, 16, 40, MIN_LIST)
+    } else {
+        (None, body)
+    };
+    let (list_area, detail) = if !grid && app.lib_detail {
+        super::detail_split(rest, app.lib_detail_pct, 24, 56, MIN_LIST)
+    } else {
+        (rest, None)
+    };
 
-    let mut constraints = Vec::new();
-    if show_sidebar {
-        constraints.push(Constraint::Length(sidebar_w));
+    if let Some(sb) = sidebar {
+        sections::render_sections(f, sb, app, theme, app.lib_pane == LibPane::Sidebar);
     }
-    constraints.push(Constraint::Min(10));
-    if show_detail {
-        constraints.push(Constraint::Length(detail_w));
-    }
-    let cols = Layout::horizontal(constraints).split(body);
-
-    let mut i = 0;
-    if show_sidebar {
-        sections::render_sections(f, cols[i], app, theme, app.lib_pane == LibPane::Sidebar);
-        i += 1;
-    }
-    let list_area = cols[i];
-    i += 1;
     if grid {
         grid::render_grid(f, list_area, app, theme, app.lib_pane == LibPane::List);
     } else {
         books::render_books(f, list_area, app, theme, app.lib_pane == LibPane::List);
     }
-    if show_detail {
-        detail::render_detail(f, cols[i], app, theme, app.lib_pane == LibPane::Detail);
+    if let Some(d) = detail {
+        detail::render_detail(f, d, app, theme, app.lib_pane == LibPane::Detail);
     }
     status::render_status(f, rows[1], app, theme);
 }
