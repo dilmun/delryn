@@ -71,6 +71,9 @@ pub struct Reader {
     wrap_table_wrap: bool,
     /// Keep scrolling within the current chapter (set each render from config).
     pub chapter_lock: bool,
+    /// Paginated reading (set each render from config): vertical nav flips whole
+    /// pages snapped to page boundaries instead of scrolling line by line.
+    pub paged: bool,
     /// Cached (outline index, line) for the current section's entries, recomputed
     /// on re-wrap; drives the TOC scroll-spy cheaply.
     heading_lines: Vec<(usize, usize)>,
@@ -212,6 +215,7 @@ impl Reader {
             table_wrap: true,
             wrap_table_wrap: true,
             chapter_lock: false,
+            paged: false,
             heading_lines: Vec::new(),
             anchors: Vec::new(),
             footnote_def_line: HashMap::new(),
@@ -852,6 +856,53 @@ impl Reader {
         }
     }
 
+    /// Total pages in the current section (for the page indicator).
+    pub fn page_count(&self) -> usize {
+        self.lines.len().div_ceil(self.page_lines.max(1)).max(1)
+    }
+
+    /// 1-based page number of the current position within the section.
+    pub fn current_page(&self) -> usize {
+        self.scroll / self.page_lines.max(1) + 1
+    }
+
+    /// Snap the position to the start of its page (so paged mode shows a clean
+    /// page boundary after toggling in or resizing).
+    pub fn snap_to_page(&mut self) {
+        let page = self.page_lines.max(1);
+        self.scroll = self.scroll / page * page;
+        self.scroll_pending = 0;
+    }
+
+    /// Flip to the next page (snapped to a page boundary), flowing into the next
+    /// chapter at the bottom edge. Used in paged mode.
+    pub fn page_forward(&mut self) {
+        let page = self.page_lines.max(1);
+        if self.scroll < self.max_scroll() {
+            self.scroll = (self.scroll / page + 1) * page;
+            self.clamp_scroll();
+        } else if !self.chapter_lock && self.section + 1 < self.doc.section_count() {
+            self.load(self.section + 1);
+        }
+        self.scroll_pending = 0;
+    }
+
+    /// Flip to the previous page boundary, flowing into the previous chapter's
+    /// last page at the top edge. Used in paged mode.
+    pub fn page_backward(&mut self) {
+        let page = self.page_lines.max(1);
+        if self.scroll > 0 {
+            // Previous boundary, or this page's start when mid-page.
+            self.scroll = self.scroll.saturating_sub(1) / page * page;
+        } else if !self.chapter_lock && self.section > 0 {
+            self.load(self.section - 1);
+            self.scroll = usize::MAX;
+            self.clamp_scroll();
+            self.snap_to_page();
+        }
+        self.scroll_pending = 0;
+    }
+
     /// Jump to the next/previous chapter (works regardless of chapter-lock).
     pub fn next_chapter(&mut self) {
         if self.section + 1 < self.doc.section_count() {
@@ -1183,5 +1234,29 @@ mod tests {
             "flash: {:?}",
             r.flash
         );
+    }
+
+    #[test]
+    fn paged_nav_moves_in_whole_page_steps() {
+        let mut r = reader_with(vec![para(); 40]);
+        r.page_lines = 4;
+        assert!(r.page_count() >= 2, "multiple pages");
+        assert_eq!((r.scroll, r.current_page()), (0, 1));
+        r.page_forward();
+        assert_eq!(
+            (r.scroll, r.current_page()),
+            (4, 2),
+            "one page down, snapped"
+        );
+        r.page_forward();
+        assert_eq!(r.scroll, 8);
+        r.page_backward();
+        assert_eq!(r.scroll, 4);
+        r.page_backward();
+        assert_eq!((r.scroll, r.current_page()), (0, 1));
+        // From mid-page, a back-flip snaps to the page start.
+        r.scroll = 6;
+        r.page_backward();
+        assert_eq!(r.scroll, 4, "mid-page back snaps to page start");
     }
 }

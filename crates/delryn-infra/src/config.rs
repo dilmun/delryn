@@ -257,6 +257,9 @@ pub struct Config {
     pub code_wrap: bool,
     /// Word-wrap table cells to their column (true) vs. truncate with `…` (false).
     pub table_wrap: bool,
+    /// Paginated reading: vertical navigation flips whole pages snapped to page
+    /// boundaries (true) vs. continuous line scrolling (false).
+    pub paged: bool,
     /// Keep scrolling within the current chapter (true) instead of flowing into
     /// the next/previous one at the edges.
     pub chapter_lock: bool,
@@ -289,6 +292,7 @@ impl Default for Config {
             theme: theme::default_theme(),
             code_wrap: true,
             table_wrap: true,
+            paged: false,
             chapter_lock: false,
             show_sidebar: true,
             show_status: true,
@@ -315,6 +319,7 @@ struct ConfigFile {
     theme: String,
     code_wrap: bool,
     table_wrap: bool,
+    paged: bool,
     chapter_lock: bool,
     show_sidebar: bool,
     show_status: bool,
@@ -338,6 +343,7 @@ impl Default for ConfigFile {
             theme: c.theme.name.to_string(),
             code_wrap: c.code_wrap,
             table_wrap: c.table_wrap,
+            paged: c.paged,
             chapter_lock: c.chapter_lock,
             show_sidebar: c.show_sidebar,
             show_status: c.show_status,
@@ -375,6 +381,7 @@ impl Config {
         }
         c.code_wrap = cf.code_wrap;
         c.table_wrap = cf.table_wrap;
+        c.paged = cf.paged;
         c.chapter_lock = cf.chapter_lock;
         c.show_sidebar = cf.show_sidebar;
         c.show_status = cf.show_status;
@@ -398,6 +405,7 @@ impl Config {
             theme: self.theme.name.to_string(),
             code_wrap: self.code_wrap,
             table_wrap: self.table_wrap,
+            paged: self.paged,
             chapter_lock: self.chapter_lock,
             show_sidebar: self.show_sidebar,
             show_status: self.show_status,
