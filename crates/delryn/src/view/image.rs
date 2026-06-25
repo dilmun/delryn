@@ -14,6 +14,11 @@ use crate::app::App;
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
+    let policy = crate::media::RenderPolicy {
+        tint: super::theme_ink(theme),
+        mode: app.config.image_mode,
+    };
+    let mode_label = app.config.image_mode.label();
     // Disjoint field borrows: picker (read), viewer (mutate to build the proto),
     // reader (chapter titles).
     let App {
@@ -37,7 +42,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let scope = if viewer.whole_book { "book" } else { "chapter" };
     let title = match &viewer.flash {
         Some(flash) => format!(" {flash} "),
-        None => format!(" Figures · {pos}/{count} · {scope} "),
+        None => format!(" Figures · {pos}/{count} · {scope} · {mode_label} "),
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -50,7 +55,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Line::from(Span::styled(
-            " ↑↓ select · ⏎ go to figure · / filter · w chapter/book · s save · Esc close ",
+            " ↑↓ select · ⏎ go · / filter · w chapter/book · m mode · s save · Esc close ",
             Style::default().fg(theme.muted),
         )))
         .style(Style::default().fg(theme.fg).bg(bg));
@@ -180,7 +185,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     // The image: Scale fills the slot (it upscales small figures; Fit would not).
     if dims.is_some()
-        && let Some(proto) = viewer.ensure_proto(picker)
+        && let Some(proto) = viewer.ensure_proto(picker, policy)
     {
         f.render_stateful_widget(
             StatefulImage::default().resize(Resize::Scale(None)),

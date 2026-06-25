@@ -264,8 +264,12 @@ pub fn theme_invert(img: &DynamicImage, colors: Ink) -> DynamicImage {
         let px = if lit >= NEAR_WHITE_L {
             // Background + compression halo → clean page colour (kills the speckle).
             colors.paper
-        } else if sat < 0.15 {
-            // Neutral → exact theme colours by inverted lightness.
+        } else if chroma(p) < INVERT_CHROMA_MIN {
+            // Neutral → exact theme colours by inverted lightness. Tested by
+            // *chroma*, not HSL saturation: saturation is `d/(1-|2l-1|)`, which
+            // explodes near white/black, so a faint-grey anti-aliased pixel would
+            // otherwise read as fully "saturated" and get painted a vivid hue
+            // (the rainbow on a black-and-white chart). Chroma stays honest.
             lerp3(colors.paper, colors.ink, inv)
         } else {
             // Colour → keep hue/sat, map inverted lightness into the theme band.
@@ -279,6 +283,10 @@ pub fn theme_invert(img: &DynamicImage, colors: Ink) -> DynamicImage {
 /// Lightness at/above which a pixel counts as the (light) figure background — incl.
 /// the faint JPEG ringing around edges that would otherwise invert into specks.
 const NEAR_WHITE_L: f32 = 0.86;
+/// Chroma at/above which an inverted pixel keeps its hue (a real coloured line);
+/// below it the pixel is treated as neutral ink. Chroma, not HSL saturation,
+/// because saturation is unstable near white/black (see `theme_invert`).
+const INVERT_CHROMA_MIN: f32 = 0.18;
 
 fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
     let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
@@ -351,18 +359,6 @@ pub fn render_for_theme(img: &DynamicImage, tint: Ink, mode: ImageMode) -> Dynam
     // match a dark page; Auto/Faithful leave them as authored.
     if mode == ImageMode::InvertBackgrounds && is_predominantly_light(&rgba) {
         theme_invert(img, tint)
-    } else {
-        img.clone()
-    }
-}
-
-/// Render an image faithfully for the figure viewer: keep the original colours
-/// (no theme recolour/invert — those produce theme-dependent artifacts, e.g. an
-/// inverted chart's axes turning rainbow), compositing any transparency onto a
-/// white "page" so a figure looks as printed and stays legible on any theme.
-pub fn render_faithful(img: &DynamicImage) -> DynamicImage {
-    if transparent_frac(&img.to_rgba8()) > TRANSPARENT_FRAC {
-        flatten_onto(img, [255, 255, 255])
     } else {
         img.clone()
     }
@@ -633,6 +629,27 @@ mod tests {
             }
         }
         DynamicImage::ImageRgba8(img)
+    }
+
+    #[test]
+    fn invert_does_not_rainbow_near_neutral_pixels() {
+        let mut img = RgbaImage::from_pixel(4, 4, Rgba([255, 255, 255, 255]));
+        // A light, faintly-tilted grey — HSL saturation read this as "fully
+        // coloured" at high lightness and painted it a vivid hue (the rainbow).
+        img.put_pixel(1, 1, Rgba([226, 217, 208, 255]));
+        // A genuinely saturated pixel must keep its colour.
+        img.put_pixel(2, 2, Rgba([200, 30, 30, 255]));
+        let out = theme_invert(&DynamicImage::ImageRgba8(img), DARK).to_rgba8();
+        assert!(
+            chroma(out.get_pixel(1, 1)) < 0.12,
+            "faint grey stays neutral: {:?}",
+            out.get_pixel(1, 1).0
+        );
+        assert!(
+            chroma(out.get_pixel(2, 2)) > 0.3,
+            "a real colour is kept: {:?}",
+            out.get_pixel(2, 2).0
+        );
     }
 
     #[test]

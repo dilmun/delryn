@@ -6,7 +6,7 @@ use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 
 use crate::document::Block;
-use crate::media::{decode, image_dimensions, render_faithful};
+use crate::media::{RenderPolicy, decode, image_dimensions, render_for_theme};
 
 /// One figure available in the viewer: its display name, source location, raw
 /// bytes (for save + protocol build), and pixel size.
@@ -83,9 +83,10 @@ pub struct ImageViewer {
     pub whole_book: bool,
     pub filter: String,
     pub filtering: bool,
-    /// Lazily-built protocol for the selected figure, and the figs index it is for.
+    /// Lazily-built protocol for the selected figure, with the (figs index,
+    /// render policy) it was built for — so changing the image mode rebuilds it.
     proto: Option<StatefulProtocol>,
-    proto_for: Option<usize>,
+    proto_for: Option<(usize, RenderPolicy)>,
     /// Transient status (e.g. "saved …"), shown in the title.
     pub flash: Option<String>,
 }
@@ -118,10 +119,6 @@ impl ImageViewer {
         (self.sel + 1, self.view.len())
     }
 
-    pub fn total(&self) -> usize {
-        self.figs.len()
-    }
-
     /// Figures in display (filtered) order, paired with their display index.
     pub fn visible(&self) -> impl Iterator<Item = (usize, &Figure)> {
         self.view
@@ -142,13 +139,19 @@ impl ImageViewer {
         self.sel = (self.sel as isize + delta).rem_euclid(n) as usize;
     }
 
-    /// Build (or reuse) the faithful protocol for the selected figure.
-    pub fn ensure_proto(&mut self, picker: &Picker) -> Option<&mut StatefulProtocol> {
+    /// Build (or reuse) the protocol for the selected figure under `policy`
+    /// (the active image mode — faithful / invert / auto).
+    pub fn ensure_proto(
+        &mut self,
+        picker: &Picker,
+        policy: RenderPolicy,
+    ) -> Option<&mut StatefulProtocol> {
         let fi = *self.view.get(self.sel)?;
-        if self.proto_for != Some(fi) {
-            self.proto = decode(&self.figs[fi].bytes)
-                .map(|img| picker.new_resize_protocol(render_faithful(&img)));
-            self.proto_for = Some(fi);
+        if self.proto_for != Some((fi, policy)) {
+            self.proto = decode(&self.figs[fi].bytes).map(|img| {
+                picker.new_resize_protocol(render_for_theme(&img, policy.tint, policy.mode))
+            });
+            self.proto_for = Some((fi, policy));
         }
         self.proto.as_mut()
     }
