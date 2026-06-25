@@ -3,6 +3,8 @@
 //! `Action` dispatcher (`apply`). Routing only — the work lives in the concern
 //! modules; child of `app`, so it calls their methods directly.
 
+use crossterm::event::KeyModifiers;
+
 use super::*;
 
 impl App {
@@ -19,8 +21,8 @@ impl App {
             self.settings_key(key);
             return;
         }
-        if self.note_input.is_some() {
-            self.note_key(key);
+        if self.prompt.is_some() {
+            self.prompt_key(key);
             return;
         }
         if self.meta_edit.is_some() {
@@ -136,34 +138,66 @@ impl App {
         }
     }
 
-    fn note_key(&mut self, key: KeyEvent) {
+    fn prompt_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => self.note_input = None,
-            KeyCode::Enter => {
-                if let Some(text) = self.note_input.take()
-                    && let (Some(store), Some(r)) = (&self.store, &self.reader)
-                    && !self.book_path.is_empty()
-                {
-                    store.add_annotation(
-                        &self.book_path,
-                        r.section,
-                        &r.current_quote(),
-                        text.trim(),
-                    );
+            KeyCode::Esc => self.prompt = None,
+            KeyCode::Enter => self.prompt_commit(),
+            KeyCode::Backspace => {
+                if let Some(p) = self.prompt.as_mut() {
+                    p.buffer.pop();
                 }
             }
-            KeyCode::Backspace => {
-                if let Some(s) = self.note_input.as_mut() {
-                    s.pop();
+            // Ctrl-U clears the line (handy for a prefilled rename/folder field).
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(p) = self.prompt.as_mut() {
+                    p.buffer.clear();
                 }
             }
             KeyCode::Char(c) => {
-                if let Some(s) = self.note_input.as_mut() {
-                    s.push(c);
+                if let Some(p) = self.prompt.as_mut() {
+                    p.buffer.push(c);
                 }
             }
             _ => {}
         }
+    }
+
+    /// Apply the committed prompt text to its bookmark (rename / file), then
+    /// dismiss the prompt and refresh the open overlay in place.
+    fn prompt_commit(&mut self) {
+        let Some(p) = self.prompt.take() else {
+            return;
+        };
+        let text = p.buffer.trim().to_string();
+        let id = match p.kind {
+            PromptKind::Name(id) => {
+                if let Some(store) = &self.store {
+                    store.set_annotation_name(id, &text);
+                }
+                id
+            }
+            PromptKind::Folder(id) => {
+                if let Some(store) = &self.store {
+                    store.set_annotation_folder(id, &text);
+                }
+                id
+            }
+        };
+        self.refresh_bookmarks(id);
+    }
+
+    /// Reload the open bookmarks overlay, keeping the cursor on bookmark `keep_id`
+    /// (whose position may have shifted when its folder changed).
+    fn refresh_bookmarks(&mut self, keep_id: i64) {
+        if let (Some(store), Some(a)) = (&self.store, self.annot.as_mut()) {
+            a.items = store.list_bookmarks(&self.book_path);
+            if let Some(pos) = a.items.iter().position(|i| i.id == keep_id) {
+                a.sel = pos;
+            } else if a.sel >= a.items.len() {
+                a.sel = a.items.len().saturating_sub(1);
+            }
+        }
+        self.sync_reader_bookmarks();
     }
 
     fn annot_key(&mut self, key: KeyEvent) {
@@ -198,6 +232,24 @@ impl App {
                     self.annot = None;
                 }
             }
+            // Name (or rename) the selected entry; prefilled with its current name.
+            KeyCode::Char('r') => {
+                if let Some(i) = self.annot.as_ref().and_then(|a| a.items.get(a.sel)) {
+                    self.prompt = Some(Prompt {
+                        kind: PromptKind::Name(i.id),
+                        buffer: i.name.clone(),
+                    });
+                }
+            }
+            // File the selected entry into a folder; prefilled with its current one.
+            KeyCode::Char('f') => {
+                if let Some(i) = self.annot.as_ref().and_then(|a| a.items.get(a.sel)) {
+                    self.prompt = Some(Prompt {
+                        kind: PromptKind::Folder(i.id),
+                        buffer: i.folder.clone(),
+                    });
+                }
+            }
             KeyCode::Char('d') => {
                 let id = self
                     .annot
@@ -206,16 +258,30 @@ impl App {
                     .map(|i| i.id);
                 if let (Some(id), Some(store)) = (id, &self.store) {
                     store.delete_annotation(id);
-                    let items = store.list_annotations(&self.book_path);
+                    let items = store.list_bookmarks(&self.book_path);
                     if let Some(a) = self.annot.as_mut() {
                         a.items = items;
                         if a.sel >= a.items.len() {
                             a.sel = a.items.len().saturating_sub(1);
                         }
                     }
+                    self.sync_reader_bookmarks();
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Push the open book's bookmarks down to the reader so it can mark their
+    /// lines in the gutter. Cheap; call after any add/delete/move and on open.
+    pub(crate) fn sync_reader_bookmarks(&mut self) {
+        if let (Some(store), Some(r)) = (&self.store, self.reader.as_mut()) {
+            let marks = store
+                .list_bookmarks(&self.book_path)
+                .into_iter()
+                .map(|a| (a.section, a.quote))
+                .collect();
+            r.set_bookmarks(marks);
         }
     }
 
@@ -377,18 +443,21 @@ impl App {
                 if let Some(store) = &self.store
                     && !self.book_path.is_empty()
                 {
-                    store.add_annotation(
-                        &self.book_path,
-                        reader.section,
-                        &reader.current_quote(),
-                        "",
-                    );
+                    store.add_bookmark(&self.book_path, reader.section, &reader.current_quote());
+                    reader.flash = Some("bookmark added".into());
+                    // `reader` is borrowed here, so push the refreshed set directly
+                    // rather than via the `&mut self` helper.
+                    let marks = store
+                        .list_bookmarks(&self.book_path)
+                        .into_iter()
+                        .map(|a| (a.section, a.quote))
+                        .collect();
+                    reader.set_bookmarks(marks);
                 }
             }
-            Action::AddNote => self.note_input = Some(String::new()),
             Action::OpenAnnotations => {
                 if let Some(store) = &self.store {
-                    let items = store.list_annotations(&self.book_path);
+                    let items = store.list_bookmarks(&self.book_path);
                     self.annot = Some(AnnotState { items, sel: 0 });
                 }
             }

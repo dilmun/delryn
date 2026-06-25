@@ -20,6 +20,10 @@ use crate::theme::Theme;
 
 const GAUGE_WIDTH: usize = 16;
 
+/// Cells reserved in the left margin for the bookmark gutter: the icon plus a
+/// one-cell gap so it never butts against the text.
+const GUTTER_COLS: u16 = 2;
+
 pub fn render(f: &mut Frame, app: &mut App) {
     let App {
         config,
@@ -195,8 +199,13 @@ fn image_policy(config: &Config) -> crate::media::RenderPolicy {
 type Images<'a> = Option<(&'a Picker, &'a ImageBuilder)>;
 
 /// The reading column width for a given pane width and per-side padding percent.
+/// With padding on, each side keeps at least the gutter width so a bookmark's
+/// ribbon always has room; `side_padding == 0` stays edge-to-edge (Fill).
 fn measure_for(pane_width: u16, side_padding: u16) -> u16 {
-    let pad = (pane_width as u32 * side_padding as u32 / 100) as u16;
+    if side_padding == 0 {
+        return pane_width.max(1);
+    }
+    let pad = ((pane_width as u32 * side_padding as u32 / 100) as u16).max(GUTTER_COLS);
     pane_width
         .saturating_sub(pad.saturating_mul(2))
         .max(crate::config::MIN_TEXT_COLS.min(pane_width).max(1))
@@ -249,11 +258,49 @@ fn render_column(
         text_area,
     );
 
+    // Bookmark ribbons in the left margin (only where padding gives us room).
+    if left_pad >= GUTTER_COLS {
+        draw_gutter(f, text_area, reader, reader.scroll, theme);
+    }
+
     // Defer the (blocking) image transmit until scrolling settles, so motion
     // stays smooth; the figure pops in when you stop.
     if images.is_some() && !reader.is_scrolling() {
         draw_images_in(f, text_area, reader, reader.scroll);
     }
+}
+
+/// Draw the bookmark ribbon in the left gutter for any bookmarked line visible in
+/// `[top, top + height)`. The marker sits `GUTTER_COLS` cells left of the text so
+/// a one-cell gap separates it from the prose. No-op if that falls off-screen
+/// (callers gate on having real margin). The glyph is a monochrome flag that
+/// takes the theme accent, so it recolours when the theme changes.
+fn draw_gutter(f: &mut Frame, text_area: Rect, reader: &Reader, top: usize, theme: Theme) {
+    let Some(x) = text_area.x.checked_sub(GUTTER_COLS) else {
+        return;
+    };
+    let gutter = Rect {
+        x,
+        y: text_area.y,
+        width: 1,
+        height: text_area.height,
+    };
+    let ribbon = Style::default()
+        .fg(theme.accent)
+        .add_modifier(Modifier::BOLD);
+    let lines: Vec<Line> = (0..text_area.height as usize)
+        .map(|row| {
+            if reader.is_bookmark_line(top + row) {
+                Line::from(Span::styled("⚑", ribbon))
+            } else {
+                Line::raw("")
+            }
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(Text::from(lines)).style(theme.text_style()),
+        gutter,
+    );
 }
 
 /// Draw the ready figure images that intersect `[top, top+height)` of the line
@@ -319,8 +366,12 @@ fn render_two_page(
 ) {
     let theme = config.theme;
     const GAP: u16 = 3;
-    // Each column takes half the pane (minus the gap); a thin outer margin.
-    let usable = body.width.saturating_sub(GAP + 4).max(2);
+    // Each column takes half the pane (minus the gap); the outer margin keeps a
+    // gutter (plus a cell of breathing room) on each side for bookmark ribbons.
+    let usable = body
+        .width
+        .saturating_sub(GAP + (GUTTER_COLS + 1) * 2)
+        .max(2);
     let col_w = (usable / 2).max(1);
     let side_pad = body.width.saturating_sub(col_w * 2 + GAP) / 2;
     let cols = Layout::horizontal([
@@ -364,6 +415,13 @@ fn render_two_page(
         Paragraph::new(Text::from(right)).style(theme.text_style()),
         right_area,
     );
+
+    // Bookmark ribbons: the left column uses the outer margin (when present), the
+    // right column the inter-column gap (always wide enough).
+    if side_pad >= GUTTER_COLS {
+        draw_gutter(f, left_area, reader, reader.scroll, theme);
+    }
+    draw_gutter(f, right_area, reader, reader.scroll + h, theme);
 
     // Images: left column shows the first `h` rows, right column the next `h`.
     // Deferred while scrolling so the heavy transmit doesn't stutter motion.

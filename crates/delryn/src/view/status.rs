@@ -46,7 +46,7 @@ pub fn bar(f: &mut Frame, area: Rect, theme: Theme, state: &str, keys: &str) {
 /// If an overlay/popup is open, draw its (context, shortcuts) over the bottom
 /// row. The note-entry prompt owns the row itself, so it's deliberately skipped.
 pub fn overlay(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    if app.note_input.is_some() {
+    if app.prompt.is_some() {
         return;
     }
     if let Some((state, keys)) = legend(app) {
@@ -74,8 +74,8 @@ fn legend(app: &App) -> Option<(String, String)> {
     }
     if app.annot.is_some() {
         return Some((
-            "Annotations".into(),
-            "↑↓ move · ⏎ jump · d delete · Esc close".into(),
+            "Bookmarks".into(),
+            "↑↓ move · ⏎ jump · r name · f folder · d delete · Esc close".into(),
         ));
     }
     if app.image_view.is_some() {
