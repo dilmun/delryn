@@ -17,6 +17,7 @@ pub struct Settings {
 /// inserted freely without re-indexing the change handler).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingItem {
+    ReadingMode,
     Theme,
     ViewMode,
     SidePadding,
@@ -43,6 +44,7 @@ pub enum SettingItem {
 impl SettingItem {
     pub fn label(self) -> &'static str {
         match self {
+            SettingItem::ReadingMode => "Reading mode",
             SettingItem::Theme => "Theme",
             SettingItem::ViewMode => "View mode",
             SettingItem::SidePadding => "Side margin %",
@@ -71,6 +73,7 @@ impl SettingItem {
     pub fn value(self, c: &Config) -> String {
         let onoff = |b: bool| if b { "on" } else { "off" }.to_string();
         match self {
+            SettingItem::ReadingMode => c.reading_mode().label().to_string(),
             SettingItem::Theme => c.theme.name.to_string(),
             SettingItem::ViewMode => c.view_mode.label().to_string(),
             SettingItem::SidePadding => c.side_padding.to_string(),
@@ -116,6 +119,8 @@ pub fn settings_rows(scope: Mode) -> Vec<SettingRow> {
     use SettingRow::{Item as I, Section as S};
     match scope {
         Mode::Reader => vec![
+            S("Profile"),
+            I(ReadingMode),
             S("Typography"),
             I(Theme),
             I(ViewMode),
@@ -212,6 +217,14 @@ impl App {
         };
         let c = &mut self.config;
         match item {
+            SettingItem::ReadingMode => {
+                let mode = if delta > 0 {
+                    c.reading_mode().next()
+                } else {
+                    c.reading_mode().prev()
+                };
+                c.apply_reading_mode(mode);
+            }
             SettingItem::Theme => {
                 c.theme = if delta > 0 {
                     c.theme.next()
