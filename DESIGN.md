@@ -157,10 +157,11 @@ Three regions; the **sidebar and status bar are independently toggleable**
 
 - **Continuous scroll** within a chapter; reaching a chapter end flows into the
   next. `j/k`/arrows by line, `Space`/`PgDn` by screen.
-- **View modes** (`v` cycles): **Center** (measure-capped, centered, ~72 cols
-  configurable), **Fill** (text fills the pane minus a thin gutter), **Two-page**
-  (two side-by-side columns; the right continues from the left so scrolling
-  flows left→right). The active mode shows in the status bar.
+- **View modes** (`v` cycles): **Center** (single centered column) and
+  **Two-page** (two side-by-side columns; the right continues from the left so
+  scrolling flows left→right). Both use the same configurable per-side edge
+  padding (`side_padding` %); two-page adds a configurable inter-column gap
+  (`page_gap`). The active mode shows in the status bar.
 - **Sidebar hide**: `s` toggles the sidebar; `Tab` moves focus into it (showing
   it first if hidden) and back. When hidden, content reclaims width and re-centers.
 - **Left sidebar = navigable outline**: a flat list of sections (labeled from
