@@ -73,7 +73,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     // Responsive: the figure list takes ~30% of the width and collapses on a
     // narrow screen so the figure keeps the room (shared app-standard split).
-    let (sidebar, right) = super::sidebar_split(inner, 30, 24, 40, 40);
+    let (sidebar, right) = super::sidebar_split(inner, 30, 24, 40, 50);
 
     // The book's own chapter label, made presentable: a bare number gets a
     // "Chapter " prefix; a label that already names the chapter is shown as-is

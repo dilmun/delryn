@@ -18,8 +18,9 @@ use crate::store::{BookRow, LibrarySection};
 use crate::theme::Theme;
 
 /// Smallest book-list width to keep when sizing the side panes (they collapse to
-/// preserve it on a narrow window).
-const MIN_LIST: u16 = 30;
+/// preserve it on a narrow window) — generous so panes drop before the list
+/// gets cramped, matching the reader's comfortable collapse.
+const MIN_LIST: u16 = 48;
 
 /// Title rows under each grid cover.
 const LABEL_H: u16 = 2;
