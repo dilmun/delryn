@@ -107,7 +107,12 @@ jump-by-type + a reader cursor.
       endnotes); link→copy URL; **cross-ref/citation → their target** via a
       book-wide id→(section, locator) index (`Document::section_targets` +
       `html::collect_targets`), resolved to a line by the locator text.
-- [ ] Bookmarks: named, quick, folders. *(Have: bookmark/note annotations + overlay.)*
+- [x] Bookmarks: **quick** (`m` drops one at the cursor), **named** (`r` in the
+      overlay sets a custom label that shows instead of the quote), **folders**
+      (`f` files an entry into a folder; the overlay groups by folder — named
+      folders first, ungrouped last). One `annotations` table (added `name` /
+      `folder` columns + migration); the note prompt generalised to note / rename
+      / file. Markdown export (`--export-annotations`) is folder-aware.
 
 ## Phase 3 — Library platform
 

@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS annotations (
     section    INTEGER NOT NULL,
     quote      TEXT NOT NULL,
     note       TEXT NOT NULL DEFAULT '',
+    name       TEXT NOT NULL DEFAULT '',
+    folder     TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS shelves (
@@ -65,11 +67,15 @@ CREATE TABLE IF NOT EXISTS collections (
 ";
 
 /// A bookmark or note, anchored to content by a text quote (reflow-stable).
+/// `name` is an optional user label (shown instead of the quote); `folder` is an
+/// optional group (empty = ungrouped).
 pub struct Annotation {
     pub id: i64,
     pub section: usize,
     pub quote: String,
     pub note: String,
+    pub name: String,
+    pub folder: String,
 }
 
 /// Which slice of the library to show.
@@ -200,6 +206,13 @@ impl Store {
             "ALTER TABLE books ADD COLUMN rating INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // Bookmark organisation: a custom name and a folder (migrate older DBs).
+        for col in ["name", "folder"] {
+            let _ = conn.execute(
+                &format!("ALTER TABLE annotations ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"),
+                [],
+            );
+        }
         // First-class collections: seed the names table from existing memberships
         // so collections created before this migration keep showing.
         let _ = conn.execute(
@@ -322,6 +335,31 @@ mod tests {
         assert_eq!(anns[1].note, "my note");
         store.delete_annotation(anns[0].id);
         assert_eq!(store.list_annotations("/books/a.epub").len(), 1);
+
+        // Names and folders: a name labels the bookmark; folders group entries.
+        let kept = store.list_annotations("/books/a.epub")[0].id;
+        store.set_annotation_name(kept, "Key idea");
+        store.set_annotation_folder(kept, "Research");
+        store.add_annotation("/books/a.epub", 1, "intro line", ""); // ungrouped
+        store.add_annotation("/books/a.epub", 2, "method line", "");
+        let method = store
+            .list_annotations("/books/a.epub")
+            .into_iter()
+            .find(|a| a.section == 2)
+            .unwrap()
+            .id;
+        store.set_annotation_folder(method, "Research");
+
+        // Named folders sort before ungrouped; within a folder, by reading order.
+        let grouped = store.list_annotations("/books/a.epub");
+        assert_eq!(
+            grouped
+                .iter()
+                .map(|a| (a.folder.as_str(), a.section))
+                .collect::<Vec<_>>(),
+            vec![("Research", 2), ("Research", 5), ("", 1)],
+        );
+        assert_eq!(grouped[1].name, "Key idea");
 
         store
             .upsert_book(
