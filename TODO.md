@@ -94,10 +94,15 @@ jump-by-type + a reader cursor.
 
 ## Phase 2 — Reading experience
 
-- [~] Reading modes: **Continuous** + **Page** (paged scroll, `p` / Settings →
+- [x] Reading modes: **Continuous** + **Page** (paged scroll, `p` / Settings →
       "Page mode"; vertical nav flips whole pages snapped to boundaries, status
-      shows "p N/M"), Focus, chapter-lock, Center/Fill/TwoPage layouts. *Still:
-      Study / Research / Presentation presets.*
+      shows "p N/M"), Focus, chapter-lock, Center + Two-page layouts (shared
+      `side_padding` % edge margin + configurable two-page `page_gap`), and
+      **presets** — Study / Research / Presentation (`M` cycles, or Settings →
+      Profile → "Reading mode"). Each bundles padding + spacing + sidebar +
+      status + chapter-lock + paged (deliberately *not* view layout — that's the
+      reader's choice); the active preset is *derived* from the live settings
+      (shows "custom" once any are hand-tweaked, so it never lies).
 - [~] Pagination models: continuous + **virtual pages** (page mode, snapped to
       `page_lines`, flows across chapters at edges). *Still: book pages (PDF).*
 - [x] Navigation: reading history + back/forward, **jump-by-type** (`w`/`b` cycle
@@ -115,6 +120,18 @@ jump-by-type + a reader cursor.
       bookmarked lines in the page margin (Center & TwoPage). `annotations` gains
       `name`/`folder`/`kind` columns (`kind` reserves notes for Phase 4) +
       migration. `--export-annotations` is folder-aware.
+- [~] Image viewer (`i`): figure **sidebar** (real figures only — equation/math
+      images excluded via `Block::Image.math`), large image **scaled + centered
+      with equal padding** (faithful colours on a white page, no theme recolour),
+      **details** (book chapter label + dimensions) + caption, **jump to the
+      figure** (⏎ → `jump_to_image`), **filter** (`/`), **save** (`s`), chapter↔
+      **whole-book** scope (`w`). *Still: zoom (fit↔actual) + pan (SlicedImage).*
+- [x] **Responsive layout standard**: shared `view::sidebar_split` / `detail_split`
+      (percentage width, clamped to cell bounds, collapse when the main pane would
+      drop below a minimum — one `side_width` rule). Used by the reader TOC
+      sidebar, the image viewer, and the library (sidebar + detail), whose panes
+      are now percentage-based — `<`/`>` adjust the percentage so they scale with
+      the window. Any future multi-pane view uses the same helpers.
 
 ## Phase 3 — Library platform
 

@@ -41,6 +41,7 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(theme.muted)),
             );
         f.render_widget(ph, parts[0]);

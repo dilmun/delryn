@@ -150,22 +150,6 @@ impl Document for EpubDocument {
             Vec::new()
         }
     }
-
-    fn section_images(&mut self, section: usize) -> Vec<Vec<u8>> {
-        // Reuse the parsed blocks so the overlay sees exactly the figures the
-        // reader renders inline (single source of truth for image selection).
-        load_blocks(&mut self.doc, section)
-            .map(|blocks| {
-                blocks
-                    .into_iter()
-                    .filter_map(|b| match b {
-                        Block::Image { data, .. } if !data.is_empty() => Some(data),
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
 }
 
 /// Resolve an image `src` (relative to the chapter dir) to its bytes, with a

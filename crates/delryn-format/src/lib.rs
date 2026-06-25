@@ -44,11 +44,6 @@ pub trait Document {
     }
     /// Load and reflow-prepare one section's content.
     fn load_section(&mut self, index: usize) -> Result<Section>;
-    /// Raw encoded bytes of the renderable images in a section (covers,
-    /// figures), in reading order. Math/icon images are excluded.
-    fn section_images(&mut self, _section: usize) -> Vec<Vec<u8>> {
-        Vec::new()
-    }
     /// Cross-reference / citation jump targets in section `index`: each element's
     /// `id` paired with a short text locator. Empty by default (formats without
     /// internal id anchors).

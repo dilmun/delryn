@@ -1162,6 +1162,7 @@ mod tests {
             alt: "diagram".into(),
             data: Vec::new(),
             caption: vec![Span::plain("Figure 1: the pipeline")],
+            math: false,
         };
         // No image protocol (image_rows empty) → text placeholder + caption.
         let lines = texts(&wrap_blocks(&[block], &WrapOpts::default(), &[]));
