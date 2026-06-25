@@ -30,7 +30,10 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
 
     // Responsive columns: drop the least-important ones as the pane narrows so a
     // fixed column never overlaps the title (shared idea with the pane collapse).
-    let cols = columns(compact, area.width);
+    let cols = columns(compact, area.width, &app.config);
+    // The `s` sort cycle follows exactly the columns drawn here, so it skips any
+    // the user hid or that collapsed on this width.
+    app.lib_sort_cycle = cols.iter().filter_map(|c| c.sort_key()).collect();
 
     // Build rows, interleaving series headers; track the selected book's row
     // index (it shifts down past the headers above it).
@@ -137,9 +140,11 @@ enum Col {
     Title,
     Author,
     Year,
+    Type,
     Source,
     Pct,
     Size,
+    Status,
 }
 
 impl Col {
@@ -148,18 +153,54 @@ impl Col {
             Col::Star => Constraint::Length(1),
             Col::Title => Constraint::Min(10),
             Col::Author => Constraint::Length(20),
-            Col::Year => Constraint::Length(4),
+            // Year widens by the 2-cell sort indicator so the arrow has room and
+            // the right-aligned label stays put (see `header_row`).
+            Col::Year => Constraint::Length(6),
+            Col::Type => Constraint::Length(5),
             Col::Source => Constraint::Length(9),
             Col::Pct => Constraint::Length(4),
             Col::Size => Constraint::Length(7),
+            Col::Status => Constraint::Length(9),
         }
+    }
+
+    /// Visibility key (matches [`config::LIB_COLUMNS`]); `None` for the always-on
+    /// star + title columns.
+    fn key(self) -> Option<&'static str> {
+        Some(match self {
+            Col::Author => "author",
+            Col::Year => "year",
+            Col::Type => "type",
+            Col::Source => "source",
+            Col::Pct => "progress",
+            Col::Size => "size",
+            Col::Status => "status",
+            Col::Star | Col::Title => return None,
+        })
+    }
+
+    /// The sort key this column sorts by, for the `s` cycle; `None` for the
+    /// non-sortable lead star column.
+    fn sort_key(self) -> Option<SortKey> {
+        Some(match self {
+            Col::Title => SortKey::Title,
+            Col::Author => SortKey::Author,
+            Col::Year => SortKey::Year,
+            Col::Type => SortKey::Type,
+            Col::Source => SortKey::Source,
+            Col::Pct => SortKey::Progress,
+            Col::Size => SortKey::Size,
+            Col::Status => SortKey::Status,
+            Col::Star => return None,
+        })
     }
 }
 
 /// The columns to show at pane `width`. Compact mode is fixed (star · title · %);
-/// the rich list keeps star + title and adds the rest only while they fit, so
-/// columns drop one-by-one as the window narrows (widest thresholds go first).
-fn columns(compact: bool, width: u16) -> Vec<Col> {
+/// the rich list keeps star + title and adds each optional column only when the
+/// user has it enabled *and* it still fits — so columns drop one-by-one as the
+/// window narrows (widest thresholds go first).
+fn columns(compact: bool, width: u16, config: &Config) -> Vec<Col> {
     if compact {
         return vec![Col::Star, Col::Title, Col::Pct];
     }
@@ -167,23 +208,41 @@ fn columns(compact: bool, width: u16) -> Vec<Col> {
     for (col, min) in [
         (Col::Author, 58u16),
         (Col::Year, 44),
+        (Col::Type, 64),
         (Col::Source, 94),
         (Col::Pct, 36),
         (Col::Size, 78),
+        (Col::Status, 60),
     ] {
-        if width >= min {
+        if col.key().is_some_and(|k| config.column_on(k)) && width >= min {
             cols.push(col);
         }
     }
     cols
 }
 
+/// The sort keys for the columns visible under `compact`/`width` (in display
+/// order) — the `s` cycle for callers that don't build the table directly (the
+/// grid and the pre-render fallback). The book table sets the cycle from its own
+/// rendered columns so width-collapsed ones are skipped.
+pub(crate) fn sort_cycle(config: &Config, compact: bool, width: u16) -> Vec<SortKey> {
+    columns(compact, width, config)
+        .iter()
+        .filter_map(|c| c.sort_key())
+        .collect()
+}
+
 /// The sortable column header for the active `cols`, marking the sort column.
 fn header_row(cols: &[Col], app: &App, theme: Theme) -> Row<'static> {
     let sort = |key: SortKey, text: &str, right: bool| -> Cell<'static> {
         let active = app.lib_sort == key;
+        // The direction indicator is a fixed 2-cell slot (space + arrow). On
+        // right-aligned columns it must be reserved even when inactive, else
+        // adding the arrow would shift the right-pinned title left on toggle.
         let label = if active {
             format!("{text} {}", if app.lib_sort_desc { "↓" } else { "↑" })
+        } else if right {
+            format!("{text}  ")
         } else {
             text.to_string()
         };
@@ -203,14 +262,11 @@ fn header_row(cols: &[Col], app: &App, theme: Theme) -> Row<'static> {
         Col::Title => sort(SortKey::Title, "Title", false),
         Col::Author => sort(SortKey::Author, "Author", false),
         Col::Year => sort(SortKey::Year, "Year", true),
-        Col::Source => Cell::from(Line::from(Span::styled(
-            "Source",
-            Style::default()
-                .fg(theme.muted)
-                .add_modifier(Modifier::BOLD),
-        ))),
+        Col::Type => sort(SortKey::Type, "Type", false),
+        Col::Source => sort(SortKey::Source, "Source", false),
         Col::Pct => sort(SortKey::Progress, "%", true),
         Col::Size => sort(SortKey::Size, "Size", true),
+        Col::Status => sort(SortKey::Status, "Status", false),
     });
     Row::new(cells.collect::<Vec<_>>())
 }
@@ -232,11 +288,28 @@ fn book_row(b: &BookRow, cols: &[Col], grouped: bool, marked: bool, theme: Theme
             Style::default().fg(theme.muted),
         )),
         Col::Year => num(b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into())),
+        Col::Type => type_cell(&b.path, theme),
         Col::Source => source_cell(b.converted, theme),
         Col::Pct => num(format!("{}%", b.pct)),
         Col::Size => num(fmt_size(b.size)),
+        Col::Status => status_cell(b, theme),
     });
     Row::new(cells.collect::<Vec<_>>())
+}
+
+/// The reading-status cell: the effective status label, with manual overrides
+/// (paused / dropped / reference) tinted to stand out from the derived ones.
+fn status_cell(b: &BookRow, theme: Theme) -> Cell<'static> {
+    let st = delryn_model::ReadingStatus::effective(b.pct, &b.status);
+    let color = if st.is_manual() {
+        theme.marker
+    } else {
+        theme.muted
+    };
+    Cell::from(Span::styled(
+        st.label().to_string(),
+        Style::default().fg(color),
+    ))
 }
 
 /// The 1-cell lead column: a multi-select check, else the favorite star, else
@@ -280,11 +353,7 @@ fn title_cell(b: &BookRow, grouped: bool, theme: Theme) -> Cell<'static> {
             Span::styled(b.title.clone(), Style::default().fg(theme.fg)),
         ]));
     }
-    let mut spans = Vec::new();
-    if let Some(badge) = format_badge(&b.path, theme) {
-        spans.push(badge);
-    }
-    spans.push(Span::styled(b.title.clone(), Style::default().fg(theme.fg)));
+    let mut spans = vec![Span::styled(b.title.clone(), Style::default().fg(theme.fg))];
     let suffix = series_suffix(b);
     if !suffix.is_empty() {
         spans.push(Span::styled(suffix, Style::default().fg(theme.muted)));
@@ -292,21 +361,73 @@ fn title_cell(b: &BookRow, grouped: bool, theme: Theme) -> Cell<'static> {
     Cell::from(Line::from(spans))
 }
 
-/// A leading format badge (`PDF `, `MOBI `, …) for non-EPUB library entries, so
-/// the not-yet-readable formats are visually distinct. EPUB — the readable
-/// default — gets no badge to keep the common case clean.
-fn format_badge(path: &str, theme: Theme) -> Option<Span<'static>> {
+/// The Type cell: the file format (`EPUB`, `PDF`, `MOBI`, `AZW3`). The readable
+/// default (EPUB) is dimmed; the not-yet-readable formats use the marker colour
+/// so they stand out. This replaces the old leading title badge.
+fn type_cell(path: &str, theme: Theme) -> Cell<'static> {
     let fmt = crate::document::BookFormat::from_path(path);
-    if matches!(
-        fmt,
-        crate::document::BookFormat::Epub | crate::document::BookFormat::Unknown
-    ) {
-        return None;
+    let (label, color) = match fmt {
+        crate::document::BookFormat::Epub => ("EPUB", theme.muted),
+        crate::document::BookFormat::Unknown => ("—", theme.muted),
+        other => (other.label(), theme.marker),
+    };
+    Cell::from(Span::styled(label.to_string(), Style::default().fg(color)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sort_cycle_includes_title_then_enabled_columns() {
+        let cfg = Config::default();
+        let cycle = sort_cycle(&cfg, false, u16::MAX);
+        assert_eq!(
+            cycle.first(),
+            Some(&SortKey::Title),
+            "title is always first"
+        );
+        // Default config enables every optional column.
+        for k in [
+            SortKey::Author,
+            SortKey::Year,
+            SortKey::Type,
+            SortKey::Source,
+            SortKey::Progress,
+            SortKey::Size,
+            SortKey::Status,
+        ] {
+            assert!(cycle.contains(&k), "{k:?} should be in the cycle");
+        }
     }
-    Some(Span::styled(
-        format!("{} ", fmt.label()),
-        Style::default()
-            .fg(theme.marker)
-            .add_modifier(Modifier::BOLD),
-    ))
+
+    #[test]
+    fn sort_cycle_skips_hidden_columns() {
+        let mut cfg = Config::default();
+        cfg.toggle_column("author"); // hide Author
+        cfg.toggle_column("size"); // hide Size
+        let cycle = sort_cycle(&cfg, false, u16::MAX);
+        assert!(
+            !cycle.contains(&SortKey::Author),
+            "hidden column is skipped"
+        );
+        assert!(!cycle.contains(&SortKey::Size), "hidden column is skipped");
+        assert!(cycle.contains(&SortKey::Year), "visible column stays");
+        assert!(cycle.contains(&SortKey::Title), "title always present");
+    }
+
+    #[test]
+    fn sort_cycle_drops_columns_that_do_not_fit() {
+        let cfg = Config::default();
+        // A narrow pane keeps Title but collapses the wide optional columns.
+        let narrow = sort_cycle(&cfg, false, 40);
+        assert_eq!(narrow.first(), Some(&SortKey::Title));
+        assert!(
+            !narrow.contains(&SortKey::Source),
+            "Source needs a wide pane"
+        );
+        // Compact layout is fixed to title + progress.
+        let compact = sort_cycle(&cfg, true, u16::MAX);
+        assert_eq!(compact, vec![SortKey::Title, SortKey::Progress]);
+    }
 }

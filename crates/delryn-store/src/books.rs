@@ -164,6 +164,14 @@ impl Store {
         );
     }
 
+    /// Set a book's manual reading-status override (empty = derive from progress).
+    pub fn set_status(&self, path: &str, status: &str) {
+        let _ = self.conn.execute(
+            "UPDATE books SET status = ?2 WHERE path = ?1",
+            params![path, status],
+        );
+    }
+
     pub fn set_favorite(&self, path: &str, favorite: bool) {
         let _ = self.conn.execute(
             "UPDATE books SET favorite = ?2 WHERE path = ?1",

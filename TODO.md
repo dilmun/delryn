@@ -135,14 +135,21 @@ jump-by-type + a reader cursor.
 
 ## Phase 3 — Library platform
 
-- [ ] Views: Table (sortable columns), Cover Wall; refine Grid/List.
+- [~] Views: Table (sortable columns), Cover Wall; refine Grid/List. *(Have:
+      per-column show/hide (Settings → Columns: Author/Year/Type/Source/Progress/
+      Size/Status), every column sortable, `s` cycles only the *visible* columns
+      ascending↔descending, a `Type` column for the file format (replaced the old
+      title badge). Still: a dedicated Cover Wall.)*
 - [x] Smart collections + **filter DSL**: `delryn-library::query` — fields
       (title/author/series/publisher/language/isbn, year/progress/rating numeric),
-      flags (favorite/converted/unread/reading/finished), AND/OR/NOT, parens,
-      quoted values; the `/` filter uses it (plain queries keep substring + FTS).
-- [~] Reading status + **rating** (0–5 ★, keys 0–5, detail stars, sort, DSL
-      `rating>=4`). *Still: a manual reading-status enum (Paused/Dropped/Reference)
-      beyond the progress-derived unread/reading/finished.*
+      flags (favorite/converted/unread/reading/finished/paused/dropped/reference),
+      AND/OR/NOT, parens, quoted values; the `/` filter uses it (plain queries
+      keep substring + FTS).
+- [x] Reading status + **rating** (0–5 ★, keys 0–5, detail stars, sort, DSL
+      `rating>=4`). Manual reading-status enum (`delryn-model::ReadingStatus`:
+      Paused/Dropped/Reference) beyond the progress-derived unread/reading/
+      finished — `m` cycles it, shown as its own toggleable `Status` column +
+      detail line, sortable, DSL-filterable.
 - [x] Duplicate detection: `delryn-library::dedup` (ISBN, else normalized
       title + author surname); a "Duplicates" library section lists members.
       *Still: explicit merge/keep/remove resolution UI.*

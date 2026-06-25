@@ -44,7 +44,9 @@ CREATE TABLE IF NOT EXISTS books (
     subtitle     TEXT NOT NULL DEFAULT '',
     isbn         TEXT NOT NULL DEFAULT '',
     language     TEXT NOT NULL DEFAULT '',
-    converted    INTEGER NOT NULL DEFAULT 0
+    converted    INTEGER NOT NULL DEFAULT 0,
+    rating       INTEGER NOT NULL DEFAULT 0,
+    status       TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS annotations (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,6 +142,9 @@ pub struct BookRow {
     pub converted: bool,
     /// User rating, 0 (unrated) to 5 stars.
     pub rating: u8,
+    /// Manual reading-status override (paused/dropped/reference); empty means
+    /// the status is derived from reading progress.
+    pub status: String,
 }
 
 /// Saved reading position for a book.
@@ -207,6 +212,12 @@ impl Store {
             "ALTER TABLE books ADD COLUMN rating INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // Manual reading-status override (paused/dropped/reference; empty = derive
+        // from progress); user-set, preserved across rescans.
+        let _ = conn.execute(
+            "ALTER TABLE books ADD COLUMN status TEXT NOT NULL DEFAULT ''",
+            [],
+        );
         // Bookmark organisation: a custom name and a folder (migrate older DBs).
         for col in ["name", "folder"] {
             let _ = conn.execute(
@@ -251,7 +262,7 @@ impl Store {
         let sql = format!(
             "SELECT b.path, b.title, b.author, b.year, b.size, b.favorite, b.sections, \
              p.section, p.frac, b.series, b.series_index, b.publisher, \
-             b.subtitle, b.isbn, b.language, b.converted, b.rating \
+             b.subtitle, b.isbn, b.language, b.converted, b.rating, b.status \
              FROM books b LEFT JOIN progress p ON p.path = b.path {join} \
              WHERE {where_clause} ORDER BY {order}"
         );
@@ -287,6 +298,7 @@ impl Store {
                 language: r.get(14)?,
                 converted: r.get::<_, i64>(15)? != 0,
                 rating: r.get::<_, i64>(16)?.clamp(0, 5) as u8,
+                status: r.get(17)?,
             })
         });
         if let Ok(rows) = rows {
