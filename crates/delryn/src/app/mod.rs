@@ -40,8 +40,8 @@ pub use collections::{CollInput, ShelfPicker};
 
 mod editor;
 pub use editor::{
-    EditMode, EditTab, LOOKUP_FIELDS, LookupForm, META_FIELDS, MetaEdit, ONLINE_LIMIT, OnlineMsg,
-    Search,
+    DiffRow, EditMode, EditTab, LOOKUP_FIELDS, LookupForm, META_FIELDS, MetaDiff, MetaEdit,
+    ONLINE_LIMIT, OnlineMsg, Search,
 };
 
 mod reader;

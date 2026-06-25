@@ -72,6 +72,25 @@ pub enum EditMode {
     Edit,
 }
 
+/// One row of the metadata diff: a [`META_FIELDS`] field, its remote value, and
+/// whether the reader has ticked it to apply.
+pub struct DiffRow {
+    pub field: usize,
+    pub remote: String,
+    pub apply: bool,
+}
+
+/// The metadata diff overlay: current-vs-remote for a picked online candidate,
+/// with per-field selection. Applying writes the ticked remote values into the
+/// Details fields (and fetches the candidate's cover).
+pub struct MetaDiff {
+    pub rows: Vec<DiffRow>,
+    /// Cursor row into `rows`.
+    pub row: usize,
+    /// The candidate's cover URL, fetched when the diff is applied.
+    pub cover_url: Option<String>,
+}
+
 /// A message from a background Open Library worker.
 pub enum OnlineMsg {
     Results(Vec<Candidate>),
@@ -208,6 +227,9 @@ pub struct MetaEdit {
     /// from. When the Details change (e.g. via `x` extract or a manual edit),
     /// entering those tabs re-seeds; while unchanged, manual search edits stick.
     pub seed_from: (String, String),
+
+    /// Open metadata-diff overlay (current vs a picked online candidate), if any.
+    pub diff: Option<MetaDiff>,
 }
 
 impl MetaEdit {
@@ -405,6 +427,7 @@ impl App {
             status: None,
             status_tab: None,
             seed_from,
+            diff: None,
         });
     }
 
@@ -440,11 +463,61 @@ impl App {
         true
     }
 
+    /// The metadata-diff overlay: ↑↓ move, space toggles a field (when it has a
+    /// remote value), `a` toggles all, ⏎ applies the ticked rows, Esc cancels.
+    fn diff_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    e.diff = None;
+                }
+            }
+            KeyCode::Enter => self.apply_diff(),
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut()) {
+                    d.row = d.row.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut()) {
+                    d.row = (d.row + 1).min(d.rows.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut())
+                    && let Some(r) = d.rows.get_mut(d.row)
+                    && !r.remote.is_empty()
+                {
+                    r.apply = !r.apply;
+                }
+            }
+            // Toggle all appliable rows (off if every one is already on).
+            KeyCode::Char('a') => {
+                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut()) {
+                    let all_on = d
+                        .rows
+                        .iter()
+                        .filter(|r| !r.remote.is_empty())
+                        .all(|r| r.apply);
+                    for r in d.rows.iter_mut().filter(|r| !r.remote.is_empty()) {
+                        r.apply = !all_on;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn meta_edit_key(&mut self, key: KeyEvent) {
         let (mode, tab) = match &self.meta_edit {
             Some(e) => (e.mode, e.tab),
             None => return,
         };
+        // The metadata-diff overlay captures input until applied or cancelled.
+        if self.meta_edit.as_ref().is_some_and(|e| e.diff.is_some()) {
+            self.diff_key(key);
+            return;
+        }
         // Lookup tab: editing one of its seed fields takes all keystrokes.
         if tab == EditTab::Online && self.meta_edit.as_ref().is_some_and(|e| e.lookup.editing) {
             self.lookup_edit_key(key);

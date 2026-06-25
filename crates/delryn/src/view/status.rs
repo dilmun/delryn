@@ -110,6 +110,13 @@ fn legend(app: &App) -> Option<(String, String)> {
 /// Context + shortcuts for the metadata editor, varying by tab and edit mode.
 fn editor_legend(ed: &MetaEdit) -> (String, String) {
     let state = format!("Edit · {}", ed.tab.label());
+    // The metadata-diff overlay owns the keys while it's open.
+    if ed.diff.is_some() {
+        return (
+            "Apply metadata".to_string(),
+            "j/k move · space toggle · a all · ⏎ apply · Esc cancel".to_string(),
+        );
+    }
     // The Lookup tab drives a structured seed form, with its own edit state.
     if ed.tab == EditTab::Online {
         let keys = if ed.lookup.editing {

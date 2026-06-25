@@ -146,7 +146,11 @@ jump-by-type + a reader cursor.
 - [x] Duplicate detection: `delryn-library::dedup` (ISBN, else normalized
       title + author surname); a "Duplicates" library section lists members.
       *Still: explicit merge/keep/remove resolution UI.*
-- [ ] Metadata diff view (current vs remote, selective apply).
+- [x] Metadata diff view (current vs remote, selective apply): picking an online
+      candidate (editor Lookup tab → ⏎) opens a diff overlay — one row per field
+      with current vs remote, fields that differ pre-ticked; space toggles, `a`
+      all, ⏎ applies the ticked rows into Details (+ fetches the cover), Esc
+      cancels. Replaces the old apply-everything-then-review behaviour.
 
 ## Phase 4 — Knowledge & power tools
 
