@@ -40,6 +40,8 @@ pub enum SettingItem {
     Mouse,
     LibLayout,
     GridSize,
+    /// Show/hide an optional library column (carries its key from `LIB_COLUMNS`).
+    Column(&'static str),
 }
 
 impl SettingItem {
@@ -68,6 +70,11 @@ impl SettingItem {
             SettingItem::Mouse => "Mouse",
             SettingItem::LibLayout => "Layout",
             SettingItem::GridSize => "Cover size",
+            SettingItem::Column(key) => crate::config::LIB_COLUMNS
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, label)| *label)
+                .unwrap_or(key),
         }
     }
 
@@ -104,6 +111,7 @@ impl SettingItem {
             SettingItem::Mouse => onoff(c.mouse_enabled),
             SettingItem::LibLayout => c.library_layout.label().to_string(),
             SettingItem::GridSize => c.library_grid_size.label().to_string(),
+            SettingItem::Column(key) => onoff(c.column_on(key)),
         }
     }
 }
@@ -150,15 +158,17 @@ pub fn settings_rows(scope: Mode) -> Vec<SettingRow> {
             S("Input"),
             I(Mouse),
         ],
-        Mode::Library => vec![
-            S("View"),
-            I(LibLayout),
-            I(GridSize),
-            S("Appearance"),
-            I(Theme),
-            S("Input"),
-            I(Mouse),
-        ],
+        Mode::Library => {
+            let mut rows = vec![S("View"), I(LibLayout), I(GridSize), S("Columns")];
+            // The star + Title columns are always on; the rest are user-toggled.
+            rows.extend(
+                crate::config::LIB_COLUMNS
+                    .iter()
+                    .map(|(key, _)| I(SettingItem::Column(key))),
+            );
+            rows.extend([S("Appearance"), I(Theme), S("Input"), I(Mouse)]);
+            rows
+        }
     }
 }
 
@@ -296,6 +306,7 @@ impl App {
                     c.library_grid_size.prev()
                 }
             }
+            SettingItem::Column(key) => c.toggle_column(key),
         }
     }
 }

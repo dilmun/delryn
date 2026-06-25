@@ -65,8 +65,13 @@ impl App {
             item("Sort by Title", Command::Sort(SortKey::Title)),
             item("Sort by Author", Command::Sort(SortKey::Author)),
             item("Sort by Year", Command::Sort(SortKey::Year)),
+            item("Sort by Type", Command::Sort(SortKey::Type)),
+            item("Sort by Source", Command::Sort(SortKey::Source)),
             item("Sort by Rating", Command::Sort(SortKey::Rating)),
             item("Sort by Progress", Command::Sort(SortKey::Progress)),
+            item("Sort by Size", Command::Sort(SortKey::Size)),
+            item("Sort by Status", Command::Sort(SortKey::Status)),
+            item("Sort: Section order", Command::Sort(SortKey::Default)),
             item("Sort: Reverse direction", Command::ToggleSortDir),
             item("View: Cycle layout", Command::CycleLayout),
             item("Toggle sidebar", Command::ToggleSidebar),
@@ -142,7 +147,9 @@ impl App {
                 self.refresh_library();
             }
             Command::Sort(key) => {
+                // Explicit pick starts ascending; cycling with `s` toggles direction.
                 self.lib_sort = key;
+                self.lib_sort_desc = false;
                 self.refresh_library();
             }
             Command::ToggleSortDir => {

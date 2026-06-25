@@ -7,8 +7,10 @@ pub mod content;
 pub mod math;
 pub mod metadata;
 pub mod naming;
+pub mod status;
 pub mod toc;
 
 pub use content::{Anchor, Block, CalloutKind, Inline, Section, Span, TableCell, find_footnote};
 pub use metadata::Metadata;
+pub use status::ReadingStatus;
 pub use toc::{OutlineItem, TocEntry};
