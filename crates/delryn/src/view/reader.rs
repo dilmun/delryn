@@ -332,20 +332,22 @@ fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize) {
         let x = (area.width.saturating_sub(plan.cols) / 2) as i16;
         let y = start as i16 - top as i16; // negative when the top scrolled off
 
-        // Skip an image whose *left edge* an open popup covers: the kitty protocol
-        // keeps each row's placeholder in its first cell, so a clobbered left edge
-        // kills the image and its right side leaks through as a black box. Images
-        // whose left edge is clear render fine — the opaque popup just draws over
-        // their covered portion.
+        // Terminal graphics draw *above* the text layer, so an inline image that
+        // overlaps an open popup would paint over it. Skip any image whose cell
+        // rect intersects the overlay region; images entirely clear of it still
+        // render (the popup just sits beside them).
         if let Some(o) = reader.overlay_occlude {
-            let left = area.x.saturating_add(x.max(0) as u16);
-            let vis_top = area.y.saturating_add(y.max(0) as u16);
-            let vis_bottom = area
+            let img_left = area.x.saturating_add(x.max(0) as u16);
+            let img_right = area
+                .x
+                .saturating_add((x + plan.cols as i16).clamp(0, area.width as i16) as u16);
+            let img_top = area.y.saturating_add(y.max(0) as u16);
+            let img_bottom = area
                 .y
                 .saturating_add((y + plan.rows as i16).clamp(0, area.height as i16) as u16);
-            let x_in = left >= o.x && left < o.right();
-            let y_overlap = vis_top < o.bottom() && vis_bottom > o.y;
-            if x_in && y_overlap {
+            let h_overlap = img_left < o.right() && img_right > o.x;
+            let v_overlap = img_top < o.bottom() && img_bottom > o.y;
+            if h_overlap && v_overlap {
                 continue;
             }
         }
