@@ -2,7 +2,7 @@
 //! rendered large and centered, and its details. See `DESIGN.md` §18.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -115,22 +115,46 @@ pub fn render(f: &mut Frame, app: &mut App) {
         f.render_stateful_widget(list, sidebar, &mut st);
     }
 
-    let rrows = Layout::vertical([Constraint::Min(0), Constraint::Length(5)]).split(right);
-    let (img_box, detail_area) = (rrows[0], rrows[1]);
-
     // Read the selected figure's details before the mutable proto build.
     let (dims, caption, name, section) = match viewer.current() {
         Some(fig) => (fig.dims, fig.caption.clone(), fig.name.clone(), fig.section),
         None => (None, String::new(), String::new(), 0),
     };
 
+    // Compose the image + its details as one block, centered in the right pane
+    // with equal padding; the image scales (up or down) to fill the space above
+    // the details, and the whole group is centered vertically.
+    let avail = inset(right, 2);
+    const DETAIL_H: u16 = 3;
+    const GAP: u16 = 1;
+    let img_space_h = avail.height.saturating_sub(DETAIL_H + GAP);
+    let (iw, ih) = match dims {
+        Some(d) => fit_size(avail.width, img_space_h, d, font),
+        None => (avail.width.min(24), 1),
+    };
+    let group_h = (ih + GAP + DETAIL_H).min(avail.height);
+    let top = avail.y + avail.height.saturating_sub(group_h) / 2;
+    let img_rect = Rect {
+        x: avail.x + avail.width.saturating_sub(iw) / 2,
+        y: top,
+        width: iw,
+        height: ih,
+    };
+    let detail_rect = Rect {
+        x: avail.x,
+        y: img_rect.y.saturating_add(ih + GAP),
+        width: avail.width,
+        height: DETAIL_H,
+    };
+
+    // Details, centered under the image: chapter + dimensions, then the caption.
     let mut meta: Vec<Span> = vec![Span::styled(
         format!("Chapter: {}", chapter_title(section)),
         Style::default().fg(theme.heading),
     )];
     if let Some((w, h)) = dims {
         meta.push(Span::styled(
-            format!("    {w}×{h}px"),
+            format!("   {w}×{h}px"),
             Style::default().fg(theme.muted),
         ));
     }
@@ -144,19 +168,21 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     f.render_widget(
         Paragraph::new(dlines)
+            .alignment(Alignment::Center)
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(theme.fg).bg(bg)),
-        detail_area,
+        detail_rect,
     );
 
-    // The image: centered to its fitted size with equal padding all round.
-    let widget = StatefulImage::default().resize(Resize::Fit(None));
-    let target = match dims {
-        Some(d) => centered_fit(inset(img_box, 1), d, font),
-        None => inset(img_box, 1),
-    };
-    if let Some(proto) = viewer.ensure_proto(picker, policy) {
-        f.render_stateful_widget(widget, target, proto);
+    // The image: Scale fills the slot (it upscales small figures; Fit would not).
+    if dims.is_some()
+        && let Some(proto) = viewer.ensure_proto(picker, policy)
+    {
+        f.render_stateful_widget(
+            StatefulImage::default().resize(Resize::Scale(None)),
+            img_rect,
+            proto,
+        );
     }
 }
 
@@ -170,21 +196,16 @@ fn inset(r: Rect, m: u16) -> Rect {
     }
 }
 
-/// A rect sized to the image's fitted dimensions, centered in `area` (so the
-/// padding is equal on all sides), given the terminal's pixels-per-cell `font`.
-fn centered_fit(area: Rect, dims: (u32, u32), font: FontSize) -> Rect {
-    if area.width == 0 || area.height == 0 {
-        return area;
+/// The cell size an image scales to within `aw`×`ah` cells, preserving aspect
+/// (up or down), given the terminal's pixels-per-cell `font`.
+fn fit_size(aw: u16, ah: u16, dims: (u32, u32), font: FontSize) -> (u16, u16) {
+    if aw == 0 || ah == 0 {
+        return (aw.max(1), ah.max(1));
     }
     let (iw, ih) = (dims.0.max(1) as f32, dims.1.max(1) as f32);
     let (fw, fh) = (font.width.max(1) as f32, font.height.max(1) as f32);
-    let scale = ((area.width as f32 * fw) / iw).min((area.height as f32 * fh) / ih);
-    let cols = (((iw * scale) / fw).round() as u16).clamp(1, area.width);
-    let rows = (((ih * scale) / fh).round() as u16).clamp(1, area.height);
-    Rect {
-        x: area.x + area.width.saturating_sub(cols) / 2,
-        y: area.y + area.height.saturating_sub(rows) / 2,
-        width: cols,
-        height: rows,
-    }
+    let scale = ((aw as f32 * fw) / iw).min((ah as f32 * fh) / ih);
+    let cols = (((iw * scale) / fw).round() as u16).clamp(1, aw);
+    let rows = (((ih * scale) / fh).round() as u16).clamp(1, ah);
+    (cols, rows)
 }
