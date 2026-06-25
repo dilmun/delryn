@@ -469,6 +469,22 @@ fn first_code(blocks: &[Block]) -> Option<&[String]> {
 }
 
 #[test]
+fn parses_authored_image_width() {
+    // Inline CSS `width` wins over the presentational attribute; `max-width` /
+    // `min-width` are ignored (they bound but don't set the size).
+    match parse_img_width(Some("999"), Some("max-width:100%; width:60%")) {
+        ImageWidth::Pct(p) => assert!((p - 0.6).abs() < 1e-6, "got {p}"),
+        other => panic!("expected Pct(0.6), got {other:?}"),
+    }
+    // The pixel `width` attribute when there's no CSS (bare number or `px`).
+    assert_eq!(parse_img_width(Some("480"), None), ImageWidth::Px(480));
+    assert_eq!(parse_img_width(Some("480px"), None), ImageWidth::Px(480));
+    // Context-dependent units and absent sizes fall back to Auto (normalized).
+    assert_eq!(parse_img_width(Some("3em"), None), ImageWidth::Auto);
+    assert_eq!(parse_img_width(None, None), ImageWidth::Auto);
+}
+
+#[test]
 fn icon_images_become_glyphs_not_labels() {
     // Dummies-style marker icons render as a symbol, not "[tip]"/"[check]".
     let blocks = parse_blocks(

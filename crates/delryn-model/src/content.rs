@@ -115,6 +115,21 @@ impl CalloutKind {
     }
 }
 
+/// The authored display width of an image, as recovered from the `<img>` markup.
+/// Reflowable EPUBs express the *intended* size in CSS/HTML (rarely matching the
+/// file's pixel resolution), so renderers size figures from this rather than from
+/// raw pixels — falling back to a normalized default when it's [`ImageWidth::Auto`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ImageWidth {
+    /// No authored size — the renderer applies its default normalization.
+    #[default]
+    Auto,
+    /// A fraction of the containing column (from a CSS/HTML percentage), 0.0–1.0.
+    Pct(f32),
+    /// An absolute width in CSS pixels (from a px `width` attribute / CSS px).
+    Px(u32),
+}
+
 /// A reflowable content block. The layout pass wraps these to the pane width.
 ///
 /// Beyond the basic prose blocks, the model carries *technical* content —
@@ -169,12 +184,15 @@ pub enum Block {
     /// the figure caption, empty when there is none. `math` marks an image that
     /// is really display math (an equation rendered as a picture, alt = Unicode
     /// fallback) rather than a content figure — so the figure viewer can skip it.
+    /// `width` is the authored display size (from the `<img>` width / CSS), used
+    /// to size the figure faithfully; [`ImageWidth::Auto`] when unspecified.
     Image {
         src: String,
         alt: String,
         data: Vec<u8>,
         caption: Vec<Span>,
         math: bool,
+        width: ImageWidth,
     },
     /// Horizontal rule.
     Rule,

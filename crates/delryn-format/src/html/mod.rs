@@ -5,7 +5,7 @@
 use ego_tree::NodeRef;
 use scraper::{Html, Node};
 
-use super::{Anchor, Block, CalloutKind, Inline, Span, TableCell};
+use super::{Anchor, Block, CalloutKind, ImageWidth, Inline, Span, TableCell};
 
 mod callout;
 mod code;
@@ -213,6 +213,8 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             data: Vec::new(),
             caption: Vec::new(),
             math: true,
+            // Equation images render at native size, so the authored width is moot.
+            width: ImageWidth::Auto,
         }),
         ElementRole::CodeBlock => {
             let lines = strip_line_numbers(trim_blank_edges(code_lines(node).into_iter()));
@@ -272,6 +274,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             data: Vec::new(),
             caption: Vec::new(),
             math: false,
+            width: parse_img_width(e.attr("width"), e.attr("style")),
         }),
         ElementRole::AsideIconTable(kind) => {
             let mut content = Vec::new();
@@ -302,6 +305,49 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             };
             walk_children(node, &c, out);
         }
+    }
+}
+
+/// The authored display width of an `<img>`, from its inline CSS `width` (which
+/// wins) or its presentational `width` attribute. This is the publisher's
+/// *intended* size; the renderer prefers it over the file's pixel resolution.
+fn parse_img_width(width_attr: Option<&str>, style_attr: Option<&str>) -> ImageWidth {
+    if let Some(style) = style_attr
+        && let Some(w) = css_width(style)
+    {
+        return w;
+    }
+    width_attr.map(parse_len).unwrap_or(ImageWidth::Auto)
+}
+
+/// Pull the `width` declaration out of an inline `style`, ignoring `max-width` /
+/// `min-width` (those bound but don't set the size).
+fn css_width(style: &str) -> Option<ImageWidth> {
+    for decl in style.to_ascii_lowercase().split(';') {
+        if let Some(val) = decl.trim().strip_prefix("width")
+            && let Some(val) = val.trim_start().strip_prefix(':')
+        {
+            return Some(parse_len(val));
+        }
+    }
+    None
+}
+
+/// Parse a CSS/HTML length: `80%` → a column fraction, `600`/`600px` → pixels.
+/// Other units (em/pt/…) are too context-dependent to map reliably, so they fall
+/// back to [`ImageWidth::Auto`] (normalized like an unsized image).
+fn parse_len(s: &str) -> ImageWidth {
+    let s = s.trim();
+    if let Some(pct) = s
+        .strip_suffix('%')
+        .and_then(|n| n.trim().parse::<f32>().ok())
+    {
+        return ImageWidth::Pct((pct / 100.0).clamp(0.0, 1.0));
+    }
+    let n = s.strip_suffix("px").unwrap_or(s).trim();
+    match n.parse::<f32>() {
+        Ok(px) if px > 0.0 => ImageWidth::Px(px.round() as u32),
+        _ => ImageWidth::Auto,
     }
 }
 

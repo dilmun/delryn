@@ -243,6 +243,7 @@ fn render_column(
             text_area.width,
             text_area.height.max(1),
             config.image_max_px,
+            config.image_width_pct,
             image_policy(config),
         );
     }
@@ -397,6 +398,7 @@ fn render_two_page(
             col_w,
             h.max(1) as u16,
             config.image_max_px,
+            config.image_width_pct,
             image_policy(config),
         );
     }
