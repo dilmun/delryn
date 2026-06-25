@@ -2,7 +2,7 @@
 //! rendered large and centered, and its details. See `DESIGN.md` §18.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -14,10 +14,6 @@ use crate::app::App;
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
-    let policy = crate::media::RenderPolicy {
-        tint: super::theme_ink(theme),
-        mode: app.config.image_mode,
-    };
     // Disjoint field borrows: picker (read), viewer (mutate to build the proto),
     // reader (chapter titles).
     let App {
@@ -61,64 +57,72 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let cols = Layout::horizontal([
-        Constraint::Length(34),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .split(inner);
-    let (sidebar, right) = (cols[0], cols[2]);
+    // Responsive: the figure list takes ~30% of the width and collapses on a
+    // narrow screen so the figure keeps the room (shared app-standard split).
+    let (sidebar, right) = super::sidebar_split(inner, 30, 24, 40, 64);
 
-    let chapter_title = |sec: usize| -> String {
-        reader
+    // The book's own chapter label, made presentable: a bare number gets a
+    // "Chapter " prefix; a label that already names the chapter is shown as-is
+    // (so we never double "Chapter Chapter 7").
+    let chapter_label = |sec: usize| -> String {
+        let label = reader
             .and_then(|r| {
                 r.outline
                     .iter()
                     .find(|e| e.section == sec)
                     .map(|e| e.label.clone())
             })
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| format!("§{}", sec + 1))
+            .unwrap_or_default();
+        let t = label.trim();
+        if t.is_empty() {
+            format!("§{}", sec + 1)
+        } else if t.chars().all(|c| c.is_ascii_digit()) {
+            format!("Chapter {t}")
+        } else {
+            t.to_string()
+        }
     };
 
-    // Sidebar: the filtered figure list (immutable borrow of the viewer).
-    if viewer.is_empty() {
-        f.render_widget(
-            Paragraph::new(Line::styled(
-                "  No figures.",
-                Style::default().fg(theme.muted),
-            )),
-            sidebar,
-        );
-    } else {
-        let items: Vec<ListItem> = viewer
-            .visible()
-            .map(|(_, fig)| {
-                Line::from(vec![
-                    Span::styled(
-                        format!("§{} ", fig.section + 1),
-                        Style::default().fg(theme.muted),
-                    ),
-                    Span::styled(fig.name.clone(), Style::default().fg(theme.fg)),
-                ])
-                .into()
-            })
-            .collect();
-        let list = List::new(items).highlight_style(
-            Style::default()
-                .fg(theme.on_accent())
-                .bg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        );
-        let mut st = ListState::default();
-        st.select(Some(viewer.sel));
-        f.render_stateful_widget(list, sidebar, &mut st);
+    // Sidebar: the filtered figure list (skipped when collapsed on a narrow pane).
+    if let Some(sidebar) = sidebar {
+        if viewer.is_empty() {
+            f.render_widget(
+                Paragraph::new(Line::styled(
+                    "  No figures.",
+                    Style::default().fg(theme.muted),
+                )),
+                sidebar,
+            );
+        } else {
+            let items: Vec<ListItem> = viewer
+                .visible()
+                .map(|(_, fig)| {
+                    Line::from(vec![
+                        Span::styled(
+                            format!("§{} ", fig.section + 1),
+                            Style::default().fg(theme.muted),
+                        ),
+                        Span::styled(fig.name.clone(), Style::default().fg(theme.fg)),
+                    ])
+                    .into()
+                })
+                .collect();
+            let list = List::new(items).highlight_style(
+                Style::default()
+                    .fg(theme.on_accent())
+                    .bg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            );
+            let mut st = ListState::default();
+            st.select(Some(viewer.sel));
+            f.render_stateful_widget(list, sidebar, &mut st);
+        }
     }
 
     // Read the selected figure's details before the mutable proto build.
-    let (dims, caption, name, section) = match viewer.current() {
-        Some(fig) => (fig.dims, fig.caption.clone(), fig.name.clone(), fig.section),
-        None => (None, String::new(), String::new(), 0),
+    let (dims, caption, section) = match viewer.current() {
+        Some(fig) => (fig.dims, fig.caption.clone(), fig.section),
+        None => (None, String::new(), 0),
     };
 
     // Compose the image + its details as one block, centered in the right pane
@@ -147,9 +151,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
         height: DETAIL_H,
     };
 
-    // Details, centered under the image: chapter + dimensions, then the caption.
+    // Details, centered under the image: chapter + dimensions, then the caption
+    // (only when the figure actually has one — no synthetic "Figure N").
     let mut meta: Vec<Span> = vec![Span::styled(
-        format!("Chapter: {}", chapter_title(section)),
+        chapter_label(section),
         Style::default().fg(theme.heading),
     )];
     if let Some((w, h)) = dims {
@@ -159,10 +164,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ));
     }
     let mut dlines = vec![Line::from(meta)];
-    let body = if caption.is_empty() { name } else { caption };
-    if !body.is_empty() {
+    if !caption.is_empty() {
         dlines.push(Line::from(Span::styled(
-            body,
+            caption,
             Style::default().fg(theme.fg),
         )));
     }
@@ -176,7 +180,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     // The image: Scale fills the slot (it upscales small figures; Fit would not).
     if dims.is_some()
-        && let Some(proto) = viewer.ensure_proto(picker, policy)
+        && let Some(proto) = viewer.ensure_proto(picker)
     {
         f.render_stateful_widget(
             StatefulImage::default().resize(Resize::Scale(None)),

@@ -14,7 +14,7 @@ pub mod stats;
 pub mod status;
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 
 use crate::app::{App, Mode};
 
@@ -88,6 +88,33 @@ fn overlay_occlusion(area: Rect, app: &App) -> Option<Rect> {
         return Some(centered(area, 74, 20));
     }
     None
+}
+
+/// The app's standard responsive sidebar split. The sidebar takes `pct`% of the
+/// width, clamped to `[min, max]` cells; below `collapse_below` columns it
+/// collapses (returns `None`) so the main pane keeps the room. A one-cell gap
+/// separates the two. Every multi-pane view uses this so layouts stay consistent
+/// and reflow with the window.
+pub fn sidebar_split(
+    area: Rect,
+    pct: u16,
+    min: u16,
+    max: u16,
+    collapse_below: u16,
+) -> (Option<Rect>, Rect) {
+    if area.width < collapse_below {
+        return (None, area);
+    }
+    let want = (area.width.saturating_mul(pct) / 100).clamp(min, max);
+    // Always leave the main pane at least half the width.
+    let w = want.min(area.width / 2);
+    let cols = Layout::horizontal([
+        Constraint::Length(w),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(area);
+    (Some(cols[0]), cols[2])
 }
 
 /// A centered rect of at most `w`×`h`, clamped to `area` (shared by the popups).
