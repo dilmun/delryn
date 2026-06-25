@@ -75,6 +75,103 @@ impl ViewMode {
     }
 }
 
+/// A reading-experience preset: a named bundle of layout / chrome / flow
+/// settings. `Custom` is the derived state when the live settings match no
+/// preset (e.g. after the reader has tweaked an individual setting).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadingMode {
+    Custom,
+    Study,
+    Research,
+    Presentation,
+}
+
+/// The reading settings a preset bundles. Every preset fixes all of these, so a
+/// live config can be compared field-for-field to recognise the active preset.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ReadingProfile {
+    view_mode: ViewMode,
+    side_padding: u16,
+    line_spacing: u8,
+    paragraph_spacing: u8,
+    show_sidebar: bool,
+    show_status: bool,
+    chapter_lock: bool,
+    paged: bool,
+}
+
+impl ReadingMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            ReadingMode::Custom => "custom",
+            ReadingMode::Study => "study",
+            ReadingMode::Research => "research",
+            ReadingMode::Presentation => "presentation",
+        }
+    }
+
+    /// Next/previous *applyable* preset. Cycles through the three real presets;
+    /// from `Custom` it enters the cycle rather than landing back on `Custom`.
+    pub fn next(self) -> Self {
+        match self {
+            ReadingMode::Custom | ReadingMode::Presentation => ReadingMode::Study,
+            ReadingMode::Study => ReadingMode::Research,
+            ReadingMode::Research => ReadingMode::Presentation,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            ReadingMode::Custom | ReadingMode::Study => ReadingMode::Presentation,
+            ReadingMode::Research => ReadingMode::Study,
+            ReadingMode::Presentation => ReadingMode::Research,
+        }
+    }
+
+    /// The settings this preset stands for (`None` for `Custom`).
+    fn profile(self) -> Option<ReadingProfile> {
+        let p = match self {
+            ReadingMode::Custom => return None,
+            // Deep, careful reading of one chapter: comfortable centered column,
+            // navigation + progress visible, stay put in the chapter.
+            ReadingMode::Study => ReadingProfile {
+                view_mode: ViewMode::Center,
+                side_padding: 10,
+                line_spacing: 1,
+                paragraph_spacing: 1,
+                show_sidebar: true,
+                show_status: true,
+                chapter_lock: true,
+                paged: false,
+            },
+            // Scanning / cross-referencing across the whole book: dense, full-width,
+            // flows freely between chapters.
+            ReadingMode::Research => ReadingProfile {
+                view_mode: ViewMode::Fill,
+                side_padding: 4,
+                line_spacing: 0,
+                paragraph_spacing: 1,
+                show_sidebar: true,
+                show_status: true,
+                chapter_lock: false,
+                paged: false,
+            },
+            // Distraction-free, slide-like: wide airy column, no chrome, page flips.
+            ReadingMode::Presentation => ReadingProfile {
+                view_mode: ViewMode::Center,
+                side_padding: 18,
+                line_spacing: 1,
+                paragraph_spacing: 2,
+                show_sidebar: false,
+                show_status: false,
+                chapter_lock: false,
+                paged: true,
+            },
+        };
+        Some(p)
+    }
+}
+
 /// How the library lists books: a metadata table, a dense table, or a cover grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibLayout {
@@ -363,6 +460,44 @@ fn config_path() -> std::path::PathBuf {
 }
 
 impl Config {
+    /// The preset the live reading settings correspond to, or `Custom` when they
+    /// match none (derived, so it stays honest after any individual tweak).
+    pub fn reading_mode(&self) -> ReadingMode {
+        let current = ReadingProfile {
+            view_mode: self.view_mode,
+            side_padding: self.side_padding,
+            line_spacing: self.line_spacing,
+            paragraph_spacing: self.paragraph_spacing,
+            show_sidebar: self.show_sidebar,
+            show_status: self.show_status,
+            chapter_lock: self.chapter_lock,
+            paged: self.paged,
+        };
+        [
+            ReadingMode::Study,
+            ReadingMode::Research,
+            ReadingMode::Presentation,
+        ]
+        .into_iter()
+        .find(|m| m.profile() == Some(current))
+        .unwrap_or(ReadingMode::Custom)
+    }
+
+    /// Apply a reading-mode preset to the live settings (a no-op for `Custom`).
+    pub fn apply_reading_mode(&mut self, mode: ReadingMode) {
+        let Some(p) = mode.profile() else {
+            return;
+        };
+        self.view_mode = p.view_mode;
+        self.side_padding = p.side_padding;
+        self.line_spacing = p.line_spacing;
+        self.paragraph_spacing = p.paragraph_spacing;
+        self.show_sidebar = p.show_sidebar;
+        self.show_status = p.show_status;
+        self.chapter_lock = p.chapter_lock;
+        self.paged = p.paged;
+    }
+
     /// Load global defaults from `config.toml`, falling back to built-ins.
     pub fn load() -> Config {
         let mut c = Config::default();
@@ -424,5 +559,46 @@ impl Config {
         if let Ok(text) = toml::to_string_pretty(&cf) {
             let _ = std::fs::write(path, text);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reading_mode_apply_and_derive() {
+        let mut c = Config::default();
+        // The built-in defaults are not a preset.
+        assert_eq!(c.reading_mode(), ReadingMode::Custom);
+
+        // Applying a preset sets its fields and is then recognised.
+        c.apply_reading_mode(ReadingMode::Study);
+        assert_eq!(c.reading_mode(), ReadingMode::Study);
+        assert_eq!(c.view_mode, ViewMode::Center);
+        assert!(c.chapter_lock);
+
+        c.apply_reading_mode(ReadingMode::Presentation);
+        assert_eq!(c.reading_mode(), ReadingMode::Presentation);
+        assert!(c.paged && !c.show_sidebar && !c.show_status);
+
+        // A manual tweak drops the derived mode back to Custom (stays honest).
+        c.side_padding += 1;
+        assert_eq!(c.reading_mode(), ReadingMode::Custom);
+
+        // Custom is a no-op to apply.
+        let before = c.side_padding;
+        c.apply_reading_mode(ReadingMode::Custom);
+        assert_eq!(c.side_padding, before);
+    }
+
+    #[test]
+    fn reading_mode_cycles_through_presets_only() {
+        // next() never lands on Custom; from Custom it enters the cycle.
+        assert_eq!(ReadingMode::Custom.next(), ReadingMode::Study);
+        assert_eq!(ReadingMode::Study.next(), ReadingMode::Research);
+        assert_eq!(ReadingMode::Research.next(), ReadingMode::Presentation);
+        assert_eq!(ReadingMode::Presentation.next(), ReadingMode::Study);
+        assert_eq!(ReadingMode::Custom.prev(), ReadingMode::Presentation);
     }
 }

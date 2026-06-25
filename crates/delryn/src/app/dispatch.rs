@@ -372,6 +372,12 @@ impl App {
                 self.config.theme = self.config.theme.next();
                 save = true;
             }
+            Action::CycleReadingMode => {
+                let mode = self.config.reading_mode().next();
+                self.config.apply_reading_mode(mode);
+                reader.flash = Some(format!("mode: {}", mode.label()));
+                save = true;
+            }
             Action::ToggleFocus => self.config.focus_mode = !self.config.focus_mode,
             // `]` widens the text (less margin), `[` narrows it (more margin).
             Action::WidthUp => {
