@@ -232,7 +232,7 @@ pub(crate) fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Them
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(border)
-            .title(Span::styled("Preview", Style::default().fg(theme.muted)))
+            .title(Span::styled(" Preview ", Style::default().fg(theme.muted)))
             .style(theme.text_style());
         let pinner = block.inner(pane);
         f.render_widget(block, pane);

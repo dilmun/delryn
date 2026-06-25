@@ -86,7 +86,9 @@ fn pane_block(title: &str, focused: bool, theme: Theme) -> Block<'static> {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border))
-        .title(Span::styled(title.to_string(), title_style))
+        // Pad the title so the border never touches the text (app-standard, like
+        // the image viewer's " Figures " title).
+        .title(Span::styled(format!(" {title} "), title_style))
         .style(theme.text_style())
 }
 
