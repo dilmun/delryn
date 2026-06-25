@@ -90,31 +90,60 @@ fn overlay_occlusion(area: Rect, app: &App) -> Option<Rect> {
     None
 }
 
-/// The app's standard responsive sidebar split. The sidebar takes `pct`% of the
-/// width, clamped to `[min, max]` cells; below `collapse_below` columns it
-/// collapses (returns `None`) so the main pane keeps the room. A one-cell gap
-/// separates the two. Every multi-pane view uses this so layouts stay consistent
-/// and reflow with the window.
+/// The width a side pane should take in `area_w` columns — `pct`% clamped to
+/// `[min, max]` cells — or `None` if it should collapse because it wouldn't leave
+/// the main pane at least `min_main` columns (plus a 1-cell gap). The single
+/// responsive rule shared by every multi-pane view.
+fn side_width(area_w: u16, pct: u16, min: u16, max: u16, min_main: u16) -> Option<u16> {
+    let want = (area_w.saturating_mul(pct) / 100).clamp(min, max);
+    (area_w >= want + 1 + min_main).then_some(want)
+}
+
+/// Standard responsive split with a **left** sidebar: `(sidebar, main)`. The
+/// sidebar collapses (→ `None`, main takes all) when the window is too narrow to
+/// keep `min_main` columns for the main pane.
 pub fn sidebar_split(
     area: Rect,
     pct: u16,
     min: u16,
     max: u16,
-    collapse_below: u16,
+    min_main: u16,
 ) -> (Option<Rect>, Rect) {
-    if area.width < collapse_below {
-        return (None, area);
+    match side_width(area.width, pct, min, max, min_main) {
+        Some(w) => {
+            let cols = Layout::horizontal([
+                Constraint::Length(w),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(area);
+            (Some(cols[0]), cols[2])
+        }
+        None => (None, area),
     }
-    let want = (area.width.saturating_mul(pct) / 100).clamp(min, max);
-    // Always leave the main pane at least half the width.
-    let w = want.min(area.width / 2);
-    let cols = Layout::horizontal([
-        Constraint::Length(w),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .split(area);
-    (Some(cols[0]), cols[2])
+}
+
+/// Standard responsive split with a **right** pane (e.g. a detail/preview):
+/// `(main, side)`. Mirrors [`sidebar_split`]; same collapse rule.
+pub fn detail_split(
+    area: Rect,
+    pct: u16,
+    min: u16,
+    max: u16,
+    min_main: u16,
+) -> (Rect, Option<Rect>) {
+    match side_width(area.width, pct, min, max, min_main) {
+        Some(w) => {
+            let cols = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(w),
+            ])
+            .split(area);
+            (cols[0], Some(cols[2]))
+        }
+        None => (area, None),
+    }
 }
 
 /// A centered rect of at most `w`×`h`, clamped to `area` (shared by the popups).

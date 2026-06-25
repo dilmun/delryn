@@ -156,9 +156,10 @@ pub struct App {
     pub lib_pane: LibPane,
     /// Show the sections/collections sidebar.
     pub lib_show_sidebar: bool,
-    /// Sidebar / detail pane widths (resizable with `[` `]`).
-    pub lib_sidebar_w: u16,
-    pub lib_detail_w: u16,
+    /// Sidebar / detail pane widths as a percentage of the window (resizable
+    /// with `<`/`>`); the responsive split clamps and collapses them per window.
+    pub lib_sidebar_pct: u16,
+    pub lib_detail_pct: u16,
     /// Cached (collection name, book count), refreshed with the book list.
     pub lib_shelves: Vec<(String, usize)>,
     pub lib_books: Vec<BookRow>,
@@ -361,8 +362,8 @@ impl App {
             lib_view: LibView::Section(LibrarySection::All),
             lib_pane: LibPane::List,
             lib_show_sidebar: true,
-            lib_sidebar_w: 24,
-            lib_detail_w: 36,
+            lib_sidebar_pct: 20,
+            lib_detail_pct: 30,
             lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
@@ -427,8 +428,8 @@ impl App {
             lib_view: LibView::Section(LibrarySection::All),
             lib_pane: LibPane::List,
             lib_show_sidebar: true,
-            lib_sidebar_w: 24,
-            lib_detail_w: 36,
+            lib_sidebar_pct: 20,
+            lib_detail_pct: 30,
             lib_shelves: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
@@ -714,17 +715,17 @@ mod tests {
         // Resize the sidebar (focus it first).
         app.on_key(key('h'));
         assert_eq!(app.lib_pane, LibPane::Sidebar);
-        let w0 = app.lib_sidebar_w;
+        let w0 = app.lib_sidebar_pct;
         app.on_key(key('>'));
-        assert_eq!(app.lib_sidebar_w, w0 + 2);
+        assert_eq!(app.lib_sidebar_pct, w0 + 2);
         app.on_key(key('<'));
-        assert_eq!(app.lib_sidebar_w, w0);
+        assert_eq!(app.lib_sidebar_pct, w0);
         for _ in 0..40 {
             app.on_key(key('<'));
         }
         assert_eq!(
-            app.lib_sidebar_w,
-            library::SIDEBAR_W_MIN,
+            app.lib_sidebar_pct,
+            library::SIDEBAR_PCT_MIN,
             "clamped at the minimum"
         );
 

@@ -65,7 +65,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // The TOC sidebar uses the shared responsive split (~33% of the width,
     // collapsing on a narrow window so the text keeps the room).
     let (sidebar_area, content_area) = if show_sidebar {
-        super::sidebar_split(body, 33, 16, 32, 50)
+        super::sidebar_split(body, 33, 16, 32, 40)
     } else {
         (None, body)
     };

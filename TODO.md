@@ -126,10 +126,12 @@ jump-by-type + a reader cursor.
       **details** (book chapter label + dimensions) + caption, **jump to the
       figure** (⏎ → `jump_to_image`), **filter** (`/`), **save** (`s`), chapter↔
       **whole-book** scope (`w`). *Still: zoom (fit↔actual) + pan (SlicedImage).*
-- [~] **Responsive layout standard**: shared `view::sidebar_split` (percentage
-      width, clamped, collapses on a narrow window). Applied to the image viewer
-      and reader TOC sidebar. *Still: convert the library's resizable panes
-      (sidebar/detail) from fixed cells to the same percentage model + collapse.*
+- [x] **Responsive layout standard**: shared `view::sidebar_split` / `detail_split`
+      (percentage width, clamped to cell bounds, collapse when the main pane would
+      drop below a minimum — one `side_width` rule). Used by the reader TOC
+      sidebar, the image viewer, and the library (sidebar + detail), whose panes
+      are now percentage-based — `<`/`>` adjust the percentage so they scale with
+      the window. Any future multi-pane view uses the same helpers.
 
 ## Phase 3 — Library platform
 
