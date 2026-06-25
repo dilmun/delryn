@@ -98,9 +98,10 @@ jump-by-type + a reader cursor.
       "Page mode"; vertical nav flips whole pages snapped to boundaries, status
       shows "p N/M"), Focus, chapter-lock, Center/Fill/TwoPage layouts, and
       **presets** — Study / Research / Presentation (`M` cycles, or Settings →
-      Profile → "Reading mode"). Each bundles view + padding + spacing + sidebar
-      + status + chapter-lock + paged; the active preset is *derived* from the
-      live settings (shows "custom" once any are hand-tweaked, so it never lies).
+      Profile → "Reading mode"). Each bundles padding + spacing + sidebar +
+      status + chapter-lock + paged (deliberately *not* view layout — that's the
+      reader's choice); the active preset is *derived* from the live settings
+      (shows "custom" once any are hand-tweaked, so it never lies).
 - [~] Pagination models: continuous + **virtual pages** (page mode, snapped to
       `page_lines`, flows across chapters at edges). *Still: book pages (PDF).*
 - [x] Navigation: reading history + back/forward, **jump-by-type** (`w`/`b` cycle

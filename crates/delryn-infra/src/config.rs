@@ -88,9 +88,10 @@ pub enum ReadingMode {
 
 /// The reading settings a preset bundles. Every preset fixes all of these, so a
 /// live config can be compared field-for-field to recognise the active preset.
+/// Deliberately excludes `view_mode` (Center/Fill/TwoPage): the page layout is a
+/// personal choice a preset shouldn't yank out from under the reader.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ReadingProfile {
-    view_mode: ViewMode,
     side_padding: u16,
     line_spacing: u8,
     paragraph_spacing: u8,
@@ -132,10 +133,9 @@ impl ReadingMode {
     fn profile(self) -> Option<ReadingProfile> {
         let p = match self {
             ReadingMode::Custom => return None,
-            // Deep, careful reading of one chapter: comfortable centered column,
+            // Deep, careful reading of one chapter: comfortable margins + spacing,
             // navigation + progress visible, stay put in the chapter.
             ReadingMode::Study => ReadingProfile {
-                view_mode: ViewMode::Center,
                 side_padding: 10,
                 line_spacing: 1,
                 paragraph_spacing: 1,
@@ -144,10 +144,9 @@ impl ReadingMode {
                 chapter_lock: true,
                 paged: false,
             },
-            // Scanning / cross-referencing across the whole book: dense, full-width,
-            // flows freely between chapters.
+            // Scanning / cross-referencing across the whole book: denser and a
+            // touch wider than default, flows freely between chapters.
             ReadingMode::Research => ReadingProfile {
-                view_mode: ViewMode::Fill,
                 side_padding: 4,
                 line_spacing: 0,
                 paragraph_spacing: 1,
@@ -156,9 +155,8 @@ impl ReadingMode {
                 chapter_lock: false,
                 paged: false,
             },
-            // Distraction-free, slide-like: wide airy column, no chrome, page flips.
+            // Distraction-free, slide-like: wide airy margins, no chrome, page flips.
             ReadingMode::Presentation => ReadingProfile {
-                view_mode: ViewMode::Center,
                 side_padding: 18,
                 line_spacing: 1,
                 paragraph_spacing: 2,
@@ -464,7 +462,6 @@ impl Config {
     /// match none (derived, so it stays honest after any individual tweak).
     pub fn reading_mode(&self) -> ReadingMode {
         let current = ReadingProfile {
-            view_mode: self.view_mode,
             side_padding: self.side_padding,
             line_spacing: self.line_spacing,
             paragraph_spacing: self.paragraph_spacing,
@@ -488,7 +485,6 @@ impl Config {
         let Some(p) = mode.profile() else {
             return;
         };
-        self.view_mode = p.view_mode;
         self.side_padding = p.side_padding;
         self.line_spacing = p.line_spacing;
         self.paragraph_spacing = p.paragraph_spacing;
@@ -575,8 +571,14 @@ mod tests {
         // Applying a preset sets its fields and is then recognised.
         c.apply_reading_mode(ReadingMode::Study);
         assert_eq!(c.reading_mode(), ReadingMode::Study);
-        assert_eq!(c.view_mode, ViewMode::Center);
         assert!(c.chapter_lock);
+
+        // Presets leave the page layout (view_mode) untouched — it's the reader's
+        // choice, not something a preset should override.
+        c.view_mode = ViewMode::TwoPage;
+        c.apply_reading_mode(ReadingMode::Research);
+        assert_eq!(c.view_mode, ViewMode::TwoPage);
+        assert_eq!(c.reading_mode(), ReadingMode::Research);
 
         c.apply_reading_mode(ReadingMode::Presentation);
         assert_eq!(c.reading_mode(), ReadingMode::Presentation);
