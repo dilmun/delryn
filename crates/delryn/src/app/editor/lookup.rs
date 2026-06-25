@@ -26,6 +26,9 @@ impl App {
             .join(" ");
         ed.lookup.name = name;
         ed.lookup.author = author1;
+        // Year seeds from the book; ISBN stays inactive until the field is focused.
+        ed.lookup.year = ed.values.get(2).cloned().unwrap_or_default();
+        ed.lookup.isbn.clear();
         ed.lookup.focus = 0;
         ed.lookup.editing = false;
         // Drop stale results so the tab re-searches the new seed on entry.
@@ -67,9 +70,14 @@ impl App {
         }
     }
 
-    /// Move the Lookup focus and keep the results' selected row in sync.
+    /// Move the Lookup focus and keep the results' selected row in sync. Selecting
+    /// the (empty) ISBN field auto-fills it from the book's own ISBN, so an exact
+    /// lookup is one keystroke away.
     fn lookup_set_focus(&mut self, focus: usize) {
         if let Some(e) = self.meta_edit.as_mut() {
+            if focus == LOOKUP_ISBN && e.lookup.isbn.trim().is_empty() {
+                e.lookup.isbn = e.values.get(7).cloned().unwrap_or_default();
+            }
             e.lookup.focus = focus;
             e.online.row = focus.saturating_sub(LOOKUP_FIELDS);
         }
