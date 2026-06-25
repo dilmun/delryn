@@ -120,6 +120,11 @@ jump-by-type + a reader cursor.
       bookmarked lines in the page margin (Center & TwoPage). `annotations` gains
       `name`/`folder`/`kind` columns (`kind` reserves notes for Phase 4) +
       migration. `--export-annotations` is folder-aware.
+- [~] Image viewer (`i`): figure **sidebar** (caption→alt→"Figure N" names),
+      large image **fitted + centered with equal padding**, **details** (chapter,
+      dimensions) + caption, **jump to source** (⏎), **filter** (`/`), **save to
+      disk** (`s`), and a chapter↔**whole-book** scope toggle (`w`). *Still: zoom
+      (fit↔actual) + pan, via the SlicedImage path.*
 
 ## Phase 3 — Library platform
 

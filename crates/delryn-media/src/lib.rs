@@ -579,50 +579,6 @@ impl ImageBuilder {
     }
 }
 
-/// An open image viewer: a set of decoded images (as resize protocols) for the
-/// current section, with a selected index.
-pub struct ImageView {
-    pub protocols: Vec<StatefulProtocol>,
-    pub sel: usize,
-}
-
-impl ImageView {
-    /// Build a viewer from raw image bytes; `None` if nothing decodes. `policy`
-    /// applies the same theme-aware rendering as the inline reader.
-    pub fn new(picker: &Picker, images: &[Vec<u8>], policy: RenderPolicy) -> Option<ImageView> {
-        let protocols: Vec<StatefulProtocol> = images
-            .iter()
-            .filter_map(|b| decode(b))
-            .map(|img| picker.new_resize_protocol(render_for_theme(&img, policy.tint, policy.mode)))
-            .collect();
-        if protocols.is_empty() {
-            None
-        } else {
-            Some(ImageView { protocols, sel: 0 })
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.protocols.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.protocols.is_empty()
-    }
-
-    pub fn next(&mut self) {
-        if !self.protocols.is_empty() {
-            self.sel = (self.sel + 1) % self.protocols.len();
-        }
-    }
-
-    pub fn prev(&mut self) {
-        if !self.protocols.is_empty() {
-            self.sel = (self.sel + self.protocols.len() - 1) % self.protocols.len();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::document::epub::{self, EpubDocument};
 use crate::document::epub_write;
 use crate::input::{self, Action, Pending};
-use crate::media::{self, ImageBuilder, ImageView};
+use crate::media::{self, ImageBuilder};
 use crate::online;
 use crate::store::{Annotation, BookRow, LibrarySection, Store};
 use crate::theme;
@@ -46,6 +46,9 @@ pub use editor::{
 
 mod reader;
 pub use reader::Reader;
+
+mod image_view;
+pub use image_view::{Figure, ImageViewer};
 
 mod library;
 pub use library::{LibPane, LibView, SortKey};
@@ -134,7 +137,7 @@ pub struct App {
     /// Total books in the current edit queue (for the `N/total` header).
     pub edit_total: usize,
     /// Open image viewer overlay, if any.
-    pub image_view: Option<ImageView>,
+    pub image_view: Option<ImageViewer>,
     /// Detected terminal image protocol (None if unsupported / headless).
     pub picker: Option<Picker>,
     /// Background builder for inline-image protocols.
