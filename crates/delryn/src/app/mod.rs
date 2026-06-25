@@ -25,7 +25,9 @@ mod confirm;
 pub use confirm::PendingConfirm;
 
 mod settings;
-pub use settings::{SettingItem, SettingRow, Settings, first_setting_row, settings_rows};
+pub use settings::{
+    SettingItem, SettingRow, SettingTab, Settings, first_setting_row, settings_tabs, tab_rows,
+};
 
 mod mouse;
 pub use mouse::{LayoutRects, MouseHits};
@@ -1328,20 +1330,34 @@ mod tests {
         let mut app = App::library();
         app.on_key(key(';')); // opens settings scoped to the library
         assert_eq!(app.settings.as_ref().unwrap().scope, Mode::Library);
-
-        let rows = settings_rows(Mode::Library);
-        assert!(
-            matches!(rows[0], SettingRow::Section(_)),
-            "first row is a header"
+        assert_eq!(
+            app.settings.as_ref().unwrap().tab,
+            0,
+            "opens on the first tab"
         );
-        for _ in 0..25 {
-            let row = app.settings.as_ref().unwrap().row;
+
+        // Walk every tab: the cursor only ever rests on items, and Tab advances
+        // to the next group (parking on its first option).
+        for t in 0..settings_tabs(Mode::Library).len() {
+            assert_eq!(app.settings.as_ref().unwrap().tab, t);
+            let rows = tab_rows(Mode::Library, t);
             assert!(
-                matches!(rows[row], SettingRow::Item(_)),
-                "cursor never rests on a section header (row {row})"
+                matches!(rows[0], SettingRow::Section(_)),
+                "tab {t} starts with a header"
             );
-            app.on_key(key('j'));
+            // Move down past the end; the cursor must never land on a header.
+            for _ in 0..rows.len() + 2 {
+                let row = app.settings.as_ref().unwrap().row;
+                assert!(
+                    matches!(rows[row], SettingRow::Item(_)),
+                    "cursor never rests on a section header (tab {t}, row {row})"
+                );
+                app.on_key(key('j'));
+            }
+            app.on_key(code(KeyCode::Tab)); // next tab
         }
+        // Tab wraps back to the first group.
+        assert_eq!(app.settings.as_ref().unwrap().tab, 0, "Tab wraps around");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

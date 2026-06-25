@@ -78,7 +78,8 @@ impl App {
             let scope = self.mode;
             self.settings = Some(Settings {
                 scope,
-                row: first_setting_row(scope),
+                tab: 0,
+                row: first_setting_row(scope, 0),
             });
             return;
         }
