@@ -28,6 +28,10 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
         }
     }
 
+    // Responsive columns: drop the least-important ones as the pane narrows so a
+    // fixed column never overlaps the title (shared idea with the pane collapse).
+    let cols = columns(compact, area.width);
+
     // Build rows, interleaving series headers; track the selected book's row
     // index (it shifts down past the headers above it).
     let mut rows: Vec<Row> = Vec::new();
@@ -46,26 +50,10 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
         }
         row_meta.push((i, rows.len()));
         let marked = app.lib_marked.contains(&b.path);
-        rows.push(book_row(b, compact, grouped, marked, theme));
+        rows.push(book_row(b, &cols, grouped, marked, theme));
     }
 
-    let widths: Vec<Constraint> = if compact {
-        vec![
-            Constraint::Length(1),
-            Constraint::Min(10),
-            Constraint::Length(4),
-        ]
-    } else {
-        vec![
-            Constraint::Length(1),  // favorite star
-            Constraint::Min(10),    // title (+ series)
-            Constraint::Length(20), // author
-            Constraint::Length(4),  // year
-            Constraint::Length(9),  // source (Original / Converted)
-            Constraint::Length(4),  // %
-            Constraint::Length(7),  // size
-        ]
-    };
+    let widths: Vec<Constraint> = cols.iter().map(|c| c.width()).collect();
 
     // Solid highlight bar when the list is focused; a quieter accent-text
     // selection when the keyboard is elsewhere.
@@ -91,7 +79,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
         .row_highlight_style(highlight)
         .style(theme.text_style());
     if !compact {
-        table = table.header(header_row(app, theme));
+        table = table.header(header_row(&cols, app, theme));
     }
     let mut state = TableState::new()
         .with_offset(centered_off)
@@ -141,55 +129,120 @@ fn series_header_row(series: &str, count: usize, theme: Theme) -> Row<'static> {
     ])
 }
 
-/// The sortable column header, marking the active sort column with an arrow.
-fn header_row(app: &App, theme: Theme) -> Row<'static> {
-    let cell = |key: SortKey, text: &str, right: bool| -> Cell<'static> {
+/// A library table column. The set shown adapts to the pane width (see
+/// [`columns`]) so the title is never overlapped — columns drop one-by-one.
+#[derive(Clone, Copy, PartialEq)]
+enum Col {
+    Star,
+    Title,
+    Author,
+    Year,
+    Source,
+    Pct,
+    Size,
+}
+
+impl Col {
+    fn width(self) -> Constraint {
+        match self {
+            Col::Star => Constraint::Length(1),
+            Col::Title => Constraint::Min(10),
+            Col::Author => Constraint::Length(20),
+            Col::Year => Constraint::Length(4),
+            Col::Source => Constraint::Length(9),
+            Col::Pct => Constraint::Length(4),
+            Col::Size => Constraint::Length(7),
+        }
+    }
+}
+
+/// The columns to show at pane `width`. Compact mode is fixed (star · title · %);
+/// the rich list keeps star + title and adds the rest only while they fit, so
+/// columns drop one-by-one as the window narrows (widest thresholds go first).
+fn columns(compact: bool, width: u16) -> Vec<Col> {
+    if compact {
+        return vec![Col::Star, Col::Title, Col::Pct];
+    }
+    let mut cols = vec![Col::Star, Col::Title];
+    for (col, min) in [
+        (Col::Author, 58u16),
+        (Col::Year, 44),
+        (Col::Source, 94),
+        (Col::Pct, 36),
+        (Col::Size, 78),
+    ] {
+        if width >= min {
+            cols.push(col);
+        }
+    }
+    cols
+}
+
+/// The sortable column header for the active `cols`, marking the sort column.
+fn header_row(cols: &[Col], app: &App, theme: Theme) -> Row<'static> {
+    let sort = |key: SortKey, text: &str, right: bool| -> Cell<'static> {
         let active = app.lib_sort == key;
         let label = if active {
             format!("{text} {}", if app.lib_sort_desc { "↓" } else { "↑" })
         } else {
             text.to_string()
         };
-        let style = if active {
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(theme.muted)
-                .add_modifier(Modifier::BOLD)
-        };
-        let line = Line::from(Span::styled(label, style));
+        let color = if active { theme.accent } else { theme.muted };
+        let line = Line::from(Span::styled(
+            label,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
         Cell::from(if right {
             line.alignment(Alignment::Right)
         } else {
             line
         })
     };
-    let plain = |text: &str| {
-        Cell::from(Line::from(Span::styled(
-            text.to_string(),
+    let cells = cols.iter().map(|c| match c {
+        Col::Star => Cell::from(""),
+        Col::Title => sort(SortKey::Title, "Title", false),
+        Col::Author => sort(SortKey::Author, "Author", false),
+        Col::Year => sort(SortKey::Year, "Year", true),
+        Col::Source => Cell::from(Line::from(Span::styled(
+            "Source",
             Style::default()
                 .fg(theme.muted)
                 .add_modifier(Modifier::BOLD),
-        )))
-    };
-    Row::new(vec![
-        Cell::from(""),
-        cell(SortKey::Title, "Title", false),
-        cell(SortKey::Author, "Author", false),
-        cell(SortKey::Year, "Year", true),
-        plain("Source"),
-        cell(SortKey::Progress, "%", true),
-        cell(SortKey::Size, "Size", true),
-    ])
+        ))),
+        Col::Pct => sort(SortKey::Progress, "%", true),
+        Col::Size => sort(SortKey::Size, "Size", true),
+    });
+    Row::new(cells.collect::<Vec<_>>())
 }
 
-/// A book row: rich (all columns) or compact (star · title · %). In `grouped`
-/// (Series) view the title is indented under its header and prefixed with #idx.
-fn book_row(b: &BookRow, compact: bool, grouped: bool, marked: bool, theme: Theme) -> Row<'static> {
-    // The 1-cell lead column shows a multi-select check, else the favorite star.
-    let star = if marked {
+/// A book row for the active `cols`. In `grouped` (Series) view the title is
+/// indented under its header and prefixed with #idx.
+fn book_row(b: &BookRow, cols: &[Col], grouped: bool, marked: bool, theme: Theme) -> Row<'static> {
+    let num = |s: String| {
+        Cell::from(
+            Line::from(Span::styled(s, Style::default().fg(theme.muted)))
+                .alignment(Alignment::Right),
+        )
+    };
+    let cells = cols.iter().map(|c| match c {
+        Col::Star => star_cell(b, marked, theme),
+        Col::Title => title_cell(b, grouped, theme),
+        Col::Author => Cell::from(Span::styled(
+            b.author.clone(),
+            Style::default().fg(theme.muted),
+        )),
+        Col::Year => num(b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into())),
+        Col::Source => source_cell(b.converted, theme),
+        Col::Pct => num(format!("{}%", b.pct)),
+        Col::Size => num(fmt_size(b.size)),
+    });
+    Row::new(cells.collect::<Vec<_>>())
+}
+
+/// The 1-cell lead column: a multi-select check, else the favorite star, else
+/// blank.
+fn star_cell(b: &BookRow, marked: bool, theme: Theme) -> Cell<'static> {
+    if marked {
         Cell::from(Span::styled(
             "✓",
             Style::default()
@@ -200,31 +253,6 @@ fn book_row(b: &BookRow, compact: bool, grouped: bool, marked: bool, theme: Them
         Cell::from(Span::styled("★", Style::default().fg(theme.marker)))
     } else {
         Cell::from(" ")
-    };
-    let title = title_cell(b, grouped, theme);
-    let num = |s: String| {
-        Cell::from(
-            Line::from(Span::styled(s, Style::default().fg(theme.muted)))
-                .alignment(Alignment::Right),
-        )
-    };
-    if compact {
-        Row::new(vec![star, title, num(format!("{}%", b.pct))])
-    } else {
-        let author = Cell::from(Span::styled(
-            b.author.clone(),
-            Style::default().fg(theme.muted),
-        ));
-        let year = num(b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into()));
-        Row::new(vec![
-            star,
-            title,
-            author,
-            year,
-            source_cell(b.converted, theme),
-            num(format!("{}%", b.pct)),
-            num(fmt_size(b.size)),
-        ])
     }
 }
 
