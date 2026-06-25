@@ -58,7 +58,7 @@ impl App {
                 if focus < LOOKUP_FIELDS {
                     self.lookup_begin_edit(None);
                 } else {
-                    self.apply_candidate(focus - LOOKUP_FIELDS);
+                    self.open_diff(focus - LOOKUP_FIELDS);
                 }
             }
             // Typing on a field starts editing it (seeded with the first char).
@@ -185,7 +185,7 @@ impl App {
                     self.stage_preview_cover();
                 } else {
                     let idx = self.meta_edit.as_ref().map_or(0, |e| e.search().row);
-                    self.apply_candidate(idx);
+                    self.open_diff(idx);
                 }
             }
             _ => {}
@@ -318,41 +318,57 @@ impl App {
     }
 
     /// Apply candidate `idx` to the Details fields and fetch its cover.
-    fn apply_candidate(&mut self, idx: usize) {
+    /// Open the metadata-diff overlay for result `idx`: current Details vs the
+    /// candidate, one row per field, ticking the fields whose remote value
+    /// differs (and is present), so the reader can review before applying.
+    fn open_diff(&mut self, idx: usize) {
+        let Some(ed) = self.meta_edit.as_mut() else {
+            return;
+        };
+        let Some(c) = ed.search().results.get(idx).cloned() else {
+            return;
+        };
+        // Candidate-fillable fields are the first 8 of META_FIELDS (Title…ISBN);
+        // Language (8) isn't carried by the metadata APIs.
+        let rows: Vec<DiffRow> = (0..8)
+            .map(|field| {
+                let remote = remote_value(&c, field);
+                let apply = !remote.is_empty() && remote != ed.values[field];
+                DiffRow {
+                    field,
+                    remote,
+                    apply,
+                }
+            })
+            .collect();
+        ed.diff = Some(MetaDiff {
+            rows,
+            row: 0,
+            cover_url: c.cover_url(),
+        });
+    }
+
+    /// Apply the ticked diff rows into the Details fields, fetch the candidate's
+    /// cover, and close the diff onto the Details tab for a final review.
+    pub(crate) fn apply_diff(&mut self) {
         let cover_url = {
             let Some(ed) = self.meta_edit.as_mut() else {
                 return;
             };
-            let Some(c) = ed.search().results.get(idx).cloned() else {
+            let Some(diff) = ed.diff.take() else {
                 return;
             };
-            ed.values[0] = c.title.clone();
-            ed.values[1] = c.author_line();
-            if let Some(sub) = &c.subtitle {
-                ed.values[F_SUBTITLE] = sub.clone();
-            }
-            if let Some(y) = c.year {
-                ed.values[2] = y.to_string();
-            }
-            if let Some(s) = &c.series {
-                ed.values[3] = s.clone();
-            }
-            if let Some(si) = c.series_index {
-                ed.values[4] = fmt_series_index(si);
-            }
-            if let Some(p) = &c.publisher {
-                ed.values[5] = p.clone();
-            }
-            if let Some(isbn) = &c.isbn {
-                ed.values[7] = isbn.clone();
+            for r in &diff.rows {
+                if r.apply {
+                    ed.values[r.field] = r.remote.clone();
+                }
             }
             ed.tab = EditTab::Details;
             ed.mode = EditMode::Nav;
             ed.row = 0;
             ed.status_on(EditTab::Details, "applied — review, then ^S to save");
-            let url = c.cover_url();
-            ed.cover_pending = url.is_some();
-            url
+            ed.cover_pending = diff.cover_url.is_some();
+            diff.cover_url
         };
         if let Some(url) = cover_url {
             let (tx, rx) = std::sync::mpsc::channel();
@@ -481,5 +497,21 @@ impl App {
             let _ = tx.send(OnlineMsg::Preview(url.clone(), online::fetch_cover(&url)));
         });
         self.online_rx = Some(rx);
+    }
+}
+
+/// A candidate's value for `META_FIELDS` index `field` (empty when absent).
+/// Language (index 8) isn't carried by the metadata APIs, so it's never filled.
+fn remote_value(c: &Candidate, field: usize) -> String {
+    match field {
+        0 => c.title.clone(),
+        1 => c.author_line(),
+        2 => c.year.map(|y| y.to_string()).unwrap_or_default(),
+        3 => c.series.clone().unwrap_or_default(),
+        4 => c.series_index.map(fmt_series_index).unwrap_or_default(),
+        5 => c.publisher.clone().unwrap_or_default(),
+        6 => c.subtitle.clone().unwrap_or_default(),
+        7 => c.isbn.clone().unwrap_or_default(),
+        _ => String::new(),
     }
 }
