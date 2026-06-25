@@ -78,24 +78,23 @@ pub enum Focus {
     Sidebar,
 }
 
-/// Open annotations (bookmarks/notes) overlay state.
+/// Open bookmarks overlay state (the folder-grouped list + cursor).
 pub struct AnnotState {
     pub items: Vec<Annotation>,
     pub sel: usize,
 }
 
-/// What a one-line text prompt's typed text becomes when committed.
+/// What a one-line text prompt's typed text becomes when committed. Both target
+/// a bookmark; notes are a Phase 4 concern with their own flow.
 pub enum PromptKind {
-    /// A note attached to a fresh bookmark dropped at the reading position.
-    Note,
-    /// The custom name of annotation `id` (empty clears it back to the quote).
+    /// The custom name of bookmark `id` (empty clears it back to the quote).
     Name(i64),
-    /// The folder annotation `id` belongs to (empty = ungrouped).
+    /// The folder bookmark `id` belongs to (empty = ungrouped).
     Folder(i64),
 }
 
-/// A one-line text prompt shown at the bottom of the reader (note / rename /
-/// file-into-folder). Generalises the former note-only input.
+/// A one-line text prompt shown at the bottom of the reader (rename a bookmark /
+/// file it into a folder).
 pub struct Prompt {
     pub kind: PromptKind,
     pub buffer: String,
@@ -307,6 +306,15 @@ fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, St
         }
         reader.load(p.section);
         reader.pending_frac = Some(p.frac);
+    }
+    // Seed the gutter with this book's bookmarks (independent of saved progress).
+    if let Some(store) = store {
+        let marks = store
+            .list_bookmarks(&book_path)
+            .into_iter()
+            .map(|a| (a.section, a.quote))
+            .collect();
+        reader.set_bookmarks(marks);
     }
     Ok((reader, config, book_path))
 }

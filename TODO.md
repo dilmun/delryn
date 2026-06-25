@@ -107,12 +107,14 @@ jump-by-type + a reader cursor.
       endnotes); link→copy URL; **cross-ref/citation → their target** via a
       book-wide id→(section, locator) index (`Document::section_targets` +
       `html::collect_targets`), resolved to a line by the locator text.
-- [x] Bookmarks: **quick** (`m` drops one at the cursor), **named** (`r` in the
-      overlay sets a custom label that shows instead of the quote), **folders**
-      (`f` files an entry into a folder; the overlay groups by folder — named
-      folders first, ungrouped last). One `annotations` table (added `name` /
-      `folder` columns + migration); the note prompt generalised to note / rename
-      / file. Markdown export (`--export-annotations`) is folder-aware.
+- [x] Bookmarks (pure — no notes; notes are Phase 4): **quick** (`m` drops one at
+      the cursor), **named** (`r` in the overlay sets a custom label shown instead
+      of the quote), **folders** (`f` files an entry; the overlay groups by folder
+      — named folders first, ungrouped last). Modern overlay (rounded frame, count
+      badge, per-folder counts, hint footer) + a **left-gutter ribbon** marking
+      bookmarked lines in the page margin (Center & TwoPage). `annotations` gains
+      `name`/`folder`/`kind` columns (`kind` reserves notes for Phase 4) +
+      migration. `--export-annotations` is folder-aware.
 
 ## Phase 3 — Library platform
 
