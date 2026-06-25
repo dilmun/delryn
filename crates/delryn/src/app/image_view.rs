@@ -83,6 +83,9 @@ pub struct ImageViewer {
     pub whole_book: bool,
     pub filter: String,
     pub filtering: bool,
+    /// Editing the save destination path (a prompt prefilled with the default).
+    pub saving: bool,
+    pub save_path: String,
     /// Lazily-built protocol for the selected figure, with the (figs index,
     /// render policy) it was built for — so changing the image mode rebuilds it.
     proto: Option<StatefulProtocol>,
@@ -104,6 +107,8 @@ impl ImageViewer {
             whole_book,
             filter: String::new(),
             filtering: false,
+            saving: false,
+            save_path: String::new(),
             proto: None,
             proto_for: None,
             flash: None,
@@ -129,6 +134,24 @@ impl ImageViewer {
 
     pub fn current(&self) -> Option<&Figure> {
         self.view.get(self.sel).map(|&fi| &self.figs[fi])
+    }
+
+    /// Select the figure nearest the given section image index — so the viewer
+    /// opens on the figure you're reading, not the chapter's first.
+    pub fn select_image(&mut self, image_index: usize) {
+        let target = image_index as isize;
+        let mut best_pos = None;
+        let mut best_dist = usize::MAX;
+        for (pos, &fi) in self.view.iter().enumerate() {
+            let dist = (self.figs[fi].image_index as isize - target).unsigned_abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best_pos = Some(pos);
+            }
+        }
+        if let Some(pos) = best_pos {
+            self.sel = pos;
+        }
     }
 
     pub fn move_sel(&mut self, delta: isize) {
@@ -173,26 +196,38 @@ impl ImageViewer {
         self.proto_for = None; // selection may now point at a different figure
     }
 
-    /// Save the selected figure to the current directory; returns a status line.
-    pub fn save_current(&self) -> Option<String> {
-        let fig = self.current()?;
-        let ext = guess_ext(&fig.bytes);
-        let base: String = fig
-            .name
-            .chars()
-            .map(|c| if c.is_alphanumeric() { c } else { '_' })
-            .take(60)
-            .collect();
-        let base = base.trim_matches('_');
-        let file = format!("{}.{ext}", if base.is_empty() { "figure" } else { base });
-        match std::fs::write(&file, &fig.bytes) {
-            Ok(()) => Some(format!(
-                "saved {}",
-                std::fs::canonicalize(&file)
-                    .map(|p| p.display().to_string())
-                    .unwrap_or(file)
-            )),
-            Err(e) => Some(format!("save failed: {e}")),
+    /// The selected figure decoded to `(width, height, RGBA)` for the clipboard.
+    pub fn current_rgba(&self) -> Option<(u32, u32, Vec<u8>)> {
+        let img = decode(&self.current()?.bytes)?.to_rgba8();
+        let (w, h) = (img.width(), img.height());
+        Some((w, h, img.into_raw()))
+    }
+
+    /// The default save path: `<Pictures|Documents|home>/<figure name>.<ext>`.
+    pub fn default_save_path(&self) -> String {
+        let (base, ext) = match self.current() {
+            Some(f) => (sanitize(&f.name), guess_ext(&f.bytes)),
+            None => ("figure".to_string(), "img"),
+        };
+        default_save_dir()
+            .join(format!("{base}.{ext}"))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Write the selected figure to `path` (`~` expanded, parents created);
+    /// returns a status line.
+    pub fn save_to(&self, path: &str) -> String {
+        let Some(fig) = self.current() else {
+            return "no figure".to_string();
+        };
+        let path = expand_tilde(path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::write(&path, &fig.bytes) {
+            Ok(()) => format!("saved {}", path.display()),
+            Err(e) => format!("save failed: {e}"),
         }
     }
 }
@@ -206,4 +241,46 @@ fn guess_ext(bytes: &[u8]) -> &'static str {
         [b'R', b'I', b'F', b'F', ..] => "webp",
         _ => "img",
     }
+}
+
+/// A filesystem-safe base name from a figure name (alphanumerics + spaces→`_`).
+fn sanitize(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .take(60)
+        .collect();
+    let s = s.trim_matches('_');
+    if s.is_empty() {
+        "figure".into()
+    } else {
+        s.into()
+    }
+}
+
+/// The default directory for saved figures: `~/Pictures`, else `~/Documents`,
+/// else the home dir, else the current directory — whatever exists.
+fn default_save_dir() -> std::path::PathBuf {
+    use std::path::PathBuf;
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for sub in ["Pictures", "Documents"] {
+            let d = home.join(sub);
+            if d.is_dir() {
+                return d;
+            }
+        }
+        return home;
+    }
+    PathBuf::from(".")
+}
+
+/// Expand a leading `~` (or `~/…`) to the home directory.
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    use std::path::PathBuf;
+    if let Some(rest) = path.strip_prefix('~')
+        && let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
+    {
+        return home.join(rest.trim_start_matches('/'));
+    }
+    PathBuf::from(path)
 }

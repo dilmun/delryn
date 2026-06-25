@@ -306,6 +306,21 @@ impl Reader {
         blocks
     }
 
+    /// The section image index nearest the current viewport, so the image viewer
+    /// can open on the figure you're looking at rather than the chapter's first.
+    pub fn current_image_index(&self) -> Option<usize> {
+        let center = self.scroll + self.viewport_lines / 2;
+        self.lines
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| match l.kind {
+                LineKind::Image(idx) => Some((i, idx)),
+                _ => None,
+            })
+            .min_by_key(|(i, _)| (*i as isize - center as isize).unsigned_abs())
+            .map(|(_, idx)| idx)
+    }
+
     /// Gather the renderable figures for the image viewer: the current chapter
     /// only, or every section in the book (decoding as needed) when `whole_book`.
     pub fn figures(&mut self, whole_book: bool) -> Vec<super::Figure> {
