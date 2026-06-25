@@ -51,6 +51,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     };
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
             title,

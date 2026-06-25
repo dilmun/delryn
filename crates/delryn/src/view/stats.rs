@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::App;
 use crate::library::stats::fmt_duration;
@@ -55,6 +55,7 @@ pub fn render(f: &mut Frame, app: &App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
             " Library statistics ",

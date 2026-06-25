@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{App, Mode, SettingRow, settings_rows};
 
@@ -26,6 +26,7 @@ pub fn render(f: &mut Frame, app: &App) {
     };
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
             format!(" {scope} Settings "),
