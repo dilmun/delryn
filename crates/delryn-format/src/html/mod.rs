@@ -252,13 +252,13 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             let mut n = start;
             for c in node.children() {
                 if matches!(c.value(), Node::Element(le) if le.name() == "li") {
-                    let marker = if ordered {
-                        format!("{n}. ")
+                    let (marker, ordinal) = if ordered {
+                        (format!("{n}. "), Some(n))
                     } else {
-                        "• ".to_string()
+                        ("• ".to_string(), None)
                     };
                     n += 1;
-                    list_item(c, ctx, marker, out);
+                    list_item(c, ctx, marker, ordinal, out);
                 }
             }
         }
@@ -328,7 +328,13 @@ fn emit_paragraph(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
     }
 }
 
-fn list_item(node: NodeRef<Node>, ctx: &Ctx, marker: String, out: &mut Vec<Block>) {
+fn list_item(
+    node: NodeRef<Node>,
+    ctx: &Ctx,
+    marker: String,
+    ordinal: Option<usize>,
+    out: &mut Vec<Block>,
+) {
     // Collect the item's content (handles `<li>text`, `<li><p>…`, `<li><div>…`,
     // and nested lists) then attach the marker to its first paragraph.
     let mut item: Vec<Block> = Vec::new();
@@ -338,6 +344,13 @@ fn list_item(node: NodeRef<Node>, ctx: &Ctx, marker: String, out: &mut Vec<Block
     };
     walk_children(node, &inner, &mut item);
 
+    // Some publishers hard-code the item's own number inside the `<li>` (e.g.
+    // Springer's `<div class="CitationNumber">4.</div>`), which our generated
+    // ordered marker would then double ("4. 4."). Drop that redundant ordinal.
+    if let Some(n) = ordinal {
+        strip_leading_ordinal(&mut item, n);
+    }
+
     if let Some(Block::Para {
         marker: m, indent, ..
     }) = item.iter_mut().find(|b| matches!(b, Block::Para { .. }))
@@ -346,6 +359,75 @@ fn list_item(node: NodeRef<Node>, ctx: &Ctx, marker: String, out: &mut Vec<Block
         *indent = ctx.indent;
     }
     out.append(&mut item);
+}
+
+/// In an ordered-list item, drop a leading ordinal that merely restates the
+/// item's own number `n` — whether it sits in its own block ("4.") or as an
+/// inline prefix ("4. Text…"). Matches only the exact number followed by a
+/// `.`/`)`/`]`/`:` delimiter, so genuine numeric prose ("4 reasons …") is kept.
+fn strip_leading_ordinal(blocks: &mut Vec<Block>, n: usize) {
+    let Some(idx) = blocks.iter().position(
+        |b| matches!(b, Block::Para { spans, .. } if spans.iter().any(|s| !s.text.trim().is_empty())),
+    ) else {
+        return;
+    };
+    let Block::Para { spans, .. } = &mut blocks[idx] else {
+        return;
+    };
+    let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+
+    let mut chars = text.chars().peekable();
+    let mut consumed = 0usize;
+    while chars.peek().is_some_and(|c| c.is_whitespace()) {
+        chars.next();
+        consumed += 1;
+    }
+    let mut digits = String::new();
+    while let Some(&c) = chars.peek() {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        digits.push(c);
+        chars.next();
+        consumed += 1;
+    }
+    if digits.parse::<usize>().ok() != Some(n) {
+        return;
+    }
+    if !chars
+        .peek()
+        .is_some_and(|c| matches!(c, '.' | ')' | ']' | ':'))
+    {
+        return;
+    }
+    chars.next();
+    consumed += 1;
+    while chars.peek().is_some_and(|c| c.is_whitespace()) {
+        chars.next();
+        consumed += 1;
+    }
+
+    if chars.peek().is_none() {
+        // The whole block was just the ordinal — drop it entirely.
+        blocks.remove(idx);
+    } else {
+        strip_leading_chars(spans, consumed);
+    }
+}
+
+/// Remove the first `count` characters across a run of inline spans, dropping any
+/// span fully consumed.
+fn strip_leading_chars(spans: &mut Vec<Span>, mut count: usize) {
+    while count > 0 && !spans.is_empty() {
+        let len = spans[0].text.chars().count();
+        if len <= count {
+            count -= len;
+            spans.remove(0);
+        } else {
+            spans[0].text = spans[0].text.chars().skip(count).collect();
+            count = 0;
+        }
+    }
 }
 
 /// Render a definition list (`<dl>`): pair each `<dt>` term with the following
