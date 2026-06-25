@@ -58,6 +58,13 @@ impl App {
             self.palette_key(key);
             return;
         }
+        // The in-book search prompt is a focused text input: it must capture
+        // every key (including shortcut letters like 'i' / ';' / ':') before any
+        // global shortcut below gets a chance to fire.
+        if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.searching) {
+            self.search_key(key);
+            return;
+        }
         // ':' opens the command palette in the library.
         if self.mode == Mode::Library && key.code == KeyCode::Char(':') {
             self.open_palette();
@@ -65,10 +72,6 @@ impl App {
         }
         if self.mode == Mode::Reader && key.code == KeyCode::Char('i') {
             self.open_images();
-            return;
-        }
-        if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.searching) {
-            self.search_key(key);
             return;
         }
         if key.code == KeyCode::Char(';') {
