@@ -302,6 +302,21 @@ impl Reader {
         blocks
     }
 
+    /// Gather the renderable figures for the image viewer: the current chapter
+    /// only, or every section in the book (decoding as needed) when `whole_book`.
+    pub fn figures(&mut self, whole_book: bool) -> Vec<super::Figure> {
+        let mut out = Vec::new();
+        if whole_book {
+            for s in 0..self.doc.section_count() {
+                let blocks = self.fetch_blocks(s);
+                super::image_view::collect_figures(&blocks, s, &mut out);
+            }
+        } else {
+            super::image_view::collect_figures(&self.blocks, self.section, &mut out);
+        }
+        out
+    }
+
     /// Ask the loader to pre-decode the adjacent chapters, and bound the cache.
     fn prefetch_neighbors(&mut self) {
         self.drain_loader();

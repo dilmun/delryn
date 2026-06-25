@@ -111,30 +111,89 @@ impl App {
         }
     }
 
-    /// Open the image viewer on the current section's images.
+    /// Open the image viewer, listing the current chapter's figures by default.
     fn open_images(&mut self) {
-        let policy = crate::media::RenderPolicy {
-            tint: crate::view::theme_ink(self.config.theme),
-            mode: self.config.image_mode,
-        };
-        let (Some(picker), Some(reader)) = (self.picker.as_ref(), self.reader.as_mut()) else {
+        let (Some(_picker), Some(reader)) = (self.picker.as_ref(), self.reader.as_mut()) else {
             return;
         };
-        let images = reader.doc.section_images(reader.section);
-        self.image_view = ImageView::new(picker, &images, policy);
+        let figs = reader.figures(false);
+        self.image_view = ImageViewer::new(figs, false);
+    }
+
+    /// Rebuild the viewer toggling between current-chapter and whole-book scope.
+    fn toggle_image_scope(&mut self) {
+        let Some(whole) = self.image_view.as_ref().map(|v| !v.whole_book) else {
+            return;
+        };
+        if let Some(reader) = self.reader.as_mut() {
+            let figs = reader.figures(whole);
+            // Keep the viewer open even if the new scope is empty (shouldn't be).
+            if let Some(v) = ImageViewer::new(figs, whole) {
+                self.image_view = Some(v);
+            }
+        }
     }
 
     fn image_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => self.image_view = None,
-            KeyCode::Char('n') | KeyCode::Char('l') | KeyCode::Right | KeyCode::Char('j') => {
-                if let Some(v) = self.image_view.as_mut() {
-                    v.next();
+        // Filter-typing mode captures every key.
+        if self.image_view.as_ref().is_some_and(|v| v.filtering) {
+            if let Some(v) = self.image_view.as_mut() {
+                match key.code {
+                    KeyCode::Esc => {
+                        v.filtering = false;
+                        v.set_filter(String::new());
+                    }
+                    KeyCode::Enter => v.filtering = false,
+                    KeyCode::Backspace => {
+                        let mut f = v.filter.clone();
+                        f.pop();
+                        v.set_filter(f);
+                    }
+                    KeyCode::Char(c) => {
+                        let mut f = v.filter.clone();
+                        f.push(c);
+                        v.set_filter(f);
+                    }
+                    _ => {}
                 }
             }
-            KeyCode::Char('N') | KeyCode::Char('h') | KeyCode::Left | KeyCode::Char('k') => {
+            return;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => self.image_view = None,
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('n') => {
                 if let Some(v) = self.image_view.as_mut() {
-                    v.prev();
+                    v.move_sel(1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::Char('N') => {
+                if let Some(v) = self.image_view.as_mut() {
+                    v.move_sel(-1);
+                }
+            }
+            KeyCode::Char('/') => {
+                if let Some(v) = self.image_view.as_mut() {
+                    v.filtering = true;
+                }
+            }
+            KeyCode::Char('s') => {
+                let msg = self.image_view.as_ref().and_then(|v| v.save_current());
+                if let Some(v) = self.image_view.as_mut() {
+                    v.flash = msg;
+                }
+            }
+            KeyCode::Char('w') => self.toggle_image_scope(),
+            // Jump to the figure's place in the book, then close the viewer.
+            KeyCode::Enter | KeyCode::Char('l') => {
+                let target = self
+                    .image_view
+                    .as_ref()
+                    .and_then(|v| v.current().map(|fig| (fig.section, fig.locator.clone())));
+                if let Some((section, locator)) = target {
+                    if let Some(r) = self.reader.as_mut() {
+                        r.jump_to(section, locator.as_deref());
+                    }
+                    self.image_view = None;
                 }
             }
             _ => {}
