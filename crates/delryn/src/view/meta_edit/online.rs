@@ -148,7 +148,7 @@ pub(crate) fn render_online(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: The
     f.render_widget(Paragraph::new(query_line), rows[0]);
 
     // Editable seed fields (reuse the Details form-field renderer).
-    const LABELS: [&str; LOOKUP_FIELDS] = ["Title", "Author"];
+    const LABELS: [&str; LOOKUP_FIELDS] = ["Title", "Author", "Year", "ISBN"];
     let value_w = (rows[2].width as usize).saturating_sub(LABEL_W + 6).max(8);
     let fields: Vec<Line> = (0..LOOKUP_FIELDS)
         .map(|i| {

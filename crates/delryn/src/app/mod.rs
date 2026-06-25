@@ -40,8 +40,8 @@ pub use collections::{CollInput, ShelfPicker};
 
 mod editor;
 pub use editor::{
-    EditMode, EditTab, LOOKUP_FIELDS, LookupForm, META_FIELDS, MetaEdit, ONLINE_LIMIT, OnlineMsg,
-    Search,
+    DiffRow, EditMode, EditTab, LOOKUP_FIELDS, LookupForm, META_FIELDS, MetaDiff, MetaEdit,
+    ONLINE_LIMIT, OnlineMsg, Search,
 };
 
 mod reader;
@@ -1356,10 +1356,12 @@ mod tests {
         }
         let ed = app.meta_edit.as_ref().unwrap();
         assert_eq!(ed.tab, EditTab::Online);
-        // Seeded from metadata: name=title, author=first author (year excluded).
+        // Seeded from metadata: name=title, author=first author, year from book;
+        // ISBN stays inactive (empty) until its field is focused.
         assert_eq!(ed.lookup.name, "K");
         assert_eq!(ed.lookup.author, "Auth");
-        assert_eq!(ed.lookup.query(), "K Auth");
+        assert_eq!(ed.lookup.year, "2010");
+        assert_eq!(ed.lookup.query(), "K Auth 2010");
         assert_eq!(ed.lookup.focus, 0); // Title focused
 
         // Typing edits the focused field (Title), entering edit mode.
@@ -1377,9 +1379,24 @@ mod tests {
         app.on_key(key('x'));
         let ed = app.meta_edit.as_ref().unwrap();
         assert_eq!(ed.lookup.author, "Authx");
-        assert_eq!(ed.lookup.query(), "K! Authx");
+        assert_eq!(ed.lookup.query(), "K! Authx 2010");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // An ISBN turns the lookup into an exact-edition search (ISBN alone), with the
+    // ISBN normalized to digits; without it, title + author + year compose.
+    #[test]
+    fn lookup_isbn_query_is_exact() {
+        let mut f = LookupForm {
+            name: "Some Title".into(),
+            author: "Auth".into(),
+            year: "2010".into(),
+            ..Default::default()
+        };
+        assert_eq!(f.query(), "Some Title Auth 2010");
+        f.isbn = "978-0-441-01359-3".into();
+        assert_eq!(f.query(), "isbn:9780441013593");
     }
 
     // The Cover free-text query and the Lookup seed fields are independent (#4):

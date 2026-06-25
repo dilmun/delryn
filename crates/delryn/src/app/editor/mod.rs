@@ -72,6 +72,25 @@ pub enum EditMode {
     Edit,
 }
 
+/// One row of the metadata diff: a [`META_FIELDS`] field, its remote value, and
+/// whether the reader has ticked it to apply.
+pub struct DiffRow {
+    pub field: usize,
+    pub remote: String,
+    pub apply: bool,
+}
+
+/// The metadata diff overlay: current-vs-remote for a picked online candidate,
+/// with per-field selection. Applying writes the ticked remote values into the
+/// Details fields (and fetches the candidate's cover).
+pub struct MetaDiff {
+    pub rows: Vec<DiffRow>,
+    /// Cursor row into `rows`.
+    pub row: usize,
+    /// The candidate's cover URL, fetched when the diff is applied.
+    pub cover_url: Option<String>,
+}
+
 /// A message from a background Open Library worker.
 pub enum OnlineMsg {
     Results(Vec<Candidate>),
@@ -98,10 +117,11 @@ pub struct Search {
     pub fetching: bool,
 }
 
-/// Number of editable seed fields on the Lookup tab (Title, Author). Year is
-/// deliberately excluded — it's free-text noise to the metadata APIs, not a
-/// real publication-year filter, and a stale year can hide the right edition.
-pub const LOOKUP_FIELDS: usize = 2;
+/// Editable seed fields on the Lookup tab, in order: Title, Author, Year, ISBN.
+pub const LOOKUP_FIELDS: usize = 4;
+/// Index of the ISBN seed field — special: it drives an exact-edition lookup
+/// (search by ISBN alone) and auto-fills from the book's own ISBN when focused.
+pub const LOOKUP_ISBN: usize = 3;
 
 /// The Lookup (Online) tab's structured search form: editable Title/Author
 /// fields from which a read-only query is composed, plus the combined keyboard
@@ -111,7 +131,12 @@ pub const LOOKUP_FIELDS: usize = 2;
 pub struct LookupForm {
     pub name: String,
     pub author: String,
-    /// Combined focus: 0=Title, 1=Author, then `LOOKUP_FIELDS + i` for result row `i`.
+    pub year: String,
+    /// ISBN — when set, the search runs on this alone (exact edition). Empty by
+    /// default; auto-filled from the book's own ISBN when the field is focused.
+    pub isbn: String,
+    /// Combined focus: 0..LOOKUP_FIELDS seed fields, then `LOOKUP_FIELDS + i` for
+    /// result row `i`.
     pub focus: usize,
     /// Editing the focused field (vs. browsing fields/results).
     pub editing: bool,
@@ -120,11 +145,17 @@ pub struct LookupForm {
 }
 
 impl LookupForm {
-    /// The composed, read-only query — `name author` with punctuation noise
-    /// (commas, colons, slashes…) flattened to spaces and collapsed, so messy
-    /// metadata like a stray ", Kissinger" can't break the metadata search.
+    /// The composed, read-only query. With an ISBN set it's an exact-edition
+    /// lookup — `isbn:<digits>` alone (the surest disambiguator when an author
+    /// has near-identical titles). Otherwise `name author year`, with punctuation
+    /// noise flattened so messy metadata can't break the search.
     pub fn query(&self) -> String {
-        let raw = [self.name.trim(), self.author.trim()]
+        let isbn = self.isbn.trim();
+        if !isbn.is_empty() {
+            let digits = online::normalize_isbn(isbn).unwrap_or_else(|| isbn.to_string());
+            return format!("isbn:{digits}");
+        }
+        let raw = [self.name.trim(), self.author.trim(), self.year.trim()]
             .into_iter()
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
@@ -143,14 +174,18 @@ impl LookupForm {
     pub fn field(&self, i: usize) -> &str {
         match i {
             0 => &self.name,
-            _ => &self.author,
+            1 => &self.author,
+            2 => &self.year,
+            _ => &self.isbn,
         }
     }
 
     fn field_mut(&mut self, i: usize) -> &mut String {
         match i {
             0 => &mut self.name,
-            _ => &mut self.author,
+            1 => &mut self.author,
+            2 => &mut self.year,
+            _ => &mut self.isbn,
         }
     }
 
@@ -208,6 +243,9 @@ pub struct MetaEdit {
     /// from. When the Details change (e.g. via `x` extract or a manual edit),
     /// entering those tabs re-seeds; while unchanged, manual search edits stick.
     pub seed_from: (String, String),
+
+    /// Open metadata-diff overlay (current vs a picked online candidate), if any.
+    pub diff: Option<MetaDiff>,
 }
 
 impl MetaEdit {
@@ -373,6 +411,8 @@ impl App {
         let lookup = LookupForm {
             name,
             author,
+            // Year seeds from the book; ISBN stays inactive until focused.
+            year: values.get(F_YEAR).cloned().unwrap_or_default(),
             ..LookupForm::default()
         };
         // Snapshot the Details the searches were seeded from (the raw values, so a
@@ -405,6 +445,7 @@ impl App {
             status: None,
             status_tab: None,
             seed_from,
+            diff: None,
         });
     }
 
@@ -440,11 +481,61 @@ impl App {
         true
     }
 
+    /// The metadata-diff overlay: ↑↓ move, space toggles a field (when it has a
+    /// remote value), `a` toggles all, ⏎ applies the ticked rows, Esc cancels.
+    fn diff_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if let Some(e) = self.meta_edit.as_mut() {
+                    e.diff = None;
+                }
+            }
+            KeyCode::Enter => self.apply_diff(),
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut()) {
+                    d.row = d.row.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut()) {
+                    d.row = (d.row + 1).min(d.rows.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut())
+                    && let Some(r) = d.rows.get_mut(d.row)
+                    && !r.remote.is_empty()
+                {
+                    r.apply = !r.apply;
+                }
+            }
+            // Toggle all appliable rows (off if every one is already on).
+            KeyCode::Char('a') => {
+                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut()) {
+                    let all_on = d
+                        .rows
+                        .iter()
+                        .filter(|r| !r.remote.is_empty())
+                        .all(|r| r.apply);
+                    for r in d.rows.iter_mut().filter(|r| !r.remote.is_empty()) {
+                        r.apply = !all_on;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn meta_edit_key(&mut self, key: KeyEvent) {
         let (mode, tab) = match &self.meta_edit {
             Some(e) => (e.mode, e.tab),
             None => return,
         };
+        // The metadata-diff overlay captures input until applied or cancelled.
+        if self.meta_edit.as_ref().is_some_and(|e| e.diff.is_some()) {
+            self.diff_key(key);
+            return;
+        }
         // Lookup tab: editing one of its seed fields takes all keystrokes.
         if tab == EditTab::Online && self.meta_edit.as_ref().is_some_and(|e| e.lookup.editing) {
             self.lookup_edit_key(key);

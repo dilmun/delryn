@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 use ratatui_image::{Resize, StatefulImage};
 
@@ -96,6 +96,89 @@ pub fn render(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(footer), rows[3]);
 
     hits::record_hits(app, rows[0], body);
+
+    // The metadata-diff overlay sits on top of the editor when open.
+    render_diff(f, app, theme);
+}
+
+/// The metadata-diff overlay: current vs the picked candidate, one row per field,
+/// with a tick on the fields chosen to apply.
+fn render_diff(f: &mut Frame, app: &App, theme: Theme) {
+    let Some(diff) = app.meta_edit.as_ref().and_then(|e| e.diff.as_ref()) else {
+        return;
+    };
+    let ed = app.meta_edit.as_ref().unwrap();
+    let bg = theme.paper();
+    let area = super::centered(f.area(), 84, diff.rows.len() as u16 + 4);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " Apply remote metadata ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Line::from(Span::styled(
+            " space toggle · a all · ⏎ apply ticked · Esc cancel ",
+            Style::default().fg(theme.muted),
+        )))
+        .style(Style::default().fg(theme.fg).bg(bg));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // tick(4) + field(12) + the rest split between current and remote.
+    let field_w = 12usize;
+    let col = (inner.width as usize).saturating_sub(4 + field_w + 2) / 2;
+    let items: Vec<ListItem> = diff
+        .rows
+        .iter()
+        .map(|r| {
+            let tick = if r.remote.is_empty() {
+                "   "
+            } else if r.apply {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            let current = super::truncate(&ed.values[r.field], col.max(1));
+            let remote = super::truncate(&r.remote, col.max(1));
+            Line::from(vec![
+                Span::styled(
+                    format!("{tick} "),
+                    Style::default().fg(if r.apply { theme.accent } else { theme.muted }),
+                ),
+                Span::styled(
+                    format!("{:field_w$}", META_FIELDS[r.field]),
+                    Style::default().fg(theme.heading),
+                ),
+                Span::styled(
+                    format!("{current:col$}  "),
+                    Style::default().fg(theme.muted),
+                ),
+                Span::styled(
+                    remote,
+                    Style::default().fg(if r.remote.is_empty() {
+                        theme.muted
+                    } else {
+                        theme.fg
+                    }),
+                ),
+            ])
+            .into()
+        })
+        .collect();
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .bg(theme.accent)
+            .fg(theme.on_accent())
+            .add_modifier(Modifier::BOLD),
+    );
+    let mut st = ListState::default();
+    st.select(Some(diff.row.min(diff.rows.len().saturating_sub(1))));
+    f.render_stateful_widget(list, inner, &mut st);
 }
 
 /// The single foot-of-popup line: the tab's transient status (search progress,
