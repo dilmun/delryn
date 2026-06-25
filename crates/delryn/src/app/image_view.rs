@@ -30,12 +30,17 @@ pub struct Figure {
 pub fn collect_figures(blocks: &[Block], section: usize, out: &mut Vec<Figure>) {
     for b in blocks {
         let Block::Image {
-            alt, data, caption, ..
+            alt,
+            data,
+            caption,
+            math,
+            ..
         } = b
         else {
             continue;
         };
-        if data.is_empty() {
+        // Skip equations-as-images (display math); the viewer is for real figures.
+        if data.is_empty() || *math {
             continue;
         }
         let caption_text = caption

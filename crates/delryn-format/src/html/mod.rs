@@ -212,6 +212,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             alt,
             data: Vec::new(),
             caption: Vec::new(),
+            math: true,
         }),
         ElementRole::CodeBlock => {
             let lines = strip_line_numbers(trim_blank_edges(code_lines(node).into_iter()));
@@ -270,6 +271,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             alt: e.attr("alt").unwrap_or("").to_string(),
             data: Vec::new(),
             caption: Vec::new(),
+            math: false,
         }),
         ElementRole::AsideIconTable(kind) => {
             let mut content = Vec::new();

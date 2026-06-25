@@ -166,12 +166,15 @@ pub enum Block {
     },
     /// A figure/cover image. `data` holds the raw encoded bytes (filled by the
     /// format layer from `src`); empty if it couldn't be resolved. `caption` is
-    /// the figure caption, empty when there is none.
+    /// the figure caption, empty when there is none. `math` marks an image that
+    /// is really display math (an equation rendered as a picture, alt = Unicode
+    /// fallback) rather than a content figure — so the figure viewer can skip it.
     Image {
         src: String,
         alt: String,
         data: Vec<u8>,
         caption: Vec<Span>,
+        math: bool,
     },
     /// Horizontal rule.
     Rule,
