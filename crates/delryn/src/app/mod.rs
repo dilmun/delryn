@@ -78,10 +78,26 @@ pub enum Focus {
     Sidebar,
 }
 
-/// Open annotations (bookmarks/notes) overlay state.
+/// Open bookmarks overlay state (the folder-grouped list + cursor).
 pub struct AnnotState {
     pub items: Vec<Annotation>,
     pub sel: usize,
+}
+
+/// What a one-line text prompt's typed text becomes when committed. Both target
+/// a bookmark; notes are a Phase 4 concern with their own flow.
+pub enum PromptKind {
+    /// The custom name of bookmark `id` (empty clears it back to the quote).
+    Name(i64),
+    /// The folder bookmark `id` belongs to (empty = ungrouped).
+    Folder(i64),
+}
+
+/// A one-line text prompt shown at the bottom of the reader (rename a bookmark /
+/// file it into a folder).
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub buffer: String,
 }
 
 pub struct App {
@@ -101,8 +117,8 @@ pub struct App {
     pub stats: Option<crate::library::stats::LibraryStats>,
     /// Open command palette, if any.
     pub palette: Option<Palette>,
-    /// Active note-entry buffer, if typing a note.
-    pub note_input: Option<String>,
+    /// Active bottom-row text prompt (note / rename bookmark / file in folder).
+    pub prompt: Option<Prompt>,
     /// Open metadata-edit form (library), if any.
     pub meta_edit: Option<MetaEdit>,
     /// Open bulk-rename popup (template applied to the marked books), if any.
@@ -291,6 +307,15 @@ fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, St
         reader.load(p.section);
         reader.pending_frac = Some(p.frac);
     }
+    // Seed the gutter with this book's bookmarks (independent of saved progress).
+    if let Some(store) = store {
+        let marks = store
+            .list_bookmarks(&book_path)
+            .into_iter()
+            .map(|a| (a.section, a.quote))
+            .collect();
+        reader.set_bookmarks(marks);
+    }
     Ok((reader, config, book_path))
 }
 
@@ -313,7 +338,7 @@ impl App {
             annot: None,
             stats: None,
             palette: None,
-            note_input: None,
+            prompt: None,
             meta_edit: None,
             bulk_rename: None,
             lib_coll_edit: None,
@@ -378,7 +403,7 @@ impl App {
             annot: None,
             stats: None,
             palette: None,
-            note_input: None,
+            prompt: None,
             meta_edit: None,
             bulk_rename: None,
             lib_coll_edit: None,

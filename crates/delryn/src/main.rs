@@ -63,17 +63,25 @@ fn main() -> Result<()> {
         Some("--export-annotations")
     ) {
         if let Ok(store) = Store::open_default() {
-            let mut last = String::new();
-            for (path, a) in store.all_annotations() {
-                if path != last {
+            let mut last_path = String::new();
+            let mut last_folder: Option<String> = None;
+            for (path, a) in store.all_bookmarks() {
+                if path != last_path {
                     println!("\n# {path}\n");
-                    last = path;
+                    last_path = path;
+                    last_folder = None;
                 }
-                if a.note.is_empty() {
-                    println!("- §{} {}", a.section + 1, a.quote);
-                } else {
-                    println!("- §{} {} — {}", a.section + 1, a.quote, a.note);
+                if last_folder.as_deref() != Some(a.folder.as_str()) {
+                    let title = if a.folder.is_empty() {
+                        "Bookmarks"
+                    } else {
+                        &a.folder
+                    };
+                    println!("## {title}\n");
+                    last_folder = Some(a.folder.clone());
                 }
+                let label = if a.name.is_empty() { &a.quote } else { &a.name };
+                println!("- §{} {label}", a.section + 1);
             }
         }
         return Ok(());

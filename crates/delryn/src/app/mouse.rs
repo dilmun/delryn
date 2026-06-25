@@ -90,7 +90,7 @@ impl App {
             || self.bulk_rename.is_some()
             || self.annot.is_some()
             || self.image_view.is_some()
-            || self.note_input.is_some()
+            || self.prompt.is_some()
         {
             return;
         }
