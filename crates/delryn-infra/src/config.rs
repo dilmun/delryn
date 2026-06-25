@@ -342,6 +342,10 @@ pub const MAX_LINE_SPACING: u8 = 3;
 /// no cap — images fill the text column. A cap trades size for a faster transmit
 /// to the terminal.
 pub const MAX_IMAGE_PX: u16 = 4096;
+/// Bounds for the default figure width (% of the reading column). Figures without
+/// an authored size are normalized to this so they read consistently across books.
+pub const MIN_IMAGE_WIDTH_PCT: u16 = 20;
+pub const MAX_IMAGE_WIDTH_PCT: u16 = 100;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -376,6 +380,9 @@ pub struct Config {
     /// Max inline-image resolution (longest side, px). Caps the data sent to the
     /// terminal so big figures don't stall scrolling.
     pub image_max_px: u16,
+    /// Default figure display width as a percent of the reading column, for images
+    /// without an authored size — normalizes figure sizes across books.
+    pub image_width_pct: u16,
     /// How book images adapt to the theme (recolour / invert / faithful).
     pub image_mode: ImageMode,
     /// Directories scanned for the library.
@@ -423,7 +430,8 @@ impl Default for Config {
             focus_mode: false,
             mouse_enabled: true,
             status: StatusFields::default(),
-            image_max_px: 0, // no cap by default — images fill the text column
+            image_max_px: 0,     // no cap by default — images fill the text column
+            image_width_pct: 85, // normalize unsized figures to 85% of the column
             image_mode: ImageMode::default(),
             library_paths: Vec::new(),
             library_layout: LibLayout::List,
@@ -452,6 +460,7 @@ struct ConfigFile {
     mouse_enabled: bool,
     status: StatusFields,
     image_max_px: u16,
+    image_width_pct: u16,
     image_mode: String,
     library_paths: Vec<String>,
     library_layout: String,
@@ -478,6 +487,7 @@ impl Default for ConfigFile {
             mouse_enabled: c.mouse_enabled,
             status: c.status,
             image_max_px: c.image_max_px,
+            image_width_pct: c.image_width_pct,
             image_mode: c.image_mode.label().to_string(),
             library_paths: c.library_paths,
             library_layout: c.library_layout.label().to_string(),
@@ -554,6 +564,9 @@ impl Config {
         c.mouse_enabled = cf.mouse_enabled;
         c.status = cf.status;
         c.image_max_px = cf.image_max_px.min(MAX_IMAGE_PX);
+        c.image_width_pct = cf
+            .image_width_pct
+            .clamp(MIN_IMAGE_WIDTH_PCT, MAX_IMAGE_WIDTH_PCT);
         c.image_mode = ImageMode::from_label(&cf.image_mode);
         c.library_paths = cf.library_paths;
         c.library_layout = LibLayout::from_label(&cf.library_layout);
@@ -585,6 +598,7 @@ impl Config {
             mouse_enabled: self.mouse_enabled,
             status: self.status,
             image_max_px: self.image_max_px,
+            image_width_pct: self.image_width_pct,
             image_mode: self.image_mode.label().to_string(),
             library_paths: self.library_paths.clone(),
             library_layout: self.library_layout.label().to_string(),

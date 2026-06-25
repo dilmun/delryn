@@ -1163,6 +1163,7 @@ mod tests {
             data: Vec::new(),
             caption: vec![Span::plain("Figure 1: the pipeline")],
             math: false,
+            width: delryn_model::ImageWidth::Auto,
         };
         // No image protocol (image_rows empty) → text placeholder + caption.
         let lines = texts(&wrap_blocks(&[block], &WrapOpts::default(), &[]));

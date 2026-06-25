@@ -32,6 +32,7 @@ pub enum SettingItem {
     StatusPercent,
     StatusGauge,
     ImageMaxPx,
+    ImageWidthPct,
     ImageMode,
     CodeWrap,
     TableWrap,
@@ -62,6 +63,7 @@ impl SettingItem {
             SettingItem::StatusPercent => "Percent",
             SettingItem::StatusGauge => "Gauge",
             SettingItem::ImageMaxPx => "Max resolution (px)",
+            SettingItem::ImageWidthPct => "Figure width %",
             SettingItem::ImageMode => "Image mode",
             SettingItem::CodeWrap => "Wrap code blocks",
             SettingItem::TableWrap => "Wrap tables",
@@ -103,6 +105,7 @@ impl SettingItem {
                     c.image_max_px.to_string()
                 }
             }
+            SettingItem::ImageWidthPct => format!("{}%", c.image_width_pct),
             SettingItem::ImageMode => c.image_mode.label().to_string(),
             SettingItem::CodeWrap => onoff(c.code_wrap),
             SettingItem::TableWrap => onoff(c.table_wrap),
@@ -150,6 +153,7 @@ pub fn settings_rows(scope: Mode) -> Vec<SettingRow> {
             I(StatusGauge),
             S("Content"),
             I(ImageMaxPx),
+            I(ImageWidthPct),
             I(ImageMode),
             I(CodeWrap),
             I(TableWrap),
@@ -278,6 +282,13 @@ impl App {
                 // 0 = off (uncapped); otherwise step in 128px increments.
                 c.image_max_px = (c.image_max_px as i32 + delta * 128)
                     .clamp(0, crate::config::MAX_IMAGE_PX as i32)
+                    as u16
+            }
+            SettingItem::ImageWidthPct => {
+                use crate::config::{MAX_IMAGE_WIDTH_PCT, MIN_IMAGE_WIDTH_PCT};
+                // Step in 5% increments within the allowed band.
+                c.image_width_pct = (c.image_width_pct as i32 + delta * 5)
+                    .clamp(MIN_IMAGE_WIDTH_PCT as i32, MAX_IMAGE_WIDTH_PCT as i32)
                     as u16
             }
             SettingItem::ImageMode => {
