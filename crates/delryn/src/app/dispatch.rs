@@ -159,6 +159,10 @@ impl App {
             }
             return;
         }
+        // Clear any transient flash (e.g. "saved …") on the next key.
+        if let Some(v) = self.image_view.as_mut() {
+            v.flash = None;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => self.image_view = None,
             KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('n') => {
@@ -183,6 +187,12 @@ impl App {
                 }
             }
             KeyCode::Char('w') => self.toggle_image_scope(),
+            // Cycle the image mode (faithful / invert / auto) — applies live and
+            // persists (it's the global image preference).
+            KeyCode::Char('m') => {
+                self.config.image_mode = self.config.image_mode.next();
+                self.config.save();
+            }
             // Jump to the figure's place in the book, then close the viewer.
             KeyCode::Enter | KeyCode::Char('l') => {
                 let target = self
