@@ -54,9 +54,12 @@ pub enum SortKey {
     Title,
     Author,
     Year,
+    Type,
+    Source,
     Progress,
     Size,
     Rating,
+    Status,
 }
 
 impl SortKey {
@@ -66,22 +69,12 @@ impl SortKey {
             SortKey::Title => "title",
             SortKey::Author => "author",
             SortKey::Year => "year",
+            SortKey::Type => "type",
+            SortKey::Source => "source",
             SortKey::Progress => "progress",
             SortKey::Size => "size",
             SortKey::Rating => "rating",
-        }
-    }
-
-    /// Cycle to the next sort key (wraps through `Default`).
-    pub fn next(self) -> SortKey {
-        match self {
-            SortKey::Default => SortKey::Title,
-            SortKey::Title => SortKey::Author,
-            SortKey::Author => SortKey::Year,
-            SortKey::Year => SortKey::Progress,
-            SortKey::Progress => SortKey::Size,
-            SortKey::Size => SortKey::Rating,
-            SortKey::Rating => SortKey::Default,
+            SortKey::Status => "status",
         }
     }
 }
@@ -146,6 +139,10 @@ impl App {
         self.lib_shelves = shelves;
         self.lib_view = view;
         self.lib_books = books;
+        // A width-agnostic sort cycle (all enabled columns) so `s` works before
+        // the first render and in the grid; the book table refines it per width.
+        let compact = self.config.library_layout == LibLayout::Compact;
+        self.lib_sort_cycle = crate::view::library::sort_cycle(&self.config, compact, u16::MAX);
         self.sort_books();
         if self.lib_sel >= self.lib_books.len() {
             self.lib_sel = self.lib_books.len().saturating_sub(1);
@@ -165,23 +162,54 @@ impl App {
                 SortKey::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
                 SortKey::Author => a.author.to_lowercase().cmp(&b.author.to_lowercase()),
                 SortKey::Year => a.year.cmp(&b.year),
+                SortKey::Type => crate::document::BookFormat::from_path(&a.path)
+                    .label()
+                    .cmp(crate::document::BookFormat::from_path(&b.path).label()),
+                SortKey::Source => a.converted.cmp(&b.converted),
                 SortKey::Progress => a.pct.cmp(&b.pct),
                 SortKey::Size => a.size.cmp(&b.size),
                 SortKey::Rating => a.rating.cmp(&b.rating),
+                SortKey::Status => {
+                    use delryn_model::ReadingStatus as RS;
+                    RS::effective(a.pct, &a.status)
+                        .order()
+                        .cmp(&RS::effective(b.pct, &b.status).order())
+                }
                 SortKey::Default => std::cmp::Ordering::Equal,
             };
             if desc { ord.reverse() } else { ord }
         });
     }
 
-    /// Cycle the sort key (`s`) keeping the selected book in view.
+    /// Cycle sort with `s` over the *currently visible* columns only: each column
+    /// steps ascending → descending before advancing to the next, wrapping the
+    /// last column's descending straight back to the first (Title). Columns the
+    /// user has hidden, or that collapsed on a narrow window, are skipped — so the
+    /// arrow always lands on a visible header (`lib_sort_cycle` is set at render).
     fn cycle_sort(&mut self) {
         self.lib_exit_visual();
-        self.lib_sort = self.lib_sort.next();
+        let cycle = &self.lib_sort_cycle;
+        if cycle.is_empty() {
+            return;
+        }
+        match cycle.iter().position(|&k| k == self.lib_sort) {
+            // On a visible column: descending advances to the next (wrapping);
+            // ascending flips the same column to descending.
+            Some(i) if self.lib_sort_desc => {
+                self.lib_sort = cycle[(i + 1) % cycle.len()];
+                self.lib_sort_desc = false;
+            }
+            Some(_) => self.lib_sort_desc = true,
+            // Coming from Default or a non-visible key: start at the first column.
+            None => {
+                self.lib_sort = cycle[0];
+                self.lib_sort_desc = false;
+            }
+        }
         self.refresh_library();
     }
 
-    /// Flip the sort direction (`S`).
+    /// Flip the sort direction (`S`) without changing the key.
     fn toggle_sort_dir(&mut self) {
         self.lib_exit_visual();
         self.lib_sort_desc = !self.lib_sort_desc;
@@ -237,6 +265,22 @@ impl App {
         } else {
             format!("rated {}", "★".repeat(rating as usize))
         });
+        self.refresh_library();
+    }
+
+    /// Cycle the selected book's manual reading status (none → paused → dropped →
+    /// reference → none), flashing the new effective status.
+    fn lib_cycle_status(&mut self) {
+        let Some(book) = self.lib_books.get(self.lib_sel) else {
+            return;
+        };
+        let next = delryn_model::ReadingStatus::cycle_manual(&book.status);
+        let pct = book.pct;
+        if let Some(store) = &self.store {
+            store.set_status(&book.path, next);
+        }
+        let eff = delryn_model::ReadingStatus::effective(pct, next);
+        self.lib_flash = Some(format!("status: {}", eff.label()));
         self.refresh_library();
     }
 
@@ -545,6 +589,8 @@ impl App {
                 self.lib_detail = !self.lib_detail;
                 self.lib_ensure_pane_visible();
             }
+            // Cycle the manual reading status (none → paused → dropped → reference).
+            KeyCode::Char('m') => self.lib_cycle_status(),
             // Book actions operate on the selected book regardless of focus.
             KeyCode::Char('f') => {
                 if self.lib_marked.is_empty() {

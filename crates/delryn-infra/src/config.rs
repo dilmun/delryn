@@ -316,6 +316,19 @@ impl ImageMode {
     }
 }
 
+/// The optional library list columns (key, display label), in display order.
+/// The star + Title columns are always shown; these can be toggled and also
+/// drop automatically on a narrow window.
+pub const LIB_COLUMNS: [(&str, &str); 7] = [
+    ("author", "Author"),
+    ("year", "Year"),
+    ("type", "Type"),
+    ("source", "Source"),
+    ("progress", "Progress"),
+    ("size", "Size"),
+    ("status", "Status"),
+];
+
 /// Bounds for the per-side text padding (percent of the content pane width).
 pub const MAX_SIDE_PADDING: u16 = 40;
 /// Upper bound for the two-page column gap (cells).
@@ -371,6 +384,25 @@ pub struct Config {
     pub library_layout: LibLayout,
     /// Cover-card size for the grid view.
     pub library_grid_size: GridSize,
+    /// Visible optional library columns (keys from [`LIB_COLUMNS`]); user-
+    /// toggleable. The star + Title columns are always shown.
+    pub library_columns: Vec<String>,
+}
+
+impl Config {
+    /// Whether an optional library column is shown.
+    pub fn column_on(&self, key: &str) -> bool {
+        self.library_columns.iter().any(|c| c == key)
+    }
+
+    /// Show/hide an optional library column.
+    pub fn toggle_column(&mut self, key: &str) {
+        if let Some(i) = self.library_columns.iter().position(|c| c == key) {
+            self.library_columns.remove(i);
+        } else {
+            self.library_columns.push(key.to_string());
+        }
+    }
 }
 
 impl Default for Config {
@@ -396,6 +428,7 @@ impl Default for Config {
             library_paths: Vec::new(),
             library_layout: LibLayout::List,
             library_grid_size: GridSize::Medium,
+            library_columns: LIB_COLUMNS.iter().map(|(k, _)| k.to_string()).collect(),
         }
     }
 }
@@ -423,6 +456,7 @@ struct ConfigFile {
     library_paths: Vec<String>,
     library_layout: String,
     library_grid_size: String,
+    library_columns: Vec<String>,
 }
 
 impl Default for ConfigFile {
@@ -448,6 +482,7 @@ impl Default for ConfigFile {
             library_paths: c.library_paths,
             library_layout: c.library_layout.label().to_string(),
             library_grid_size: c.library_grid_size.label().to_string(),
+            library_columns: c.library_columns.clone(),
         }
     }
 }
@@ -523,6 +558,12 @@ impl Config {
         c.library_paths = cf.library_paths;
         c.library_layout = LibLayout::from_label(&cf.library_layout);
         c.library_grid_size = GridSize::from_label(&cf.library_grid_size);
+        // Keep only known column keys; an empty list (all hidden) is valid.
+        c.library_columns = cf
+            .library_columns
+            .into_iter()
+            .filter(|k| LIB_COLUMNS.iter().any(|(key, _)| key == k))
+            .collect();
         c
     }
 
@@ -548,6 +589,7 @@ impl Config {
             library_paths: self.library_paths.clone(),
             library_layout: self.library_layout.label().to_string(),
             library_grid_size: self.library_grid_size.label().to_string(),
+            library_columns: self.library_columns.clone(),
         };
         let path = config_path();
         if let Some(dir) = path.parent() {

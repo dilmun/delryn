@@ -105,6 +105,7 @@ mod tests {
             language: String::new(),
             converted: false,
             rating: 0,
+            status: String::new(),
         }
     }
 

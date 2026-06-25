@@ -26,6 +26,7 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
     let fav = b.favorite;
     let converted = b.converted;
     let rating = b.rating;
+    let status = b.status.clone();
 
     let parts = Layout::vertical([Constraint::Min(2), Constraint::Length(13)]).split(inner);
 
@@ -104,6 +105,12 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
         ),
     ]));
     lines.push(meta_kv("Progress", &format!("{pct}%"), theme));
+    let st = delryn_model::ReadingStatus::effective(pct, &status);
+    lines.push(meta_kv(
+        "Status",
+        format!("{} {}", st.badge(), st.label()).trim(),
+        theme,
+    ));
     f.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: true })
