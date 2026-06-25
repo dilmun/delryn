@@ -181,8 +181,6 @@ fn render_content(
 
     match config.view_mode {
         ViewMode::Center => render_column(f, body, reader, config, config.side_padding, images),
-        // Fill: edge-to-edge text (zero side margin).
-        ViewMode::Fill => render_column(f, body, reader, config, 0, images),
         ViewMode::TwoPage => render_two_page(f, body, reader, config, images),
     }
 }
@@ -201,7 +199,7 @@ type Images<'a> = Option<(&'a Picker, &'a ImageBuilder)>;
 
 /// The reading column width for a given pane width and per-side padding percent.
 /// With padding on, each side keeps at least the gutter width so a bookmark's
-/// ribbon always has room; `side_padding == 0` stays edge-to-edge (Fill).
+/// ribbon always has room; a `side_padding` of 0 % is edge-to-edge.
 fn measure_for(pane_width: u16, side_padding: u16) -> u16 {
     if side_padding == 0 {
         return pane_width.max(1);
@@ -366,19 +364,18 @@ fn render_two_page(
     images: Images,
 ) {
     let theme = config.theme;
-    const GAP: u16 = 5;
-    // Each column takes half the pane (minus the gap); the outer margin keeps a
-    // gutter (plus a cell of breathing room) on each side for bookmark ribbons.
-    let usable = body
-        .width
-        .saturating_sub(GAP + (GUTTER_COLS + 1) * 2)
-        .max(2);
+    // Same per-side edge padding as Center (at least the gutter width), with a
+    // configurable gap between the two columns.
+    let pad = ((body.width as u32 * config.side_padding as u32 / 100) as u16).max(GUTTER_COLS);
+    let gap = config.page_gap;
+    let usable = body.width.saturating_sub(pad * 2 + gap).max(2);
     let col_w = (usable / 2).max(1);
-    let side_pad = body.width.saturating_sub(col_w * 2 + GAP) / 2;
+    // Re-center any rounding remainder into the outer margins.
+    let side_pad = body.width.saturating_sub(col_w * 2 + gap) / 2;
     let cols = Layout::horizontal([
         Constraint::Length(side_pad),
         Constraint::Length(col_w),
-        Constraint::Length(GAP),
+        Constraint::Length(gap),
         Constraint::Length(col_w),
         Constraint::Min(0),
     ])

@@ -30,13 +30,12 @@ impl Default for StatusFields {
     }
 }
 
-/// How body text is laid out in the content pane.
+/// How body text is laid out in the content pane. Both layouts use the same
+/// per-side edge padding (`side_padding`); two-page adds a configurable gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
-    /// Measure-capped column, centered with gutters.
+    /// A single column, centered within the side padding.
     Center,
-    /// Text fills the pane width (minus a thin gutter).
-    Fill,
     /// Two side-by-side columns — a two-page spread.
     TwoPage,
 }
@@ -44,31 +43,24 @@ pub enum ViewMode {
 impl ViewMode {
     pub fn next(self) -> Self {
         match self {
-            ViewMode::Center => ViewMode::Fill,
-            ViewMode::Fill => ViewMode::TwoPage,
+            ViewMode::Center => ViewMode::TwoPage,
             ViewMode::TwoPage => ViewMode::Center,
         }
     }
 
     pub fn prev(self) -> Self {
-        match self {
-            ViewMode::Center => ViewMode::TwoPage,
-            ViewMode::Fill => ViewMode::Center,
-            ViewMode::TwoPage => ViewMode::Fill,
-        }
+        self.next()
     }
 
     pub fn label(self) -> &'static str {
         match self {
             ViewMode::Center => "center",
-            ViewMode::Fill => "fill",
             ViewMode::TwoPage => "two-page",
         }
     }
 
     pub fn from_label(s: &str) -> ViewMode {
         match s {
-            "fill" => ViewMode::Fill,
             "two-page" => ViewMode::TwoPage,
             _ => ViewMode::Center,
         }
@@ -88,7 +80,7 @@ pub enum ReadingMode {
 
 /// The reading settings a preset bundles. Every preset fixes all of these, so a
 /// live config can be compared field-for-field to recognise the active preset.
-/// Deliberately excludes `view_mode` (Center/Fill/TwoPage): the page layout is a
+/// Deliberately excludes `view_mode` (Center / TwoPage): the page layout is a
 /// personal choice a preset shouldn't yank out from under the reader.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ReadingProfile {
@@ -326,6 +318,8 @@ impl ImageMode {
 
 /// Bounds for the per-side text padding (percent of the content pane width).
 pub const MAX_SIDE_PADDING: u16 = 40;
+/// Upper bound for the two-page column gap (cells).
+pub const MAX_PAGE_GAP: u16 = 16;
 /// Smallest text column we'll ever wrap to, so heavy padding on a narrow
 /// terminal still leaves a readable line.
 pub const MIN_TEXT_COLS: u16 = 20;
@@ -339,8 +333,10 @@ pub const MAX_IMAGE_PX: u16 = 4096;
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Text padding from each edge, as a percent of the content pane width, so
-    /// the reading column scales with the window (Center mode).
+    /// the reading column scales with the window. Applied in every view mode.
     pub side_padding: u16,
+    /// Gap (in cells) between the two columns of the two-page spread.
+    pub page_gap: u16,
     /// Extra blank lines between wrapped text lines (0 = single-spaced).
     pub line_spacing: u8,
     /// Blank lines between blocks/paragraphs.
@@ -381,6 +377,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             side_padding: 6,
+            page_gap: 5,
             line_spacing: 0,
             paragraph_spacing: 1,
             view_mode: ViewMode::Center,
@@ -408,6 +405,7 @@ impl Default for Config {
 #[serde(default)]
 struct ConfigFile {
     side_padding: u16,
+    page_gap: u16,
     line_spacing: u8,
     paragraph_spacing: u8,
     view_mode: String,
@@ -432,6 +430,7 @@ impl Default for ConfigFile {
         let c = Config::default();
         Self {
             side_padding: c.side_padding,
+            page_gap: c.page_gap,
             line_spacing: c.line_spacing,
             paragraph_spacing: c.paragraph_spacing,
             view_mode: c.view_mode.label().to_string(),
@@ -504,6 +503,7 @@ impl Config {
             return c;
         };
         c.side_padding = cf.side_padding.min(MAX_SIDE_PADDING);
+        c.page_gap = cf.page_gap.min(MAX_PAGE_GAP);
         c.line_spacing = cf.line_spacing.min(MAX_LINE_SPACING);
         c.paragraph_spacing = cf.paragraph_spacing.min(3);
         c.view_mode = ViewMode::from_label(&cf.view_mode);
@@ -530,6 +530,7 @@ impl Config {
     pub fn save(&self) {
         let cf = ConfigFile {
             side_padding: self.side_padding,
+            page_gap: self.page_gap,
             line_spacing: self.line_spacing,
             paragraph_spacing: self.paragraph_spacing,
             view_mode: self.view_mode.label().to_string(),

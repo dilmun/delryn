@@ -21,6 +21,7 @@ pub enum SettingItem {
     Theme,
     ViewMode,
     SidePadding,
+    PageGap,
     LineSpacing,
     ParagraphSpacing,
     ShowSidebar,
@@ -48,6 +49,7 @@ impl SettingItem {
             SettingItem::Theme => "Theme",
             SettingItem::ViewMode => "View mode",
             SettingItem::SidePadding => "Side margin %",
+            SettingItem::PageGap => "Two-page gap",
             SettingItem::LineSpacing => "Line spacing",
             SettingItem::ParagraphSpacing => "Paragraph spacing",
             SettingItem::ShowSidebar => "Sidebar by default",
@@ -77,6 +79,7 @@ impl SettingItem {
             SettingItem::Theme => c.theme.name.to_string(),
             SettingItem::ViewMode => c.view_mode.label().to_string(),
             SettingItem::SidePadding => c.side_padding.to_string(),
+            SettingItem::PageGap => c.page_gap.to_string(),
             SettingItem::LineSpacing => c.line_spacing.to_string(),
             SettingItem::ParagraphSpacing => c.paragraph_spacing.to_string(),
             SettingItem::ShowSidebar => onoff(c.show_sidebar),
@@ -125,6 +128,7 @@ pub fn settings_rows(scope: Mode) -> Vec<SettingRow> {
             I(Theme),
             I(ViewMode),
             I(SidePadding),
+            I(PageGap),
             I(LineSpacing),
             I(ParagraphSpacing),
             S("Chrome"),
@@ -207,7 +211,7 @@ impl App {
     }
 
     fn settings_change(&mut self, delta: i32) {
-        use crate::config::{MAX_LINE_SPACING, MAX_SIDE_PADDING};
+        use crate::config::{MAX_LINE_SPACING, MAX_PAGE_GAP, MAX_SIDE_PADDING};
         let Some(s) = self.settings.as_ref() else {
             return;
         };
@@ -242,6 +246,9 @@ impl App {
             SettingItem::SidePadding => {
                 c.side_padding =
                     (c.side_padding as i32 + delta).clamp(0, MAX_SIDE_PADDING as i32) as u16
+            }
+            SettingItem::PageGap => {
+                c.page_gap = (c.page_gap as i32 + delta).clamp(0, MAX_PAGE_GAP as i32) as u16
             }
             SettingItem::LineSpacing => {
                 c.line_spacing =

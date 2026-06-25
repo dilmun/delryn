@@ -96,7 +96,8 @@ jump-by-type + a reader cursor.
 
 - [x] Reading modes: **Continuous** + **Page** (paged scroll, `p` / Settings →
       "Page mode"; vertical nav flips whole pages snapped to boundaries, status
-      shows "p N/M"), Focus, chapter-lock, Center/Fill/TwoPage layouts, and
+      shows "p N/M"), Focus, chapter-lock, Center + Two-page layouts (shared
+      `side_padding` % edge margin + configurable two-page `page_gap`), and
       **presets** — Study / Research / Presentation (`M` cycles, or Settings →
       Profile → "Reading mode"). Each bundles padding + spacing + sidebar +
       status + chapter-lock + paged (deliberately *not* view layout — that's the
