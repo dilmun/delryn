@@ -16,7 +16,8 @@ pub use format::BookFormat;
 // The format-independent content model now lives in `delryn-model`; re-exported
 // here so existing `document::{Block, Metadata, …}` paths keep resolving.
 pub use delryn_model::{
-    Anchor, Block, CalloutKind, Inline, Metadata, OutlineItem, Section, Span, TableCell, TocEntry,
+    Anchor, Block, CalloutKind, ImageWidth, Inline, Metadata, OutlineItem, Section, Span,
+    TableCell, TocEntry,
 };
 
 /// A self-contained, `Send` handle that loads a section's blocks off the main
