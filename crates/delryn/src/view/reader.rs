@@ -62,10 +62,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let body = rows[0];
     let status = rows[1];
 
+    // The TOC sidebar uses the shared responsive split (~33% of the width,
+    // collapsing on a narrow window so the text keeps the room).
     let (sidebar_area, content_area) = if show_sidebar {
-        let sw = (body.width / 3).clamp(16, 32);
-        let cols = Layout::horizontal([Constraint::Length(sw), Constraint::Min(0)]).split(body);
-        (Some(cols[0]), cols[1])
+        super::sidebar_split(body, 33, 16, 32, 50)
     } else {
         (None, body)
     };

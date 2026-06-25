@@ -188,10 +188,10 @@ impl App {
                 let target = self
                     .image_view
                     .as_ref()
-                    .and_then(|v| v.current().map(|fig| (fig.section, fig.locator.clone())));
-                if let Some((section, locator)) = target {
+                    .and_then(|v| v.current().map(|fig| (fig.section, fig.image_index)));
+                if let Some((section, image_index)) = target {
                     if let Some(r) = self.reader.as_mut() {
-                        r.jump_to(section, locator.as_deref());
+                        r.jump_to_image(section, image_index);
                     }
                     self.image_view = None;
                 }

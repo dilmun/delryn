@@ -356,6 +356,18 @@ pub fn render_for_theme(img: &DynamicImage, tint: Ink, mode: ImageMode) -> Dynam
     }
 }
 
+/// Render an image faithfully for the figure viewer: keep the original colours
+/// (no theme recolour/invert — those produce theme-dependent artifacts, e.g. an
+/// inverted chart's axes turning rainbow), compositing any transparency onto a
+/// white "page" so a figure looks as printed and stays legible on any theme.
+pub fn render_faithful(img: &DynamicImage) -> DynamicImage {
+    if transparent_frac(&img.to_rgba8()) > TRANSPARENT_FRAC {
+        flatten_onto(img, [255, 255, 255])
+    } else {
+        img.clone()
+    }
+}
+
 /// A decoded cover plus its source pixel dimensions, so the renderer can size a
 /// render rect to the cover's aspect ratio (filling it with no letterbox).
 pub struct CoverImage {

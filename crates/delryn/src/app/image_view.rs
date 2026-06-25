@@ -6,19 +6,20 @@ use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 
 use crate::document::Block;
-use crate::media::{RenderPolicy, decode, image_dimensions, render_for_theme};
+use crate::media::{decode, image_dimensions, render_faithful};
 
 /// One figure available in the viewer: its display name, source location, raw
 /// bytes (for save + protocol build), and pixel size.
 pub struct Figure {
     /// Section (chapter) the figure lives in.
     pub section: usize,
+    /// The figure's index among its section's images (matches `LineKind::Image`),
+    /// so jumping lands on the figure rather than the chapter top.
+    pub image_index: usize,
     /// Display name: caption → alt text → "Figure N".
     pub name: String,
     /// Full caption text (shown under the image; empty when none).
     pub caption: String,
-    /// Text locator for jumping to the figure's place (caption / alt), if any.
-    pub locator: Option<String>,
     /// Raw encoded image bytes.
     pub bytes: Vec<u8>,
     /// Pixel dimensions, if decodable.
@@ -28,6 +29,8 @@ pub struct Figure {
 /// Collect the renderable figures from a section's blocks into `out`, naming any
 /// caption-less, alt-less figure "Figure {n}" counted across the whole list.
 pub fn collect_figures(blocks: &[Block], section: usize, out: &mut Vec<Figure>) {
+    // Counts every image (incl. equation/empty ones) to match `LineKind::Image`.
+    let mut image_index = 0usize;
     for b in blocks {
         let Block::Image {
             alt,
@@ -39,6 +42,8 @@ pub fn collect_figures(blocks: &[Block], section: usize, out: &mut Vec<Figure>) 
         else {
             continue;
         };
+        let idx = image_index;
+        image_index += 1;
         // Skip equations-as-images (display math); the viewer is for real figures.
         if data.is_empty() || *math {
             continue;
@@ -57,15 +62,11 @@ pub fn collect_figures(blocks: &[Block], section: usize, out: &mut Vec<Figure>) 
         } else {
             format!("Figure {}", out.len() + 1)
         };
-        let locator = [caption_text.as_str(), alt.trim()]
-            .into_iter()
-            .find(|s| !s.is_empty())
-            .map(|s| s.chars().take(40).collect());
         out.push(Figure {
             section,
+            image_index: idx,
             name,
             caption: caption_text,
-            locator,
             dims: image_dimensions(data),
             bytes: data.clone(),
         });
@@ -141,17 +142,12 @@ impl ImageViewer {
         self.sel = (self.sel as isize + delta).rem_euclid(n) as usize;
     }
 
-    /// Build (or reuse) the protocol for the selected figure, themed by `policy`.
-    pub fn ensure_proto(
-        &mut self,
-        picker: &Picker,
-        policy: RenderPolicy,
-    ) -> Option<&mut StatefulProtocol> {
+    /// Build (or reuse) the faithful protocol for the selected figure.
+    pub fn ensure_proto(&mut self, picker: &Picker) -> Option<&mut StatefulProtocol> {
         let fi = *self.view.get(self.sel)?;
         if self.proto_for != Some(fi) {
-            self.proto = decode(&self.figs[fi].bytes).map(|img| {
-                picker.new_resize_protocol(render_for_theme(&img, policy.tint, policy.mode))
-            });
+            self.proto = decode(&self.figs[fi].bytes)
+                .map(|img| picker.new_resize_protocol(render_faithful(&img)));
             self.proto_for = Some(fi);
         }
         self.proto.as_mut()
