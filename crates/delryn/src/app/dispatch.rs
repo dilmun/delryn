@@ -111,13 +111,19 @@ impl App {
         }
     }
 
-    /// Open the image viewer, listing the current chapter's figures by default.
+    /// Open the image viewer on the current chapter's figures, selecting the one
+    /// nearest the current reading position.
     fn open_images(&mut self) {
         let (Some(_picker), Some(reader)) = (self.picker.as_ref(), self.reader.as_mut()) else {
             return;
         };
+        let current = reader.current_image_index();
         let figs = reader.figures(false);
-        self.image_view = ImageViewer::new(figs, false);
+        let mut viewer = ImageViewer::new(figs, false);
+        if let (Some(v), Some(idx)) = (viewer.as_mut(), current) {
+            v.select_image(idx);
+        }
+        self.image_view = viewer;
     }
 
     /// Rebuild the viewer toggling between current-chapter and whole-book scope.
@@ -159,6 +165,29 @@ impl App {
             }
             return;
         }
+        // Save-path editing mode captures every key.
+        if self.image_view.as_ref().is_some_and(|v| v.saving) {
+            if let Some(v) = self.image_view.as_mut() {
+                match key.code {
+                    KeyCode::Esc => v.saving = false,
+                    KeyCode::Enter => {
+                        let path = v.save_path.clone();
+                        let msg = v.save_to(&path);
+                        v.saving = false;
+                        v.flash = Some(msg);
+                    }
+                    KeyCode::Backspace => {
+                        v.save_path.pop();
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        v.save_path.clear();
+                    }
+                    KeyCode::Char(c) => v.save_path.push(c),
+                    _ => {}
+                }
+            }
+            return;
+        }
         // Clear any transient flash (e.g. "saved …") on the next key.
         if let Some(v) = self.image_view.as_mut() {
             v.flash = None;
@@ -180,10 +209,21 @@ impl App {
                     v.filtering = true;
                 }
             }
+            // Save: open an editable path prompt prefilled with the default dir.
             KeyCode::Char('s') => {
-                let msg = self.image_view.as_ref().and_then(|v| v.save_current());
                 if let Some(v) = self.image_view.as_mut() {
-                    v.flash = msg;
+                    v.save_path = v.default_save_path();
+                    v.saving = true;
+                }
+            }
+            // Copy the figure to the system clipboard.
+            KeyCode::Char('c') => {
+                let img = self.image_view.as_ref().and_then(|v| v.current_rgba());
+                if let Some(rgba) = img {
+                    self.pending_clipboard_image = Some(rgba);
+                    if let Some(v) = self.image_view.as_mut() {
+                        v.flash = Some("copied to clipboard".into());
+                    }
                 }
             }
             KeyCode::Char('w') => self.toggle_image_scope(),

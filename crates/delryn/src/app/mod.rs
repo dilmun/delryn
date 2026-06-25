@@ -138,6 +138,9 @@ pub struct App {
     pub edit_total: usize,
     /// Open image viewer overlay, if any.
     pub image_view: Option<ImageViewer>,
+    /// An image queued for the system clipboard (`(w, h, RGBA)`), set by the
+    /// viewer's copy action and drained by the main loop.
+    pub pending_clipboard_image: Option<(u32, u32, Vec<u8>)>,
     /// Detected terminal image protocol (None if unsupported / headless).
     pub picker: Option<Picker>,
     /// Background builder for inline-image protocols.
@@ -349,6 +352,7 @@ impl App {
             edit_queue: Vec::new(),
             edit_total: 0,
             image_view: None,
+            pending_clipboard_image: None,
             picker: None,
             image_builder: None,
             session_start: Some(Instant::now()),
@@ -414,6 +418,7 @@ impl App {
             edit_queue: Vec::new(),
             edit_total: 0,
             image_view: None,
+            pending_clipboard_image: None,
             picker: None,
             image_builder: None,
             session_start: None,
@@ -529,6 +534,11 @@ impl App {
     /// Text queued for the system clipboard (OSC 52), if any.
     pub fn take_clipboard(&mut self) -> Option<String> {
         self.reader.as_mut().and_then(|r| r.take_clipboard())
+    }
+
+    /// An image queued for the system clipboard (`(w, h, RGBA)`), if any.
+    pub fn take_clipboard_image(&mut self) -> Option<(u32, u32, Vec<u8>)> {
+        self.pending_clipboard_image.take()
     }
 
     /// Whether any blocking overlay/popup is currently open. The main loop forces

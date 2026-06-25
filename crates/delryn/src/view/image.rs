@@ -44,6 +44,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
         Some(flash) => format!(" {flash} "),
         None => format!(" Figures · {pos}/{count} · {scope} · {mode_label} "),
     };
+    // The footer shows the active text prompt, else the shortcut legend.
+    let footer = if viewer.filtering {
+        format!(" filter: {} ", viewer.filter)
+    } else if viewer.saving {
+        format!(" save to: {} ", viewer.save_path)
+    } else {
+        " ↑↓ select · ⏎ go · / filter · w chapter/book · m mode · c copy · s save · Esc "
+            .to_string()
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -55,7 +64,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Line::from(Span::styled(
-            " ↑↓ select · ⏎ go · / filter · w chapter/book · m mode · s save · Esc close ",
+            footer,
             Style::default().fg(theme.muted),
         )))
         .style(Style::default().fg(theme.fg).bg(bg));
