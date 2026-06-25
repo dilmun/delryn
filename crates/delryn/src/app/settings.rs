@@ -7,9 +7,12 @@ use super::{App, Mode};
 use crate::config::Config;
 
 /// Open settings popup. Scoped to the mode it was opened from — Reading settings
-/// in the reader, Library settings in the library — so the two never mix.
+/// in the reader, Library settings in the library — so the two never mix. Options
+/// are grouped into [`SettingTab`]s; `tab` is the active one and `row` the cursor
+/// within it.
 pub struct Settings {
     pub scope: Mode,
+    pub tab: usize,
     pub row: usize,
 }
 
@@ -125,60 +128,99 @@ pub enum SettingRow {
     Item(SettingItem),
 }
 
-/// The grouped rows for a settings scope (section headers + items). Each scope
-/// is self-contained: the reader shows only reading settings, the library only
-/// library settings (global toggles like Theme/Mouse appear in both).
-pub fn settings_rows(scope: Mode) -> Vec<SettingRow> {
+/// A top-level group of settings shown under one tab.
+pub struct SettingTab {
+    pub title: &'static str,
+    pub rows: Vec<SettingRow>,
+}
+
+/// The tabs for a settings scope. Each scope is self-contained: the reader shows
+/// only reading settings, the library only library settings (global toggles like
+/// Theme/Mouse appear in both). Within a tab, [`SettingRow::Section`] headers
+/// sub-group related options.
+pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
     use SettingItem::*;
     use SettingRow::{Item as I, Section as S};
+    let tab = |title, rows| SettingTab { title, rows };
     match scope {
         Mode::Reader => vec![
-            S("Profile"),
-            I(ReadingMode),
-            S("Typography"),
-            I(Theme),
-            I(ViewMode),
-            I(SidePadding),
-            I(PageGap),
-            I(LineSpacing),
-            I(ParagraphSpacing),
-            S("Chrome"),
-            I(ShowSidebar),
-            I(ShowStatus),
-            S("Status bar segments"),
-            I(StatusTheme),
-            I(StatusView),
-            I(StatusPosition),
-            I(StatusPercent),
-            I(StatusGauge),
-            S("Content"),
-            I(ImageMaxPx),
-            I(ImageWidthPct),
-            I(ImageMode),
-            I(CodeWrap),
-            I(TableWrap),
-            I(Paged),
-            I(ChapterLock),
-            S("Input"),
-            I(Mouse),
+            tab(
+                "Reading",
+                vec![
+                    S("Profile"),
+                    I(ReadingMode),
+                    S("Typography"),
+                    I(Theme),
+                    I(ViewMode),
+                    I(SidePadding),
+                    I(PageGap),
+                    I(LineSpacing),
+                    I(ParagraphSpacing),
+                ],
+            ),
+            tab(
+                "Chrome",
+                vec![
+                    S("Panes"),
+                    I(ShowSidebar),
+                    I(ShowStatus),
+                    S("Status bar segments"),
+                    I(StatusTheme),
+                    I(StatusView),
+                    I(StatusPosition),
+                    I(StatusPercent),
+                    I(StatusGauge),
+                ],
+            ),
+            tab(
+                "Content",
+                vec![
+                    S("Images"),
+                    I(ImageMaxPx),
+                    I(ImageWidthPct),
+                    I(ImageMode),
+                    S("Blocks"),
+                    I(CodeWrap),
+                    I(TableWrap),
+                    S("Pagination"),
+                    I(Paged),
+                    I(ChapterLock),
+                ],
+            ),
+            tab("Input", vec![S("Mouse"), I(Mouse)]),
         ],
         Mode::Library => {
-            let mut rows = vec![S("View"), I(LibLayout), I(GridSize), S("Columns")];
             // The star + Title columns are always on; the rest are user-toggled.
-            rows.extend(
+            let mut columns = vec![S("Show / hide")];
+            columns.extend(
                 crate::config::LIB_COLUMNS
                     .iter()
-                    .map(|(key, _)| I(SettingItem::Column(key))),
+                    .map(|(key, _)| I(Column(key))),
             );
-            rows.extend([S("Appearance"), I(Theme), S("Input"), I(Mouse)]);
-            rows
+            vec![
+                tab("View", vec![S("Layout"), I(LibLayout), I(GridSize)]),
+                tab("Columns", columns),
+                tab(
+                    "General",
+                    vec![S("Appearance"), I(Theme), S("Input"), I(Mouse)],
+                ),
+            ]
         }
     }
 }
 
-/// Index of the first selectable item in a scope (skips a leading section header).
-pub fn first_setting_row(scope: Mode) -> usize {
-    settings_rows(scope)
+/// The rows of one tab (empty if the index is out of range).
+pub fn tab_rows(scope: Mode, tab: usize) -> Vec<SettingRow> {
+    settings_tabs(scope)
+        .into_iter()
+        .nth(tab)
+        .map(|t| t.rows)
+        .unwrap_or_default()
+}
+
+/// Index of the first selectable item in a tab (skips a leading section header).
+pub fn first_setting_row(scope: Mode, tab: usize) -> usize {
+    tab_rows(scope, tab)
         .iter()
         .position(|r| matches!(r, SettingRow::Item(_)))
         .unwrap_or(0)
@@ -194,6 +236,8 @@ impl App {
                 self.settings = None;
                 self.config.save();
             }
+            KeyCode::Tab => self.settings_tab(1),
+            KeyCode::BackTab => self.settings_tab(-1),
             KeyCode::Char('j') | KeyCode::Down => self.settings_move(1),
             KeyCode::Char('k') | KeyCode::Up => self.settings_move(-1),
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.settings_change(1),
@@ -202,12 +246,30 @@ impl App {
         }
     }
 
-    /// Move the settings cursor by `delta` items, skipping section headers.
+    /// Switch tab by `delta` (wrapping), parking the cursor on its first option.
+    fn settings_tab(&mut self, delta: isize) {
+        let Some(s) = self.settings.as_ref() else {
+            return;
+        };
+        let n = settings_tabs(s.scope).len();
+        if n == 0 {
+            return;
+        }
+        let tab = (s.tab as isize + delta).rem_euclid(n as isize) as usize;
+        let row = first_setting_row(s.scope, tab);
+        if let Some(s) = self.settings.as_mut() {
+            s.tab = tab;
+            s.row = row;
+        }
+    }
+
+    /// Move the settings cursor by `delta` items within the active tab, skipping
+    /// section headers.
     fn settings_move(&mut self, delta: isize) {
         let Some(s) = self.settings.as_ref() else {
             return;
         };
-        let rows = settings_rows(s.scope);
+        let rows = tab_rows(s.scope, s.tab);
         let items: Vec<usize> = rows
             .iter()
             .enumerate()
@@ -229,8 +291,8 @@ impl App {
         let Some(s) = self.settings.as_ref() else {
             return;
         };
-        // Resolve the focused row to a setting identity.
-        let Some(SettingRow::Item(item)) = settings_rows(s.scope).into_iter().nth(s.row) else {
+        // Resolve the focused row (in the active tab) to a setting identity.
+        let Some(SettingRow::Item(item)) = tab_rows(s.scope, s.tab).into_iter().nth(s.row) else {
             return;
         };
         let c = &mut self.config;

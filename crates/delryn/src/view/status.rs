@@ -62,7 +62,10 @@ fn legend(app: &App) -> Option<(String, String)> {
         return Some((c.question.clone(), "y/⏎ confirm · n/Esc cancel".into()));
     }
     if app.settings.is_some() {
-        return Some(("Settings".into(), "↑↓ move · ←→ change · Esc close".into()));
+        return Some((
+            "Settings".into(),
+            "Tab section · ↑↓ move · ←→ change · Esc close".into(),
+        ));
     }
     if let Some(p) = &app.shelf_picker {
         let keys = if p.new_name.is_some() {
