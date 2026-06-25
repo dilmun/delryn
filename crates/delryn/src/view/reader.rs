@@ -93,7 +93,7 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.muted))
         .title(Span::styled(
-            "Contents",
+            " Contents ",
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
