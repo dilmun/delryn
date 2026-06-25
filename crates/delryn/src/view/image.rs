@@ -37,6 +37,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
     f.render_widget(Clear, area);
 
+    // The selected figure's details (read once; used by the title badge below
+    // and the under-image strip).
+    let (dims, caption, section) = match viewer.current() {
+        Some(fig) => (fig.dims, fig.caption.clone(), fig.section),
+        None => (None, String::new(), 0),
+    };
+
     // Outer frame: position + scope, or a transient flash (e.g. "saved …").
     let (pos, count) = viewer.position();
     let scope = if viewer.whole_book { "book" } else { "chapter" };
@@ -53,7 +60,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         " ↑↓ select · ⏎ go · / filter · w chapter/book · m mode · c copy · s save · Esc "
             .to_string()
     };
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
@@ -68,6 +75,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
             Style::default().fg(theme.muted),
         )))
         .style(Style::default().fg(theme.fg).bg(bg));
+    // Pixel dimensions as a right-aligned metadata badge in the top border.
+    if let Some((w, h)) = dims {
+        block = block.title(
+            Line::from(Span::styled(
+                format!(" {w}×{h}px "),
+                Style::default().fg(theme.muted),
+            ))
+            .alignment(Alignment::Right),
+        );
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -133,12 +150,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
         }
     }
 
-    // Read the selected figure's details before the mutable proto build.
-    let (dims, caption, section) = match viewer.current() {
-        Some(fig) => (fig.dims, fig.caption.clone(), fig.section),
-        None => (None, String::new(), 0),
-    };
-
     // Compose the image + its details as one block, centered in the right pane
     // with equal padding; the image scales (up or down) to fill the space above
     // the details, and the whole group is centered vertically.
@@ -165,19 +176,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
         height: DETAIL_H,
     };
 
-    // Details, centered under the image: chapter + dimensions, then the caption
-    // (only when the figure actually has one — no synthetic "Figure N").
-    let mut meta: Vec<Span> = vec![Span::styled(
+    // Details, centered under the image: the chapter, then the caption (only
+    // when the figure has one — no synthetic "Figure N"). Dimensions live in the
+    // title badge.
+    let mut dlines = vec![Line::from(Span::styled(
         chapter_label(section),
         Style::default().fg(theme.heading),
-    )];
-    if let Some((w, h)) = dims {
-        meta.push(Span::styled(
-            format!("   {w}×{h}px"),
-            Style::default().fg(theme.muted),
-        ));
-    }
-    let mut dlines = vec![Line::from(meta)];
+    ))];
     if !caption.is_empty() {
         dlines.push(Line::from(Span::styled(
             caption,
