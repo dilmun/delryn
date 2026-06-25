@@ -10,7 +10,9 @@ pub mod naming;
 pub mod status;
 pub mod toc;
 
-pub use content::{Anchor, Block, CalloutKind, Inline, Section, Span, TableCell, find_footnote};
+pub use content::{
+    Anchor, Block, CalloutKind, ImageWidth, Inline, Section, Span, TableCell, find_footnote,
+};
 pub use metadata::Metadata;
 pub use status::ReadingStatus;
 pub use toc::{OutlineItem, TocEntry};

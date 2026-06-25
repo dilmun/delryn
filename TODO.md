@@ -87,6 +87,15 @@ the size guidelines.
       the theme's colours (alpha or luminance matte); photos keep their colours,
       transparency flattened onto the page. Re-tints on theme change. *(Re-test
       the two-page-view "some images don't show" now that visibility is fixed.)*
+- [x] **Consistent figure sizing across books**: pixel resolution is an authoring
+      artifact, not the intended size, so figures used to be wildly inconsistent
+      (a low-res screenshot tiny next to a high-res chart). The parser now keeps
+      the authored width (`<img>` width / inline CSS `width`, `%`/px) on
+      `Block::Image` as `ImageWidth`; `delryn-media::target_cells` sizes figures to
+      a consistent display width — authored width when known, else `image_width_pct`
+      (Settings → Content "Figure width %", default 85%) — enlarging low-res
+      figures up to a bounded `MAX_UPSCALE` (2.5×, so tiny icons aren't blown up)
+      but never past the column/viewport. Equation images keep native size.
 
 Phase 1 content model is complete end-to-end (parse → rich `Block` → render).
 The deferred bits are all *interactive navigation*, gathered into Phase 2's

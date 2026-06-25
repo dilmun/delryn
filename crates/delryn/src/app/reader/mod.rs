@@ -100,8 +100,8 @@ pub struct Reader {
     /// Reserved rows per image index, estimated up front so reflow doesn't wait
     /// on the background build.
     image_rows_estimate: Vec<u16>,
-    /// (section, avail-cols, max-rows, max-px) the current estimates are for.
-    images_key: (usize, u16, u16, u16),
+    /// (section, avail-cols, max-rows, max-px, width-pct) the estimates are for.
+    images_key: (usize, u16, u16, u16, u16),
     /// Theme tint + mode the current image builds used; a change re-requests them
     /// so images re-render when the theme cycles or the image mode changes.
     images_policy: media::RenderPolicy,
@@ -120,7 +120,7 @@ pub struct Reader {
     /// A transient status-bar message (e.g. "copied"), cleared on next key.
     pub flash: Option<String>,
     /// images_key the current `lines` were wrapped against.
-    wrap_images_key: (usize, u16, u16, u16),
+    wrap_images_key: (usize, u16, u16, u16, u16),
     /// Index of the top visible line within `lines`.
     pub scroll: usize,
     /// Requested but not-yet-applied line movement; eased a few lines per frame
@@ -235,7 +235,7 @@ impl Reader {
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
             section_images: HashMap::new(),
             image_rows_estimate: Vec::new(),
-            images_key: (usize::MAX, 0, 0, 0),
+            images_key: (usize::MAX, 0, 0, 0, 0),
             images_policy: media::RenderPolicy {
                 tint: media::Ink {
                     ink: [0, 0, 0],
@@ -249,7 +249,7 @@ impl Reader {
             pending_clipboard: None,
             pending_open: None,
             flash: None,
-            wrap_images_key: (usize::MAX, 0, 0, 0),
+            wrap_images_key: (usize::MAX, 0, 0, 0, 0),
             scroll: 0,
             scroll_pending: 0,
             focus: Focus::Content,

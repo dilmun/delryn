@@ -4,10 +4,22 @@
 
 use super::*;
 
+/// Map a block's authored width + math flag to the media layer's sizing intent.
+fn size_spec(width: delryn_model::ImageWidth, math: bool) -> media::SizeSpec {
+    let hint = match width {
+        delryn_model::ImageWidth::Auto => media::SizeHint::Auto,
+        delryn_model::ImageWidth::Pct(p) => media::SizeHint::Pct(p),
+        delryn_model::ImageWidth::Px(px) => media::SizeHint::Px(px),
+    };
+    media::SizeSpec { hint, math }
+}
+
 impl Reader {
     /// Collect any finished background image builds, and — when the section or
     /// size changes — estimate each image's rows (cheaply, for reflow) and
     /// dispatch the protocol builds to the worker. Never blocks on encoding.
+    /// `width_pct` is the default figure width (% of column) for unsized images.
+    #[allow(clippy::too_many_arguments)]
     pub fn sync_images(
         &mut self,
         builder: &ImageBuilder,
@@ -15,6 +27,7 @@ impl Reader {
         avail: u16,
         max_rows: u16,
         max_px: u16,
+        width_pct: u16,
         policy: media::RenderPolicy,
     ) {
         // Tell the worker where we are so it can drop builds for far-away
@@ -43,11 +56,11 @@ impl Reader {
 
         // 2. On section/size change, remap the current section and dispatch any
         //    builds it still needs.
-        let key = (self.section, avail, max_rows, max_px);
+        let key = (self.section, avail, max_rows, max_px, width_pct);
         if self.images_key != key || self.images_policy != policy {
             self.images_key = key;
             self.images_policy = policy;
-            self.remap_section_images(builder, picker, avail, max_rows, max_px, policy);
+            self.remap_section_images(builder, picker, avail, max_rows, max_px, width_pct, policy);
         }
 
         // 3. Keep the visible section's images most-recently-used so they aren't
@@ -59,12 +72,13 @@ impl Reader {
 
         // 4. Pre-build neighbouring sections' images once the current one is ready.
         if !self.images_pending() {
-            self.prefetch_neighbor_images(builder, avail, max_rows, max_px, policy);
+            self.prefetch_neighbor_images(builder, avail, max_rows, max_px, width_pct, policy);
         }
     }
 
     /// Map the current section's images to cache keys, estimate their rows for
     /// reflow, and request builds for any not already cached/in-flight/failed.
+    #[allow(clippy::too_many_arguments)]
     fn remap_section_images(
         &mut self,
         builder: &ImageBuilder,
@@ -72,6 +86,7 @@ impl Reader {
         avail: u16,
         max_rows: u16,
         max_px: u16,
+        width_pct: u16,
         policy: media::RenderPolicy,
     ) {
         // A failed build is only blacklisted until the next remap (section change,
@@ -84,17 +99,30 @@ impl Reader {
         let (fw, fh) = (fs.width, fs.height);
         let mut section_images = HashMap::new();
         let mut estimates = Vec::new();
-        let mut requests: Vec<(ImgKey, Vec<u8>)> = Vec::new();
+        let mut requests: Vec<(ImgKey, Vec<u8>, media::SizeSpec)> = Vec::new();
         let mut idx = 0;
         for block in &self.blocks {
-            if let Block::Image { data, .. } = block {
+            if let Block::Image {
+                data, math, width, ..
+            } = block
+            {
+                let spec = size_spec(*width, *math);
                 let key = ImgKey {
                     section: self.section,
                     idx,
                     avail,
                     max_rows,
                     max_px,
+                    target_pct: width_pct,
                     policy,
+                };
+                let fit = media::FitBox {
+                    fw,
+                    fh,
+                    cols: avail,
+                    rows: max_rows,
+                    max_px,
+                    target_pct: width_pct,
                 };
                 let rows = if let Some(plan) = self.image_cache.peek(&key) {
                     plan.rows
@@ -102,7 +130,7 @@ impl Reader {
                     0
                 } else {
                     media::image_dimensions(data)
-                        .map(|(w, h)| media::target_cells(w, h, fw, fh, avail, max_rows, max_px).1)
+                        .map(|(w, h)| media::target_cells(w, h, fit, spec).1)
                         .unwrap_or(0)
                 };
                 estimates.push(rows);
@@ -112,7 +140,7 @@ impl Reader {
                     && !self.img_requested.contains(&key)
                     && !self.img_failed.contains(&key)
                 {
-                    requests.push((key, data.clone()));
+                    requests.push((key, data.clone(), spec));
                 }
                 idx += 1;
             }
@@ -129,9 +157,9 @@ impl Reader {
         {
             self.image_cache.resize(cap);
         }
-        for (k, bytes) in requests {
+        for (k, bytes, spec) in requests {
             self.img_requested.insert(k);
-            builder.request(k, bytes);
+            builder.request(k, bytes, spec);
         }
     }
 
@@ -143,11 +171,12 @@ impl Reader {
         avail: u16,
         max_rows: u16,
         max_px: u16,
+        width_pct: u16,
         policy: media::RenderPolicy,
     ) {
         let n = self.doc.section_count();
         let neighbors = [self.section + 1, self.section.wrapping_sub(1)];
-        let mut requests: Vec<(ImgKey, Vec<u8>)> = Vec::new();
+        let mut requests: Vec<(ImgKey, Vec<u8>, media::SizeSpec)> = Vec::new();
         for &sec in &neighbors {
             if sec >= n || sec == self.section {
                 continue;
@@ -157,7 +186,10 @@ impl Reader {
             };
             let mut idx = 0;
             for block in blocks {
-                if let Block::Image { data, .. } = block {
+                if let Block::Image {
+                    data, math, width, ..
+                } = block
+                {
                     if !data.is_empty() {
                         let key = ImgKey {
                             section: sec,
@@ -165,22 +197,23 @@ impl Reader {
                             avail,
                             max_rows,
                             max_px,
+                            target_pct: width_pct,
                             policy,
                         };
                         if !self.image_cache.contains(&key)
                             && !self.img_requested.contains(&key)
                             && !self.img_failed.contains(&key)
                         {
-                            requests.push((key, data.clone()));
+                            requests.push((key, data.clone(), size_spec(*width, *math)));
                         }
                     }
                     idx += 1;
                 }
             }
         }
-        for (k, bytes) in requests {
+        for (k, bytes, spec) in requests {
             self.img_requested.insert(k);
-            builder.request(k, bytes);
+            builder.request(k, bytes, spec);
         }
     }
 
