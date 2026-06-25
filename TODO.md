@@ -141,6 +141,12 @@ jump-by-type + a reader cursor.
       sidebar, the image viewer, and the library (sidebar + detail), whose panes
       are now percentage-based — `<`/`>` adjust the percentage so they scale with
       the window. Any future multi-pane view uses the same helpers.
+- [x] **Tabbed settings overlay**: options grouped into tabs (`Tab`/`Shift-Tab`
+      switch, wrapping) instead of one long list — Reader: Reading / Chrome /
+      Content / Input; Library: View / Columns / General. Pill tab strip on the
+      accent, section sub-headers within a tab, and the body scrolls (cursor
+      centered, slim scrollbar on overflow) so options are always reachable on a
+      short terminal. `↑↓` move, `←→` change.
 
 ## Phase 3 — Library platform
 
