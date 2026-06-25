@@ -178,6 +178,10 @@ pub struct App {
     /// Active sort key and direction for the book list.
     pub lib_sort: SortKey,
     pub lib_sort_desc: bool,
+    /// Sort keys for the currently visible columns, in display order — the `s`
+    /// cycle. Set each frame from the rendered columns so hidden / collapsed
+    /// columns are skipped.
+    pub lib_sort_cycle: Vec<SortKey>,
     pub lib_filter: String,
     pub lib_filtering: bool,
     /// Transient message shown in the library status bar (e.g. cover embedded);
@@ -373,6 +377,7 @@ impl App {
             lib_side_new: false,
             lib_sort: SortKey::Default,
             lib_sort_desc: false,
+            lib_sort_cycle: Vec::new(),
             lib_filter: String::new(),
             lib_filtering: false,
             lib_flash: None,
@@ -439,6 +444,7 @@ impl App {
             lib_side_new: false,
             lib_sort: SortKey::Default,
             lib_sort_desc: false,
+            lib_sort_cycle: Vec::new(),
             lib_filter: String::new(),
             lib_filtering: false,
             lib_flash: None,
@@ -957,13 +963,34 @@ mod tests {
         };
         assert_eq!(titles(&app), ["A", "B", "C"], "All section sorts by title");
 
-        // Default → Title → Author → Year.
+        // `s` steps each key ascending → descending before advancing to the
+        // next key: Default → Title↑ → Title↓ → Author↑ → …
         app.on_key(key('s'));
-        app.on_key(key('s'));
-        app.on_key(key('s'));
-        assert_eq!(app.lib_sort, SortKey::Year);
-        assert_eq!(titles(&app), ["B", "C", "A"], "year ascending");
+        assert_eq!(app.lib_sort, SortKey::Title);
+        assert!(!app.lib_sort_desc);
+        assert_eq!(titles(&app), ["A", "B", "C"], "title ascending");
 
+        app.on_key(key('s'));
+        assert_eq!(app.lib_sort, SortKey::Title);
+        assert!(
+            app.lib_sort_desc,
+            "second press flips the same key to descending"
+        );
+        assert_eq!(titles(&app), ["C", "B", "A"], "title descending");
+
+        app.on_key(key('s'));
+        assert_eq!(
+            app.lib_sort,
+            SortKey::Author,
+            "third press advances the key"
+        );
+        assert!(!app.lib_sort_desc, "advancing a key resets to ascending");
+
+        // `S` flips direction in place without changing the key.
+        app.lib_sort = SortKey::Year;
+        app.lib_sort_desc = false;
+        app.refresh_library();
+        assert_eq!(titles(&app), ["B", "C", "A"], "year ascending");
         app.on_key(key('S'));
         assert!(app.lib_sort_desc);
         assert_eq!(titles(&app), ["A", "C", "B"], "year descending");

@@ -13,7 +13,7 @@ use ratatui::widgets::{
 use ratatui_image::{Resize, StatefulImage};
 
 use crate::app::{App, LibPane, LibView, SortKey};
-use crate::config::LibLayout;
+use crate::config::{Config, LibLayout};
 use crate::store::{BookRow, LibrarySection};
 use crate::theme::Theme;
 
@@ -34,6 +34,8 @@ mod detail;
 mod grid;
 mod sections;
 mod status;
+
+pub(crate) use books::sort_cycle;
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;

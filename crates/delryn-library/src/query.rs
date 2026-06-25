@@ -42,6 +42,29 @@ pub enum Flag {
     Reading,
     /// Read to (near) the end.
     Finished,
+    /// Manual override: paused.
+    Paused,
+    /// Manual override: dropped.
+    Dropped,
+    /// Manual override: kept as a reference.
+    Reference,
+}
+
+impl Flag {
+    /// The reading status this flag denotes, if it is a status flag (else `None`
+    /// for `Favorite` / `Converted`).
+    fn status(self) -> Option<delryn_model::ReadingStatus> {
+        use delryn_model::ReadingStatus as RS;
+        Some(match self {
+            Flag::Unread => RS::Unread,
+            Flag::Reading => RS::Reading,
+            Flag::Finished => RS::Finished,
+            Flag::Paused => RS::Paused,
+            Flag::Dropped => RS::Dropped,
+            Flag::Reference => RS::Reference,
+            _ => return None,
+        })
+    }
 }
 
 /// Comparison operator. `Colon` is the field-default (substring for text,
@@ -56,9 +79,6 @@ pub enum Op {
     Gt,
     Ge,
 }
-
-/// Progress percent at/above which a book counts as finished.
-const FINISHED_PCT: u8 = 98;
 
 // --- Parsing ---------------------------------------------------------------
 
@@ -245,6 +265,9 @@ fn flag_from_word(w: &str) -> Option<Flag> {
         "unread" | "new" => Flag::Unread,
         "reading" | "started" | "inprogress" => Flag::Reading,
         "finished" | "done" | "complete" => Flag::Finished,
+        "paused" => Flag::Paused,
+        "dropped" | "abandoned" => Flag::Dropped,
+        "reference" | "ref" => Flag::Reference,
         _ => return None,
     })
 }
@@ -288,9 +311,11 @@ impl Term {
             Term::Flag(flag) => match flag {
                 Flag::Favorite => b.favorite,
                 Flag::Converted => b.converted,
-                Flag::Unread => b.pct == 0,
-                Flag::Reading => b.pct > 0 && b.pct < FINISHED_PCT,
-                Flag::Finished => b.pct >= FINISHED_PCT,
+                // Status flags compare against the single *effective* status
+                // (a manual override wins), so they stay mutually exclusive.
+                _ => flag.status().is_some_and(|want| {
+                    delryn_model::ReadingStatus::effective(b.pct, &b.status) == want
+                }),
             },
             Term::Field { key, op, value } => match_field(key, *op, value, b),
         }
@@ -379,6 +404,7 @@ mod tests {
             language: "en".into(),
             converted: false,
             rating: 4,
+            status: String::new(),
         }
     }
 
@@ -418,6 +444,20 @@ mod tests {
         assert!(!parse("converted").matches(&book()));
         assert!(parse("status:reading").matches(&book()));
         assert!(!parse("status:finished").matches(&book()));
+    }
+
+    #[test]
+    fn manual_status_overrides_progress() {
+        let mut b = book(); // pct 42 → reading by progress
+        b.status = "paused".into();
+        // The manual override wins: paused, not reading.
+        assert!(parse("paused").matches(&b));
+        assert!(parse("status:paused").matches(&b));
+        assert!(!parse("reading").matches(&b));
+        // A dropped/reference book likewise isn't "reading".
+        b.status = "dropped".into();
+        assert!(parse("dropped").matches(&b));
+        assert!(!parse("paused").matches(&b));
     }
 
     #[test]

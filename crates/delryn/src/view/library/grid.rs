@@ -9,6 +9,8 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
     let inner = block.inner(area);
     f.render_widget(block, area);
     let area = inner;
+    // The grid has no columns, so the `s` sort cycle follows all enabled ones.
+    app.lib_sort_cycle = super::sort_cycle(&app.config, false, u16::MAX);
     if app.lib_books.is_empty() {
         let msg = if app.config.library_paths.is_empty() {
             "No library configured.\n\nAdd a folder:  delryn --add <dir>"
