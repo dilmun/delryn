@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS annotations (
     note       TEXT NOT NULL DEFAULT '',
     name       TEXT NOT NULL DEFAULT '',
     folder     TEXT NOT NULL DEFAULT '',
+    kind       INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS shelves (
@@ -213,6 +214,14 @@ impl Store {
                 [],
             );
         }
+        // Kind discriminator (0 = bookmark, 1 = note). Notes are a Phase 4 concern;
+        // bookmarks stay a pure list. Tag any pre-existing note-bearing rows as
+        // notes so they don't surface in the bookmarks overlay.
+        let _ = conn.execute(
+            "ALTER TABLE annotations ADD COLUMN kind INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute("UPDATE annotations SET kind = 1 WHERE note <> ''", []);
         // First-class collections: seed the names table from existing memberships
         // so collections created before this migration keep showing.
         let _ = conn.execute(
@@ -326,24 +335,24 @@ mod tests {
 
         assert!(store.load_progress("/books/missing.epub").is_none());
 
-        // Annotations + reading time.
-        store.add_annotation("/books/a.epub", 3, "the quote", "");
-        store.add_annotation("/books/a.epub", 5, "another", "my note");
-        let anns = store.list_annotations("/books/a.epub");
-        assert_eq!(anns.len(), 2);
-        assert_eq!(anns[0].section, 3);
-        assert_eq!(anns[1].note, "my note");
-        store.delete_annotation(anns[0].id);
-        assert_eq!(store.list_annotations("/books/a.epub").len(), 1);
+        // Bookmarks: quick drops, delete, and folder grouping.
+        store.add_bookmark("/books/a.epub", 3, "the quote");
+        store.add_bookmark("/books/a.epub", 5, "another");
+        let marks = store.list_bookmarks("/books/a.epub");
+        assert_eq!(marks.len(), 2);
+        assert_eq!(marks[0].section, 3);
+        store.delete_annotation(marks[0].id);
+        let marks = store.list_bookmarks("/books/a.epub");
+        assert_eq!(marks.len(), 1);
 
         // Names and folders: a name labels the bookmark; folders group entries.
-        let kept = store.list_annotations("/books/a.epub")[0].id;
+        let kept = marks[0].id;
         store.set_annotation_name(kept, "Key idea");
         store.set_annotation_folder(kept, "Research");
-        store.add_annotation("/books/a.epub", 1, "intro line", ""); // ungrouped
-        store.add_annotation("/books/a.epub", 2, "method line", "");
+        store.add_bookmark("/books/a.epub", 1, "intro line"); // ungrouped
+        store.add_bookmark("/books/a.epub", 2, "method line");
         let method = store
-            .list_annotations("/books/a.epub")
+            .list_bookmarks("/books/a.epub")
             .into_iter()
             .find(|a| a.section == 2)
             .unwrap()
@@ -351,7 +360,7 @@ mod tests {
         store.set_annotation_folder(method, "Research");
 
         // Named folders sort before ungrouped; within a folder, by reading order.
-        let grouped = store.list_annotations("/books/a.epub");
+        let grouped = store.list_bookmarks("/books/a.epub");
         assert_eq!(
             grouped
                 .iter()

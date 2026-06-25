@@ -74,7 +74,7 @@ fn legend(app: &App) -> Option<(String, String)> {
     }
     if app.annot.is_some() {
         return Some((
-            "Bookmarks & Notes".into(),
+            "Bookmarks".into(),
             "↑↓ move · ⏎ jump · r name · f folder · d delete · Esc close".into(),
         ));
     }

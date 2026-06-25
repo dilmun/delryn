@@ -249,11 +249,47 @@ fn render_column(
         text_area,
     );
 
+    // Bookmark ribbons in the left margin (only where padding gives us a cell).
+    if left_pad > 0 {
+        draw_gutter(f, text_area, reader, reader.scroll, theme);
+    }
+
     // Defer the (blocking) image transmit until scrolling settles, so motion
     // stays smooth; the figure pops in when you stop.
     if images.is_some() && !reader.is_scrolling() {
         draw_images_in(f, text_area, reader, reader.scroll);
     }
+}
+
+/// Draw the bookmark ribbon in the margin cell immediately left of a text column,
+/// for any bookmarked line visible in `[top, top + height)`. A no-op when that
+/// cell would fall off the screen (the caller gates on having real margin).
+fn draw_gutter(f: &mut Frame, text_area: Rect, reader: &Reader, top: usize, theme: Theme) {
+    let Some(x) = text_area.x.checked_sub(1) else {
+        return;
+    };
+    let gutter = Rect {
+        x,
+        y: text_area.y,
+        width: 1,
+        height: text_area.height,
+    };
+    let ribbon = Style::default()
+        .fg(theme.accent)
+        .add_modifier(Modifier::BOLD);
+    let lines: Vec<Line> = (0..text_area.height as usize)
+        .map(|row| {
+            if reader.is_bookmark_line(top + row) {
+                Line::from(Span::styled("▐", ribbon))
+            } else {
+                Line::raw("")
+            }
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(Text::from(lines)).style(theme.text_style()),
+        gutter,
+    );
 }
 
 /// Draw the ready figure images that intersect `[top, top+height)` of the line
@@ -364,6 +400,13 @@ fn render_two_page(
         Paragraph::new(Text::from(right)).style(theme.text_style()),
         right_area,
     );
+
+    // Bookmark ribbons: the left column uses the outer margin (when present), the
+    // right column the inter-column gap (always ≥ a cell wide).
+    if side_pad > 0 {
+        draw_gutter(f, left_area, reader, reader.scroll, theme);
+    }
+    draw_gutter(f, right_area, reader, reader.scroll + h, theme);
 
     // Images: left column shows the first `h` rows, right column the next `h`.
     // Deferred while scrolling so the heavy transmit doesn't stutter motion.

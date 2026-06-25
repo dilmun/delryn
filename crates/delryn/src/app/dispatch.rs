@@ -162,47 +162,42 @@ impl App {
         }
     }
 
-    /// Apply the committed prompt text to its target (new note / rename / file),
-    /// then dismiss the prompt. Rename/file refresh the open overlay in place.
+    /// Apply the committed prompt text to its bookmark (rename / file), then
+    /// dismiss the prompt and refresh the open overlay in place.
     fn prompt_commit(&mut self) {
         let Some(p) = self.prompt.take() else {
             return;
         };
         let text = p.buffer.trim().to_string();
-        match p.kind {
-            PromptKind::Note => {
-                if let (Some(store), Some(r)) = (&self.store, &self.reader)
-                    && !self.book_path.is_empty()
-                {
-                    store.add_annotation(&self.book_path, r.section, &r.current_quote(), &text);
-                }
-            }
+        let id = match p.kind {
             PromptKind::Name(id) => {
                 if let Some(store) = &self.store {
                     store.set_annotation_name(id, &text);
                 }
-                self.refresh_annotations(id);
+                id
             }
             PromptKind::Folder(id) => {
                 if let Some(store) = &self.store {
                     store.set_annotation_folder(id, &text);
                 }
-                self.refresh_annotations(id);
+                id
             }
-        }
+        };
+        self.refresh_bookmarks(id);
     }
 
-    /// Reload the open annotations overlay, keeping the cursor on annotation
-    /// `keep_id` (whose position may have shifted when its folder changed).
-    fn refresh_annotations(&mut self, keep_id: i64) {
+    /// Reload the open bookmarks overlay, keeping the cursor on bookmark `keep_id`
+    /// (whose position may have shifted when its folder changed).
+    fn refresh_bookmarks(&mut self, keep_id: i64) {
         if let (Some(store), Some(a)) = (&self.store, self.annot.as_mut()) {
-            a.items = store.list_annotations(&self.book_path);
+            a.items = store.list_bookmarks(&self.book_path);
             if let Some(pos) = a.items.iter().position(|i| i.id == keep_id) {
                 a.sel = pos;
             } else if a.sel >= a.items.len() {
                 a.sel = a.items.len().saturating_sub(1);
             }
         }
+        self.sync_reader_bookmarks();
     }
 
     fn annot_key(&mut self, key: KeyEvent) {
@@ -263,16 +258,30 @@ impl App {
                     .map(|i| i.id);
                 if let (Some(id), Some(store)) = (id, &self.store) {
                     store.delete_annotation(id);
-                    let items = store.list_annotations(&self.book_path);
+                    let items = store.list_bookmarks(&self.book_path);
                     if let Some(a) = self.annot.as_mut() {
                         a.items = items;
                         if a.sel >= a.items.len() {
                             a.sel = a.items.len().saturating_sub(1);
                         }
                     }
+                    self.sync_reader_bookmarks();
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Push the open book's bookmarks down to the reader so it can mark their
+    /// lines in the gutter. Cheap; call after any add/delete/move and on open.
+    pub(crate) fn sync_reader_bookmarks(&mut self) {
+        if let (Some(store), Some(r)) = (&self.store, self.reader.as_mut()) {
+            let marks = store
+                .list_bookmarks(&self.book_path)
+                .into_iter()
+                .map(|a| (a.section, a.quote))
+                .collect();
+            r.set_bookmarks(marks);
         }
     }
 
@@ -434,23 +443,21 @@ impl App {
                 if let Some(store) = &self.store
                     && !self.book_path.is_empty()
                 {
-                    store.add_annotation(
-                        &self.book_path,
-                        reader.section,
-                        &reader.current_quote(),
-                        "",
-                    );
+                    store.add_bookmark(&self.book_path, reader.section, &reader.current_quote());
+                    reader.flash = Some("bookmark added".into());
+                    // `reader` is borrowed here, so push the refreshed set directly
+                    // rather than via the `&mut self` helper.
+                    let marks = store
+                        .list_bookmarks(&self.book_path)
+                        .into_iter()
+                        .map(|a| (a.section, a.quote))
+                        .collect();
+                    reader.set_bookmarks(marks);
                 }
-            }
-            Action::AddNote => {
-                self.prompt = Some(Prompt {
-                    kind: PromptKind::Note,
-                    buffer: String::new(),
-                });
             }
             Action::OpenAnnotations => {
                 if let Some(store) = &self.store {
-                    let items = store.list_annotations(&self.book_path);
+                    let items = store.list_bookmarks(&self.book_path);
                     self.annot = Some(AnnotState { items, sel: 0 });
                 }
             }

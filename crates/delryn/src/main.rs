@@ -65,7 +65,7 @@ fn main() -> Result<()> {
         if let Ok(store) = Store::open_default() {
             let mut last_path = String::new();
             let mut last_folder: Option<String> = None;
-            for (path, a) in store.all_annotations() {
+            for (path, a) in store.all_bookmarks() {
                 if path != last_path {
                     println!("\n# {path}\n");
                     last_path = path;
@@ -81,11 +81,7 @@ fn main() -> Result<()> {
                     last_folder = Some(a.folder.clone());
                 }
                 let label = if a.name.is_empty() { &a.quote } else { &a.name };
-                if a.note.is_empty() {
-                    println!("- §{} {label}", a.section + 1);
-                } else {
-                    println!("- §{} {label} — {}", a.section + 1, a.note);
-                }
+                println!("- §{} {label}", a.section + 1);
             }
         }
         return Ok(());

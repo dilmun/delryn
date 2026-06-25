@@ -81,6 +81,12 @@ pub struct Reader {
     anchors: Vec<AnchorHit>,
     /// Footnote id → its definition's first display line (rebuilt on re-wrap).
     footnote_def_line: HashMap<String, usize>,
+    /// All bookmarks for the open book, as `(section, quote)`. Pushed by the app
+    /// whenever bookmarks change; the source for the gutter markers.
+    bookmarks: Vec<(usize, String)>,
+    /// Current-section bookmark lines (quotes resolved to display lines on
+    /// re-wrap), so the view can mark them in the left gutter cheaply.
+    bookmark_lines: HashSet<usize>,
     /// Cross-reference/citation targets for one section: `(section, id→locator)`,
     /// cached so repeated lookups in the current section don't re-parse it.
     targets_cache: Option<(usize, Vec<(String, String)>)>,
@@ -219,6 +225,8 @@ impl Reader {
             heading_lines: Vec::new(),
             anchors: Vec::new(),
             footnote_def_line: HashMap::new(),
+            bookmarks: Vec::new(),
+            bookmark_lines: HashSet::new(),
             targets_cache: None,
             anchor_sel: None,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
@@ -366,7 +374,30 @@ impl Reader {
             self.wrap_images_key = self.images_key;
             self.recompute_heading_lines();
             self.recompute_anchors();
+            self.recompute_bookmark_lines();
         }
+    }
+
+    /// Set the open book's bookmarks (`(section, quote)`), then resolve the
+    /// current section's into gutter lines. Called by the app on any change.
+    pub fn set_bookmarks(&mut self, bookmarks: Vec<(usize, String)>) {
+        self.bookmarks = bookmarks;
+        self.recompute_bookmark_lines();
+    }
+
+    /// Resolve this section's bookmark quotes to display lines (once per re-wrap).
+    fn recompute_bookmark_lines(&mut self) {
+        self.bookmark_lines = self
+            .bookmarks
+            .iter()
+            .filter(|(section, _)| *section == self.section)
+            .filter_map(|(_, quote)| find_line(&self.lines, quote))
+            .collect();
+    }
+
+    /// Whether a display line carries a bookmark (for the left-gutter marker).
+    pub fn is_bookmark_line(&self, line: usize) -> bool {
+        self.bookmark_lines.contains(&line)
     }
 
     /// Recompute each current-section outline entry's line position (for the

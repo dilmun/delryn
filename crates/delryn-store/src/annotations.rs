@@ -1,27 +1,34 @@
-//! Annotations (bookmarks/notes) anchored to content quotes.
+//! Bookmarks (and, from Phase 4, notes) anchored to content quotes. Rows carry a
+//! `kind`: this module deals only with bookmarks (`kind = 0`); notes are layered
+//! on later. All quotes are reflow-stable text anchors, not byte offsets.
 
 use super::*;
 
+/// `annotations.kind` value for a bookmark (vs a Phase 4 note).
+const KIND_BOOKMARK: i64 = 0;
+
 impl Store {
-    pub fn add_annotation(&self, path: &str, section: usize, quote: &str, note: &str) {
+    /// Drop a bookmark at a reading position (anchored by its quote).
+    pub fn add_bookmark(&self, path: &str, section: usize, quote: &str) {
         let _ = self.conn.execute(
-            "INSERT INTO annotations (path, section, quote, note, created_at)
+            "INSERT INTO annotations (path, section, quote, kind, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![path, section as i64, quote, note, now_secs()],
+            params![path, section as i64, quote, KIND_BOOKMARK, now_secs()],
         );
     }
 
-    /// Annotations for one book, grouped so each folder's entries are contiguous:
+    /// Bookmarks for one book, grouped so each folder's entries are contiguous:
     /// named folders first (alphabetical), then ungrouped, each by reading order.
-    pub fn list_annotations(&self, path: &str) -> Vec<Annotation> {
+    pub fn list_bookmarks(&self, path: &str) -> Vec<Annotation> {
         let mut out = Vec::new();
         let Ok(mut stmt) = self.conn.prepare(
-            "SELECT id, section, quote, note, name, folder FROM annotations WHERE path = ?1 \
+            "SELECT id, section, quote, note, name, folder FROM annotations \
+             WHERE path = ?1 AND kind = ?2 \
              ORDER BY folder = '', folder, section, id",
         ) else {
             return out;
         };
-        if let Ok(rows) = stmt.query_map(params![path], |r| annotation_at(r, 0)) {
+        if let Ok(rows) = stmt.query_map(params![path, KIND_BOOKMARK], |r| annotation_at(r, 0)) {
             out.extend(rows.flatten());
         }
         out
@@ -49,17 +56,18 @@ impl Store {
         );
     }
 
-    /// Every annotation with its book path (for export).
-    pub fn all_annotations(&self) -> Vec<(String, Annotation)> {
+    /// Every bookmark with its book path (for `--export-annotations`).
+    pub fn all_bookmarks(&self) -> Vec<(String, Annotation)> {
         let mut out = Vec::new();
         let Ok(mut stmt) = self.conn.prepare(
             "SELECT path, id, section, quote, note, name, folder FROM annotations \
-             ORDER BY path, folder = '', folder, section, id",
+             WHERE kind = ?1 ORDER BY path, folder = '', folder, section, id",
         ) else {
             return out;
         };
-        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, annotation_at(r, 1)?)))
-        {
+        if let Ok(rows) = stmt.query_map(params![KIND_BOOKMARK], |r| {
+            Ok((r.get::<_, String>(0)?, annotation_at(r, 1)?))
+        }) {
             out.extend(rows.flatten());
         }
         out
