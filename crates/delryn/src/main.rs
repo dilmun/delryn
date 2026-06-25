@@ -211,6 +211,16 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
                 let _ = execute!(io::stdout(), Print(delryn::clipboard::osc52(&text)));
             }
         }
+        // Copy a requested image (from the image viewer) to the system clipboard.
+        if let Some((w, h, rgba)) = app.take_clipboard_image()
+            && let Some(c) = clipboard.as_mut()
+        {
+            let _ = c.set_image(arboard::ImageData {
+                width: w as usize,
+                height: h as usize,
+                bytes: std::borrow::Cow::Owned(rgba),
+            });
+        }
 
         // A popup opening or closing forces a full repaint: terminal graphics
         // don't compose with the cell-diff, so a stale image/popup region would

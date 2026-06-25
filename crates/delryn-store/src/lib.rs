@@ -329,7 +329,7 @@ mod tests {
 
         // Upsert overwrites.
         store
-            .save_progress("/books/a.epub", 9, 0.1, ViewMode::Fill, "gruvbox")
+            .save_progress("/books/a.epub", 9, 0.1, ViewMode::Center, "gruvbox")
             .unwrap();
         assert_eq!(store.load_progress("/books/a.epub").unwrap().section, 9);
 

@@ -19,8 +19,21 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
         return;
     }
 
-    // Card size from the configured grid size; cell pitch adds a 1-cell gutter.
-    let (cover_w, cover_h) = app.config.library_grid_size.card();
+    // Card size from the configured grid size, shrunk to fit a narrow / short
+    // pane (preserving the card aspect) so a card never overflows — the cover
+    // image scales down with it. Cell pitch adds a 1-cell gutter.
+    let (cfg_w, cfg_h) = app.config.library_grid_size.card();
+    let (mut cover_w, mut cover_h) = (cfg_w, cfg_h);
+    let avail_w = area.width.saturating_sub(1);
+    if cover_w > avail_w {
+        cover_w = avail_w.max(6);
+        cover_h = ((cover_w as u32 * cfg_h as u32) / cfg_w.max(1) as u32).max(4) as u16;
+    }
+    let avail_h = area.height.saturating_sub(LABEL_H + 1);
+    if cover_h > avail_h {
+        cover_h = avail_h.max(4);
+        cover_w = ((cover_h as u32 * cfg_w as u32) / cfg_h.max(1) as u32).max(6) as u16;
+    }
     let cell_w = cover_w + 1;
     let cell_h = cover_h + LABEL_H + 1;
 

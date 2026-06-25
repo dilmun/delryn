@@ -148,6 +148,9 @@ pub struct Reader {
     pub overlay_occlude: Option<ratatui::layout::Rect>,
     /// A saved within-section fraction to restore on the next draw (resume).
     pub pending_frac: Option<f32>,
+    /// A figure to scroll to once the section is wrapped with image rows (a
+    /// jump from the image viewer; resolved one-shot on the next draw).
+    pending_image: Option<usize>,
     /// Collapsed parent rows (outline indices) in the sidebar tree.
     collapsed: HashSet<usize>,
     /// Navigation history (jump list).
@@ -258,6 +261,7 @@ impl Reader {
             page_lines: 1,
             last_measure: 72,
             pending_frac: None,
+            pending_image: None,
             overlay_occlude: None,
             collapsed: HashSet::new(),
             back_stack: Vec::new(),
@@ -300,6 +304,36 @@ impl Reader {
             .unwrap_or_default();
         self.cache.insert(section, blocks.clone());
         blocks
+    }
+
+    /// The section image index nearest the current viewport, so the image viewer
+    /// can open on the figure you're looking at rather than the chapter's first.
+    pub fn current_image_index(&self) -> Option<usize> {
+        let center = self.scroll + self.viewport_lines / 2;
+        self.lines
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| match l.kind {
+                LineKind::Image(idx) => Some((i, idx)),
+                _ => None,
+            })
+            .min_by_key(|(i, _)| (*i as isize - center as isize).unsigned_abs())
+            .map(|(_, idx)| idx)
+    }
+
+    /// Gather the renderable figures for the image viewer: the current chapter
+    /// only, or every section in the book (decoding as needed) when `whole_book`.
+    pub fn figures(&mut self, whole_book: bool) -> Vec<super::Figure> {
+        let mut out = Vec::new();
+        if whole_book {
+            for s in 0..self.doc.section_count() {
+                let blocks = self.fetch_blocks(s);
+                super::image_view::collect_figures(&blocks, s, &mut out);
+            }
+        } else {
+            super::image_view::collect_figures(&self.blocks, self.section, &mut out);
+        }
+        out
     }
 
     /// Ask the loader to pre-decode the adjacent chapters, and bound the cache.
@@ -965,6 +999,21 @@ impl Reader {
         self.focus = Focus::Content;
     }
 
+    /// Jump to a figure: load its section and scroll to the image's display line.
+    /// The image rows aren't sized until the next render syncs images, so the
+    /// scroll is deferred to `resolve_pending` (one-shot) and lands on the figure
+    /// rather than the chapter top.
+    pub fn jump_to_image(&mut self, section: usize, image_index: usize) {
+        self.push_history();
+        if section != self.section {
+            self.load(section);
+        } else {
+            self.scroll = 0;
+        }
+        self.pending_image = Some(image_index);
+        self.focus = Focus::Content;
+    }
+
     fn push_history(&mut self) {
         self.back_stack.push(Pos {
             section: self.section,
@@ -1013,11 +1062,20 @@ impl Reader {
         }
     }
 
-    /// Apply a pending resume fraction once the section is wrapped.
+    /// Apply a pending resume fraction or figure jump once the section is wrapped.
     pub fn resolve_pending(&mut self) {
         if let Some(frac) = self.pending_frac.take() {
             let n = self.lines.len();
             self.scroll = ((frac * n as f32).round() as usize).min(n.saturating_sub(1));
+        }
+        // One-shot: scroll to the jumped-to figure's image line (now sized).
+        if let Some(idx) = self.pending_image.take()
+            && let Some(line) = self
+                .lines
+                .iter()
+                .position(|l| l.kind == LineKind::Image(idx))
+        {
+            self.scroll = line;
         }
     }
 

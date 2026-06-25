@@ -40,12 +40,12 @@ pub enum LibPane {
     Detail,
 }
 
-/// Sidebar width bounds (cells).
-pub const SIDEBAR_W_MIN: u16 = 16;
-pub const SIDEBAR_W_MAX: u16 = 44;
-/// Detail-pane width bounds (cells).
-pub const DETAIL_W_MIN: u16 = 24;
-pub const DETAIL_W_MAX: u16 = 60;
+/// Sidebar width bounds (percent of the window).
+pub const SIDEBAR_PCT_MIN: u16 = 10;
+pub const SIDEBAR_PCT_MAX: u16 = 36;
+/// Detail-pane width bounds (percent of the window).
+pub const DETAIL_PCT_MIN: u16 = 18;
+pub const DETAIL_PCT_MAX: u16 = 45;
 
 /// How the book list is sorted. `Default` keeps each section's natural order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -361,17 +361,18 @@ impl App {
         }
     }
 
-    /// Grow/shrink the focused side pane (`[`/`]`); the list takes the slack.
+    /// Grow/shrink the focused side pane's percentage (`<`/`>`); the responsive
+    /// split turns it into cells and the list takes the slack.
     fn lib_resize(&mut self, delta: i16) {
         match self.lib_pane {
             LibPane::Sidebar => {
-                self.lib_sidebar_w = (self.lib_sidebar_w as i16 + delta)
-                    .clamp(SIDEBAR_W_MIN as i16, SIDEBAR_W_MAX as i16)
+                self.lib_sidebar_pct = (self.lib_sidebar_pct as i16 + delta)
+                    .clamp(SIDEBAR_PCT_MIN as i16, SIDEBAR_PCT_MAX as i16)
                     as u16;
             }
             LibPane::Detail => {
-                self.lib_detail_w = (self.lib_detail_w as i16 + delta)
-                    .clamp(DETAIL_W_MIN as i16, DETAIL_W_MAX as i16)
+                self.lib_detail_pct = (self.lib_detail_pct as i16 + delta)
+                    .clamp(DETAIL_PCT_MIN as i16, DETAIL_PCT_MAX as i16)
                     as u16;
             }
             LibPane::List => {}

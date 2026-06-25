@@ -236,6 +236,60 @@ fn regenerated_markers_are_stripped() {
 }
 
 #[test]
+fn ordered_list_does_not_double_hardcoded_numbers() {
+    // Springer-style bibliography: an <ol> whose items hard-code their own number
+    // in a separate block. Our ordered marker must not double it ("4. 4.").
+    let blocks = parse_blocks(
+        r#"<html><body><ol class="BibliographyWrapper">
+            <li class="Citation"><div class="CitationNumber">1.</div><div class="CitationContent">First ref</div></li>
+            <li class="Citation"><div class="CitationNumber">2.</div><div class="CitationContent">Second ref</div></li>
+        </ol></body></html>"#,
+    );
+    let paras: Vec<(Option<String>, String)> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Para { marker, spans, .. } => Some((
+                marker.clone(),
+                spans.iter().map(|s| s.text.as_str()).collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(paras.len(), 2, "no stray number paragraphs: {paras:?}");
+    assert_eq!(paras[0].0.as_deref(), Some("1. "));
+    assert_eq!(paras[0].1, "First ref");
+    assert_eq!(paras[1].0.as_deref(), Some("2. "));
+    assert_eq!(paras[1].1, "Second ref");
+
+    // The inline form ("<li>3. Third ref</li>") is de-duplicated too.
+    let inline =
+        parse_blocks(r#"<html><body><ol start="3"><li>3. Third ref</li></ol></body></html>"#);
+    let p = inline
+        .iter()
+        .find_map(|b| match b {
+            Block::Para { marker, spans, .. } => Some((
+                marker.clone(),
+                spans.iter().map(|s| s.text.as_str()).collect::<String>(),
+            )),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(p.0.as_deref(), Some("3. "));
+    assert_eq!(p.1, "Third ref");
+
+    // A genuine numbered lead that is NOT the ordinal is left intact.
+    let keep = parse_blocks(r#"<html><body><ol><li>4 reasons to refactor</li></ol></body></html>"#);
+    let kept: String = keep
+        .iter()
+        .find_map(|b| match b {
+            Block::Para { spans, .. } => Some(spans.iter().map(|s| s.text.as_str()).collect()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(kept, "4 reasons to refactor");
+}
+
+#[test]
 fn printed_toc_indents_by_level_and_drops_page_numbers() {
     let blocks = parse_blocks(
         r##"<html><body>

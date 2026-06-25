@@ -14,7 +14,7 @@ pub mod stats;
 pub mod status;
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 
 use crate::app::{App, Mode};
 
@@ -85,9 +85,65 @@ fn overlay_occlusion(area: Rect, app: &App) -> Option<Rect> {
         ));
     }
     if app.annot.is_some() {
-        return Some(centered(area, 72, 18));
+        return Some(centered(area, 74, 20));
     }
     None
+}
+
+/// The width a side pane should take in `area_w` columns — `pct`% clamped to
+/// `[min, max]` cells — or `None` if it should collapse because it wouldn't leave
+/// the main pane at least `min_main` columns (plus a 1-cell gap). The single
+/// responsive rule shared by every multi-pane view.
+fn side_width(area_w: u16, pct: u16, min: u16, max: u16, min_main: u16) -> Option<u16> {
+    let want = (area_w.saturating_mul(pct) / 100).clamp(min, max);
+    (area_w >= want + 1 + min_main).then_some(want)
+}
+
+/// Standard responsive split with a **left** sidebar: `(sidebar, main)`. The
+/// sidebar collapses (→ `None`, main takes all) when the window is too narrow to
+/// keep `min_main` columns for the main pane.
+pub fn sidebar_split(
+    area: Rect,
+    pct: u16,
+    min: u16,
+    max: u16,
+    min_main: u16,
+) -> (Option<Rect>, Rect) {
+    match side_width(area.width, pct, min, max, min_main) {
+        Some(w) => {
+            let cols = Layout::horizontal([
+                Constraint::Length(w),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(area);
+            (Some(cols[0]), cols[2])
+        }
+        None => (None, area),
+    }
+}
+
+/// Standard responsive split with a **right** pane (e.g. a detail/preview):
+/// `(main, side)`. Mirrors [`sidebar_split`]; same collapse rule.
+pub fn detail_split(
+    area: Rect,
+    pct: u16,
+    min: u16,
+    max: u16,
+    min_main: u16,
+) -> (Rect, Option<Rect>) {
+    match side_width(area.width, pct, min, max, min_main) {
+        Some(w) => {
+            let cols = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(w),
+            ])
+            .split(area);
+            (cols[0], Some(cols[2]))
+        }
+        None => (area, None),
+    }
 }
 
 /// A centered rect of at most `w`×`h`, clamped to `area` (shared by the popups).

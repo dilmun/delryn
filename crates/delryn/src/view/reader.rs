@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use ratatui_image::picker::Picker;
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
@@ -62,10 +62,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let body = rows[0];
     let status = rows[1];
 
+    // The TOC sidebar uses the shared responsive split (~33% of the width,
+    // collapsing on a narrow window so the text keeps the room).
     let (sidebar_area, content_area) = if show_sidebar {
-        let sw = (body.width / 3).clamp(16, 32);
-        let cols = Layout::horizontal([Constraint::Length(sw), Constraint::Min(0)]).split(body);
-        (Some(cols[0]), cols[1])
+        super::sidebar_split(body, 33, 16, 32, 58)
     } else {
         (None, body)
     };
@@ -90,9 +90,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
 fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.muted))
         .title(Span::styled(
-            "Contents",
+            " Contents ",
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
@@ -180,8 +181,6 @@ fn render_content(
 
     match config.view_mode {
         ViewMode::Center => render_column(f, body, reader, config, config.side_padding, images),
-        // Fill: edge-to-edge text (zero side margin).
-        ViewMode::Fill => render_column(f, body, reader, config, 0, images),
         ViewMode::TwoPage => render_two_page(f, body, reader, config, images),
     }
 }
@@ -200,7 +199,7 @@ type Images<'a> = Option<(&'a Picker, &'a ImageBuilder)>;
 
 /// The reading column width for a given pane width and per-side padding percent.
 /// With padding on, each side keeps at least the gutter width so a bookmark's
-/// ribbon always has room; `side_padding == 0` stays edge-to-edge (Fill).
+/// ribbon always has room; a `side_padding` of 0 % is edge-to-edge.
 fn measure_for(pane_width: u16, side_padding: u16) -> u16 {
     if side_padding == 0 {
         return pane_width.max(1);
@@ -333,20 +332,22 @@ fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize) {
         let x = (area.width.saturating_sub(plan.cols) / 2) as i16;
         let y = start as i16 - top as i16; // negative when the top scrolled off
 
-        // Skip an image whose *left edge* an open popup covers: the kitty protocol
-        // keeps each row's placeholder in its first cell, so a clobbered left edge
-        // kills the image and its right side leaks through as a black box. Images
-        // whose left edge is clear render fine — the opaque popup just draws over
-        // their covered portion.
+        // Terminal graphics draw *above* the text layer, so an inline image that
+        // overlaps an open popup would paint over it. Skip any image whose cell
+        // rect intersects the overlay region; images entirely clear of it still
+        // render (the popup just sits beside them).
         if let Some(o) = reader.overlay_occlude {
-            let left = area.x.saturating_add(x.max(0) as u16);
-            let vis_top = area.y.saturating_add(y.max(0) as u16);
-            let vis_bottom = area
+            let img_left = area.x.saturating_add(x.max(0) as u16);
+            let img_right = area
+                .x
+                .saturating_add((x + plan.cols as i16).clamp(0, area.width as i16) as u16);
+            let img_top = area.y.saturating_add(y.max(0) as u16);
+            let img_bottom = area
                 .y
                 .saturating_add((y + plan.rows as i16).clamp(0, area.height as i16) as u16);
-            let x_in = left >= o.x && left < o.right();
-            let y_overlap = vis_top < o.bottom() && vis_bottom > o.y;
-            if x_in && y_overlap {
+            let h_overlap = img_left < o.right() && img_right > o.x;
+            let v_overlap = img_top < o.bottom() && img_bottom > o.y;
+            if h_overlap && v_overlap {
                 continue;
             }
         }
@@ -365,19 +366,18 @@ fn render_two_page(
     images: Images,
 ) {
     let theme = config.theme;
-    const GAP: u16 = 3;
-    // Each column takes half the pane (minus the gap); the outer margin keeps a
-    // gutter (plus a cell of breathing room) on each side for bookmark ribbons.
-    let usable = body
-        .width
-        .saturating_sub(GAP + (GUTTER_COLS + 1) * 2)
-        .max(2);
+    // Same per-side edge padding as Center (at least the gutter width), with a
+    // configurable gap between the two columns.
+    let pad = ((body.width as u32 * config.side_padding as u32 / 100) as u16).max(GUTTER_COLS);
+    let gap = config.page_gap;
+    let usable = body.width.saturating_sub(pad * 2 + gap).max(2);
     let col_w = (usable / 2).max(1);
-    let side_pad = body.width.saturating_sub(col_w * 2 + GAP) / 2;
+    // Re-center any rounding remainder into the outer margins.
+    let side_pad = body.width.saturating_sub(col_w * 2 + gap) / 2;
     let cols = Layout::horizontal([
         Constraint::Length(side_pad),
         Constraint::Length(col_w),
-        Constraint::Length(GAP),
+        Constraint::Length(gap),
         Constraint::Length(col_w),
         Constraint::Min(0),
     ])

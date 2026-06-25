@@ -30,13 +30,12 @@ impl Default for StatusFields {
     }
 }
 
-/// How body text is laid out in the content pane.
+/// How body text is laid out in the content pane. Both layouts use the same
+/// per-side edge padding (`side_padding`); two-page adds a configurable gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
-    /// Measure-capped column, centered with gutters.
+    /// A single column, centered within the side padding.
     Center,
-    /// Text fills the pane width (minus a thin gutter).
-    Fill,
     /// Two side-by-side columns — a two-page spread.
     TwoPage,
 }
@@ -44,34 +43,122 @@ pub enum ViewMode {
 impl ViewMode {
     pub fn next(self) -> Self {
         match self {
-            ViewMode::Center => ViewMode::Fill,
-            ViewMode::Fill => ViewMode::TwoPage,
+            ViewMode::Center => ViewMode::TwoPage,
             ViewMode::TwoPage => ViewMode::Center,
         }
     }
 
     pub fn prev(self) -> Self {
-        match self {
-            ViewMode::Center => ViewMode::TwoPage,
-            ViewMode::Fill => ViewMode::Center,
-            ViewMode::TwoPage => ViewMode::Fill,
-        }
+        self.next()
     }
 
     pub fn label(self) -> &'static str {
         match self {
             ViewMode::Center => "center",
-            ViewMode::Fill => "fill",
             ViewMode::TwoPage => "two-page",
         }
     }
 
     pub fn from_label(s: &str) -> ViewMode {
         match s {
-            "fill" => ViewMode::Fill,
             "two-page" => ViewMode::TwoPage,
             _ => ViewMode::Center,
         }
+    }
+}
+
+/// A reading-experience preset: a named bundle of layout / chrome / flow
+/// settings. `Custom` is the derived state when the live settings match no
+/// preset (e.g. after the reader has tweaked an individual setting).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadingMode {
+    Custom,
+    Study,
+    Research,
+    Presentation,
+}
+
+/// The reading settings a preset bundles. Every preset fixes all of these, so a
+/// live config can be compared field-for-field to recognise the active preset.
+/// Deliberately excludes `view_mode` (Center / TwoPage): the page layout is a
+/// personal choice a preset shouldn't yank out from under the reader.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ReadingProfile {
+    side_padding: u16,
+    line_spacing: u8,
+    paragraph_spacing: u8,
+    show_sidebar: bool,
+    show_status: bool,
+    chapter_lock: bool,
+    paged: bool,
+}
+
+impl ReadingMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            ReadingMode::Custom => "custom",
+            ReadingMode::Study => "study",
+            ReadingMode::Research => "research",
+            ReadingMode::Presentation => "presentation",
+        }
+    }
+
+    /// Next/previous *applyable* preset. Cycles through the three real presets;
+    /// from `Custom` it enters the cycle rather than landing back on `Custom`.
+    pub fn next(self) -> Self {
+        match self {
+            ReadingMode::Custom | ReadingMode::Presentation => ReadingMode::Study,
+            ReadingMode::Study => ReadingMode::Research,
+            ReadingMode::Research => ReadingMode::Presentation,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            ReadingMode::Custom | ReadingMode::Study => ReadingMode::Presentation,
+            ReadingMode::Research => ReadingMode::Study,
+            ReadingMode::Presentation => ReadingMode::Research,
+        }
+    }
+
+    /// The settings this preset stands for (`None` for `Custom`).
+    fn profile(self) -> Option<ReadingProfile> {
+        let p = match self {
+            ReadingMode::Custom => return None,
+            // Deep, careful reading of one chapter: comfortable margins + spacing,
+            // navigation + progress visible, stay put in the chapter.
+            ReadingMode::Study => ReadingProfile {
+                side_padding: 10,
+                line_spacing: 1,
+                paragraph_spacing: 1,
+                show_sidebar: true,
+                show_status: true,
+                chapter_lock: true,
+                paged: false,
+            },
+            // Scanning / cross-referencing across the whole book: denser and a
+            // touch wider than default, flows freely between chapters.
+            ReadingMode::Research => ReadingProfile {
+                side_padding: 4,
+                line_spacing: 0,
+                paragraph_spacing: 1,
+                show_sidebar: true,
+                show_status: true,
+                chapter_lock: false,
+                paged: false,
+            },
+            // Distraction-free, slide-like: wide airy margins, no chrome, page flips.
+            ReadingMode::Presentation => ReadingProfile {
+                side_padding: 18,
+                line_spacing: 1,
+                paragraph_spacing: 2,
+                show_sidebar: false,
+                show_status: false,
+                chapter_lock: false,
+                paged: true,
+            },
+        };
+        Some(p)
     }
 }
 
@@ -231,6 +318,8 @@ impl ImageMode {
 
 /// Bounds for the per-side text padding (percent of the content pane width).
 pub const MAX_SIDE_PADDING: u16 = 40;
+/// Upper bound for the two-page column gap (cells).
+pub const MAX_PAGE_GAP: u16 = 16;
 /// Smallest text column we'll ever wrap to, so heavy padding on a narrow
 /// terminal still leaves a readable line.
 pub const MIN_TEXT_COLS: u16 = 20;
@@ -244,8 +333,10 @@ pub const MAX_IMAGE_PX: u16 = 4096;
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Text padding from each edge, as a percent of the content pane width, so
-    /// the reading column scales with the window (Center mode).
+    /// the reading column scales with the window. Applied in every view mode.
     pub side_padding: u16,
+    /// Gap (in cells) between the two columns of the two-page spread.
+    pub page_gap: u16,
     /// Extra blank lines between wrapped text lines (0 = single-spaced).
     pub line_spacing: u8,
     /// Blank lines between blocks/paragraphs.
@@ -286,6 +377,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             side_padding: 6,
+            page_gap: 5,
             line_spacing: 0,
             paragraph_spacing: 1,
             view_mode: ViewMode::Center,
@@ -313,6 +405,7 @@ impl Default for Config {
 #[serde(default)]
 struct ConfigFile {
     side_padding: u16,
+    page_gap: u16,
     line_spacing: u8,
     paragraph_spacing: u8,
     view_mode: String,
@@ -337,6 +430,7 @@ impl Default for ConfigFile {
         let c = Config::default();
         Self {
             side_padding: c.side_padding,
+            page_gap: c.page_gap,
             line_spacing: c.line_spacing,
             paragraph_spacing: c.paragraph_spacing,
             view_mode: c.view_mode.label().to_string(),
@@ -363,6 +457,42 @@ fn config_path() -> std::path::PathBuf {
 }
 
 impl Config {
+    /// The preset the live reading settings correspond to, or `Custom` when they
+    /// match none (derived, so it stays honest after any individual tweak).
+    pub fn reading_mode(&self) -> ReadingMode {
+        let current = ReadingProfile {
+            side_padding: self.side_padding,
+            line_spacing: self.line_spacing,
+            paragraph_spacing: self.paragraph_spacing,
+            show_sidebar: self.show_sidebar,
+            show_status: self.show_status,
+            chapter_lock: self.chapter_lock,
+            paged: self.paged,
+        };
+        [
+            ReadingMode::Study,
+            ReadingMode::Research,
+            ReadingMode::Presentation,
+        ]
+        .into_iter()
+        .find(|m| m.profile() == Some(current))
+        .unwrap_or(ReadingMode::Custom)
+    }
+
+    /// Apply a reading-mode preset to the live settings (a no-op for `Custom`).
+    pub fn apply_reading_mode(&mut self, mode: ReadingMode) {
+        let Some(p) = mode.profile() else {
+            return;
+        };
+        self.side_padding = p.side_padding;
+        self.line_spacing = p.line_spacing;
+        self.paragraph_spacing = p.paragraph_spacing;
+        self.show_sidebar = p.show_sidebar;
+        self.show_status = p.show_status;
+        self.chapter_lock = p.chapter_lock;
+        self.paged = p.paged;
+    }
+
     /// Load global defaults from `config.toml`, falling back to built-ins.
     pub fn load() -> Config {
         let mut c = Config::default();
@@ -373,6 +503,7 @@ impl Config {
             return c;
         };
         c.side_padding = cf.side_padding.min(MAX_SIDE_PADDING);
+        c.page_gap = cf.page_gap.min(MAX_PAGE_GAP);
         c.line_spacing = cf.line_spacing.min(MAX_LINE_SPACING);
         c.paragraph_spacing = cf.paragraph_spacing.min(3);
         c.view_mode = ViewMode::from_label(&cf.view_mode);
@@ -399,6 +530,7 @@ impl Config {
     pub fn save(&self) {
         let cf = ConfigFile {
             side_padding: self.side_padding,
+            page_gap: self.page_gap,
             line_spacing: self.line_spacing,
             paragraph_spacing: self.paragraph_spacing,
             view_mode: self.view_mode.label().to_string(),
@@ -424,5 +556,52 @@ impl Config {
         if let Ok(text) = toml::to_string_pretty(&cf) {
             let _ = std::fs::write(path, text);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reading_mode_apply_and_derive() {
+        let mut c = Config::default();
+        // The built-in defaults are not a preset.
+        assert_eq!(c.reading_mode(), ReadingMode::Custom);
+
+        // Applying a preset sets its fields and is then recognised.
+        c.apply_reading_mode(ReadingMode::Study);
+        assert_eq!(c.reading_mode(), ReadingMode::Study);
+        assert!(c.chapter_lock);
+
+        // Presets leave the page layout (view_mode) untouched — it's the reader's
+        // choice, not something a preset should override.
+        c.view_mode = ViewMode::TwoPage;
+        c.apply_reading_mode(ReadingMode::Research);
+        assert_eq!(c.view_mode, ViewMode::TwoPage);
+        assert_eq!(c.reading_mode(), ReadingMode::Research);
+
+        c.apply_reading_mode(ReadingMode::Presentation);
+        assert_eq!(c.reading_mode(), ReadingMode::Presentation);
+        assert!(c.paged && !c.show_sidebar && !c.show_status);
+
+        // A manual tweak drops the derived mode back to Custom (stays honest).
+        c.side_padding += 1;
+        assert_eq!(c.reading_mode(), ReadingMode::Custom);
+
+        // Custom is a no-op to apply.
+        let before = c.side_padding;
+        c.apply_reading_mode(ReadingMode::Custom);
+        assert_eq!(c.side_padding, before);
+    }
+
+    #[test]
+    fn reading_mode_cycles_through_presets_only() {
+        // next() never lands on Custom; from Custom it enters the cycle.
+        assert_eq!(ReadingMode::Custom.next(), ReadingMode::Study);
+        assert_eq!(ReadingMode::Study.next(), ReadingMode::Research);
+        assert_eq!(ReadingMode::Research.next(), ReadingMode::Presentation);
+        assert_eq!(ReadingMode::Presentation.next(), ReadingMode::Study);
+        assert_eq!(ReadingMode::Custom.prev(), ReadingMode::Presentation);
     }
 }

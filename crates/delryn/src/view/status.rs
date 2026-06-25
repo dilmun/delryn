@@ -78,12 +78,8 @@ fn legend(app: &App) -> Option<(String, String)> {
             "↑↓ move · ⏎ jump · r name · f folder · d delete · Esc close".into(),
         ));
     }
-    if app.image_view.is_some() {
-        return Some((
-            "Images".into(),
-            "n/N · h/l · ←→ page · i / q / Esc close".into(),
-        ));
-    }
+    // The image viewer is fullscreen and shows its own shortcut footer, so it
+    // doesn't use the shared status-row legend.
     if let Some(ed) = &app.meta_edit {
         return Some(editor_legend(ed));
     }
