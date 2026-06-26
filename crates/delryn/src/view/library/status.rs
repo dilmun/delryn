@@ -63,10 +63,17 @@ pub(crate) fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) 
     };
     // Selection (visual range or individual picks) gets bulk keys; grid (no
     // side panes) gets size keys, else the panes get </> resize.
+    // In the Duplicates section, surface the resolve key.
+    let dups = matches!(
+        app.lib_view,
+        LibView::Section(crate::store::LibrarySection::Duplicates)
+    );
     let keys = if visual {
         "j/k extend · space pick · e edit · r rename · T tag · f favorite · V/Esc cancel"
     } else if marked > 0 {
         "space/A pick · e edit · r rename · T tag · f favorite · c shelf · Esc clear"
+    } else if dups {
+        "hjkl move · ⏎ open · D keep this & delete dups · e edit · T tag · s sort · q"
     } else if app.is_grid() {
         "hjkl move · ⏎ open · e edit · r rename · T tag · c shelf · s sort · v view · +/- size · q"
     } else {
