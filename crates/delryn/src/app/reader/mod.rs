@@ -69,6 +69,11 @@ pub struct Reader {
     /// Word-wrap table cells (set each render from config).
     pub table_wrap: bool,
     wrap_table_wrap: bool,
+    /// Full justification + converter-spacing tidy (set each render from config).
+    pub justify: bool,
+    wrap_justify: bool,
+    pub tidy_spacing: bool,
+    wrap_tidy: bool,
     /// Keep scrolling within the current chapter (set each render from config).
     pub chapter_lock: bool,
     /// Paginated reading (set each render from config): vertical nav flips whole
@@ -223,6 +228,10 @@ impl Reader {
             wrap_code_hscroll: 0,
             table_wrap: true,
             wrap_table_wrap: true,
+            justify: false,
+            wrap_justify: false,
+            tidy_spacing: true,
+            wrap_tidy: true,
             chapter_lock: false,
             paged: false,
             heading_lines: Vec::new(),
@@ -383,6 +392,8 @@ impl Reader {
             || self.code_wrap != self.wrap_code_wrap
             || self.code_hscroll != self.wrap_code_hscroll
             || self.table_wrap != self.wrap_table_wrap
+            || self.justify != self.wrap_justify
+            || self.tidy_spacing != self.wrap_tidy
             || self.images_key != self.wrap_images_key
         {
             self.lines = wrap_blocks(
@@ -395,6 +406,8 @@ impl Reader {
                     code_wrap: self.code_wrap,
                     code_hscroll: self.code_hscroll,
                     table_wrap: self.table_wrap,
+                    justify: self.justify,
+                    tidy_spacing: self.tidy_spacing,
                 },
                 &self.image_rows_estimate,
             );
@@ -405,6 +418,8 @@ impl Reader {
             self.wrap_code_wrap = self.code_wrap;
             self.wrap_code_hscroll = self.code_hscroll;
             self.wrap_table_wrap = self.table_wrap;
+            self.wrap_justify = self.justify;
+            self.wrap_tidy = self.tidy_spacing;
             self.wrap_images_key = self.images_key;
             self.recompute_heading_lines();
             self.recompute_anchors();

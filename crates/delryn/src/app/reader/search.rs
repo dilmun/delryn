@@ -78,6 +78,10 @@ impl Reader {
                         code_wrap: true,
                         code_hscroll: 0,
                         table_wrap: true,
+                        // Never justify (keeps single spaces so phrase matches work);
+                        // tidy must match the display so positions line up.
+                        justify: false,
+                        tidy_spacing: self.tidy_spacing,
                     },
                     &[],
                 );

@@ -4,6 +4,8 @@
 //! across resizes. The view layer maps these to ratatui styles. See
 //! `DESIGN.md` §2.1, §4.
 
+use std::collections::VecDeque;
+
 use crate::highlight::highlight_code;
 use delryn_model::{Anchor, Block, Inline, Span, TableCell};
 
@@ -84,6 +86,10 @@ pub struct WrapOpts<'a> {
     pub code_hscroll: usize,
     /// Word-wrap table cells to their column (true) vs. truncate with `…` (false).
     pub table_wrap: bool,
+    /// Fully justify body paragraphs to the column (true) vs. ragged-right (false).
+    pub justify: bool,
+    /// Collapse converter spacing artifacts in body text (see [`tidy_spacing`]).
+    pub tidy_spacing: bool,
 }
 
 impl Default for WrapOpts<'_> {
@@ -96,6 +102,8 @@ impl Default for WrapOpts<'_> {
             code_wrap: true,
             code_hscroll: 0,
             table_wrap: true,
+            justify: false,
+            tidy_spacing: true,
         }
     }
 }
@@ -144,7 +152,17 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                 kind: LineKind::Rule,
             }),
             Block::Heading { level, spans } => {
-                wrap_spans(spans, width, "", "", LineKind::Heading(*level), &mut out)
+                let tidied = opts.tidy_spacing.then(|| tidy_spacing(spans)).flatten();
+                let spans = tidied.as_deref().unwrap_or(spans.as_slice());
+                wrap_spans(
+                    spans,
+                    width,
+                    "",
+                    "",
+                    LineKind::Heading(*level),
+                    false,
+                    &mut out,
+                )
             }
             Block::Para {
                 spans,
@@ -161,7 +179,17 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                 } else {
                     (ind.clone(), ind.clone(), LineKind::Body)
                 };
-                wrap_spans(spans, width, &first_prefix, &cont_prefix, kind, &mut out);
+                let tidied = opts.tidy_spacing.then(|| tidy_spacing(spans)).flatten();
+                let spans = tidied.as_deref().unwrap_or(spans.as_slice());
+                wrap_spans(
+                    spans,
+                    width,
+                    &first_prefix,
+                    &cont_prefix,
+                    kind,
+                    opts.justify,
+                    &mut out,
+                );
             }
             Block::Image { alt, caption, .. } => {
                 // The reader pre-computes each image's height; reserve exactly
@@ -204,7 +232,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                             anchor: s.anchor.clone(),
                         })
                         .collect();
-                    wrap_spans(&italic, width, "", "", LineKind::Body, &mut out);
+                    wrap_spans(&italic, width, "", "", LineKind::Body, false, &mut out);
                 }
                 img_idx += 1;
             }
@@ -431,54 +459,154 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
 /// Word-wrap styled spans into display lines, with a prefix on the first line
 /// and a (usually padding) prefix on continuations.
+/// One styled glyph carried through wrapping: char + its inline style + any
+/// navigation anchor (footnote ref, link, …).
+type Glyph = (char, Inline, Option<Anchor>);
+/// Soft hyphen (U+00AD): an invisible break opportunity inside a word. Dropped
+/// from the rendered text, but a real `-` is shown when a word breaks there.
+const SOFT_HYPHEN: char = '\u{00AD}';
+
+/// A piece of a word placed on a line: its glyphs plus whether a hyphen follows
+/// (true when a long word was broken at a soft hyphen).
+struct Piece {
+    cells: Vec<Glyph>,
+    hyphen: bool,
+}
+
 fn wrap_spans(
     spans: &[Span],
     width: usize,
     first_prefix: &str,
     cont_prefix: &str,
     kind: LineKind,
+    justify: bool,
     out: &mut Vec<DisplayLine>,
 ) {
-    // Flatten the spans to (char, style) preserving adjacency, then split into
-    // words on *actual* whitespace. A word is a run of non-whitespace chars that
-    // may span several source spans — so adjacent spans with no whitespace
-    // between them join with no inserted space. This matters for math, which
-    // some publishers (InDesign MathTools) emit as one span per glyph
-    // (`𝔼`,`(`,`X`,`)`): the old per-span split turned that into `𝔼 ( X )`.
+    // Flatten the spans to glyphs preserving adjacency, then split into words on
+    // *actual* whitespace. A word is a run of non-whitespace glyphs that may span
+    // several source spans — so adjacent spans with no whitespace between them
+    // join with no inserted space (matters for math emitted one span per glyph:
+    // `𝔼`,`(`,`X`,`)` must stay `𝔼(X)`, not `𝔼 ( X )`). Within a word, soft
+    // hyphens split it into break segments (the SHY itself is dropped).
     let chars = spans
         .iter()
         .flat_map(|s| s.text.chars().map(move |c| (c, s.style, s.anchor.clone())));
-    let mut words: Vec<Vec<(char, Inline, Option<Anchor>)>> = Vec::new();
-    let mut cur: Vec<(char, Inline, Option<Anchor>)> = Vec::new();
+    let mut words: Vec<Vec<Vec<Glyph>>> = Vec::new(); // word → segments → glyphs
+    let mut segs: Vec<Vec<Glyph>> = vec![Vec::new()];
+    let mut in_word = false;
     for (c, st, an) in chars {
         if c.is_whitespace() {
-            if !cur.is_empty() {
-                words.push(std::mem::take(&mut cur));
+            if in_word {
+                segs.retain(|s| !s.is_empty());
+                words.push(std::mem::take(&mut segs));
+                segs = vec![Vec::new()];
+                in_word = false;
+            }
+        } else if c == SOFT_HYPHEN {
+            // A break opportunity: start a new segment (ignore a leading SHY).
+            if in_word && !segs.last().is_none_or(Vec::is_empty) {
+                segs.push(Vec::new());
             }
         } else {
-            cur.push((c, st, an));
+            segs.last_mut().unwrap().push((c, st, an));
+            in_word = true;
         }
     }
-    if !cur.is_empty() {
-        words.push(cur);
+    if in_word {
+        segs.retain(|s| !s.is_empty());
+        words.push(segs);
     }
     if words.is_empty() {
         return;
     }
 
-    // Pack words into lines with the shared greedy wrapper; the available width
-    // shrinks by the first/continuation prefix.
     let prefix_for = |line: usize| if line == 0 { first_prefix } else { cont_prefix };
-    let widths: Vec<usize> = words.iter().map(Vec::len).collect();
-    let counts = pack_words(&widths, |line| {
+    let avail = |line: usize| {
         width
             .saturating_sub(prefix_for(line).chars().count())
             .max(1)
-    });
+    };
 
-    let mut i = 0;
-    for (line, &count) in counts.iter().enumerate() {
-        let prefix = prefix_for(line);
+    // Greedy line fill, breaking over-long words at soft hyphens when it helps.
+    let mut lines: Vec<Vec<Piece>> = Vec::new();
+    let mut cur: Vec<Piece> = Vec::new();
+    let mut cur_w = 0usize; // width of `cur` excluding the prefix
+    let mut queue: VecDeque<Vec<Vec<Glyph>>> = words.into();
+    while let Some(word) = queue.pop_front() {
+        let av = avail(lines.len());
+        let gap = usize::from(!cur.is_empty());
+        let wfull: usize = word.iter().map(Vec::len).sum();
+        if cur_w + gap + wfull <= av {
+            cur.push(Piece {
+                cells: word.into_iter().flatten().collect(),
+                hyphen: false,
+            });
+            cur_w += gap + wfull;
+            continue;
+        }
+        // Try to break the word at the latest soft-hyphen boundary that fits the
+        // already-placed prefix plus a trailing '-'.
+        if word.len() > 1 {
+            let (mut acc, mut best_k) = (0usize, 0usize);
+            for (k, seg) in word.iter().take(word.len() - 1).enumerate() {
+                acc += seg.len();
+                // `+ 1` for the trailing hyphen (folded into `<` per clippy).
+                if cur_w + gap + acc < av {
+                    best_k = k + 1;
+                } else {
+                    break;
+                }
+            }
+            if best_k > 0 {
+                cur.push(Piece {
+                    cells: word[..best_k].iter().flatten().cloned().collect(),
+                    hyphen: true,
+                });
+                lines.push(std::mem::take(&mut cur));
+                cur_w = 0;
+                queue.push_front(word[best_k..].to_vec());
+                continue;
+            }
+        }
+        if !cur.is_empty() {
+            // No break point here: flush the line and retry the word on a fresh one.
+            lines.push(std::mem::take(&mut cur));
+            cur_w = 0;
+            queue.push_front(word);
+            continue;
+        }
+        // Empty line and the word is wider than the column with no break point:
+        // place it whole (overflow), as before — one over-long token per line.
+        cur.push(Piece {
+            cells: word.into_iter().flatten().collect(),
+            hyphen: false,
+        });
+        lines.push(std::mem::take(&mut cur));
+        cur_w = 0;
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+
+    // Emit. Full justification (when enabled, body only) distributes the leftover
+    // columns across inter-word gaps — never on the last line of the paragraph or
+    // a single-piece line.
+    let last = lines.len().saturating_sub(1);
+    let justify_body = justify && matches!(kind, LineKind::Body);
+    for (li, line) in lines.iter().enumerate() {
+        let prefix = prefix_for(li);
+        let pieces_w: usize = line
+            .iter()
+            .map(|p| p.cells.len() + usize::from(p.hyphen))
+            .sum();
+        let gaps = line.len().saturating_sub(1);
+        let justify_line = justify_body && li != last && gaps >= 1;
+        let slack = if justify_line {
+            avail(li).saturating_sub(pieces_w + gaps)
+        } else {
+            0
+        };
+
         let mut runs: Vec<Run> = Vec::new();
         if !prefix.is_empty() {
             runs.push(Run {
@@ -488,20 +616,75 @@ fn wrap_spans(
                 anchor: None,
             });
         }
-        for k in 0..count {
-            if k > 0 {
+        for (pi, piece) in line.iter().enumerate() {
+            if pi > 0 {
+                let extra = if justify_line {
+                    slack / gaps + usize::from(pi - 1 < slack % gaps)
+                } else {
+                    0
+                };
                 runs.push(Run {
-                    text: " ".to_string(),
+                    text: " ".repeat(1 + extra),
                     style: Inline::default(),
                     fg: None,
                     anchor: None,
                 });
             }
-            push_word_runs(&words[i], &mut runs);
-            i += 1;
+            push_word_runs(&piece.cells, &mut runs);
+            if piece.hyphen {
+                let st = piece.cells.last().map(|(_, s, _)| *s).unwrap_or_default();
+                runs.push(Run {
+                    text: "-".to_string(),
+                    style: st,
+                    fg: None,
+                    anchor: None,
+                });
+            }
         }
         out.push(DisplayLine { runs, kind });
     }
+}
+
+/// Collapse the stray space some converters leave between a short *styled*
+/// variable and a hyphenated suffix: `<i>t</i> -distribution` → `t-distribution`
+/// (also `p-value`, `F-test`). Returns rewritten spans only when something
+/// changed. Deliberately narrow — the trigger is a short italic/bold/math/code
+/// token immediately before a space + hyphen + letter, so it never touches
+/// numbers (`16. 3`), `p < 0.05`, dashes, or ordinary prose.
+fn tidy_spacing(spans: &[Span]) -> Option<Vec<Span>> {
+    if !(1..spans.len()).any(|i| stripped_suffix(&spans[i - 1], &spans[i]).is_some()) {
+        return None;
+    }
+    let mut out = spans.to_vec();
+    for i in 1..out.len() {
+        if let Some(text) = stripped_suffix(&out[i - 1], &out[i]) {
+            out[i].text = text;
+        }
+    }
+    Some(out)
+}
+
+/// If `prev` is a short styled variable and `next` begins with " -<letter>", the
+/// `next` text with that leading space removed; else `None`.
+fn stripped_suffix(prev: &Span, next: &Span) -> Option<String> {
+    let st = prev.style;
+    if !(st.italic || st.bold || st.math || st.code) {
+        return None;
+    }
+    let tok = prev.text.trim();
+    if tok.is_empty() || tok.chars().count() > 3 || tok.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let rest = next.text.trim_start_matches(' ');
+    if rest.len() == next.text.len() {
+        return None; // no leading space to drop
+    }
+    let mut cs = rest.chars();
+    if !matches!(cs.next(), Some('-' | '\u{2010}' | '\u{2011}')) {
+        return None;
+    }
+    cs.next().filter(|c| c.is_alphanumeric())?;
+    Some(rest.to_string())
 }
 
 /// Pad a line's runs with trailing spaces so it spans `width` columns. Used for
@@ -639,6 +822,8 @@ fn wrap_nested(
         code_wrap: true,
         code_hscroll: 0,
         table_wrap: opts.table_wrap,
+        justify: false,
+        tidy_spacing: opts.tidy_spacing,
     };
     for line in wrap_blocks(blocks, &inner, &[]) {
         let mut runs = Vec::with_capacity(line.runs.len() + 1);
@@ -1215,5 +1400,128 @@ mod tests {
         let joined = texts(&wrap_blocks(&[block], &WrapOpts::default(), &[])).join("\n");
         assert!(joined.contains("[1]"));
         assert!(joined.contains("the cited source"));
+    }
+
+    fn ital(s: &str) -> Span {
+        Span {
+            text: s.into(),
+            style: Inline {
+                italic: true,
+                ..Default::default()
+            },
+            anchor: None,
+        }
+    }
+
+    fn para_spans(spans: Vec<Span>) -> Block {
+        Block::Para {
+            spans,
+            indent: 0,
+            quote: false,
+            marker: None,
+        }
+    }
+
+    #[test]
+    fn tidy_collapses_styled_variable_hyphen() {
+        // `<i>t</i> -distribution` (a converter artifact) → `t-distribution`.
+        let block = para_spans(vec![
+            Span::plain("the "),
+            ital("t"),
+            Span::plain(" -distribution is wide"),
+        ]);
+        let on = WrapOpts {
+            width: 80,
+            tidy_spacing: true,
+            ..Default::default()
+        };
+        let j = texts(&wrap_blocks(std::slice::from_ref(&block), &on, &[])).join(" ");
+        assert!(j.contains("t-distribution"), "tidied: {j:?}");
+        assert!(!j.contains("t -distribution"));
+
+        // With the toggle off we render faithfully (space kept).
+        let off = WrapOpts {
+            width: 80,
+            tidy_spacing: false,
+            ..Default::default()
+        };
+        let j = texts(&wrap_blocks(&[block], &off, &[])).join(" ");
+        assert!(j.contains("t -distribution"), "faithful: {j:?}");
+    }
+
+    #[test]
+    fn tidy_leaves_numbers_operators_and_prose() {
+        let opts = WrapOpts {
+            width: 80,
+            ..Default::default()
+        }; // tidy on by default
+        let render = |b| texts(&wrap_blocks(&[b], &opts, &[])).join(" ");
+        // No hyphen → number untouched (`16. 3` style is content, never rewritten).
+        assert!(render(para_spans(vec![ital("t"), Span::plain(" = 16.3")])).contains("t = 16.3"));
+        // A comparison operator, not a hyphen → untouched.
+        assert!(render(para_spans(vec![ital("p"), Span::plain(" < 0.05")])).contains("p < 0.05"));
+        // Unstyled preceding token → untouched even with a hyphen.
+        assert!(
+            render(para_spans(vec![
+                Span::plain("well"),
+                Span::plain(" -being")
+            ]))
+            .contains("well -being")
+        );
+    }
+
+    #[test]
+    fn justify_fills_inner_lines_not_the_last() {
+        let block = para(
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron",
+        );
+        let opts = WrapOpts {
+            width: 24,
+            justify: true,
+            para_spacing: 0,
+            ..Default::default()
+        };
+        let lines = wrap_blocks(&[block], &opts, &[]);
+        let body: Vec<&DisplayLine> = lines
+            .iter()
+            .filter(|l| matches!(l.kind, LineKind::Body) && !l.runs.is_empty())
+            .collect();
+        assert!(body.len() >= 2, "wraps to several lines");
+        for l in &body[..body.len() - 1] {
+            let w: usize = l.runs.iter().map(|r| r.text.chars().count()).sum();
+            assert_eq!(w, 24, "inner line justified to full width: {:?}", l.text());
+        }
+        let last: usize = body
+            .last()
+            .unwrap()
+            .runs
+            .iter()
+            .map(|r| r.text.chars().count())
+            .sum();
+        assert!(last <= 24, "last line not padded past width");
+    }
+
+    #[test]
+    fn soft_hyphen_breaks_long_word_with_visible_hyphen() {
+        let shy = '\u{00AD}';
+        let word = format!("super{shy}cali{shy}fragi{shy}listic");
+        let block = para(&format!("a {word} end"));
+        let opts = WrapOpts {
+            width: 12,
+            ..Default::default()
+        };
+        let lines = texts(&wrap_blocks(&[block], &opts, &[]));
+        let joined = lines.join("|");
+        assert!(
+            !joined.contains(shy),
+            "soft hyphens never render: {joined:?}"
+        );
+        assert!(
+            joined.contains('-'),
+            "long word breaks with a hyphen: {joined:?}"
+        );
+        for l in &lines {
+            assert!(l.chars().count() <= 12, "line stays within width: {l:?}");
+        }
     }
 }

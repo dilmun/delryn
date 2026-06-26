@@ -114,6 +114,18 @@ jump-by-type + a reader cursor.
       (shows "custom" once any are hand-tweaked, so it never lies).
 - [~] Pagination models: continuous + **virtual pages** (page mode, snapped to
       `page_lines`, flows across chapters at edges). *Still: book pages (PDF).*
+- [x] **Text layout: justify + soft hyphens + spacing tidy** (`delryn-render::
+      layout`). The greedy line filler now breaks long words at embedded soft
+      hyphens (U+00AD dropped, a real `-` shown on break) and supports full
+      **justification** (Settings → Typography "Justify text", default ragged-
+      right; never the last line or single-word lines, body only). **Tidy spacing**
+      (Settings → Content, default on) collapses a converter artifact — a stray
+      space between a short styled variable and a hyphenated suffix (`<i>t</i>
+      -distribution` → `t-distribution`, p-value, F-test) — verified against the
+      raw EPUB; deliberately narrow, so numbers (`16. 3`), `p < 0.05`, dashes and
+      prose are untouched. Both flow through `WrapOpts` so toggling re-wraps
+      without re-parsing. *(The original `t -distribution` report was dirty source,
+      not a delryn bug — the space is literally in the book's markup.)*
 - [x] Navigation: reading history + back/forward, **jump-by-type** (`w`/`b` cycle
       code/table/math/figure/footnote), and a **link cursor** — `e`/`E` step
       through inline references (footnote/cross-ref/link/citation), Enter follows,
