@@ -71,14 +71,37 @@ impl Reader {
             self.remap_section_images(builder, picker, avail, max_rows, max_px, width_pct, policy);
         }
 
-        // 3. Keep the visible section's images most-recently-used so they aren't
-        //    evicted while on screen.
+        // 2b. In a two-page spread the facing page (next section) is on screen,
+        //     so build it at the same priority as the current page — not deferred
+        //     like an off-screen prefetch — so the right page appears with the left
+        //     instead of lagging a beat behind it.
+        if self.spread {
+            self.request_section_image_builds(
+                self.section + 1,
+                builder,
+                avail,
+                max_rows,
+                max_px,
+                width_pct,
+                policy,
+            );
+        }
+
+        // 3. Keep the visible images most-recently-used so they aren't evicted
+        //    while on screen: the current section's images, plus the facing page
+        //    of a spread (which lives outside `section_images`, so it would
+        //    otherwise churn and flicker as look-ahead builds land).
         let keys: Vec<ImgKey> = self.section_images.values().copied().collect();
         for k in keys {
             self.image_cache.get(&k);
         }
+        if self.spread {
+            let facing = self.page_key(self.section + 1);
+            self.image_cache.get(&facing);
+        }
 
-        // 4. Pre-build neighbouring sections' images once the current one is ready.
+        // 4. Pre-build neighbouring sections' images once the current one is ready
+        //    (one section further ahead in a spread, so the next turn is instant).
         if !self.images_pending() {
             self.prefetch_neighbor_images(builder, avail, max_rows, max_px, width_pct, policy);
         }
@@ -171,8 +194,10 @@ impl Reader {
         }
     }
 
-    /// Build the adjacent sections' images ahead of time (from already-prefetched
-    /// blocks) so crossing a chapter boundary is instant. Never forces a load.
+    /// Build adjacent sections' images ahead of time (from already-prefetched
+    /// blocks) so a page turn / chapter crossing is instant. Never forces a load.
+    /// In a spread the facing page (section + 1) is built eagerly elsewhere, so
+    /// look one section *further* ahead here, so the next turn is already warm.
     fn prefetch_neighbor_images(
         &mut self,
         builder: &ImageBuilder,
@@ -182,41 +207,67 @@ impl Reader {
         width_pct: u16,
         policy: media::RenderPolicy,
     ) {
-        let n = self.doc.section_count();
-        let neighbors = [self.section + 1, self.section.wrapping_sub(1)];
+        let ahead = if self.spread {
+            self.section + 2
+        } else {
+            self.section + 1
+        };
+        for sec in [ahead, self.section.wrapping_sub(1)] {
+            self.request_section_image_builds(
+                sec, builder, avail, max_rows, max_px, width_pct, policy,
+            );
+        }
+    }
+
+    /// Request background builds for `section`'s images that aren't already
+    /// built / in-flight / failed, from its cached blocks, at the given geometry.
+    /// A no-op when the section is out of range, is the current one (handled by
+    /// `remap_section_images`), or its blocks aren't loaded yet. Shared by the
+    /// facing-page eager build and neighbour/look-ahead prefetch.
+    // The geometry args mirror the `sync_images` frame parameters; bundling them
+    // into a struct is tracked as tech debt (TODO.md) across this image pipeline.
+    #[allow(clippy::too_many_arguments)]
+    fn request_section_image_builds(
+        &mut self,
+        section: usize,
+        builder: &ImageBuilder,
+        avail: u16,
+        max_rows: u16,
+        max_px: u16,
+        width_pct: u16,
+        policy: media::RenderPolicy,
+    ) {
+        if section >= self.doc.section_count() || section == self.section {
+            return;
+        }
+        let Some(blocks) = self.cache.get(&section) else {
+            return;
+        };
         let mut requests: Vec<(ImgKey, Vec<u8>, media::SizeSpec)> = Vec::new();
-        for &sec in &neighbors {
-            if sec >= n || sec == self.section {
-                continue;
-            }
-            let Some(blocks) = self.cache.get(&sec) else {
-                continue;
-            };
-            let mut idx = 0;
-            for block in blocks {
-                if let Block::Image {
-                    data, math, width, ..
-                } = block
-                {
-                    if !data.is_empty() {
-                        let key = ImgKey {
-                            section: sec,
-                            idx,
-                            avail,
-                            max_rows,
-                            max_px,
-                            target_pct: width_pct,
-                            policy,
-                        };
-                        if !self.image_cache.contains(&key)
-                            && !self.img_requested.contains(&key)
-                            && !self.img_failed.contains(&key)
-                        {
-                            requests.push((key, data.clone(), size_spec(*width, *math)));
-                        }
+        let mut idx = 0;
+        for block in blocks {
+            if let Block::Image {
+                data, math, width, ..
+            } = block
+            {
+                if !data.is_empty() {
+                    let key = ImgKey {
+                        section,
+                        idx,
+                        avail,
+                        max_rows,
+                        max_px,
+                        target_pct: width_pct,
+                        policy,
+                    };
+                    if !self.image_cache.contains(&key)
+                        && !self.img_requested.contains(&key)
+                        && !self.img_failed.contains(&key)
+                    {
+                        requests.push((key, data.clone(), size_spec(*width, *math)));
                     }
-                    idx += 1;
                 }
+                idx += 1;
             }
         }
         for (k, bytes, spec) in requests {

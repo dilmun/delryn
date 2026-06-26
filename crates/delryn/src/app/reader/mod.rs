@@ -79,6 +79,10 @@ pub struct Reader {
     /// Paginated reading (set each render from config): vertical nav flips whole
     /// pages snapped to page boundaries instead of scrolling line by line.
     pub paged: bool,
+    /// A two-page paged-image spread is on screen (set each render): the facing
+    /// page (next section) is visible, so it's built eagerly + kept warm, and the
+    /// image look-ahead reaches one section further so page turns are instant.
+    pub spread: bool,
     /// Cached (outline index, line) for the current section's entries, recomputed
     /// on re-wrap; drives the TOC scroll-spy cheaply.
     heading_lines: Vec<(usize, usize)>,
@@ -234,6 +238,7 @@ impl Reader {
             wrap_tidy: true,
             chapter_lock: false,
             paged: false,
+            spread: false,
             heading_lines: Vec::new(),
             anchors: Vec::new(),
             footnote_def_line: HashMap::new(),
@@ -352,6 +357,11 @@ impl Reader {
         let mut targets = Vec::new();
         if self.section + 1 < n {
             targets.push(self.section + 1);
+        }
+        // In a spread, warm the page beyond the facing one too, so the next turn
+        // (which makes section + 2 the new facing page) is instant.
+        if self.spread && self.section + 2 < n {
+            targets.push(self.section + 2);
         }
         if self.section > 0 {
             targets.push(self.section - 1);
@@ -1369,12 +1379,13 @@ mod tests {
         buf
     }
 
-    /// Regression: in a paged-image two-page spread, the *facing* page (the next
-    /// section) must actually build and become drawable — it requires the loader
-    /// to be drained during steady-state rendering, not only on navigation.
+    /// Regression + optimization: in a paged-image two-page spread, the current
+    /// page (0), its eagerly-built facing page (1), and the look-ahead page (2,
+    /// warmed for the next turn) must all build and become drawable. Exercises
+    /// the per-frame loader drain, the eager facing build, and the look-ahead.
     /// Drives the real pipeline headlessly (halfblocks `Picker`, no tty).
     #[test]
-    fn paged_spread_builds_the_facing_page() {
+    fn paged_spread_builds_facing_and_lookahead() {
         let png = page_png();
         let page = || {
             vec![Block::Image {
@@ -1388,6 +1399,8 @@ mod tests {
         };
         let doc = MockDoc::new(vec![page(), page(), page()]).paged();
         let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.spread = true; // the view sets this each render in two-page mode
+        r.load(0); // re-run neighbour prefetch now that spread warms section 2
 
         let picker = Picker::halfblocks();
         let builder = ImageBuilder::new(picker.clone());
@@ -1399,12 +1412,12 @@ mod tests {
             mode: media::ImageMode::default(),
         };
 
-        // Simulate two-page frames (no navigation) until the current page (0) and
-        // its facing page (1) have both built, or time out.
+        // Simulate spread frames (no navigation) until the current, facing, and
+        // look-ahead pages have all built, or time out.
         let mut ok = false;
         for _ in 0..400 {
             r.sync_images(&builder, &picker, 40, 40, 0, 85, policy);
-            if r.page_plan(0).is_some() && r.page_plan(1).is_some() {
+            if r.page_plan(0).is_some() && r.page_plan(1).is_some() && r.page_plan(2).is_some() {
                 ok = true;
                 break;
             }
@@ -1412,7 +1425,7 @@ mod tests {
         }
         assert!(
             ok,
-            "facing page (section 1) never built — the loader is not drained during rendering"
+            "current, facing, and look-ahead pages must all build in a spread"
         );
     }
 
