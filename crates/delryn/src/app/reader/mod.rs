@@ -1358,6 +1358,64 @@ mod tests {
         }
     }
 
+    /// A small white page encoded as PNG, so the image pipeline can decode +
+    /// build it in the spread test.
+    fn page_png() -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(20, 28, image::Rgb([255, 255, 255]));
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        buf
+    }
+
+    /// Regression: in a paged-image two-page spread, the *facing* page (the next
+    /// section) must actually build and become drawable — it requires the loader
+    /// to be drained during steady-state rendering, not only on navigation.
+    /// Drives the real pipeline headlessly (halfblocks `Picker`, no tty).
+    #[test]
+    fn paged_spread_builds_the_facing_page() {
+        let png = page_png();
+        let page = || {
+            vec![Block::Image {
+                src: String::new(),
+                alt: String::new(),
+                data: png.clone(),
+                caption: Vec::new(),
+                math: false,
+                width: delryn_model::ImageWidth::Full,
+            }]
+        };
+        let doc = MockDoc::new(vec![page(), page(), page()]).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+
+        let picker = Picker::halfblocks();
+        let builder = ImageBuilder::new(picker.clone());
+        let policy = media::RenderPolicy {
+            tint: media::Ink {
+                ink: [0, 0, 0],
+                paper: [255, 255, 255],
+            },
+            mode: media::ImageMode::default(),
+        };
+
+        // Simulate two-page frames (no navigation) until the current page (0) and
+        // its facing page (1) have both built, or time out.
+        let mut ok = false;
+        for _ in 0..400 {
+            r.sync_images(&builder, &picker, 40, 40, 0, 85, policy);
+            if r.page_plan(0).is_some() && r.page_plan(1).is_some() {
+                ok = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            ok,
+            "facing page (section 1) never built — the loader is not drained during rendering"
+        );
+    }
+
     #[test]
     fn facing_page_pending_only_paged_and_bounded() {
         // Reflowable (non-paged) documents never wait on a facing page.
