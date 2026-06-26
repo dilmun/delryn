@@ -145,6 +145,7 @@ enum Col {
     Pct,
     Size,
     Status,
+    Tags,
 }
 
 impl Col {
@@ -161,6 +162,7 @@ impl Col {
             Col::Pct => Constraint::Length(4),
             Col::Size => Constraint::Length(7),
             Col::Status => Constraint::Length(9),
+            Col::Tags => Constraint::Length(18),
         }
     }
 
@@ -175,6 +177,7 @@ impl Col {
             Col::Pct => "progress",
             Col::Size => "size",
             Col::Status => "status",
+            Col::Tags => "tags",
             Col::Star | Col::Title => return None,
         })
     }
@@ -191,6 +194,7 @@ impl Col {
             Col::Pct => SortKey::Progress,
             Col::Size => SortKey::Size,
             Col::Status => SortKey::Status,
+            Col::Tags => SortKey::Tags,
             Col::Star => return None,
         })
     }
@@ -213,6 +217,7 @@ fn columns(compact: bool, width: u16, config: &Config) -> Vec<Col> {
         (Col::Pct, 36),
         (Col::Size, 78),
         (Col::Status, 60),
+        (Col::Tags, 100),
     ] {
         if col.key().is_some_and(|k| config.column_on(k)) && width >= min {
             cols.push(col);
@@ -267,6 +272,7 @@ fn header_row(cols: &[Col], app: &App, theme: Theme) -> Row<'static> {
         Col::Pct => sort(SortKey::Progress, "%", true),
         Col::Size => sort(SortKey::Size, "Size", true),
         Col::Status => sort(SortKey::Status, "Status", false),
+        Col::Tags => sort(SortKey::Tags, "Tags", false),
     });
     Row::new(cells.collect::<Vec<_>>())
 }
@@ -293,8 +299,18 @@ fn book_row(b: &BookRow, cols: &[Col], grouped: bool, marked: bool, theme: Theme
         Col::Pct => num(format!("{}%", b.pct)),
         Col::Size => num(fmt_size(b.size)),
         Col::Status => status_cell(b, theme),
+        Col::Tags => tags_cell(&b.tags, theme),
     });
     Row::new(cells.collect::<Vec<_>>())
+}
+
+/// The Tags cell: the book's tags, comma-separated and muted (the table clips to
+/// the column width). Empty when untagged.
+fn tags_cell(tags: &str, theme: Theme) -> Cell<'static> {
+    Cell::from(Span::styled(
+        tags.to_string(),
+        Style::default().fg(theme.muted),
+    ))
 }
 
 /// The reading-status cell: the effective status label, with manual overrides

@@ -319,7 +319,7 @@ impl ImageMode {
 /// The optional library list columns (key, display label), in display order.
 /// The star + Title columns are always shown; these can be toggled and also
 /// drop automatically on a narrow window.
-pub const LIB_COLUMNS: [(&str, &str); 7] = [
+pub const LIB_COLUMNS: [(&str, &str); 8] = [
     ("author", "Author"),
     ("year", "Year"),
     ("type", "Type"),
@@ -327,6 +327,7 @@ pub const LIB_COLUMNS: [(&str, &str); 7] = [
     ("progress", "Progress"),
     ("size", "Size"),
     ("status", "Status"),
+    ("tags", "Tags"),
 ];
 
 /// Bounds for the per-side text padding (percent of the content pane width).

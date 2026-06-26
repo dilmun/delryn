@@ -106,6 +106,7 @@ mod tests {
             converted: false,
             rating: 0,
             status: String::new(),
+            tags: String::new(),
         }
     }
 

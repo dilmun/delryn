@@ -130,6 +130,7 @@ mod tests {
             converted: false,
             rating,
             status: String::new(),
+            tags: String::new(),
         }
     }
 
