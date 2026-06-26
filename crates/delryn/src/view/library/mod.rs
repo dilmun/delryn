@@ -115,7 +115,7 @@ fn fmt_idx(i: f32) -> String {
     }
 }
 
-fn fmt_size(bytes: u64) -> String {
+pub(crate) fn fmt_size(bytes: u64) -> String {
     let kb = bytes as f64 / 1024.0;
     if kb < 1024.0 {
         format!("{kb:.0}K")

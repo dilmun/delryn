@@ -3,6 +3,7 @@
 
 pub mod annotations;
 pub mod bulk_rename;
+pub mod dup_resolve;
 pub mod image;
 pub mod library;
 pub mod meta_edit;
@@ -193,6 +194,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     if app.palette.is_some() {
         palette::render(f, app);
+    }
+    if app.dup_resolve.is_some() {
+        dup_resolve::render(f, app);
     }
     // An open overlay shows its shortcuts on the shared bottom status row,
     // drawn last so it sits above the popup (which never reaches that row).
