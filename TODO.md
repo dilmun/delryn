@@ -340,6 +340,67 @@ only framed/matted to sit in the theme.
       - Caching at scale: persist wrapped-layout + cover thumbnails keyed by
         (path, mtime, width, theme) so re-opens are instant.
 
+## Phase 7 — Advanced reading layout system
+
+Generalize the two view modes (`Center` / `TwoPage`) into a **composition
+engine** that renders *N* page tiles per view, parameterized rather than
+hardcoded — so a new layout is a strategy + preset, not a new `if`. Grounded in
+delryn's reality: it's a **terminal** (ratatui + Kitty graphics, a cell grid, no
+GPU/smooth-pixel-scroll), and content is one of two kinds — **reflowable** (EPUB:
+`Block`s → wrapped lines; "pages" are emergent) or **paged-image** (PDF, later
+comics: one fixed page image per section). Most spread/grid modes are paged-only;
+reflowable supports single/multi-column + scroll + presentation. The key
+insight: the draft's ~16 "modes" are ~4 strategies + parameters. *Build the
+engine + high-value presets; defer niche modes behind the interface (dev docs:
+no premature abstraction, no speculative modes).*
+
+- [ ] **7.1 Composition engine (the seam — refactor, no new user modes yet).** A
+      `LayoutStrategy` mapping (viewport cells, position, content) → a list of
+      *placements* (a cell `Rect` + what to draw: a page-image plan or a reflowed
+      text-column slice); the renderer just draws placements. Port today's
+      `Center` and `TwoPage`/PDF-spread onto it. New module `view/layout/` — not
+      more bulk in `view/reader.rs` (pays down its 196-line `render` + the
+      `reader/mod.rs` size debt). **Stable interface = adding a mode never edits
+      the renderer.**
+- [ ] **7.2 Cross-cutting plumbing.** Content-kind **registry** (which modes a
+      format allows — `Document::paged_image()` already distinguishes them);
+      **position preservation across switches** (paged↔paged = page index, trivial;
+      reflow re-wrap = map by section + `within_frac`, already stored); per-strategy
+      **keymap** (arrows scroll vs move a tile selection; ←/→ turn pages; Enter in a
+      grid jumps); **presentation/chrome** as an orthogonal toggle (hide header/
+      status/gutter, maximize area), layerable on any mode.
+- [ ] **7.3 Tiled-pages presets (paged) — ONE parameterized strategy.** Params:
+      tiles (rows×cols), step (1 = sliding / N = non-overlapping spreads),
+      start-offset (cover-alone odd/even binding), direction (LTR / **manga RTL**),
+      fit (width / height / page / fixed-zoom). The presets fall out: Single,
+      Two-Page spread, Offset/Facing, Continuous-spread (step 1), Sliding window
+      (step k), N-up, Manga. Plus **fit modes + manual zoom/pan** (re-rasterize the
+      page at higher DPI — the zoom deferred from PDF v2 lands here). RTL also flips
+      the gutter side + page-turn keys.
+- [ ] **7.4 Distinct strategies (not presets).** Continuous **scroll across
+      sections** (the long-missing chapter-join, for reflow *and* paged); **grid /
+      thumbnail browser** as a visual page-jump complementing the TOC sidebar
+      (arrows move selection, Enter opens).
+- [ ] **7.5 Deferred behind the interface (cheap once 7.1 exists — build on
+      demand, NOT speculatively).** Film strip (current page large + neighbours
+      small); Comparison (pin arbitrary non-sequential pages — needs a "pinned
+      pages" model distinct from current position); digital-magazine reflow.
+- [ ] **Config** (Settings tab): pages-per-view, step/overlap, reading direction,
+      fit strategy, gap/margin/alignment, presentation toggle; per-book layout
+      memory (like KOReader).
+- [ ] **Performance — reuse + measure, don't speculate.** The image pipeline
+      already gives async decode + LRU + neighbour-prefetch + viewport-cull +
+      deferred-on-scroll, and `ImgKey` caches per tile-size, so the engine plugs
+      straight in. Grids transmit many Kitty images at once: downscale thumbnails
+      hard, transmit on settle, cull off-screen. Add predictive prefetch / retained-
+      page caps **only against a profile**. No GPU path — rasterize-once + cache +
+      cull is the terminal-correct model.
+- [ ] **Research spike** (informs the preset set, before 7.3): what KOReader
+      (per-book layout + RTL), SumatraPDF (continuous-facing + cover offset), Okular,
+      Calibre, Apple Books/Kindle, and comic/manga readers (CDisplayEx, Tachiyomi)
+      actually expose — adopt the wins, skip GUI-only smooth-scroll + auto-magazine
+      reflow. Folio-tuned, not a feature-clone.
+
 ## Tech debt — chip away, don't grow (dev docs size guidelines)
 
 Soft "review/refactor triggers," not hard gates. Logged 2026-06-26 against the
