@@ -44,6 +44,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.paragraph_spacing = config.paragraph_spacing;
     reader.code_wrap = config.code_wrap;
     reader.table_wrap = config.table_wrap;
+    reader.justify = config.justify;
+    reader.tidy_spacing = config.tidy_spacing;
     reader.paged = config.paged;
     reader.chapter_lock = config.chapter_lock;
     let area = f.area();

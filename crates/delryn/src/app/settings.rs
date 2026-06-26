@@ -27,6 +27,8 @@ pub enum SettingItem {
     PageGap,
     LineSpacing,
     ParagraphSpacing,
+    Justify,
+    TidySpacing,
     ShowSidebar,
     ShowStatus,
     StatusTheme,
@@ -58,6 +60,8 @@ impl SettingItem {
             SettingItem::PageGap => "Two-page gap",
             SettingItem::LineSpacing => "Line spacing",
             SettingItem::ParagraphSpacing => "Paragraph spacing",
+            SettingItem::Justify => "Justify text",
+            SettingItem::TidySpacing => "Tidy spacing",
             SettingItem::ShowSidebar => "Sidebar by default",
             SettingItem::ShowStatus => "Status bar by default",
             SettingItem::StatusTheme => "Theme",
@@ -94,6 +98,8 @@ impl SettingItem {
             SettingItem::PageGap => c.page_gap.to_string(),
             SettingItem::LineSpacing => c.line_spacing.to_string(),
             SettingItem::ParagraphSpacing => c.paragraph_spacing.to_string(),
+            SettingItem::Justify => onoff(c.justify),
+            SettingItem::TidySpacing => onoff(c.tidy_spacing),
             SettingItem::ShowSidebar => onoff(c.show_sidebar),
             SettingItem::ShowStatus => onoff(c.show_status),
             SettingItem::StatusTheme => onoff(c.status.theme),
@@ -156,6 +162,7 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
                     I(PageGap),
                     I(LineSpacing),
                     I(ParagraphSpacing),
+                    I(Justify),
                 ],
             ),
             tab(
@@ -182,6 +189,7 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
                     S("Blocks"),
                     I(CodeWrap),
                     I(TableWrap),
+                    I(TidySpacing),
                     S("Pagination"),
                     I(Paged),
                     I(ChapterLock),
@@ -333,6 +341,8 @@ impl App {
             SettingItem::ParagraphSpacing => {
                 c.paragraph_spacing = (c.paragraph_spacing as i32 + delta).clamp(0, 3) as u8
             }
+            SettingItem::Justify => c.justify = !c.justify,
+            SettingItem::TidySpacing => c.tidy_spacing = !c.tidy_spacing,
             SettingItem::ShowSidebar => c.show_sidebar = !c.show_sidebar,
             SettingItem::ShowStatus => c.show_status = !c.show_status,
             SettingItem::StatusTheme => c.status.theme = !c.status.theme,
