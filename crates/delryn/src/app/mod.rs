@@ -11,7 +11,7 @@ use std::time::Instant;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
-use crate::config::Config;
+use crate::config::{Config, ViewMode};
 use crate::document::epub::{self, EpubDocument};
 use crate::document::epub_write;
 use crate::input::{self, Action, Pending};
@@ -598,7 +598,14 @@ impl App {
         let Some(r) = self.reader.as_ref() else {
             return false;
         };
-        r.is_scrolling() || (self.mode == Mode::Reader && r.images_pending())
+        let in_reader = self.mode == Mode::Reader;
+        r.is_scrolling()
+            || (in_reader && r.images_pending())
+            // A two-page PDF spread's facing page builds just after the current
+            // page; keep redrawing until it lands so the right page pops in.
+            || (in_reader
+                && matches!(self.config.view_mode, ViewMode::TwoPage)
+                && r.facing_page_pending())
     }
 
     /// Advance one frame of smooth scrolling; returns whether anything moved.
