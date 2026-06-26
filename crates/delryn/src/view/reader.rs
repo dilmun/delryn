@@ -425,7 +425,12 @@ fn render_two_page(
     // the spread by a page.
     if reader.is_paged_image() {
         reader.page_lines = h;
-        if images.is_some() && !reader.is_scrolling() {
+        // Draw both pages every frame, even mid-scroll. Each is a static,
+        // already-transmitted protocol — re-rendering just re-places it (see the
+        // kitty `make_transmit` once-only flag) — so, unlike inline figures, they
+        // don't need deferring while scrolling, and gating on `!is_scrolling`
+        // would only blank the spread during motion.
+        if images.is_some() {
             if let Some(plan) = reader.page_plan(reader.section) {
                 draw_page_centered(f, left_area, plan);
             }
