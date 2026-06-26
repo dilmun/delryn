@@ -12,6 +12,7 @@ use crate::config::LibLayout;
 use crate::media;
 use crate::store::LibrarySection;
 
+use super::confirm::ConfirmAction;
 use super::{App, COVER_DEBOUNCE, Mode, load_cover_bytes};
 
 /// The active library view: one of the fixed smart sections, or a user
@@ -253,6 +254,61 @@ impl App {
             let secs = store.total_read_seconds();
             self.stats = Some(crate::library::stats::compute(&books, secs));
         }
+    }
+
+    /// Resolve the selected book's duplicate group: keep the selected copy and
+    /// ask to delete the others (file + library row). Only meaningful in the
+    /// Duplicates section. The selection is the *keeper* — pick it deliberately
+    /// (e.g. the original EPUB over a converted/PDF copy) before pressing `D`.
+    fn lib_resolve_duplicates(&mut self) {
+        if !matches!(self.lib_view, LibView::Section(LibrarySection::Duplicates)) {
+            return;
+        }
+        let Some(sel) = self.lib_books.get(self.lib_sel) else {
+            return;
+        };
+        let keep = sel.path.clone();
+        let title = sel.title.clone();
+        let Some(store) = &self.store else {
+            return;
+        };
+        // Groups span the whole library, so recompute over all books.
+        let all = store.all_books();
+        let remove: Vec<String> = crate::library::dedup::duplicate_groups(&all)
+            .into_iter()
+            .find(|g| g.iter().any(|&i| all[i].path == keep))
+            .map(|g| {
+                g.iter()
+                    .map(|&i| all[i].path.clone())
+                    .filter(|p| p != &keep)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if remove.is_empty() {
+            self.lib_flash = Some("no duplicates to remove".into());
+            return;
+        }
+        let q = format!(
+            "Delete {} duplicate file(s) of \u{201c}{title}\u{201d}? Keeps the selected copy.",
+            remove.len()
+        );
+        self.ask_confirm(&q, ConfirmAction::ResolveDuplicates(remove));
+    }
+
+    /// Delete each duplicate's file (best-effort) and drop its library row, then
+    /// refresh. Called from the confirmation handler.
+    pub(crate) fn remove_duplicate_files(&mut self, paths: &[String]) {
+        let mut removed = 0;
+        for p in paths {
+            let gone = std::fs::remove_file(p).is_ok();
+            if let Some(store) = &self.store {
+                store.remove_book(p);
+            }
+            removed += usize::from(gone);
+        }
+        self.lib_flash = Some(format!("removed {removed} duplicate(s)"));
+        self.lib_sel = 0;
+        self.refresh_library();
     }
 
     /// Set the selected book's rating (0 clears), flashing the result.
@@ -591,6 +647,9 @@ impl App {
             }
             // Cycle the manual reading status (none → paused → dropped → reference).
             KeyCode::Char('m') => self.lib_cycle_status(),
+            // `D` resolves duplicates of the selected book (Duplicates section):
+            // keep this copy, delete the rest.
+            KeyCode::Char('D') if pane != LibPane::Sidebar => self.lib_resolve_duplicates(),
             // Book actions operate on the selected book regardless of focus.
             KeyCode::Char('f') => {
                 if self.lib_marked.is_empty() {

@@ -1110,6 +1110,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    // Duplicates: `D` keeps the selected copy and (after confirm) deletes the
+    // others' files + library rows.
+    #[test]
+    fn resolve_duplicates_keeps_selected_deletes_rest() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_dup_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let books = tmp.join("books");
+        std::fs::create_dir_all(&books).unwrap();
+        let p1 = books.join("dup-a.epub");
+        let p2 = books.join("dup-b.epub");
+        std::fs::write(&p1, b"x").unwrap();
+        std::fs::write(&p2, b"x").unwrap();
+        let (s1, s2) = (
+            p1.to_string_lossy().into_owned(),
+            p2.to_string_lossy().into_owned(),
+        );
+        {
+            let store = Store::open_default().unwrap();
+            for p in [&s1, &s2] {
+                store
+                    .upsert_book(
+                        p,
+                        "Same Title",
+                        "Same Author",
+                        None,
+                        1,
+                        1,
+                        1,
+                        "",
+                        None,
+                        "",
+                        "",
+                        "",
+                        "",
+                    )
+                    .unwrap();
+            }
+        }
+
+        let mut app = App::library();
+        app.lib_view = LibView::Section(LibrarySection::Duplicates);
+        app.refresh_library();
+        assert_eq!(app.lib_books.len(), 2, "both copies listed as duplicates");
+
+        let keep = app.lib_books[0].path.clone();
+        let other = app.lib_books[1].path.clone();
+        app.lib_sel = 0;
+        app.on_key(key('D'));
+        assert!(app.pending_confirm.is_some(), "resolve asks to confirm");
+        app.on_key(key('y'));
+
+        assert!(
+            std::path::Path::new(&keep).exists(),
+            "kept copy stays on disk"
+        );
+        assert!(
+            !std::path::Path::new(&other).exists(),
+            "duplicate file deleted"
+        );
+        let all = app.store.as_ref().unwrap().all_books();
+        assert!(all.iter().any(|b| b.path == keep), "kept row remains");
+        assert!(
+            !all.iter().any(|b| b.path == other),
+            "duplicate row dropped"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     // Multi-select + bulk rename: mark all, open the popup, apply the template.
     #[test]
     fn bulk_rename_renames_marked_books() {
