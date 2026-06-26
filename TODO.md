@@ -179,9 +179,11 @@ jump-by-type + a reader cursor.
       detail line, sortable, DSL-filterable.
 - [x] Duplicate detection + resolution: `delryn-library::dedup` (ISBN, else
       normalized title + author surname); a "Duplicates" library section lists
-      members. Resolve with `D` — keep the selected copy (pick it deliberately,
-      e.g. original over converted/PDF), delete the rest (file + library row)
-      after one confirmation.
+      members. `D` opens a **resolution overlay** — every group with a checkbox
+      per copy; a **smart auto-select** keeps the best (engagement > original >
+      EPUB > richer metadata > larger) and pre-checks the worse ones; `space`
+      toggles, `a` re-auto, `u` clears, `d` deletes all checked (file + row) after
+      one confirm, then the overlay refreshes/closes.
 - [x] Metadata diff view (current vs remote, selective apply): picking an online
       candidate (editor Lookup tab → ⏎) opens a diff overlay — one row per field
       with current vs remote, fields that differ pre-ticked; space toggles, `a`
