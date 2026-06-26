@@ -530,6 +530,20 @@ impl ImagePlan {
     pub fn image_id(&self) -> Option<u32> {
         self.proto.image_id()
     }
+
+    /// The Kitty upload sequence if this image hasn't been transmitted yet, so a
+    /// look-ahead page can be uploaded to the terminal *ahead* of display (no
+    /// first-render upload flash). `None` for non-Kitty protocols or once sent.
+    /// The caller MUST write the returned bytes to the terminal.
+    pub fn pretransmit(&self) -> Option<String> {
+        self.proto.pretransmit()
+    }
+
+    /// Whether this image still needs uploading to the terminal (non-consuming),
+    /// so the reader can keep the loop alive until look-ahead pages are uploaded.
+    pub fn needs_pretransmit(&self) -> bool {
+        self.proto.needs_pretransmit()
+    }
 }
 
 /// Kitty escape sequence to delete an image (and free its data) by id.

@@ -568,6 +568,15 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Kitty upload sequences for look-ahead PDF pages, to transmit ahead of
+    /// display so a page turn reveals an already-decoded image (no upload flash).
+    pub fn take_pretransmits(&self) -> Vec<String> {
+        self.reader
+            .as_ref()
+            .map(|r| r.take_pretransmits())
+            .unwrap_or_default()
+    }
+
     /// Text queued for the system clipboard (OSC 52), if any.
     pub fn take_clipboard(&mut self) -> Option<String> {
         self.reader.as_mut().and_then(|r| r.take_clipboard())
@@ -606,6 +615,9 @@ impl App {
             || (in_reader
                 && matches!(self.config.view_mode, ViewMode::TwoPage)
                 && r.facing_page_pending())
+            // Keep redrawing while look-ahead pages build / await pre-upload, so
+            // they're uploaded to the terminal before a turn reveals them.
+            || (in_reader && r.warm_pending())
     }
 
     /// Advance one frame of smooth scrolling; returns whether anything moved.
