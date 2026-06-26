@@ -10,6 +10,7 @@ fn size_spec(width: delryn_model::ImageWidth, math: bool) -> media::SizeSpec {
         delryn_model::ImageWidth::Auto => media::SizeHint::Auto,
         delryn_model::ImageWidth::Pct(p) => media::SizeHint::Pct(p),
         delryn_model::ImageWidth::Px(px) => media::SizeHint::Px(px),
+        delryn_model::ImageWidth::Full => media::SizeHint::Full,
     };
     media::SizeSpec { hint, math }
 }

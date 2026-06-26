@@ -35,10 +35,11 @@ impl BookFormat {
     }
 
     /// Whether a [`crate::Document`] backend exists to actually open this format
-    /// today. Only EPUB is readable for now; the others are recognized but not
-    /// yet parseable (see the Phase 5 plan in `TODO.md`).
+    /// today. EPUB (reflowable text) and PDF (page-as-image) are readable;
+    /// MOBI/AZW3 are recognized but not yet parseable (see the Phase 5 plan in
+    /// `TODO.md`).
     pub fn is_readable(self) -> bool {
-        matches!(self, BookFormat::Epub)
+        matches!(self, BookFormat::Epub | BookFormat::Pdf)
     }
 
     /// A short human label, for status messages and badges.
@@ -71,9 +72,10 @@ mod tests {
     }
 
     #[test]
-    fn only_epub_is_readable_today() {
+    fn epub_and_pdf_are_readable() {
         assert!(BookFormat::Epub.is_readable());
-        for f in [BookFormat::Pdf, BookFormat::Mobi, BookFormat::Azw3] {
+        assert!(BookFormat::Pdf.is_readable());
+        for f in [BookFormat::Mobi, BookFormat::Azw3] {
             assert!(!f.is_readable(), "{f:?} should not be readable yet");
         }
     }

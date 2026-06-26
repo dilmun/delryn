@@ -8,6 +8,7 @@ pub mod epub_write;
 pub mod format;
 pub mod html;
 pub mod mathml;
+pub mod pdf;
 
 use anyhow::Result;
 
