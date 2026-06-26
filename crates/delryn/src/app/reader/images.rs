@@ -31,6 +31,13 @@ impl Reader {
         width_pct: u16,
         policy: media::RenderPolicy,
     ) {
+        // Pick up any sections the background loader has finished — neighbours
+        // are requested on navigation but only land in the cache when drained.
+        // A two-page spread needs the facing section's blocks *now* (not just on
+        // the next navigation) so its page image can build; without this the
+        // facing page never appears.
+        self.drain_loader();
+
         // Tell the worker where we are so it can drop builds for far-away
         // sections (avoids a fast-scroll backlog delaying the current one).
         builder.set_current(self.section);
