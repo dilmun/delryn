@@ -100,9 +100,12 @@ impl Reader {
             self.image_cache.get(&facing);
         }
 
-        // 4. Pre-build neighbouring sections' images once the current one is ready
-        //    (one section further ahead in a spread, so the next turn is instant).
-        if !self.images_pending() {
+        // 4. Pre-build neighbouring sections' images. In a spread, do it eagerly
+        //    (don't wait for the current page) so the look-ahead pages are warm
+        //    *before* you turn: active scrolling keeps the current page "pending",
+        //    which would otherwise starve this prefetch and make the just-revealed
+        //    page build late and flash. Elsewhere, defer until the current is ready.
+        if self.spread || !self.images_pending() {
             self.prefetch_neighbor_images(builder, avail, max_rows, max_px, width_pct, policy);
         }
     }
