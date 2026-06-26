@@ -437,6 +437,11 @@ impl App {
         };
         let before = reader.section;
         let mut save = false;
+        // Whole-page rasters (PDF) always navigate by page flip, never eased
+        // line-scroll: easing re-renders the full-page image every frame, which
+        // blanks/flickers it. So page-snap whenever paged mode is on *or* the
+        // document is page-image-based, regardless of the continuous-scroll knob.
+        let paged = self.config.paged || reader.is_paged_image();
         match action {
             Action::Quit => self.should_quit = true,
             Action::Back => {
@@ -453,21 +458,21 @@ impl App {
             }
             // In paged mode, vertical content navigation flips whole pages.
             Action::Down(n) => match reader.focus {
-                Focus::Content if self.config.paged => reader.page_forward(),
+                Focus::Content if paged => reader.page_forward(),
                 Focus::Content => reader.queue_scroll(n as isize),
                 Focus::Sidebar => reader.sidebar_move(n as isize),
             },
             Action::Up(n) => match reader.focus {
-                Focus::Content if self.config.paged => reader.page_backward(),
+                Focus::Content if paged => reader.page_backward(),
                 Focus::Content => reader.queue_scroll(-(n as isize)),
                 Focus::Sidebar => reader.sidebar_move(-(n as isize)),
             },
-            Action::HalfDown if self.config.paged => reader.page_forward(),
-            Action::HalfUp if self.config.paged => reader.page_backward(),
+            Action::HalfDown if paged => reader.page_forward(),
+            Action::HalfUp if paged => reader.page_backward(),
             Action::HalfDown => reader.scroll_down(reader.page_lines.max(2) / 2),
             Action::HalfUp => reader.scroll_up(reader.page_lines.max(2) / 2),
-            Action::PageDown if self.config.paged => reader.page_forward(),
-            Action::PageUp if self.config.paged => reader.page_backward(),
+            Action::PageDown if paged => reader.page_forward(),
+            Action::PageUp if paged => reader.page_backward(),
             Action::PageDown => reader.scroll_down(reader.page_lines.max(1)),
             Action::PageUp => reader.scroll_up(reader.page_lines.max(1)),
             Action::Top => {
