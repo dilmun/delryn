@@ -144,6 +144,10 @@ impl Document for PdfDocument {
         self.page_count
     }
 
+    fn paged_image(&self) -> bool {
+        true
+    }
+
     fn load_section(&mut self, index: usize) -> Result<Section> {
         Ok(Section {
             index,

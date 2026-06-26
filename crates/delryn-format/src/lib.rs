@@ -44,6 +44,12 @@ pub trait Document {
     fn start_section(&self) -> usize {
         0
     }
+    /// True when each section is a standalone full-page image (PDF): two-page
+    /// mode then shows consecutive pages as a side-by-side spread, rather than
+    /// flowing reflowable text into two columns. Default `false`.
+    fn paged_image(&self) -> bool {
+        false
+    }
     /// Load and reflow-prepare one section's content.
     fn load_section(&mut self, index: usize) -> Result<Section>;
     /// Cross-reference / citation jump targets in section `index`: each element's

@@ -14,7 +14,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use crate::app::{App, Focus, Reader};
 use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
-use crate::media::ImageBuilder;
+use crate::media::{ImageBuilder, ImagePlan};
 use crate::search::Matcher;
 use crate::theme::Theme;
 
@@ -305,6 +305,15 @@ fn draw_gutter(f: &mut Frame, text_area: Rect, reader: &Reader, top: usize, them
     );
 }
 
+/// Draw a single full-page image centered in `area` — one half of a two-page
+/// PDF spread. The page is pre-sized to fit the column, so it's positioned
+/// whole (no scroll slice).
+fn draw_page_centered(f: &mut Frame, area: Rect, plan: &ImagePlan) {
+    let x = (area.width.saturating_sub(plan.cols) / 2) as i16;
+    let y = (area.height.saturating_sub(plan.rows) / 2) as i16;
+    f.render_widget(SlicedImage::new(&plan.proto, SignedPosition { x, y }), area);
+}
+
 /// Draw the ready figure images that intersect `[top, top+height)` of the line
 /// flow into `area`, centered. Uses a sliced protocol with a signed vertical
 /// offset so an image scrolling past either edge shows its visible slice
@@ -408,6 +417,25 @@ fn render_two_page(
     reader.ensure_wrapped(col_w as usize);
     reader.resolve_pending();
     reader.clamp_scroll();
+
+    // PDF (paged-image): a facing-page spread — the current page on the left, the
+    // next on the right — instead of flowing reflowable text into two columns.
+    // Each page is sized to fit its column, so neither scrolls; navigation moves
+    // the spread by a page.
+    if reader.is_paged_image() {
+        reader.page_lines = h;
+        if images.is_some() && !reader.is_scrolling() {
+            if let Some(plan) = reader.page_plan(reader.section) {
+                draw_page_centered(f, left_area, plan);
+            }
+            if reader.section + 1 < reader.section_count()
+                && let Some(plan) = reader.page_plan(reader.section + 1)
+            {
+                draw_page_centered(f, right_area, plan);
+            }
+        }
+        return;
+    }
 
     let left = visible_lines(reader, reader.scroll, h, theme);
     let right = visible_lines(reader, reader.scroll + h, h, theme);
