@@ -957,13 +957,12 @@ impl Reader {
         self.doc.section_count()
     }
 
-    /// The built full-page image for `section` at the geometry the last
-    /// [`Reader::sync_images`] settled on, if it's cached — used to draw the
-    /// facing page of a two-page spread. The key matches what neighbour-prefetch
+    /// The image-cache key for `section`'s full page at the geometry the last
+    /// [`Reader::sync_images`] settled on — matches what neighbour-prefetch
     /// builds, so the facing page is already warm.
-    pub fn page_plan(&self, section: usize) -> Option<&ImagePlan> {
+    fn page_key(&self, section: usize) -> ImgKey {
         let (_, avail, max_rows, max_px, target_pct) = self.images_key;
-        let key = ImgKey {
+        ImgKey {
             section,
             idx: 0,
             avail,
@@ -971,8 +970,30 @@ impl Reader {
             max_px,
             target_pct,
             policy: self.images_policy,
-        };
-        self.image_cache.peek(&key)
+        }
+    }
+
+    /// The built full-page image for `section`, if it's cached — used to draw
+    /// the facing page of a two-page spread.
+    pub fn page_plan(&self, section: usize) -> Option<&ImagePlan> {
+        self.image_cache.peek(&self.page_key(section))
+    }
+
+    /// Whether the facing page (the next section) of a paged-image spread is not
+    /// yet built. Keeps the redraw loop alive until it appears — it builds
+    /// asynchronously, just *after* the current page, so without this the loop
+    /// would idle and the right page would never pop in. False when there is no
+    /// facing page or its build has failed, so the loop can settle.
+    pub fn facing_page_pending(&self) -> bool {
+        if !self.is_paged_image() {
+            return false;
+        }
+        let next = self.section + 1;
+        if next >= self.doc.section_count() {
+            return false;
+        }
+        let key = self.page_key(next);
+        !self.image_cache.contains(&key) && !self.img_failed.contains(&key)
     }
 
     /// Snap the position to the start of its page (so paged mode shows a clean
@@ -1248,6 +1269,7 @@ mod tests {
         meta: Metadata,
         toc: Vec<TocEntry>,
         outline: Vec<OutlineItem>,
+        paged: bool,
     }
 
     impl MockDoc {
@@ -1257,7 +1279,14 @@ mod tests {
                 meta: Metadata::default(),
                 toc: Vec::new(),
                 outline: Vec::new(),
+                paged: false,
             }
+        }
+
+        /// Mark this as a paged-image document (like PDF), for spread tests.
+        fn paged(mut self) -> Self {
+            self.paged = true;
+            self
         }
     }
 
@@ -1283,6 +1312,9 @@ mod tests {
         }
         fn section_count(&self) -> usize {
             self.sections.len()
+        }
+        fn paged_image(&self) -> bool {
+            self.paged
         }
         fn load_section(&mut self, index: usize) -> anyhow::Result<Section> {
             Ok(Section {
@@ -1324,6 +1356,28 @@ mod tests {
         Block::Math {
             tex: r"\alpha".to_string(),
         }
+    }
+
+    #[test]
+    fn facing_page_pending_only_paged_and_bounded() {
+        // Reflowable (non-paged) documents never wait on a facing page.
+        let r = reader_with(vec![para()]);
+        assert!(!r.is_paged_image());
+        assert!(!r.facing_page_pending());
+
+        // A paged-image document waits for the facing page on a middle page (its
+        // image isn't built in these no-picker tests) but settles on the last
+        // page — so the redraw loop can converge rather than spin forever.
+        let doc = MockDoc::new(vec![vec![para()], vec![para()], vec![para()]]).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        assert!(r.is_paged_image());
+        r.load(0);
+        assert!(
+            r.facing_page_pending(),
+            "a middle page waits for its facing page"
+        );
+        r.load(2);
+        assert!(!r.facing_page_pending(), "the last page has no facing page");
     }
 
     #[test]
