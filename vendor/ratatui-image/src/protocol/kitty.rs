@@ -63,6 +63,25 @@ impl Kitty {
         self.proto_state.id.0
     }
 
+    /// delryn patch: the upload (transmit) sequence if it hasn't been sent yet,
+    /// so the image can be uploaded to the terminal *ahead* of display — its
+    /// first render then only places it, with no upload-on-reveal flash. The
+    /// `U=1` virtual placement uploads without showing anything until unicode
+    /// placeholders reference it. Returns `None` once transmitted. The caller
+    /// MUST write the returned bytes to the terminal, or the image will be
+    /// marked sent without actually being uploaded.
+    pub fn pretransmit(&self) -> Option<String> {
+        self.proto_state.make_transmit().map(str::to_owned)
+    }
+
+    /// delryn patch: whether this image still needs uploading (non-consuming), so
+    /// the app can keep its redraw loop alive until look-ahead pages have been
+    /// pre-uploaded — otherwise the loop idles before the upload and the first
+    /// turn after a pause still flashes.
+    pub fn needs_pretransmit(&self) -> bool {
+        !self.proto_state.transmitted.load(Ordering::SeqCst)
+    }
+
     pub fn new(image: DynamicImage, size: Size, id: u32, is_tmux: bool) -> Result<Self> {
         let proto_state = KittyProtoState::new(&image, id, is_tmux);
         Ok(Self { proto_state, size })
