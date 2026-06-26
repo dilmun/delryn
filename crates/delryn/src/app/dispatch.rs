@@ -37,6 +37,10 @@ impl App {
             self.lib_coll_edit_key(key);
             return;
         }
+        if self.tag_edit.is_some() {
+            self.tag_edit_key(key);
+            return;
+        }
         if self.shelf_picker.is_some() {
             self.shelf_picker_key(key);
             return;

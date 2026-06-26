@@ -27,6 +27,7 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
     let converted = b.converted;
     let rating = b.rating;
     let status = b.status.clone();
+    let tags = b.tags.clone();
 
     let parts = Layout::vertical([Constraint::Min(2), Constraint::Length(13)]).split(inner);
 
@@ -111,6 +112,9 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
         format!("{} {}", st.badge(), st.label()).trim(),
         theme,
     ));
+    if !tags.is_empty() {
+        lines.push(meta_kv("Tags", &tags, theme));
+    }
     f.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: true })

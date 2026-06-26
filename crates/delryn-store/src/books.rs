@@ -172,6 +172,14 @@ impl Store {
         );
     }
 
+    /// Set a book's tags (already normalised; empty clears them).
+    pub fn set_tags(&self, path: &str, tags: &str) {
+        let _ = self.conn.execute(
+            "UPDATE books SET tags = ?2 WHERE path = ?1",
+            params![path, tags],
+        );
+    }
+
     pub fn set_favorite(&self, path: &str, favorite: bool) {
         let _ = self.conn.execute(
             "UPDATE books SET favorite = ?2 WHERE path = ?1",
