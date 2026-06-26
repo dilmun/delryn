@@ -1006,51 +1006,6 @@ impl Reader {
         !self.image_cache.contains(&key) && !self.img_failed.contains(&key)
     }
 
-    /// In a paged-image reader, the Kitty upload sequences for built-but-not-yet-
-    /// transmitted neighbour pages, so the app can send them to the terminal
-    /// *before* a turn reveals them — eliminating the first-render upload that
-    /// made the just-revealed page flash / appear to load slowly. Idempotent per
-    /// page (the protocol's transmit flag); a no-op for reflowable formats. The
-    /// caller must write the returned bytes to the terminal.
-    pub fn take_pretransmits(&self) -> Vec<String> {
-        if !self.is_paged_image() {
-            return Vec::new();
-        }
-        let n = self.doc.section_count();
-        let lo = self.section.saturating_sub(2);
-        let hi = (self.section + 3).min(n);
-        let mut out = Vec::new();
-        for sec in lo..hi {
-            if let Some(plan) = self.image_cache.peek(&self.page_key(sec))
-                && let Some(seq) = plan.pretransmit()
-            {
-                out.push(seq);
-            }
-        }
-        out
-    }
-
-    /// Whether any look-ahead page is still building or built-but-not-yet-uploaded
-    /// — used to keep the redraw loop alive until the warm window is fully ready,
-    /// so the pages are pre-uploaded before a turn reveals them (else the loop
-    /// idles mid-warmup and the first turn flashes). A no-op for reflowable books.
-    pub fn warm_pending(&self) -> bool {
-        if !self.is_paged_image() {
-            return false;
-        }
-        let n = self.doc.section_count();
-        let lo = self.section.saturating_sub(2);
-        let hi = (self.section + 3).min(n);
-        (lo..hi).any(|sec| {
-            let key = self.page_key(sec);
-            self.img_requested.contains(&key)
-                || self
-                    .image_cache
-                    .peek(&key)
-                    .is_some_and(|p| p.needs_pretransmit())
-        })
-    }
-
     /// Snap the position to the start of its page (so paged mode shows a clean
     /// page boundary after toggling in or resizing).
     pub fn snap_to_page(&mut self) {
@@ -1472,64 +1427,6 @@ mod tests {
             ok,
             "current, facing, and look-ahead pages must all build in a spread"
         );
-    }
-
-    /// The pre-upload pipeline: with a Kitty protocol, look-ahead pages must
-    /// produce upload sequences (so the app can transmit them ahead of display),
-    /// and the warm window must settle once they're built + uploaded — otherwise
-    /// the redraw loop would either spin forever or idle before uploading. Drives
-    /// the real pipeline headlessly with a Kitty-forced `Picker` (the protocol is
-    /// built from bytes; no terminal needed).
-    #[test]
-    fn paged_spread_preuploads_lookahead() {
-        let png = page_png();
-        let page = || {
-            vec![Block::Image {
-                src: String::new(),
-                alt: String::new(),
-                data: png.clone(),
-                caption: Vec::new(),
-                math: false,
-                width: delryn_model::ImageWidth::Full,
-            }]
-        };
-        let doc = MockDoc::new(vec![page(), page(), page(), page()]).paged();
-        let mut r = Reader::new(Box::new(doc)).unwrap();
-        r.spread = true;
-        r.load(0);
-
-        let mut picker = Picker::halfblocks();
-        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
-        let builder = ImageBuilder::new(picker.clone());
-        let policy = media::RenderPolicy {
-            tint: media::Ink {
-                ink: [0, 0, 0],
-                paper: [255, 255, 255],
-            },
-            mode: media::ImageMode::default(),
-        };
-
-        let mut produced_uploads = false;
-        let mut settled = false;
-        for _ in 0..400 {
-            r.sync_images(&builder, &picker, 40, 40, 0, 85, policy);
-            if !r.take_pretransmits().is_empty() {
-                produced_uploads = true; // look-ahead pages were uploaded ahead of display
-            }
-            if !r.warm_pending() && r.page_plan(2).is_some() {
-                settled = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(
-            produced_uploads,
-            "look-ahead pages must produce upload sequences"
-        );
-        assert!(settled, "the warm window must settle once built + uploaded");
-        // Once-only: nothing left to pre-upload, so the loop can idle.
-        assert!(r.take_pretransmits().is_empty(), "pre-upload is idempotent");
-        assert!(!r.warm_pending(), "no pending warmup after settle");
     }
 
     #[test]
