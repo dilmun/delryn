@@ -43,6 +43,9 @@ pub use collections::{CollInput, ShelfPicker};
 mod tags;
 pub use tags::TagInput;
 
+mod dup_resolve;
+pub use dup_resolve::{DupGroup, DupMember, DupResolve};
+
 mod editor;
 pub use editor::{
     DiffRow, EditMode, EditTab, LOOKUP_FIELDS, LookupForm, META_FIELDS, MetaDiff, MetaEdit,
@@ -135,6 +138,8 @@ pub struct App {
     pub lib_coll_edit: Option<CollInput>,
     /// Inline tag-edit prompt (set a book's tags), if active.
     pub tag_edit: Option<TagInput>,
+    /// Duplicate-resolution overlay, if open.
+    pub dup_resolve: Option<DupResolve>,
     /// A destructive action awaiting a yes/no confirmation, if any. Intercepts
     /// input ahead of every popup and is answered with y/⏎ or n/Esc.
     pub pending_confirm: Option<PendingConfirm>,
@@ -361,6 +366,7 @@ impl App {
             bulk_rename: None,
             lib_coll_edit: None,
             tag_edit: None,
+            dup_resolve: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
@@ -429,6 +435,7 @@ impl App {
             bulk_rename: None,
             lib_coll_edit: None,
             tag_edit: None,
+            dup_resolve: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
@@ -1176,72 +1183,71 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    // Duplicates: `D` keeps the selected copy and (after confirm) deletes the
-    // others' files + library rows.
+    // Duplicates: `D` opens the resolution overlay, auto-selects the worse copy
+    // (smaller here), and `d`+`y` deletes the checked file + row, keeping the best.
     #[test]
-    fn resolve_duplicates_keeps_selected_deletes_rest() {
+    fn dup_overlay_auto_selects_and_deletes_checked() {
         let _env = crate::test_env_guard();
         let tmp = std::env::temp_dir().join(format!("delryn_dup_{}", std::process::id()));
         // SAFETY: serialized by `_env`; scopes the config dir to this process.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         let books = tmp.join("books");
         std::fs::create_dir_all(&books).unwrap();
-        let p1 = books.join("dup-a.epub");
-        let p2 = books.join("dup-b.epub");
-        std::fs::write(&p1, b"x").unwrap();
-        std::fs::write(&p2, b"x").unwrap();
-        let (s1, s2) = (
-            p1.to_string_lossy().into_owned(),
-            p2.to_string_lossy().into_owned(),
+        let big = books.join("keep-big.epub");
+        let small = books.join("del-small.epub");
+        std::fs::write(&big, b"x").unwrap();
+        std::fs::write(&small, b"x").unwrap();
+        let (sbig, ssmall) = (
+            big.to_string_lossy().into_owned(),
+            small.to_string_lossy().into_owned(),
         );
         {
             let store = Store::open_default().unwrap();
-            for p in [&s1, &s2] {
-                store
-                    .upsert_book(
-                        p,
-                        "Same Title",
-                        "Same Author",
-                        None,
-                        1,
-                        1,
-                        1,
-                        "",
-                        None,
-                        "",
-                        "",
-                        "",
-                        "",
-                    )
-                    .unwrap();
-            }
+            // Same title/author → duplicates; distinct sizes → deterministic keep
+            // (larger wins the tiebreak).
+            store
+                .upsert_book(
+                    &sbig, "Same", "Auth", None, 9_000_000, 1, 1, "", None, "", "", "", "",
+                )
+                .unwrap();
+            store
+                .upsert_book(
+                    &ssmall, "Same", "Auth", None, 1000, 1, 1, "", None, "", "", "", "",
+                )
+                .unwrap();
         }
 
         let mut app = App::library();
-        app.lib_view = LibView::Section(LibrarySection::Duplicates);
-        app.refresh_library();
-        assert_eq!(app.lib_books.len(), 2, "both copies listed as duplicates");
+        app.lib_pane = LibPane::List;
+        app.on_key(key('D')); // open the overlay (works from any section)
+        let dr = app.dup_resolve.as_ref().expect("overlay opens");
+        assert_eq!(dr.groups.len(), 1, "one duplicate group");
+        assert_eq!(dr.checked_count(), 1, "auto-selects one to delete");
+        // The smaller copy is the one checked for deletion.
+        let checked: Vec<&str> = dr.groups[0]
+            .members
+            .iter()
+            .filter(|m| m.checked)
+            .map(|m| m.path.as_str())
+            .collect();
+        assert_eq!(checked, vec![ssmall.as_str()], "keeps the larger copy");
 
-        let keep = app.lib_books[0].path.clone();
-        let other = app.lib_books[1].path.clone();
-        app.lib_sel = 0;
-        app.on_key(key('D'));
-        assert!(app.pending_confirm.is_some(), "resolve asks to confirm");
+        app.on_key(key('d')); // delete checked → confirm
+        assert!(app.pending_confirm.is_some(), "asks to confirm");
         app.on_key(key('y'));
 
+        assert!(std::path::Path::new(&sbig).exists(), "larger copy kept");
         assert!(
-            std::path::Path::new(&keep).exists(),
-            "kept copy stays on disk"
-        );
-        assert!(
-            !std::path::Path::new(&other).exists(),
-            "duplicate file deleted"
+            !std::path::Path::new(&ssmall).exists(),
+            "smaller copy deleted"
         );
         let all = app.store.as_ref().unwrap().all_books();
-        assert!(all.iter().any(|b| b.path == keep), "kept row remains");
+        assert!(all.iter().any(|b| b.path == sbig));
+        assert!(!all.iter().any(|b| b.path == ssmall));
+        // No duplicates remain → the overlay closes itself.
         assert!(
-            !all.iter().any(|b| b.path == other),
-            "duplicate row dropped"
+            app.dup_resolve.is_none(),
+            "overlay closes when nothing's left"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);

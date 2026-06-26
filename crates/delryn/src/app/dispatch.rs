@@ -41,6 +41,10 @@ impl App {
             self.tag_edit_key(key);
             return;
         }
+        if self.dup_resolve.is_some() {
+            self.dup_resolve_key(key);
+            return;
+        }
         if self.shelf_picker.is_some() {
             self.shelf_picker_key(key);
             return;
