@@ -25,6 +25,9 @@ pub(crate) enum ConfirmAction {
     Collection,
     /// Open an external link in the default browser.
     OpenUrl(String),
+    /// Resolve a duplicate group: delete these files and drop their library rows
+    /// (the kept copy isn't in the list).
+    ResolveDuplicates(Vec<String>),
 }
 
 /// Open `url` in the OS default browser (best-effort, non-blocking). `url` is a
@@ -82,6 +85,7 @@ impl App {
                     r.flash = Some("opened link in browser".to_string());
                 }
             }
+            ConfirmAction::ResolveDuplicates(paths) => self.remove_duplicate_files(&paths),
         }
     }
 }
