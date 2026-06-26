@@ -177,9 +177,11 @@ jump-by-type + a reader cursor.
       Paused/Dropped/Reference) beyond the progress-derived unread/reading/
       finished — `m` cycles it, shown as its own toggleable `Status` column +
       detail line, sortable, DSL-filterable.
-- [x] Duplicate detection: `delryn-library::dedup` (ISBN, else normalized
-      title + author surname); a "Duplicates" library section lists members.
-      *Still: explicit merge/keep/remove resolution UI.*
+- [x] Duplicate detection + resolution: `delryn-library::dedup` (ISBN, else
+      normalized title + author surname); a "Duplicates" library section lists
+      members. Resolve with `D` — keep the selected copy (pick it deliberately,
+      e.g. original over converted/PDF), delete the rest (file + library row)
+      after one confirmation.
 - [x] Metadata diff view (current vs remote, selective apply): picking an online
       candidate (editor Lookup tab → ⏎) opens a diff overlay — one row per field
       with current vs remote, fields that differ pre-ticked; space toggles, `a`
