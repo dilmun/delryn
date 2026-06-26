@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS books (
     language     TEXT NOT NULL DEFAULT '',
     converted    INTEGER NOT NULL DEFAULT 0,
     rating       INTEGER NOT NULL DEFAULT 0,
-    status       TEXT NOT NULL DEFAULT ''
+    status       TEXT NOT NULL DEFAULT '',
+    tags         TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS annotations (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,6 +146,9 @@ pub struct BookRow {
     /// Manual reading-status override (paused/dropped/reference); empty means
     /// the status is derived from reading progress.
     pub status: String,
+    /// User tags: free-form, normalised (lowercased, trimmed, deduped),
+    /// comma-separated. Empty when untagged. Library-only.
+    pub tags: String,
 }
 
 /// Saved reading position for a book.
@@ -218,6 +222,12 @@ impl Store {
             "ALTER TABLE books ADD COLUMN status TEXT NOT NULL DEFAULT ''",
             [],
         );
+        // User tags (free-form, comma-separated, normalised; preserved across
+        // rescans). Library-only — never written back to the file.
+        let _ = conn.execute(
+            "ALTER TABLE books ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
+            [],
+        );
         // Bookmark organisation: a custom name and a folder (migrate older DBs).
         for col in ["name", "folder"] {
             let _ = conn.execute(
@@ -262,7 +272,7 @@ impl Store {
         let sql = format!(
             "SELECT b.path, b.title, b.author, b.year, b.size, b.favorite, b.sections, \
              p.section, p.frac, b.series, b.series_index, b.publisher, \
-             b.subtitle, b.isbn, b.language, b.converted, b.rating, b.status \
+             b.subtitle, b.isbn, b.language, b.converted, b.rating, b.status, b.tags \
              FROM books b LEFT JOIN progress p ON p.path = b.path {join} \
              WHERE {where_clause} ORDER BY {order}"
         );
@@ -299,6 +309,7 @@ impl Store {
                 converted: r.get::<_, i64>(15)? != 0,
                 rating: r.get::<_, i64>(16)?.clamp(0, 5) as u8,
                 status: r.get(17)?,
+                tags: r.get(18)?,
             })
         });
         if let Ok(rows) = rows {

@@ -354,6 +354,14 @@ fn match_field(key: &str, op: Op, value: &str, b: &BookRow) -> bool {
             None => false,
         };
     }
+    // `tag:fiction` — substring match against any of the book's tags.
+    if matches!(key, "tag" | "tags") {
+        let hit = delryn_model::tags::matches(&b.tags, value);
+        return match op {
+            Op::Ne => !hit,
+            _ => hit,
+        };
+    }
     match resolve(key, b) {
         Resolved::Text(hay) => {
             let hay = hay.to_lowercase();
@@ -405,7 +413,20 @@ mod tests {
             converted: false,
             rating: 4,
             status: String::new(),
+            tags: String::new(),
         }
+    }
+
+    #[test]
+    fn tag_field_matches_individual_tags() {
+        let mut b = book();
+        b.tags = "reference, classic".into();
+        assert!(parse("tag:reference").matches(&b));
+        assert!(parse("tag:class").matches(&b), "substring per tag");
+        assert!(parse("tag:REFERENCE").matches(&b), "case-insensitive");
+        assert!(!parse("tag:fiction").matches(&b));
+        assert!(parse("-tag:fiction").matches(&b), "negation");
+        assert!(!parse("tag:reference").matches(&book()), "untagged misses");
     }
 
     #[test]

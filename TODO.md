@@ -189,8 +189,12 @@ jump-by-type + a reader cursor.
 ## Phase 4 — Knowledge & power tools
 
 - [~] Highlights/notes/tags/backlinks. *(Have: bookmark + note annotations with
-      an overlay.) Still: highlight colors, selection/page-anchored notes, tags
-      (needs a `tags` table + `BookRow.tags` + DSL `tag:` wire-up), backlinks.*
+      an overlay; **tags** — free-form per-book labels: `books.tags` column +
+      `BookRow.tags`, normalised via `delryn_model::tags` (lowercase/trim/dedup),
+      edited with `T` (inline prompt; single replaces, multi-selection adds),
+      shown in the detail pane + a toggleable sortable Tags column, filterable
+      with `tag:` in the DSL.) Still: highlight colors, selection/page-anchored
+      notes, backlinks.*
 - [x] Statistics: `delryn-library::stats` + overlay (`i`) — totals, status mix,
       ratings, reading hours, top authors.
 - [x] Export: `delryn-library::export` (`X`) — book list → CSV / JSON / Markdown.

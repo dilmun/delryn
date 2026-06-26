@@ -40,6 +40,9 @@ mod select;
 mod collections;
 pub use collections::{CollInput, ShelfPicker};
 
+mod tags;
+pub use tags::TagInput;
+
 mod editor;
 pub use editor::{
     DiffRow, EditMode, EditTab, LOOKUP_FIELDS, LookupForm, META_FIELDS, MetaDiff, MetaEdit,
@@ -130,6 +133,8 @@ pub struct App {
     pub bulk_rename: Option<BulkRename>,
     /// Inline sidebar collection editor (create / rename), if active.
     pub lib_coll_edit: Option<CollInput>,
+    /// Inline tag-edit prompt (set a book's tags), if active.
+    pub tag_edit: Option<TagInput>,
     /// A destructive action awaiting a yes/no confirmation, if any. Intercepts
     /// input ahead of every popup and is answered with y/⏎ or n/Esc.
     pub pending_confirm: Option<PendingConfirm>,
@@ -355,6 +360,7 @@ impl App {
             meta_edit: None,
             bulk_rename: None,
             lib_coll_edit: None,
+            tag_edit: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
@@ -422,6 +428,7 @@ impl App {
             meta_edit: None,
             bulk_rename: None,
             lib_coll_edit: None,
+            tag_edit: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
@@ -996,6 +1003,65 @@ mod tests {
         app.on_key(key('S'));
         assert!(app.lib_sort_desc);
         assert_eq!(titles(&app), ["A", "C", "B"], "year descending");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // `T` tags: single-book edit replaces (normalised); a multi-selection adds the
+    // typed tags to each book (union with what it already had).
+    #[test]
+    fn tag_editing_replaces_single_and_adds_to_selection() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_tag_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for p in ["/a.epub", "/b.epub"] {
+                store
+                    .upsert_book(p, "T", "x", None, 1, 1, 1, "", None, "", "", "", "")
+                    .unwrap();
+            }
+        }
+        let mut app = App::library();
+        let tags_of = |a: &App, path: &str| {
+            a.lib_books
+                .iter()
+                .find(|b| b.path == path)
+                .map(|b| b.tags.clone())
+                .unwrap_or_default()
+        };
+
+        // Single book: T opens the prompt; typing replaces; commit normalises.
+        app.lib_sel = 0;
+        let first = app.lib_books[0].path.clone();
+        app.on_key(key('T'));
+        app.tag_edit.as_mut().unwrap().buf = "Fiction, FICTION, sci-fi".into();
+        app.on_key(code(KeyCode::Enter));
+        assert!(app.tag_edit.is_none(), "prompt closed on commit");
+        assert_eq!(
+            tags_of(&app, &first),
+            "fiction, sci-fi",
+            "deduped + lowercased"
+        );
+
+        // Multi-selection: typed tag is added to each (union), not replaced.
+        let other = if first == "/a.epub" {
+            "/b.epub"
+        } else {
+            "/a.epub"
+        };
+        app.lib_marked.insert("/a.epub".into());
+        app.lib_marked.insert("/b.epub".into());
+        app.on_key(key('T'));
+        app.tag_edit.as_mut().unwrap().buf = "classic".into();
+        app.on_key(code(KeyCode::Enter));
+        assert_eq!(
+            tags_of(&app, &first),
+            "fiction, sci-fi, classic",
+            "added to the already-tagged book"
+        );
+        assert_eq!(tags_of(&app, other), "classic", "added to the untagged one");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

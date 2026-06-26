@@ -8,6 +8,7 @@ pub mod math;
 pub mod metadata;
 pub mod naming;
 pub mod status;
+pub mod tags;
 pub mod toc;
 
 pub use content::{
