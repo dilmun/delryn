@@ -288,24 +288,36 @@ only framed/matted to sit in the theme.
       recognized format (EPUB → full metadata; PDF/MOBI/AZW3 → by filename, so
       they show in the library now, badged); opening a non-EPUB reports cleanly
       on the status row. This is the seam the backends below plug into.
-- [ ] **PDF** (`delryn-format::pdf`, behind a `Document` impl):
-      - Crate: evaluate `lopdf` (pure-Rust, low-level: page tree + content
-        streams + font maps — most control, most work) vs `pdf-extract` (text
-        out of the box, heavier, less layout fidelity). Lean `lopdf` for the
-        page model + a thin text-extraction layer so figures/positions stay
-        reachable later.
-      - Page model: one `Section` per page (or per outline entry if present);
-        map the PDF outline → `TocEntry`/`OutlineItem`.
-      - Text: extract text runs with positions; group into `Block::Para` by
-        line/column gaps; detect headings by font size; preserve reading order
-        across columns (sort by column then y).
-      - Figures: extract `XObject` images → `Block::Image` (reuse the existing
-        image pipeline). Math stays rasterized (no MathML in PDF).
-      - Pagination: PDF is inherently paged — honor "book pages" mode (Phase 2).
-      - **Validation:** needs real PDFs + a graphics-capable terminal; build
-        against a corpus of varied PDFs (single/multi-column, scanned-vs-text,
-        with/without outline) before shipping. Unit-test the text-grouping and
-        outline-mapping logic on small fixtures independent of rendering.
+- [ ] **PDF — page-as-image (v2)** (`delryn-format::pdf`, behind a `Document` impl):
+      v1 (text extraction via `pdf-extract`, branch `feat/pdf`) was rejected — a
+      reflowed PDF loses the document's real layout. PDF v2 renders each page as
+      an image, like macOS Preview, preserving exact visual fidelity.
+      - **Engine:** `pdfium-render` (Chromium's PDFium) for true-to-original
+        rendering. Runtime binding: bundled `libpdfium` next to the binary →
+        system-library fallback. `thread_safe` (default) sequences all calls, so
+        the foreground handle + the background loader's own handle are safe.
+      - **Model:** one `Section` per page, holding a single full-bleed
+        `Block::Image` (new `ImageWidth::Full` sizing → fills the pane). Page
+        navigation = section navigation; honors "book pages" mode (Phase 2).
+      - **Rasterization:** the background `SectionLoader` (its own lazily-opened
+        PDFium handle, on the loader thread) rasterizes each page once at a
+        generous fixed width → PNG. The existing `ImageBuilder` downscales it to
+        the pane and transmits via the patched PNG Kitty path. Rasterize-once +
+        re-downscale-on-resize (no re-rasterization on resize), reusing the LRU +
+        neighbour prefetch already in the reader.
+      - **Outline:** PDFium bookmark tree → `TocEntry`/`OutlineItem`; flat
+        "Page N" fallback when a PDF has no outline.
+      - **Metadata:** title/author from PDFium's Info dictionary; size from the
+        file; title falls back to the cleaned file name.
+      - **Fallback:** when `libpdfium` is absent or the terminal has no graphics
+        protocol, opening a PDF reports cleanly on the status row (no crash, no
+        half-render). Text-extraction-as-fallback deferred (revisit post-v2).
+      - **Out of scope for v2:** zoom/fit modes, pan, in-page search/selection
+        (PDFium exposes a text layer with bounding boxes — design the seam so a
+        future invisible text layer can land without rework).
+      - **Validation:** needs real PDFs + a graphics-capable terminal (Ghostty);
+        unit-test outline mapping, metadata fallback, and full-bleed sizing math
+        independent of rendering. Real-PDF rendering is the user's to confirm.
 - [ ] **MOBI / AZW3**: parse the PalmDB/MOBI header + record stream; KF8 (AZW3)
       is essentially zipped XHTML — reuse the existing `html` → `Block` pipeline
       once records are decompressed (PalmDOC/HUFF-CDIC). Evaluate `mobi` crate
@@ -327,3 +339,26 @@ only framed/matted to sit in the theme.
         via `load_section`); add an LRU of parsed `Section`s.
       - Caching at scale: persist wrapped-layout + cover thumbnails keyed by
         (path, mtime, width, theme) so re-opens are instant.
+
+## Tech debt — chip away, don't grow (dev docs size guidelines)
+
+Soft "review/refactor triggers," not hard gates. Logged 2026-06-26 against the
+updated dev docs; none block the build (`cargo fmt` + `clippy` are clean
+workspace-wide). Address opportunistically when touching the area — and do not
+grow these further.
+
+- [ ] `app/reader/mod.rs` (~1210 non-test lines; `impl Reader` ~1024) — regrew
+      past the 1000-line refactor trigger after the Phase 0 split to 601. Image
+      lifecycle, sidebar, and search are already child modules; the remaining
+      bulk is the decode/wrap/scroll/nav/history core. Carve further as PDF v2's
+      page path lands, so it doesn't grow again.
+- [ ] `delryn-render/src/layout.rs` (~1008 non-test lines) — the text-wrap engine.
+      `wrap_blocks` is 287 lines (refactor trigger); decompose by block kind.
+- [ ] `app/dispatch.rs::apply` (234 lines) — the action match; split by action
+      group if it grows.
+- [ ] `view/image.rs::render` (196 lines) — full-screen image view render.
+- [ ] 2× undocumented `#[allow(clippy::too_many_arguments)]` in
+      `app/reader/images.rs` (`sync_images`, `remap_section_images`) — regrew
+      after Phase 0's cleanup. Bundle the (avail, max_rows, max_px, width_pct,
+      policy) geometry into a struct to remove them. (The two `Store` row-writer
+      allows are already documented — compliant.)
