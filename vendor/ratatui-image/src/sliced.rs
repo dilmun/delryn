@@ -168,6 +168,23 @@ impl SlicedProtocol {
         }
     }
 
+    /// delryn patch: the Kitty upload sequence if not yet sent, so a look-ahead
+    /// page can be transmitted to the terminal *ahead* of display (no first-
+    /// render upload flash). `None` for non-Kitty protocols (which are immediate)
+    /// or already-sent images. The caller MUST write the returned bytes out.
+    pub fn pretransmit(&self) -> Option<String> {
+        match self {
+            SlicedProtocol::Kitty(kitty) => kitty.pretransmit(),
+            _ => None,
+        }
+    }
+
+    /// delryn patch: whether a Kitty image still needs uploading (non-consuming).
+    /// Always false for immediate protocols (nothing to pre-upload).
+    pub fn needs_pretransmit(&self) -> bool {
+        matches!(self, SlicedProtocol::Kitty(kitty) if kitty.needs_pretransmit())
+    }
+
     /// Create a `SlicedProtocol` for the target [`ratatui::layout::Size`].
     ///
     /// If `size` is omitted, it will be calculated based on `dyn_img`'s image-pixel-size and
