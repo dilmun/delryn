@@ -202,13 +202,6 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         for id in app.take_image_deletes() {
             let _ = execute!(io::stdout(), Print(delryn::media::delete_image_seq(id)));
         }
-        // Pre-upload look-ahead PDF pages (Kitty) so a page turn reveals an
-        // already-decoded image instead of uploading on first display — the
-        // "flash" on the page in the scroll direction. Invisible (a virtual
-        // placement); shown only once unicode placeholders reference it.
-        for seq in app.take_pretransmits() {
-            let _ = execute!(io::stdout(), Print(seq));
-        }
         // Copy requested text to the system clipboard: native first, else OSC 52.
         if let Some(text) = app.take_clipboard() {
             let copied = clipboard
