@@ -128,6 +128,10 @@ pub enum ImageWidth {
     Pct(f32),
     /// An absolute width in CSS pixels (from a px `width` attribute / CSS px).
     Px(u32),
+    /// Full-bleed: fill the display pane, preserving aspect. For page-as-image
+    /// formats (PDF), where each "image" is a whole page rather than an inline
+    /// figure sized to a fraction of the column.
+    Full,
 }
 
 /// A reflowable content block. The layout pass wraps these to the pane width.

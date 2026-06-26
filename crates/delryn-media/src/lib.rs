@@ -403,6 +403,9 @@ pub enum SizeHint {
     Pct(f32),
     /// An absolute CSS-pixel width.
     Px(u32),
+    /// Fill the pane (preserving aspect), bounded only by the cols×rows box —
+    /// for page-as-image content (PDF), not inline figures.
+    Full,
 }
 
 /// Per-image sizing intent passed to [`target_cells`] / the build worker.
@@ -465,12 +468,17 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
         // Equations read best at native size, proportional to the surrounding
         // text; only shrink to fit, never enlarge.
         cap.min(1.0)
+    } else if matches!(spec.hint, SizeHint::Full) {
+        // A full-bleed page (PDF): fill the pane box, preserving aspect —
+        // enlarging a small page or shrinking a large one to the cols×rows box.
+        cap
     } else {
         // The display width we want this figure to occupy, in pixels.
         let want_px = match spec.hint {
             SizeHint::Pct(p) => f64::from(fit.cols) * fwf * f64::from(p).clamp(0.0, 1.0),
             SizeHint::Px(px) => f64::from(px),
             SizeHint::Auto => f64::from(fit.cols) * fwf * f64::from(fit.target_pct) / 100.0,
+            SizeHint::Full => unreachable!("full-bleed handled above"),
         };
         // Reach it (up- or down-scaling), but never blow up tiny art past the
         // upscale cap and never exceed the box.
@@ -480,8 +488,10 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
         scale = cap.min(1.0);
     }
 
+    // A full-bleed page is bounded by the pane itself; the per-figure pixel cap
+    // (which bounds inline-figure transfers) would only letterbox it, so skip it.
     let longest = (wf * scale).max(hf * scale);
-    if fit.max_px > 0 && longest > f64::from(fit.max_px) {
+    if fit.max_px > 0 && longest > f64::from(fit.max_px) && !matches!(spec.hint, SizeHint::Full) {
         scale *= f64::from(fit.max_px) / longest;
     }
     let cols = ((wf * scale / fwf).ceil() as u16).clamp(1, fit.cols.max(1));
@@ -939,6 +949,38 @@ mod tests {
         assert!(
             (i32::from(cols) - 50).abs() <= 2,
             "≈50% of 100 cols: {cols}"
+        );
+    }
+
+    #[test]
+    fn full_bleed_page_fills_the_pane() {
+        // A full-bleed page (PDF) fills the pane, unlike a figure: it is bounded
+        // only by the cols×rows box, ignoring the upscale cap and the px cap.
+        let page = SizeSpec {
+            hint: SizeHint::Full,
+            math: false,
+        };
+        // A portrait (A4-ish) page in a wide-enough pane fills the column width.
+        let (cols, _) = target_cells(1240, 1750, fit(100, 200), page);
+        assert!(
+            (i32::from(cols) - 100).abs() <= 1,
+            "page fills width: {cols}"
+        );
+
+        // A small page is enlarged to fill — no MAX_UPSCALE cap (a figure of the
+        // same size would stay near native size).
+        let (small, _) = target_cells(80, 113, fit(100, 200), page);
+        assert!(small >= 90, "small page upscales to fill: {small}");
+
+        // The per-figure pixel cap must not letterbox a page (the pane bounds it).
+        let capped = FitBox {
+            max_px: 100,
+            ..fit(100, 200)
+        };
+        let (cols_capped, _) = target_cells(1240, 1750, capped, page);
+        assert!(
+            (i32::from(cols_capped) - 100).abs() <= 1,
+            "max_px does not shrink a full-bleed page: {cols_capped}"
         );
     }
 

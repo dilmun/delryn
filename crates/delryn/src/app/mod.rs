@@ -303,19 +303,33 @@ fn str_delete_at(s: &mut String, cursor: usize) {
 
 /// Build a reader for `path`, applying global config and any saved per-book
 /// overrides (theme, view mode, resume position).
-fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, String)> {
-    // Dispatch by file format. Only EPUB has a `Document` backend today; other
-    // recognized formats report cleanly here instead of failing deep in the EPUB
-    // parser with a cryptic error. See the Phase 5 plan in `TODO.md`.
+fn build_reader(
+    path: &str,
+    store: &Option<Store>,
+    has_graphics: bool,
+) -> Result<(Reader, Config, String)> {
+    // Dispatch by file format. EPUB and PDF have `Document` backends; other
+    // recognized formats report cleanly here instead of failing deep in a parser
+    // with a cryptic error. See the Phase 5 plan in `TODO.md`.
     let fmt = crate::document::BookFormat::from_path(path);
     if !fmt.is_readable() {
         anyhow::bail!(
-            "{} files aren't readable yet — only EPUB opens for now",
+            "{} files aren't readable yet — EPUB and PDF open for now",
             fmt.label()
         );
     }
-    let doc = EpubDocument::open(path)?;
-    let mut reader = Reader::new(Box::new(doc))?;
+    // PDF renders each page as an image, so it needs a graphics-capable terminal
+    // (Kitty/iTerm2/sixel). Report cleanly rather than opening to blank pages.
+    if fmt == crate::document::BookFormat::Pdf && !has_graphics {
+        anyhow::bail!("PDF needs a graphics-capable terminal (e.g. Ghostty, Kitty, iTerm2)");
+    }
+    let doc: Box<dyn crate::document::Document> = match fmt {
+        crate::document::BookFormat::Pdf => {
+            Box::new(crate::document::pdf::PdfDocument::open(path)?)
+        }
+        _ => Box::new(EpubDocument::open(path)?),
+    };
+    let mut reader = Reader::new(doc)?;
     let mut config = Config::load();
     let book_path = std::fs::canonicalize(path)
         .map(|p| p.to_string_lossy().into_owned())
@@ -343,9 +357,9 @@ fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, St
 }
 
 impl App {
-    pub fn open_book(path: &str) -> Result<Self> {
+    pub fn open_book(path: &str, has_graphics: bool) -> Result<Self> {
         let store = Store::open_default().ok();
-        let (reader, config, book_path) = build_reader(path, &store)?;
+        let (reader, config, book_path) = build_reader(path, &store, has_graphics)?;
         if let Some(s) = &store {
             s.mark_opened(&book_path);
         }
@@ -488,7 +502,7 @@ impl App {
             return;
         };
         self.flush_reading_time();
-        match build_reader(&path, &self.store) {
+        match build_reader(&path, &self.store, self.picker.is_some()) {
             Ok((reader, config, book_path)) => {
                 self.reader = Some(reader);
                 self.config = config;

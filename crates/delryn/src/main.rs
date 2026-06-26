@@ -98,7 +98,7 @@ fn main() -> Result<()> {
     }
 
     let mut app = match args.first() {
-        Some(path) => App::open_book(path)?,
+        Some(path) => App::open_book(path, picker.is_some())?,
         None => {
             // Clean out dead entries (deleted/moved files) so the library has no
             // un-openable duplicates. Cheap stat per book; skips offline roots.
