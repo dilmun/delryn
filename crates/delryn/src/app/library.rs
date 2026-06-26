@@ -60,6 +60,7 @@ pub enum SortKey {
     Size,
     Rating,
     Status,
+    Tags,
 }
 
 impl SortKey {
@@ -75,6 +76,7 @@ impl SortKey {
             SortKey::Size => "size",
             SortKey::Rating => "rating",
             SortKey::Status => "status",
+            SortKey::Tags => "tags",
         }
     }
 }
@@ -175,6 +177,12 @@ impl App {
                         .order()
                         .cmp(&RS::effective(b.pct, &b.status).order())
                 }
+                // Untagged books sort last; otherwise alphabetical by tag string.
+                SortKey::Tags => a
+                    .tags
+                    .is_empty()
+                    .cmp(&b.tags.is_empty())
+                    .then_with(|| a.tags.cmp(&b.tags)),
                 SortKey::Default => std::cmp::Ordering::Equal,
             };
             if desc { ord.reverse() } else { ord }
@@ -647,6 +655,8 @@ impl App {
                 self.config.theme = self.config.theme.next();
                 self.config.save();
             }
+            // `T` edits tags for the selected book (or all marked books).
+            KeyCode::Char('T') if pane != LibPane::Sidebar => self.open_tag_edit(),
             KeyCode::Char('/') => {
                 self.lib_exit_visual();
                 self.lib_filtering = true;

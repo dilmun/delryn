@@ -71,6 +71,7 @@ impl App {
             item("Sort by Progress", Command::Sort(SortKey::Progress)),
             item("Sort by Size", Command::Sort(SortKey::Size)),
             item("Sort by Status", Command::Sort(SortKey::Status)),
+            item("Sort by Tags", Command::Sort(SortKey::Tags)),
             item("Sort: Section order", Command::Sort(SortKey::Default)),
             item("Sort: Reverse direction", Command::ToggleSortDir),
             item("View: Cycle layout", Command::CycleLayout),
