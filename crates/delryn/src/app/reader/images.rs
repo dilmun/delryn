@@ -71,11 +71,12 @@ impl Reader {
             self.remap_section_images(builder, picker, avail, max_rows, max_px, width_pct, policy);
         }
 
-        // 2b. In a two-page spread the facing page (next section) is on screen,
-        //     so build it at the same priority as the current page — not deferred
-        //     like an off-screen prefetch — so the right page appears with the left
-        //     instead of lagging a beat behind it.
-        if self.spread {
+        // 2b. For a paged-image document, build the adjacent pages eagerly (at
+        //     the same priority as the current page, not deferred like an
+        //     off-screen prefetch) so the page a flip reveals — the spread's
+        //     facing page, or the next/prev page in single-page mode — is already
+        //     built (and then pre-uploaded) before you turn to it.
+        if self.is_paged_image() {
             self.request_section_image_builds(
                 self.section + 1,
                 builder,
@@ -85,19 +86,36 @@ impl Reader {
                 width_pct,
                 policy,
             );
+            if self.section > 0 {
+                self.request_section_image_builds(
+                    self.section - 1,
+                    builder,
+                    avail,
+                    max_rows,
+                    max_px,
+                    width_pct,
+                    policy,
+                );
+            }
         }
 
-        // 3. Keep the visible images most-recently-used so they aren't evicted
-        //    while on screen: the current section's images, plus the facing page
-        //    of a spread (which lives outside `section_images`, so it would
-        //    otherwise churn and flicker as look-ahead builds land).
+        // 3. Keep the visible + look-ahead pages most-recently-used so they
+        //    can't be evicted: an evicted page rebuilds with a fresh protocol
+        //    (transmit flag reset), which both re-transmits (flicker) and keeps
+        //    the pre-upload keepalive from ever settling. Pin the whole warm
+        //    window for a paged-image document.
         let keys: Vec<ImgKey> = self.section_images.values().copied().collect();
         for k in keys {
             self.image_cache.get(&k);
         }
-        if self.spread {
-            let facing = self.page_key(self.section + 1);
-            self.image_cache.get(&facing);
+        if self.is_paged_image() {
+            let n = self.doc.section_count();
+            let lo = self.section.saturating_sub(2);
+            let hi = (self.section + 3).min(n);
+            for sec in lo..hi {
+                let key = self.page_key(sec);
+                self.image_cache.get(&key);
+            }
         }
 
         // 4. Pre-build neighbouring sections' images. In a spread, do it eagerly
