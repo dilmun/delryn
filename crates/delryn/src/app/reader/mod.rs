@@ -946,6 +946,35 @@ impl Reader {
         self.scroll / self.page_lines.max(1) + 1
     }
 
+    /// Whether the document renders each section as a full-page image (PDF), so
+    /// two-page mode shows a facing-page spread rather than two text columns.
+    pub fn is_paged_image(&self) -> bool {
+        self.doc.paged_image()
+    }
+
+    /// Number of sections (= pages, for a paged-image document).
+    pub fn section_count(&self) -> usize {
+        self.doc.section_count()
+    }
+
+    /// The built full-page image for `section` at the geometry the last
+    /// [`Reader::sync_images`] settled on, if it's cached — used to draw the
+    /// facing page of a two-page spread. The key matches what neighbour-prefetch
+    /// builds, so the facing page is already warm.
+    pub fn page_plan(&self, section: usize) -> Option<&ImagePlan> {
+        let (_, avail, max_rows, max_px, target_pct) = self.images_key;
+        let key = ImgKey {
+            section,
+            idx: 0,
+            avail,
+            max_rows,
+            max_px,
+            target_pct,
+            policy: self.images_policy,
+        };
+        self.image_cache.peek(&key)
+    }
+
     /// Snap the position to the start of its page (so paged mode shows a clean
     /// page boundary after toggling in or resizing).
     pub fn snap_to_page(&mut self) {
