@@ -12,6 +12,7 @@ pub struct Pending {
 }
 
 /// A semantic intent. `Down`/`Up` are routed by focus (scroll vs. select).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     None,
     Quit,
@@ -24,6 +25,8 @@ pub enum Action {
     PageUp,
     Top,
     Bottom,
+    /// Jump to page/section N (1-based), from a count-prefixed `G` (`50G`).
+    Goto(usize),
     ToggleStatus,
     ToggleSidebar,
     CycleView,
@@ -78,7 +81,8 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         pending.count = Some(pending.count.unwrap_or(0) * 10 + d);
         return Action::None;
     }
-    let count = pending.count.take().unwrap_or(1);
+    let explicit_count = pending.count.take();
+    let count = explicit_count.unwrap_or(1);
 
     // `gg` → top.
     if pending.g {
@@ -105,7 +109,11 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
             pending.g = true;
             Action::None
         }
-        KeyCode::Char('G') => Action::Bottom,
+        // `G` jumps to the last page; `NG` (count-prefixed) jumps to page N.
+        KeyCode::Char('G') => match explicit_count {
+            Some(n) => Action::Goto(n),
+            None => Action::Bottom,
+        },
         KeyCode::Home => Action::Top,
         KeyCode::End => Action::Bottom,
         KeyCode::Tab => Action::FocusToggle,
@@ -141,5 +149,33 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('J') => Action::NextChapter,
         KeyCode::Char('K') => Action::PrevChapter,
         _ => Action::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    /// `G` jumps to the bottom; a count prefix turns it into an absolute
+    /// `Goto(N)`, and the count is consumed (doesn't leak into the next key).
+    #[test]
+    fn count_prefixed_g_is_goto() {
+        let mut p = Pending::default();
+        assert_eq!(map_key(key('G'), &mut p), Action::Bottom);
+
+        // `50G` → Goto(50).
+        assert_eq!(map_key(key('5'), &mut p), Action::None);
+        assert_eq!(map_key(key('0'), &mut p), Action::None);
+        assert_eq!(map_key(key('G'), &mut p), Action::Goto(50));
+
+        // Count cleared: a bare `G` is Bottom again, and `10j` still counts.
+        assert_eq!(map_key(key('G'), &mut p), Action::Bottom);
+        assert_eq!(map_key(key('1'), &mut p), Action::None);
+        assert_eq!(map_key(key('0'), &mut p), Action::None);
+        assert_eq!(map_key(key('j'), &mut p), Action::Down(10));
     }
 }

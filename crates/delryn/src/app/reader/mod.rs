@@ -1120,6 +1120,29 @@ impl Reader {
         self.scroll_pending = 0;
     }
 
+    /// Flip `pages` pages at once (a count-prefixed `j`/`k`, e.g. `10j`). For a
+    /// paged-image doc one page is one section, so it jumps the section directly
+    /// (clamped) — bypassing the per-frame flip throttle, which is only meant to
+    /// pace a *held* key. Reflowable page mode steps page by page.
+    pub fn page_jump(&mut self, pages: isize) {
+        if pages == 0 {
+            return;
+        }
+        if self.is_paged_image() {
+            let max = self.doc.section_count().saturating_sub(1) as isize;
+            let target = (self.section as isize + pages).clamp(0, max) as usize;
+            self.load(target);
+        } else {
+            for _ in 0..pages.unsigned_abs() {
+                if pages > 0 {
+                    self.page_forward();
+                } else {
+                    self.page_backward();
+                }
+            }
+        }
+    }
+
     /// Jump to the next/previous chapter (works regardless of chapter-lock).
     pub fn next_chapter(&mut self) {
         if self.section + 1 < self.doc.section_count() {
@@ -1609,5 +1632,45 @@ mod tests {
         r.scroll = 6;
         r.page_backward();
         assert_eq!(r.scroll, 4, "mid-page back snaps to page start");
+    }
+
+    /// A count-prefixed flip (`10j`) jumps that many pages in a paged-image doc,
+    /// clamped to the document bounds.
+    #[test]
+    fn paged_page_jump_moves_by_count_and_clamps() {
+        let doc = MockDoc::new((0..10).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.load(2);
+        r.page_jump(5);
+        assert_eq!(r.section, 7);
+        r.page_jump(-3);
+        assert_eq!(r.section, 4);
+        r.page_jump(100);
+        assert_eq!(r.section, 9, "clamps to the last page");
+        r.page_jump(-100);
+        assert_eq!(r.section, 0, "clamps to the first page");
+    }
+
+    /// Scroll-spy for a PDF: the sidebar tracks the outline entry whose page is at
+    /// or before the current one (PDFs have no text locators, so spy by section).
+    #[test]
+    fn paged_scroll_spy_tracks_current_page_section() {
+        let doc = MockDoc::new((0..10).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        let item = |section| OutlineItem {
+            label: format!("Ch@{section}"),
+            depth: 0,
+            section,
+            locator: None,
+        };
+        r.outline = vec![item(0), item(3), item(7)];
+        r.section = 0;
+        assert_eq!(r.active_outline(), Some(0));
+        r.section = 5; // between Ch@3 and Ch@7 → Ch@3
+        assert_eq!(r.active_outline(), Some(1));
+        r.section = 8; // at/after Ch@7 → Ch@7
+        assert_eq!(r.active_outline(), Some(2));
+        r.section = 2; // before Ch@3 → Ch@0
+        assert_eq!(r.active_outline(), Some(0));
     }
 }
