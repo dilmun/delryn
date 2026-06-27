@@ -124,6 +124,9 @@ impl PageDeck {
             for &(sec, area) in &ready {
                 out.push(media::place_image_seq(
                     self.id(sec),
+                    // Unique placement id per page — a shared one blanks the
+                    // first page (placements key on (image-id, placement-id)).
+                    sec as u32 + 1,
                     area.x + 1,
                     area.y + 1,
                     area.width,

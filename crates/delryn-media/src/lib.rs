@@ -588,13 +588,21 @@ pub fn transmit_image_seq(id: u32, png: &[u8]) -> String {
 }
 
 /// Kitty: display the already-transmitted image `id` at terminal cell
-/// (`col`,`row`) (1-based), scaled to fill `cols`×`rows` cells (`a=p`). Uses a
-/// fixed placement id so a later placement of the *same* image replaces it
-/// without flicker. The cursor is saved/restored so the surrounding TUI is
-/// undisturbed.
-pub fn place_image_seq(id: u32, col: u16, row: u16, cols: u16, rows: u16) -> String {
+/// (`col`,`row`) (1-based), scaled to fill `cols`×`rows` cells (`a=p`).
+/// `placement` MUST be unique across simultaneously-shown images: placements key
+/// on the (image-id, placement-id) pair, and a duplicate pair deletes the
+/// earlier placement — sharing one placement id across a two-page spread blanks
+/// the first page. The cursor is saved/restored so the TUI is undisturbed.
+pub fn place_image_seq(
+    id: u32,
+    placement: u32,
+    col: u16,
+    row: u16,
+    cols: u16,
+    rows: u16,
+) -> String {
     // \x1b7 / \x1b8 save & restore cursor; CUP moves to the placement origin.
-    format!("\x1b7\x1b[{row};{col}H\x1b_Ga=p,i={id},p=1,c={cols},r={rows},q=2\x1b\\\x1b8")
+    format!("\x1b7\x1b[{row};{col}H\x1b_Ga=p,i={id},p={placement},c={cols},r={rows},q=2\x1b\\\x1b8")
 }
 
 /// Kitty: remove the on-screen placement of image `id` but **keep its stored
