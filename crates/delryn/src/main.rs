@@ -197,6 +197,12 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         if app.animating() {
             dirty = true;
         }
+        // Drain finished PDF page rasterizations and keep drawing until the
+        // look-ahead pages are resident in the terminal, so page turns are
+        // instant (the page is already there, just placed).
+        if app.poll_pages() {
+            dirty = true;
+        }
 
         // Free terminal-side images evicted from the cache.
         for id in app.take_image_deletes() {
@@ -280,10 +286,16 @@ fn add_library(dir: Option<&str>) -> Result<()> {
 fn draw(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> {
     if sync {
         execute!(io::stdout(), BeginSynchronizedUpdate)?;
-        terminal.draw(|f| view::render(f, app))?;
+    }
+    terminal.draw(|f| view::render(f, app))?;
+    // Full PDF pages are managed directly via the kitty protocol (transmit-once
+    // + placement), not through ratatui's cell buffer. Emit their escapes inside
+    // the synchronized frame so a page appears atomically with the chrome.
+    for esc in app.page_escapes() {
+        execute!(io::stdout(), Print(esc))?;
+    }
+    if sync {
         execute!(io::stdout(), EndSynchronizedUpdate)?;
-    } else {
-        terminal.draw(|f| view::render(f, app))?;
     }
     Ok(())
 }

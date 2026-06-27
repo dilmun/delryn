@@ -66,6 +66,9 @@ mod dispatch;
 mod palette;
 pub use palette::{Command, Palette, PaletteItem};
 
+mod page_deck;
+use page_deck::PageDeck;
+
 /// How long the library selection must hold still before the detail-pane cover
 /// is (re)built, so holding j/k stays smooth.
 const COVER_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(110);
@@ -157,6 +160,8 @@ pub struct App {
     pub picker: Option<Picker>,
     /// Background builder for inline-image protocols.
     pub image_builder: Option<ImageBuilder>,
+    /// Direct-Kitty manager for full PDF page images (transmit-once + place).
+    page_deck: PageDeck,
     /// Start of the current reading session, for time tracking.
     session_start: Option<Instant>,
     store: Option<Store>,
@@ -388,6 +393,7 @@ impl App {
             pending_clipboard_image: None,
             picker: None,
             image_builder: None,
+            page_deck: PageDeck::default(),
             session_start: Some(Instant::now()),
             store,
             book_path,
@@ -457,6 +463,7 @@ impl App {
             pending_clipboard_image: None,
             picker: None,
             image_builder: None,
+            page_deck: PageDeck::default(),
             session_start: None,
             store,
             book_path: String::new(),
@@ -575,6 +582,57 @@ impl App {
             .as_ref()
             .map(|r| r.take_pretransmits())
             .unwrap_or_default()
+    }
+
+    /// Whether full PDF pages should be on screen right now: reading a PDF with
+    /// no overlay open. Kitty images draw *above* the cell grid, so while a popup
+    /// is up we take the page down (it's torn down and re-placed on resume) so
+    /// the popup isn't hidden behind it.
+    fn in_pdf(&self) -> bool {
+        self.mode == Mode::Reader
+            && !self.any_overlay_open()
+            && self.reader.as_ref().is_some_and(|r| r.is_paged_image())
+    }
+
+    /// Drain finished page rasterizations each frame (the direct path skips
+    /// `sync_images`, which is what otherwise drains them) and report whether any
+    /// windowed page is loaded but not yet transmitted — so the loop keeps
+    /// drawing until the look-ahead is resident and turns are instant.
+    pub fn poll_pages(&mut self) -> bool {
+        if !self.in_pdf() {
+            return false;
+        }
+        if let Some(r) = self.reader.as_mut() {
+            r.poll_loader();
+        }
+        let Some(r) = self.reader.as_ref() else {
+            return false;
+        };
+        r.pdf_window
+            .clone()
+            .any(|s| !self.page_deck.is_resident(s) && r.page_png(s).is_some())
+    }
+
+    /// Escapes to reconcile the terminal's PDF page images with the current
+    /// frame: transmit look-ahead pages, place the visible one(s), and tear
+    /// everything down when leaving the reader. Written inside the synchronized
+    /// frame, alongside the chrome.
+    pub fn page_escapes(&mut self) -> Vec<String> {
+        if !self.in_pdf() {
+            // Leaving a PDF (or never in one): free any page images. No-op once
+            // the deck is empty.
+            return if self.page_deck.is_empty() {
+                Vec::new()
+            } else {
+                self.page_deck.clear()
+            };
+        }
+        let Some(r) = self.reader.as_ref() else {
+            return Vec::new();
+        };
+        let targets = r.pdf_targets.clone();
+        let window = r.pdf_window.clone();
+        self.page_deck.render(&targets, window, |s| r.page_png(s))
     }
 
     /// Text queued for the system clipboard (OSC 52), if any.

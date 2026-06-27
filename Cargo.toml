@@ -10,6 +10,7 @@ edition = "2024"
 # External
 anyhow = "1.0.102"
 arboard = "3.6.1"
+base64 = "0.22.1"
 crossterm = "0.29.0"
 ego-tree = "0.11"
 epub = "2.1.5"

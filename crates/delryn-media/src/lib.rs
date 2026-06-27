@@ -2,6 +2,7 @@
 //! `ratatui-image` so the rest of the app doesn't depend on it directly.
 //! See `DESIGN.md` §0 (graphics protocols).
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -549,6 +550,58 @@ impl ImagePlan {
 /// Kitty escape sequence to delete an image (and free its data) by id.
 pub fn delete_image_seq(id: u32) -> String {
     format!("\x1b_Ga=d,d=I,i={id}\x1b\\")
+}
+
+// ── Direct Kitty image management (for full-page PDF rendering) ───────────────
+//
+// The unicode-placeholder path (above) is for inline figures that flow with
+// text. A full PDF page is better managed directly, the way kitty's own `icat`
+// does it: transmit the page to the terminal *once* as a stored image (`a=t`),
+// then *display* it with a cheap placement (`a=p`) that re-uses the stored data.
+// Swapping pages then never re-transmits — and the previous page can stay on
+// screen until the next placement lands, so a page turn has no black gap.
+
+/// Kitty: transmit `png` to the terminal and store it under `id` **without
+/// displaying it** (`a=t`). Chunked at the protocol's 4096-base64-char limit.
+/// Show it later with [`place_image_seq`]; `id` and the data persist until
+/// [`delete_image_seq`]. `q=2` suppresses the terminal's responses.
+pub fn transmit_image_seq(id: u32, png: &[u8]) -> String {
+    use base64::Engine;
+    // 4096 base64 chars ⇒ 3072 source bytes per chunk.
+    const CHUNK: usize = (4096 / 4) * 3;
+    let chunks = png.chunks(CHUNK);
+    let n = chunks.len().max(1);
+    let mut out = String::with_capacity(png.len() * 4 / 3 + n * 24);
+    for (i, chunk) in chunks.enumerate() {
+        out.push_str("\x1b_Gq=2,");
+        if i == 0 {
+            // a=t: transmit only (store, don't display). f=100: PNG (kitty reads
+            // the dimensions from the header). t=d: data is inline (direct).
+            let _ = write!(out, "i={id},a=t,f=100,t=d,");
+        }
+        let more = u8::from(i + 1 < n);
+        let _ = write!(out, "m={more};");
+        base64::engine::general_purpose::STANDARD.encode_string(chunk, &mut out);
+        out.push_str("\x1b\\");
+    }
+    out
+}
+
+/// Kitty: display the already-transmitted image `id` at terminal cell
+/// (`col`,`row`) (1-based), scaled to fill `cols`×`rows` cells (`a=p`). Uses a
+/// fixed placement id so a later placement of the *same* image replaces it
+/// without flicker. The cursor is saved/restored so the surrounding TUI is
+/// undisturbed.
+pub fn place_image_seq(id: u32, col: u16, row: u16, cols: u16, rows: u16) -> String {
+    // \x1b7 / \x1b8 save & restore cursor; CUP moves to the placement origin.
+    format!("\x1b7\x1b[{row};{col}H\x1b_Ga=p,i={id},p=1,c={cols},r={rows},q=2\x1b\\\x1b8")
+}
+
+/// Kitty: remove the on-screen placement of image `id` but **keep its stored
+/// data** (lowercase `d=i`), so flipping back to it re-displays instantly with
+/// no re-transmit. Use [`delete_image_seq`] to also free the data.
+pub fn unplace_image_seq(id: u32) -> String {
+    format!("\x1b_Ga=d,d=i,i={id},q=2\x1b\\")
 }
 
 /// Decode, upscale-to-fill, and encode one image into a sliced protocol. This
