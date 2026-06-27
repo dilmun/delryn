@@ -323,8 +323,15 @@ fn capture_pdf_targets(reader: &mut Reader, images: Images, areas: &[(usize, Rec
     let mut targets = Vec::new();
     if let Some((picker, _)) = images {
         for &(section, area) in areas {
-            if let Some(rect) = pdf_page_rect(reader, section, area, picker) {
-                targets.push((section, rect));
+            match pdf_page_rect(reader, section, area, picker) {
+                Some(rect) => targets.push((section, rect)),
+                // A page isn't rasterized yet: emit no targets at all so the deck
+                // holds the previous page(s) up rather than showing a half spread
+                // (which would flicker the ready page when the other lands).
+                None => {
+                    targets.clear();
+                    break;
+                }
             }
         }
     }

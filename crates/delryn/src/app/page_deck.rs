@@ -70,6 +70,12 @@ impl PageDeck {
         self.shown.is_empty()
     }
 
+    /// The sections currently placed on screen, in order — for the loop to tell
+    /// whether the deck has caught up to the pages it should be showing.
+    pub fn shown_sections(&self) -> Vec<usize> {
+        self.shown.iter().map(|(s, _)| *s).collect()
+    }
+
     /// Reconcile the terminal to show `targets`, returning the escapes to write.
     /// `png_for` yields a section's rasterized PNG once it's ready. If any target
     /// isn't ready yet, the current pages are left up (no escapes) so a turn
