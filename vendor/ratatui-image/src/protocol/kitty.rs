@@ -136,6 +136,12 @@ impl StatefulKitty {
             is_tmux,
         }
     }
+
+    /// delryn patch: the Kitty image id, for lifecycle management (delete on
+    /// eviction from the library cover cache).
+    pub fn image_id(&self) -> u32 {
+        self.id.0
+    }
 }
 
 impl ProtocolTrait for StatefulKitty {

@@ -4,7 +4,10 @@
 //! Library is a stub; the Reader is the working EPUB vertical slice. See
 //! `DESIGN.md` §4, §6.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use std::num::NonZeroUsize;
+
+use lru::LruCache;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
@@ -81,6 +84,11 @@ const CACHE_CAP: usize = 11;
 /// terminal. Reused across section revisits; LRU-evicted (and deleted from the
 /// terminal) beyond this.
 const IMAGE_CACHE_CAP: usize = 32;
+/// Library cover thumbnails kept built / terminal-resident at once. Bounded so a
+/// big library doesn't transmit hundreds of Kitty images until the terminal runs
+/// out of image memory and blanks them; evicted covers are deleted from the
+/// terminal and rebuilt on scroll-back. Several screens' worth.
+const LIB_COVER_CAP: usize = 96;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -223,9 +231,18 @@ pub struct App {
     lib_cover_at: Instant,
     /// Grid view: number of columns from the last render (for 2D navigation).
     pub lib_grid_cols: usize,
+    /// Visible rows from the last list/grid render (for half/full-page nav).
+    pub lib_visible_rows: usize,
+    /// Last list navigation went down (toward higher indices) — so cover
+    /// prefetch loads ahead in the direction of travel.
+    pub lib_nav_down: bool,
     /// Grid view: lazily-built cover protocols, keyed by book path
-    /// (`None` = no cover / failed, so we don't retry every frame).
-    pub lib_grid_covers: HashMap<String, Option<media::CoverImage>>,
+    /// (`None` = no cover / failed, so we don't retry every frame). A bounded LRU
+    /// (rendering bumps each visible cover to most-recently-used) so terminal
+    /// image memory stays capped; evicted covers feed `lib_grid_deletes`.
+    pub lib_grid_covers: LruCache<String, Option<media::CoverImage>>,
+    /// Terminal image ids of covers evicted from `lib_grid_covers`, to delete.
+    pub lib_grid_deletes: Vec<u32>,
     /// Grid view: visible covers still waiting to be built (keeps redrawing).
     pub lib_grid_pending: bool,
     /// Cover-tab preview image protocol + the URL it was built for, plus the
@@ -246,15 +263,33 @@ fn fmt_series_index(i: f32) -> String {
     }
 }
 
-/// Cover image bytes for a book: a fetched cover from the cache if present,
-/// otherwise the EPUB's own cover. `None` if neither exists.
+/// Cover image bytes for a book: a fetched cover from the cache if present, else
+/// the file's own cover — an EPUB's embedded cover, or a PDF's first page
+/// rendered to an image (and cached, since rasterizing is comparatively dear).
+/// `None` if none is available.
 fn load_cover_bytes(path: &str) -> Option<Vec<u8>> {
     if path.is_empty() {
         return None;
     }
-    match std::fs::read(online::cover_cache_path(path)) {
+    let cache = online::cover_cache_path(path);
+    match std::fs::read(&cache) {
         Ok(bytes) if !bytes.is_empty() => return Some(bytes),
         _ => {}
+    }
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if ext == "pdf" {
+        // A PDF has no embedded cover; render its first page, then cache it so we
+        // don't re-rasterize next session. (A later online fetch overwrites it.)
+        let bytes = crate::document::pdf::render_cover(path)?;
+        if let Some(dir) = cache.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&cache, &bytes);
+        return Some(bytes);
     }
     // Declared cover, else the first content image (converted files declare none).
     epub::extract_cover(path).map(|(b, _)| b)
@@ -425,7 +460,10 @@ impl App {
             lib_cover_target: String::new(),
             lib_cover_at: Instant::now(),
             lib_grid_cols: 1,
-            lib_grid_covers: HashMap::new(),
+            lib_visible_rows: 1,
+            lib_nav_down: true,
+            lib_grid_covers: LruCache::new(NonZeroUsize::new(LIB_COVER_CAP).unwrap()),
+            lib_grid_deletes: Vec::new(),
             lib_grid_pending: false,
             edit_cover: None,
             edit_cover_url: String::new(),
@@ -495,7 +533,10 @@ impl App {
             lib_cover_target: String::new(),
             lib_cover_at: Instant::now(),
             lib_grid_cols: 1,
-            lib_grid_covers: HashMap::new(),
+            lib_visible_rows: 1,
+            lib_nav_down: true,
+            lib_grid_covers: LruCache::new(NonZeroUsize::new(LIB_COVER_CAP).unwrap()),
+            lib_grid_deletes: Vec::new(),
             lib_grid_pending: false,
             edit_cover: None,
             edit_cover_url: String::new(),
@@ -569,12 +610,14 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// Terminal image ids to delete (evicted from the reader's cache).
+    /// Terminal image ids to delete: covers evicted from the library grid cache,
+    /// plus images evicted from the reader's cache.
     pub fn take_image_deletes(&mut self) -> Vec<u32> {
-        self.reader
-            .as_mut()
-            .map(|r| r.take_image_deletes())
-            .unwrap_or_default()
+        let mut ids = std::mem::take(&mut self.lib_grid_deletes);
+        if let Some(r) = self.reader.as_mut() {
+            ids.extend(r.take_image_deletes());
+        }
+        ids
     }
 
     /// Whether full PDF pages should be on screen right now: reading a PDF with

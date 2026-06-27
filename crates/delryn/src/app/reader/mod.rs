@@ -1573,14 +1573,13 @@ mod tests {
         // the load returns at once without rasterizing it on the main thread.
         r.load(8);
         assert_eq!(r.section, 8);
+        // The load returns without rasterizing on the main thread: the blocks are
+        // empty (the page is merely requested). It may or may not have landed via
+        // the background loader yet — that's checked below — so we don't assert on
+        // the still-loading state here (it would race the instant mock loader).
         assert!(
             r.blocks.is_empty(),
             "load must not block rasterizing the page"
-        );
-        assert!(r.pages_loading(false), "the page is still loading");
-        assert!(
-            r.placeable_sections(false).is_empty(),
-            "nothing is placeable until the page lands"
         );
 
         // The loader fills it in the background; once drained it's placeable.

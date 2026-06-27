@@ -167,6 +167,16 @@ impl StatefulProtocol {
         self.protocol_type
     }
 
+    /// delryn patch: the underlying Kitty image id, if this is a Kitty protocol —
+    /// used to delete the image from the terminal when its cover is evicted from
+    /// the library cache (otherwise terminal image memory grows unbounded).
+    pub fn image_id(&self) -> Option<u32> {
+        match &self.protocol_type {
+            StatefulProtocolType::Kitty(kitty) => Some(kitty.image_id()),
+            _ => None,
+        }
+    }
+
     /// This returns the latest Result returned when encoding, and none if there was no encoding since the last result read. It is encouraged but not required to handle it
     pub fn last_encoding_result(&mut self) -> Option<Result<()>> {
         self.last_encoding_result.take()
