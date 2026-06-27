@@ -47,6 +47,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.justify = config.justify;
     reader.tidy_spacing = config.tidy_spacing;
     reader.paged = config.paged;
+    reader.spread = matches!(config.view_mode, ViewMode::TwoPage) && reader.is_paged_image();
     reader.chapter_lock = config.chapter_lock;
     let area = f.area();
 
