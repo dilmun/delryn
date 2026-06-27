@@ -845,9 +845,9 @@ mod tests {
         app.on_key(key('h'));
         assert_eq!(app.lib_pane, LibPane::Sidebar);
 
-        // j/k now walk the sections (All → Favorites → All), not the book list.
+        // j/k now walk the sections (All → PDFs → All), not the book list.
         app.on_key(key('j'));
-        assert_eq!(app.lib_view, LibView::Section(LibrarySection::Favorites));
+        assert_eq!(app.lib_view, LibView::Section(LibrarySection::Pdf));
         app.on_key(key('k'));
         assert_eq!(app.lib_view, LibView::Section(LibrarySection::All));
 

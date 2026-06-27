@@ -41,16 +41,25 @@ pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme
         })
         .collect();
 
-    // Collections, below a divider, each with its book count — always shown so
-    // "＋ New collection" is reachable even before any collection exists.
-    let mut header = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
+    // Collections, below a clear divider, each with its book count — always shown
+    // so "＋ New collection" is reachable even before any collection exists. A
+    // blank spacer + a full-width rule separates them from the built-in sections.
+    let (mut rule, mut label) = (
+        Style::default().fg(theme.muted),
+        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+    );
     if let Some(bg) = theme.bg {
-        header = header.bg(bg);
+        rule = rule.bg(bg);
+        label = label.bg(bg);
     }
-    items.push(ListItem::new(Line::from(Span::styled(
-        "  Collections",
-        header,
-    ))));
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let fill = inner_w.saturating_sub("─ Collections ".chars().count());
+    items.push(ListItem::new(Line::default()));
+    items.push(ListItem::new(Line::from(vec![
+        Span::styled("─ ", rule),
+        Span::styled("Collections", label),
+        Span::styled(format!(" {}", "─".repeat(fill)), rule),
+    ])));
     // Which collection (if any) is being renamed in place.
     let renaming = app
         .lib_coll_edit

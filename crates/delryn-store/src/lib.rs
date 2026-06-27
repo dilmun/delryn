@@ -87,6 +87,8 @@ pub struct Annotation {
 pub enum LibrarySection {
     Recent,
     All,
+    Pdf,
+    Epub,
     Favorites,
     Reading,
     Series,
@@ -95,9 +97,11 @@ pub enum LibrarySection {
 
 impl LibrarySection {
     /// The fixed sections, in sidebar / Tab-cycle order.
-    pub const ALL: [LibrarySection; 6] = [
+    pub const ALL: [LibrarySection; 8] = [
         LibrarySection::Recent,
         LibrarySection::All,
+        LibrarySection::Pdf,
+        LibrarySection::Epub,
         LibrarySection::Favorites,
         LibrarySection::Reading,
         LibrarySection::Series,
@@ -108,6 +112,8 @@ impl LibrarySection {
         match self {
             LibrarySection::Recent => "Recent",
             LibrarySection::All => "All Books",
+            LibrarySection::Pdf => "PDFs",
+            LibrarySection::Epub => "EPUBs",
             LibrarySection::Favorites => "Favorites",
             LibrarySection::Reading => "Currently Reading",
             LibrarySection::Series => "Series",
