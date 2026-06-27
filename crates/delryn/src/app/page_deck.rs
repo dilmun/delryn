@@ -29,21 +29,21 @@ use crate::media;
 /// Monotonic counter for unique page temp-file names.
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-/// Whether to force the inline (`t=d`) transmit medium instead of the temp-file
-/// one — an escape hatch (`DELRYN_KITTY_DIRECT`) in case a terminal mishandles
-/// file transmission. Read once.
-fn use_direct() -> bool {
+/// Whether to use the temp-file transmit medium (a tiny escape instead of
+/// multi-MB inline base64). Opt-in via `FOLIO_KITTY_FILE` while it's validated:
+/// some terminals (Ghostty) render a black screen with it, so inline `t=d` — the
+/// medium known to work everywhere — stays the default. Read once.
+fn use_file_transmit() -> bool {
     use std::sync::OnceLock;
-    static DIRECT: OnceLock<bool> = OnceLock::new();
-    *DIRECT.get_or_init(|| std::env::var_os("DELRYN_KITTY_DIRECT").is_some())
+    static FILE: OnceLock<bool> = OnceLock::new();
+    *FILE.get_or_init(|| std::env::var_os("FOLIO_KITTY_FILE").is_some())
 }
 
-/// Transmit `png` under `id`, preferring the temp-file medium so a turn pushes a
-/// tiny escape instead of multi-MB of base64 (the ~60ms-per-turn stall that made
-/// held `j`/`k` drag). Falls back to inline `t=d` if the file can't be written or
-/// the escape hatch is set.
+/// Transmit `png` under `id`. Inline `t=d` by default (universally supported);
+/// the temp-file medium (tiny escape, no ~60ms-per-turn base64 stall) when
+/// opted in and the file can be written.
 fn transmit_seq(id: u32, png: &[u8]) -> String {
-    if !use_direct()
+    if use_file_transmit()
         && let Some(seq) = transmit_via_file(id, png)
     {
         return seq;
