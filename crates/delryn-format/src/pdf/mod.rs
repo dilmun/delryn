@@ -26,11 +26,13 @@ use crate::{
     Block, Document, ImageWidth, Metadata, OutlineItem, Section, SectionLoader, Span, TocEntry,
 };
 
-/// Width, in pixels, each page is rasterized to. Generous so the result
-/// super-samples typical terminal panes — the image pipeline then downscales it
-/// to the exact pane, staying crisp. Rasterize-once means a resize re-downscales
-/// rather than re-rendering. The v2 quality/perf knob.
-const PAGE_RASTER_WIDTH: i32 = 2000;
+/// Width, in pixels, each page is rasterized to. Sized so the terminal
+/// (which GPU-scales the placement to the display area) still gets a crisp
+/// page, while keeping the PNG small enough that the transmit — the cost on a
+/// page turn — is fast and reliable. Smaller ⇒ snappier fast navigation; a
+/// half-screen spread page only displays ~700px wide, so 1400 super-samples it.
+/// The v2 quality/perf knob.
+const PAGE_RASTER_WIDTH: i32 = 1400;
 
 /// Cap the rasterized height so a pathologically tall page can't allocate a
 /// huge bitmap; 4× the width covers any real page aspect ratio.

@@ -358,21 +358,24 @@ impl Reader {
         out
     }
 
-    /// Ask the loader to pre-decode the adjacent chapters, and bound the cache.
+    /// Ask the loader to pre-decode the adjacent sections, and bound the cache.
+    /// A PDF reader pre-rasterizes several pages each side (forward first) so the
+    /// direct-Kitty window can transmit them ahead and fast j/k turns are instant.
     fn prefetch_neighbors(&mut self) {
         self.drain_loader();
         let n = self.doc.section_count();
         let mut targets = Vec::new();
-        if self.section + 1 < n {
-            targets.push(self.section + 1);
+        let ahead = if self.is_paged_image() { 4 } else { 1 };
+        // Forward pages first (reading direction → loaded soonest), then back.
+        for d in 1..=ahead {
+            if self.section + d < n {
+                targets.push(self.section + d);
+            }
         }
-        // In a spread, warm the page beyond the facing one too, so the next turn
-        // (which makes section + 2 the new facing page) is instant.
-        if self.spread && self.section + 2 < n {
-            targets.push(self.section + 2);
-        }
-        if self.section > 0 {
-            targets.push(self.section - 1);
+        for d in 1..=ahead {
+            if self.section >= d {
+                targets.push(self.section - d);
+            }
         }
         for t in targets {
             if !self.cache.contains_key(&t) && self.requested.insert(t) {

@@ -73,8 +73,10 @@ use page_deck::PageDeck;
 /// is (re)built, so holding j/k stays smooth.
 const COVER_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(110);
 
-/// Number of decoded sections kept in memory (current ± neighbours).
-const CACHE_CAP: usize = 9;
+/// Number of decoded sections kept in memory (current ± neighbours). Sized to
+/// hold a PDF's full pre-rasterization window (current ± 4 pages) so the
+/// direct-Kitty deck can transmit them ahead for fast navigation.
+const CACHE_CAP: usize = 11;
 /// Number of built image protocols kept in memory / GPU-resident in the
 /// terminal. Reused across section revisits; LRU-evicted (and deleted from the
 /// terminal) beyond this.

@@ -11,10 +11,10 @@
 //!
 //! * **No re-transmit on a turn** — the page is already in the terminal, so the
 //!   placement is instant.
-//! * **No black gap** — on a turn we place the new page *before* removing the
-//!   old one's placement, and if the new page isn't transmitted yet we simply
-//!   leave the old one up. The previous page always stays on screen until the
-//!   next one is ready.
+//! * **No black gap** — a turn's unplace-old + place-new happen in one
+//!   synchronized-update frame (atomic, no visible intermediate), and if the new
+//!   page isn't transmitted yet we leave the old one up. The previous page stays
+//!   on screen until the next is ready.
 //!
 //! The deck holds no terminal handle; it returns escape strings for the render
 //! loop to write (inside the synchronized-update frame, with the chrome).
@@ -24,6 +24,23 @@ use std::collections::HashSet;
 use ratatui::layout::Rect;
 
 use crate::media;
+
+/// Append a line to `/tmp/delryn-kitty.log` when `DELRYN_KITTY_LOG` is set — a
+/// diagnostic for the page-placement decisions, since terminal graphics can't be
+/// observed from tests. Zero cost when the env var is unset.
+fn dbg_log(msg: &dyn std::fmt::Display) {
+    if std::env::var_os("DELRYN_KITTY_LOG").is_none() {
+        return;
+    }
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/delryn-kitty.log")
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
 
 /// A page to show this frame: its section index and the absolute terminal cell
 /// rect (already aspect-fitted + centred by the view) to place it in.
@@ -66,6 +83,7 @@ impl PageDeck {
         mut png_for: impl FnMut(usize) -> Option<Vec<u8>>,
     ) -> Vec<String> {
         let mut out = Vec::new();
+        let (win_lo, win_hi) = (window.start, window.end);
 
         // 1. Transmit (store, invisibly) any windowed page not yet resident.
         for sec in window.clone() {
@@ -84,25 +102,30 @@ impl PageDeck {
             .filter(|(sec, _)| self.resident.contains(sec))
             .collect();
 
-        // 3. Update placements only when the visible set changed — otherwise the
-        //    placed images persist on their own (no per-frame re-emit). If none
-        //    of the new targets are ready yet, leave the previous page up (the
-        //    `!ready.is_empty()` guard) so a turn never blanks.
+        // 3. Reconcile placements when the visible set changed (otherwise they
+        //    persist on their own — no per-frame re-emit). Explicitly unplace any
+        //    page that's gone OR has moved to a different rect, then place any
+        //    that's new or moved. We don't rely on a same-id "move" (re-placing
+        //    at a new position) — some terminals don't honour it, which left a
+        //    moved spread page (facing → current, right → left) blank. Unplace +
+        //    place is atomic inside the synchronized frame, so there's still no
+        //    visible gap. Keep the previous page(s) up while nothing new is ready
+        //    (`!ready.is_empty()`), so a turn never blanks.
         if !ready.is_empty() && ready != self.on_screen {
-            // Place the new page(s) first so they cover the old, *then* remove
-            // the old placement(s) — no gap on the swap.
-            for (sec, area) in &ready {
-                out.push(media::place_image_seq(
-                    self.id(*sec),
-                    area.x + 1,
-                    area.y + 1,
-                    area.width,
-                    area.height,
-                ));
+            for placed in &self.on_screen {
+                if !ready.contains(placed) {
+                    out.push(media::unplace_image_seq(self.id(placed.0)));
+                }
             }
-            for (sec, _) in &self.on_screen {
-                if !ready.iter().any(|(s, _)| s == sec) {
-                    out.push(media::unplace_image_seq(self.id(*sec)));
+            for &(sec, area) in &ready {
+                if !self.on_screen.contains(&(sec, area)) {
+                    out.push(media::place_image_seq(
+                        self.id(sec),
+                        area.x + 1,
+                        area.y + 1,
+                        area.width,
+                        area.height,
+                    ));
                 }
             }
             self.on_screen = ready;
@@ -120,6 +143,19 @@ impl PageDeck {
             self.resident.remove(&s);
         }
 
+        if !out.is_empty() {
+            let t: Vec<_> = targets
+                .iter()
+                .map(|(s, r)| (*s, r.x, r.y, r.width, r.height))
+                .collect();
+            let mut res: Vec<_> = self.resident.iter().copied().collect();
+            res.sort_unstable();
+            dbg_log(&format!(
+                "win={win_lo}..{win_hi} targets={t:?} on_screen={:?} resident={res:?} escapes={}",
+                self.on_screen.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+                out.len(),
+            ));
+        }
         out
     }
 
@@ -167,21 +203,18 @@ mod tests {
     }
 
     #[test]
-    fn turn_places_new_before_unplacing_old_no_blank() {
+    fn turn_swaps_placement_explicitly() {
         let mut deck = PageDeck::default();
         // Warm pages 0 and 1.
         deck.render(&[(0, rect())], 0..3, |s| Some(vec![s as u8; 4]));
-        // Turn to page 1: both already resident → place 1, then unplace 0.
+        // Turn to page 1: place the new page and remove the old placement (kept
+        // data — lowercase `d=i`). Order is unplace-then-place, atomic inside the
+        // synchronized frame; what matters is both happen and the state updates.
         let esc = deck
             .render(&[(1, rect())], 0..4, |s| Some(vec![s as u8; 4]))
             .join("");
-        let place_new = esc.find("a=p");
-        let unplace_old = esc.find("d=i,i="); // unplace keeps data (lowercase d=i)
-        assert!(place_new.is_some() && unplace_old.is_some());
-        assert!(
-            place_new < unplace_old,
-            "new page placed before old removed"
-        );
+        assert!(esc.contains("a=p"), "new page placed");
+        assert!(esc.contains("d=i,i="), "old placement removed (data kept)");
         assert_eq!(deck.on_screen, vec![(1, rect())]);
     }
 
