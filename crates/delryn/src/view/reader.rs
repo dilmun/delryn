@@ -236,6 +236,15 @@ fn render_column(
     reader.page_lines = reader.viewport_lines;
     reader.last_measure = measure as usize;
 
+    // PDF: the page is a whole image rendered directly via the kitty protocol
+    // (transmit-once + placement) by the PageDeck. Capture where to place it and
+    // leave the area empty so the placement shows through — no per-cell drawing,
+    // no transmit-on-turn, no black gap.
+    if reader.is_paged_image() {
+        capture_pdf_targets(reader, images, &[(reader.section, text_area)]);
+        return;
+    }
+
     // Images align to the text column and scale with it. Sync (which estimates
     // rows + dispatches background builds) must run before wrapping.
     if let Some((picker, builder)) = images {
@@ -303,6 +312,57 @@ fn draw_gutter(f: &mut Frame, text_area: Rect, reader: &Reader, top: usize, them
         Paragraph::new(Text::from(lines)).style(theme.text_style()),
         gutter,
     );
+}
+
+/// Compute and store the PDF page placements for this frame: aspect-fit + centre
+/// each (section, column-area), and set the look-ahead window. The [`PageDeck`]
+/// reads these after the frame and drives the kitty transmit/placement escapes;
+/// the columns themselves are left empty so the placed images show through.
+fn capture_pdf_targets(reader: &mut Reader, images: Images, areas: &[(usize, Rect)]) {
+    let mut targets = Vec::new();
+    if let Some((picker, _)) = images {
+        for &(section, area) in areas {
+            match pdf_page_rect(reader, section, area, picker) {
+                Some(rect) => targets.push((section, rect)),
+                // A page isn't rasterized yet: emit no targets at all so the deck
+                // holds the previous page(s) up rather than showing a half spread
+                // (which would flicker the ready page when the other lands).
+                None => {
+                    targets.clear();
+                    break;
+                }
+            }
+        }
+    }
+    reader.pdf_targets = targets;
+}
+
+/// The absolute, aspect-fitted, centred cell rect to place `section`'s page in
+/// `area`, from the page's pixel dimensions. `None` until the page is loaded.
+fn pdf_page_rect(reader: &Reader, section: usize, area: Rect, picker: &Picker) -> Option<Rect> {
+    let png = reader.page_png(section)?;
+    let (w, h) = crate::media::image_dimensions(&png)?;
+    let fs = picker.font_size();
+    let fit = crate::media::FitBox {
+        fw: fs.width,
+        fh: fs.height,
+        cols: area.width,
+        rows: area.height,
+        max_px: 0,
+        target_pct: 100,
+    };
+    let (cols, rows) = crate::media::target_cells(
+        w,
+        h,
+        fit,
+        crate::media::SizeSpec {
+            hint: crate::media::SizeHint::Full,
+            math: false,
+        },
+    );
+    let x = area.x + area.width.saturating_sub(cols) / 2;
+    let y = area.y + area.height.saturating_sub(rows) / 2;
+    Some(Rect::new(x, y, cols, rows))
 }
 
 /// Draw the ready figure images that intersect `[top, top+height)` of the line
@@ -390,8 +450,20 @@ fn render_two_page(
 
     let h = left_area.height as usize;
     reader.viewport_lines = h;
-    reader.page_lines = h * 2;
+    reader.page_lines = h;
     reader.last_measure = col_w as usize;
+
+    // PDF: a facing-page spread, rendered as two whole page images via the
+    // direct-Kitty PageDeck. Capture where to place each (current page left, the
+    // next right) and leave the columns empty for the placements.
+    if reader.is_paged_image() {
+        let mut spread = vec![(reader.section, left_area)];
+        if reader.section + 1 < reader.section_count() {
+            spread.push((reader.section + 1, right_area));
+        }
+        capture_pdf_targets(reader, images, &spread);
+        return;
+    }
 
     if let Some((picker, builder)) = images {
         reader.sync_images(

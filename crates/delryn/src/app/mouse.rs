@@ -60,9 +60,19 @@ impl App {
                     .last_layout
                     .sidebar
                     .is_some_and(|sb| sb.contains((m.column, m.row).into()));
+                let paged = self.config.paged;
                 if let Some(r) = self.reader.as_mut() {
                     if over_sidebar {
                         r.sidebar_wheel(d);
+                    } else if paged || r.is_paged_image() {
+                        // Whole-page rasters (PDF) flip pages instead of eased
+                        // line-scroll, which would blank/flicker the full-page
+                        // image every frame.
+                        if d > 0 {
+                            r.page_forward();
+                        } else {
+                            r.page_backward();
+                        }
                     } else {
                         r.queue_scroll(d);
                     }
