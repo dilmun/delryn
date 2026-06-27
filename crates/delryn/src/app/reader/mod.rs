@@ -89,6 +89,9 @@ pub struct Reader {
     pub pdf_targets: Vec<(usize, ratatui::layout::Rect)>,
     /// Sections to keep resident in the terminal (warm) for instant page turns.
     pub pdf_window: std::ops::Range<usize>,
+    /// The last navigation was backward (to a lower section). Prefetch loads the
+    /// direction of travel first, so reverse paging isn't starved.
+    nav_back: bool,
     /// Cached (outline index, line) for the current section's entries, recomputed
     /// on re-wrap; drives the TOC scroll-spy cheaply.
     heading_lines: Vec<(usize, usize)>,
@@ -247,6 +250,7 @@ impl Reader {
             spread: false,
             pdf_targets: Vec::new(),
             pdf_window: 0..0,
+            nav_back: false,
             heading_lines: Vec::new(),
             anchors: Vec::new(),
             footnote_def_line: HashMap::new(),
@@ -364,18 +368,24 @@ impl Reader {
     fn prefetch_neighbors(&mut self) {
         self.drain_loader();
         let n = self.doc.section_count();
-        let mut targets = Vec::new();
         let ahead = if self.is_paged_image() { 4 } else { 1 };
-        // Forward pages first (reading direction → loaded soonest), then back.
-        for d in 1..=ahead {
-            if self.section + d < n {
-                targets.push(self.section + d);
-            }
-        }
-        for d in 1..=ahead {
-            if self.section >= d {
-                targets.push(self.section - d);
-            }
+        let fwd: Vec<usize> = (1..=ahead)
+            .map(|d| self.section + d)
+            .filter(|&s| s < n)
+            .collect();
+        let back: Vec<usize> = (1..=ahead)
+            .filter(|&d| self.section >= d)
+            .map(|d| self.section - d)
+            .collect();
+        // Prefetch the direction of travel first, so reverse paging (k) isn't
+        // starved waiting behind the forward pages.
+        let mut targets = Vec::new();
+        if self.nav_back {
+            targets.extend(back);
+            targets.extend(fwd);
+        } else {
+            targets.extend(fwd);
+            targets.extend(back);
         }
         for t in targets {
             if !self.cache.contains_key(&t) && self.requested.insert(t) {
@@ -902,6 +912,7 @@ impl Reader {
         if section >= self.doc.section_count() {
             return;
         }
+        self.nav_back = section < self.section;
         self.section = section;
         self.blocks = self.fetch_blocks(section);
         self.scroll = 0;

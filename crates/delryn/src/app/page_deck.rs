@@ -112,21 +112,23 @@ impl PageDeck {
         //    visible gap. Keep the previous page(s) up while nothing new is ready
         //    (`!ready.is_empty()`), so a turn never blanks.
         if !ready.is_empty() && ready != self.on_screen {
-            for placed in &self.on_screen {
-                if !ready.contains(placed) {
-                    out.push(media::unplace_image_seq(self.id(placed.0)));
-                }
+            // Clear every placement (keeping the data) and place the new spread
+            // fresh. Re-placing an image where a placement already exists is a
+            // no-op on some terminals (left a moved page blank); a per-image
+            // delete-then-place freed the data (both pages blank). Clearing all
+            // placements first, keeping data, then placing fresh avoids both —
+            // and it's atomic inside the synchronized frame, so no gap.
+            if !self.on_screen.is_empty() {
+                out.push(media::clear_placements_seq());
             }
             for &(sec, area) in &ready {
-                if !self.on_screen.contains(&(sec, area)) {
-                    out.push(media::place_image_seq(
-                        self.id(sec),
-                        area.x + 1,
-                        area.y + 1,
-                        area.width,
-                        area.height,
-                    ));
-                }
+                out.push(media::place_image_seq(
+                    self.id(sec),
+                    area.x + 1,
+                    area.y + 1,
+                    area.width,
+                    area.height,
+                ));
             }
             self.on_screen = ready;
         }
@@ -203,18 +205,17 @@ mod tests {
     }
 
     #[test]
-    fn turn_swaps_placement_explicitly() {
+    fn turn_clears_then_places_fresh() {
         let mut deck = PageDeck::default();
         // Warm pages 0 and 1.
         deck.render(&[(0, rect())], 0..3, |s| Some(vec![s as u8; 4]));
-        // Turn to page 1: place the new page and remove the old placement (kept
-        // data — lowercase `d=i`). Order is unplace-then-place, atomic inside the
-        // synchronized frame; what matters is both happen and the state updates.
+        // Turn to page 1: clear all placements (keeping data — `d=a`), then place
+        // the new page fresh. Atomic inside the synchronized frame.
         let esc = deck
             .render(&[(1, rect())], 0..4, |s| Some(vec![s as u8; 4]))
             .join("");
-        assert!(esc.contains("a=p"), "new page placed");
-        assert!(esc.contains("d=i,i="), "old placement removed (data kept)");
+        assert!(esc.contains("d=a"), "placements cleared (data kept)");
+        assert!(esc.contains("a=p"), "new page placed fresh");
         assert_eq!(deck.on_screen, vec![(1, rect())]);
     }
 
