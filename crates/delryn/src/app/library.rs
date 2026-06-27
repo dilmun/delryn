@@ -313,10 +313,7 @@ impl App {
     /// The book path the detail cover should show (empty when no cover pane is
     /// relevant, so we treat it as "nothing to do").
     fn cover_target_path(&self) -> String {
-        if self.mode != Mode::Library
-            || !self.lib_detail
-            || self.config.library_layout == LibLayout::Grid
-        {
+        if self.mode != Mode::Library || !self.lib_detail || self.is_grid() {
             return self.lib_cover_path.clone();
         }
         self.lib_books
@@ -381,13 +378,16 @@ impl App {
 
     /// Whether the grid is still building visible covers (keeps the loop drawing).
     pub fn lib_grid_pending(&self) -> bool {
-        self.mode == Mode::Library
-            && self.config.library_layout == LibLayout::Grid
-            && self.lib_grid_pending
+        self.mode == Mode::Library && self.is_grid() && self.lib_grid_pending
     }
 
+    /// A cover-image view (the card grid or the cover wall): navigates by grid
+    /// columns, lazily builds cover thumbnails, and has no detail pane.
     pub fn is_grid(&self) -> bool {
-        self.config.library_layout == LibLayout::Grid
+        matches!(
+            self.config.library_layout,
+            LibLayout::Grid | LibLayout::Wall
+        )
     }
 
     /// Vertical step for j/k: one grid row in grid view, else one list row.
@@ -406,8 +406,9 @@ impl App {
             panes.push(LibPane::Sidebar);
         }
         panes.push(LibPane::List);
-        // The detail pane only exists alongside the list views.
-        if self.lib_detail && self.config.library_layout != LibLayout::Grid {
+        // The detail pane only exists alongside the list views (cover views have
+        // no detail pane).
+        if self.lib_detail && !self.is_grid() {
             panes.push(LibPane::Detail);
         }
         panes

@@ -34,6 +34,7 @@ mod detail;
 mod grid;
 mod sections;
 mod status;
+mod wall;
 
 pub(crate) use books::sort_cycle;
 
@@ -47,16 +48,17 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
     let body = rows[0];
 
-    let grid = app.config.library_layout == LibLayout::Grid;
+    // Cover views (the card grid and the cover wall) are themselves full of
+    // covers, so they skip the detail pane.
+    let cover_view = app.is_grid();
     // Sidebar (left) + detail (right) are responsive percentage panes that
-    // collapse on a narrow window (shared app-standard split). The grid view is
-    // itself a cover wall, so it skips the detail pane.
+    // collapse on a narrow window (shared app-standard split).
     let (sidebar, rest) = if app.lib_show_sidebar {
         super::sidebar_split(body, app.lib_sidebar_pct, 16, 40, MIN_LIST)
     } else {
         (None, body)
     };
-    let (list_area, detail) = if !grid && app.lib_detail {
+    let (list_area, detail) = if !cover_view && app.lib_detail {
         super::detail_split(rest, app.lib_detail_pct, 24, 56, MIN_LIST)
     } else {
         (rest, None)
@@ -65,10 +67,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if let Some(sb) = sidebar {
         sections::render_sections(f, sb, app, theme, app.lib_pane == LibPane::Sidebar);
     }
-    if grid {
-        grid::render_grid(f, list_area, app, theme, app.lib_pane == LibPane::List);
-    } else {
-        books::render_books(f, list_area, app, theme, app.lib_pane == LibPane::List);
+    let focused = app.lib_pane == LibPane::List;
+    match app.config.library_layout {
+        LibLayout::Grid => grid::render_grid(f, list_area, app, theme, focused),
+        LibLayout::Wall => wall::render_wall(f, list_area, app, theme, focused),
+        _ => books::render_books(f, list_area, app, theme, focused),
     }
     if let Some(d) = detail {
         detail::render_detail(f, d, app, theme, app.lib_pane == LibPane::Detail);
