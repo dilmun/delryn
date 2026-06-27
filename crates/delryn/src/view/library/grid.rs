@@ -75,7 +75,6 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
 
     app.lib_grid_cols = cols;
     app.ensure_grid_covers(&paths, GRID_BUILD_PER_FRAME);
-    let font = crate::view::image_font(app);
     let mut book_hits: Vec<(usize, Rect)> = Vec::with_capacity(visible.len());
 
     for (i, path, title, fav, marked) in &visible {
@@ -144,9 +143,10 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
 
         match app.lib_grid_covers.get_mut(path) {
             Some(Some(cover)) => {
-                let rect = crate::view::cover_image_rect(inner, font, cover.dims);
-                let w = StatefulImage::default().resize(Resize::Scale(None));
-                f.render_stateful_widget(w, rect, &mut cover.proto);
+                // Stretch to fill the card (object-fit: fill) so covers are
+                // uniform; the rounded frame + badge + title frame each one.
+                let w = StatefulImage::default().resize(Resize::Stretch(None));
+                f.render_stateful_widget(w, inner, &mut cover.proto);
             }
             _ => {
                 let star = if *fav { "★\n" } else { "" };

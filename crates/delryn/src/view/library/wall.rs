@@ -87,7 +87,6 @@ pub(crate) fn render_wall(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
 
     app.lib_grid_cols = cols;
     app.ensure_grid_covers(&paths, GRID_BUILD_PER_FRAME);
-    let font = crate::view::image_font(app);
     let mut book_hits: Vec<(usize, Rect)> = Vec::with_capacity(visible.len());
 
     for (i, path, title, marked) in &visible {
@@ -104,30 +103,41 @@ pub(crate) fn render_wall(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
 
         match app.lib_grid_covers.get_mut(path) {
             Some(Some(cover)) => {
-                // A subtle uniform panel fills every cell; the cover is shown
-                // whole (bounded, never cropped) and centered on it. So mixed
-                // aspects — a wide PDF page next to a tall book — read as a tidy,
-                // even wall: the cells are identical, the letterbox slack is just
-                // panel. (Cropping to fill instead zoomed covers past the cell.)
-                f.render_widget(
-                    Block::default().style(Style::default().bg(theme.status_bg)),
-                    card,
-                );
-                let rect = crate::view::cover_image_rect(card, font, cover.dims);
-                let w = StatefulImage::default().resize(Resize::Scale(None));
-                f.render_stateful_widget(w, rect, &mut cover.proto);
+                // Stretch the cover to exactly fill the cell (object-fit: fill),
+                // so every thumbnail is the same size with no gaps.
+                let w = StatefulImage::default().resize(Resize::Stretch(None));
+                f.render_stateful_widget(w, card, &mut cover.proto);
             }
-            // Coverless book: the same panel, with its title (the only identifier
-            // here) centered on it.
+            // Coverless book: its title (the only identifier here) centered.
             _ => {
                 f.render_widget(
                     Paragraph::new(crate::view::truncate(title, (cover_w as usize) * 2))
                         .alignment(Alignment::Center)
                         .wrap(Wrap { trim: true })
-                        .style(Style::default().fg(theme.muted).bg(theme.status_bg)),
+                        .style(Style::default().fg(theme.muted)),
                     card,
                 );
             }
+        }
+
+        // Format badge (PDF / EPUB) in the gutter row just above the cover, so
+        // it's legible and never hidden by the full-bleed cover image.
+        if let Some(ext) = std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+        {
+            let label = ext.to_uppercase();
+            let bw = (label.chars().count() as u16).min(cover_w);
+            f.render_widget(
+                Paragraph::new(label)
+                    .style(Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
+                Rect {
+                    x: card.x,
+                    y: card.y.saturating_sub(1),
+                    width: bw,
+                    height: 1,
+                },
+            );
         }
 
         // Selection / mark: a frame floating one cell outside the cover (in the
