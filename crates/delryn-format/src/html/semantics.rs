@@ -86,7 +86,8 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
         "blockquote" => ElementRole::Quote,
         "dl" => ElementRole::DefList,
         "hr" => ElementRole::Rule,
-        "img" => ElementRole::Image,
+        // `<img>` and the SVG `<image>` used by many EPUB cover pages.
+        "img" | "image" => ElementRole::Image,
         "table" if aside_icon_src(node).is_some() => ElementRole::AsideIconTable(
             aside_kind_from_icon(&aside_icon_src(node).unwrap_or_default()),
         ),
