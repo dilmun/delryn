@@ -359,7 +359,7 @@ impl App {
         let mut built = 0;
         let mut pending = false;
         for path in paths {
-            if self.lib_grid_covers.contains_key(path) {
+            if self.lib_grid_covers.contains(path) {
                 continue;
             }
             if built >= limit {
@@ -370,7 +370,13 @@ impl App {
                 (Some(picker), Some(bytes)) => media::build_cover(picker, &bytes),
                 _ => None,
             };
-            self.lib_grid_covers.insert(path.clone(), cover);
+            // Bounded LRU: an eviction must free its terminal image too, else
+            // image memory grows until the terminal blanks everything.
+            if let Some((_, Some(evicted))) = self.lib_grid_covers.push(path.clone(), cover)
+                && let Some(id) = evicted.image_id()
+            {
+                self.lib_grid_deletes.push(id);
+            }
             built += 1;
         }
         self.lib_grid_pending = pending;

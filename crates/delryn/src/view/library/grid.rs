@@ -109,14 +109,28 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
                 let w = StatefulImage::default().resize(Resize::Stretch(None));
                 f.render_stateful_widget(w, card, &mut cover.proto);
             }
-            // Coverless book: its title (the only identifier here) centered.
+            // Coverless book: a default placeholder card — a rounded frame (to
+            // match the rounded covers) with a book glyph and the title centred,
+            // so it reads as a cover rather than empty space.
             _ => {
+                let frame = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(theme.muted));
+                let inner = frame.inner(card);
+                f.render_widget(frame, card);
+                let pad = (inner.height / 2).saturating_sub(2) as usize;
+                let body = format!(
+                    "{}▢\n\n{}",
+                    "\n".repeat(pad),
+                    crate::view::truncate(title, (inner.width as usize) * 3)
+                );
                 f.render_widget(
-                    Paragraph::new(crate::view::truncate(title, (cover_w as usize) * 2))
+                    Paragraph::new(body)
                         .alignment(Alignment::Center)
                         .wrap(Wrap { trim: true })
                         .style(Style::default().fg(theme.muted)),
-                    card,
+                    inner,
                 );
             }
         }

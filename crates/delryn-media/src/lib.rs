@@ -373,6 +373,14 @@ pub struct CoverImage {
     pub dims: (u32, u32),
 }
 
+impl CoverImage {
+    /// The terminal (Kitty) image id, if any — used to delete it when this cover
+    /// is evicted from the library cache, so terminal image memory stays bounded.
+    pub fn image_id(&self) -> Option<u32> {
+        self.proto.image_id()
+    }
+}
+
 /// How much of a cover's shorter side becomes its corner radius (1/N).
 const COVER_CORNER_DIV: u32 = 18;
 
