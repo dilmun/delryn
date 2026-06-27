@@ -86,6 +86,9 @@ pub struct Reader {
     /// Paginated reading (set each render from config): vertical nav flips whole
     /// pages snapped to page boundaries instead of scrolling line by line.
     pub paged: bool,
+    /// A two-page paged-image spread is on screen (set each render): a page flip
+    /// turns a whole leaf (2 sections) so consecutive spreads don't overlap.
+    pub spread: bool,
     /// PDF page placements for this frame (section + absolute cell rect),
     /// captured by the view and consumed by the direct-Kitty [`PageDeck`]. One
     /// entry single-page, two for a spread.
@@ -264,6 +267,7 @@ impl Reader {
             wrap_tidy: true,
             chapter_lock: false,
             paged: false,
+            spread: false,
             pdf_targets: Vec::new(),
             nav_back: false,
             heading_lines: Vec::new(),
@@ -1091,6 +1095,12 @@ impl Reader {
         self.scroll_pending = 0;
     }
 
+    /// Sections advanced per page flip: a two-page spread turns a whole leaf (2),
+    /// everything else one page.
+    fn page_step(&self) -> usize {
+        if self.spread { 2 } else { 1 }
+    }
+
     /// Flip to the next page (snapped to a page boundary), flowing into the next
     /// chapter at the bottom edge. Used in paged mode.
     pub fn page_forward(&mut self) {
@@ -1098,8 +1108,14 @@ impl Reader {
         if self.scroll < self.max_scroll() {
             self.scroll = (self.scroll / page + 1) * page;
             self.clamp_scroll();
-        } else if !self.chapter_lock && self.section + 1 < self.doc.section_count() {
-            self.load(self.section + 1);
+        } else if !self.chapter_lock {
+            // Advance a leaf, clamped to the last page (so a spread whose facing
+            // page is the last one still steps onto it).
+            let last = self.doc.section_count().saturating_sub(1);
+            let target = (self.section + self.page_step()).min(last);
+            if target > self.section {
+                self.load(target);
+            }
         }
         self.scroll_pending = 0;
     }
@@ -1112,7 +1128,7 @@ impl Reader {
             // Previous boundary, or this page's start when mid-page.
             self.scroll = self.scroll.saturating_sub(1) / page * page;
         } else if !self.chapter_lock && self.section > 0 {
-            self.load(self.section - 1);
+            self.load(self.section.saturating_sub(self.page_step()));
             self.scroll = usize::MAX;
             self.clamp_scroll();
             self.snap_to_page();
@@ -1649,6 +1665,27 @@ mod tests {
         assert_eq!(r.section, 9, "clamps to the last page");
         r.page_jump(-100);
         assert_eq!(r.section, 0, "clamps to the first page");
+    }
+
+    /// A two-page spread flips a whole leaf (2 pages) so consecutive spreads
+    /// don't overlap, clamping onto the last page at the end.
+    #[test]
+    fn paged_spread_flips_a_whole_leaf() {
+        let doc = MockDoc::new((0..10).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.spread = true;
+        r.load(0);
+        r.page_forward();
+        assert_eq!(r.section, 2, "a spread turns two pages");
+        r.page_forward();
+        assert_eq!(r.section, 4);
+        r.page_backward();
+        assert_eq!(r.section, 2);
+        r.load(8); // last leaf is the single page 9
+        r.page_forward();
+        assert_eq!(r.section, 9, "steps onto the last page");
+        r.page_forward();
+        assert_eq!(r.section, 9, "no-op at the last page");
     }
 
     /// Scroll-spy for a PDF: the sidebar tracks the outline entry whose page is at
