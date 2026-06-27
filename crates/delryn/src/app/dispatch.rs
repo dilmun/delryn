@@ -432,6 +432,9 @@ impl App {
     }
 
     fn apply(&mut self, action: Action) {
+        // Throttle PDF flips to the display rate (see `pdf_flip_ready`): a held
+        // key advances one visible page per drawn frame rather than skipping.
+        let flip_ready = self.pdf_flip_ready();
         let Some(reader) = self.reader.as_mut() else {
             return;
         };
@@ -442,6 +445,18 @@ impl App {
         // blanks/flickers it. So page-snap whenever paged mode is on *or* the
         // document is page-image-based, regardless of the continuous-scroll knob.
         let paged = self.config.paged || reader.is_paged_image();
+        // A PDF flip that the throttle isn't ready for is dropped (the page
+        // hasn't been shown yet); reflowable page-snap is never throttled.
+        let page_forward = |r: &mut Reader| {
+            if flip_ready {
+                r.page_forward();
+            }
+        };
+        let page_backward = |r: &mut Reader| {
+            if flip_ready {
+                r.page_backward();
+            }
+        };
         match action {
             Action::Quit => self.should_quit = true,
             Action::Back => {
@@ -458,21 +473,21 @@ impl App {
             }
             // In paged mode, vertical content navigation flips whole pages.
             Action::Down(n) => match reader.focus {
-                Focus::Content if paged => reader.page_forward(),
+                Focus::Content if paged => page_forward(reader),
                 Focus::Content => reader.queue_scroll(n as isize),
                 Focus::Sidebar => reader.sidebar_move(n as isize),
             },
             Action::Up(n) => match reader.focus {
-                Focus::Content if paged => reader.page_backward(),
+                Focus::Content if paged => page_backward(reader),
                 Focus::Content => reader.queue_scroll(-(n as isize)),
                 Focus::Sidebar => reader.sidebar_move(-(n as isize)),
             },
-            Action::HalfDown if paged => reader.page_forward(),
-            Action::HalfUp if paged => reader.page_backward(),
+            Action::HalfDown if paged => page_forward(reader),
+            Action::HalfUp if paged => page_backward(reader),
             Action::HalfDown => reader.scroll_down(reader.page_lines.max(2) / 2),
             Action::HalfUp => reader.scroll_up(reader.page_lines.max(2) / 2),
-            Action::PageDown if paged => reader.page_forward(),
-            Action::PageUp if paged => reader.page_backward(),
+            Action::PageDown if paged => page_forward(reader),
+            Action::PageUp if paged => page_backward(reader),
             Action::PageDown => reader.scroll_down(reader.page_lines.max(1)),
             Action::PageUp => reader.scroll_up(reader.page_lines.max(1)),
             Action::Top => {

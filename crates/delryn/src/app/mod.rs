@@ -610,6 +610,26 @@ impl App {
         self.pdf_pages_pending()
     }
 
+    /// Whether a PDF page flip should be honoured right now: only when the deck is
+    /// actually displaying the current page. The deck updates only on a draw, so
+    /// while a held `j`/`k` drains a burst of key-repeats (no draw in between) the
+    /// deck stays "behind" and this gates out every flip after the first — so the
+    /// page advances one *visible* page per drawn frame instead of racing ahead
+    /// and skipping pages. Always true for reflowable/page-snap (non-PDF) modes,
+    /// which have nothing to throttle.
+    fn pdf_flip_ready(&self) -> bool {
+        let Some(r) = self.reader.as_ref() else {
+            return true;
+        };
+        if !r.is_paged_image() {
+            return true;
+        }
+        // Normal: the deck is showing the current page → ok to advance.
+        // Escape hatch: the current page resolved but can't be shown (render
+        // failed), so don't soft-lock — let the user move past it.
+        self.page_deck.shown_sections().contains(&r.section) || r.page_unrenderable(r.section)
+    }
+
     /// Whether the PDF page deck needs another frame: a visible page is still
     /// rasterizing (loaded async off the main thread), or every visible page is
     /// ready but the deck hasn't placed them yet (capture + place happen on the
