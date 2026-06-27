@@ -25,6 +25,7 @@ pub enum SettingItem {
     ViewMode,
     SidePadding,
     PageGap,
+    CoverOffset,
     LineSpacing,
     ParagraphSpacing,
     Justify,
@@ -58,6 +59,7 @@ impl SettingItem {
             SettingItem::ViewMode => "View mode",
             SettingItem::SidePadding => "Side margin %",
             SettingItem::PageGap => "Two-page gap",
+            SettingItem::CoverOffset => "First page alone",
             SettingItem::LineSpacing => "Line spacing",
             SettingItem::ParagraphSpacing => "Paragraph spacing",
             SettingItem::Justify => "Justify text",
@@ -96,6 +98,7 @@ impl SettingItem {
             SettingItem::ViewMode => c.view_mode.label().to_string(),
             SettingItem::SidePadding => c.side_padding.to_string(),
             SettingItem::PageGap => c.page_gap.to_string(),
+            SettingItem::CoverOffset => onoff(c.cover_offset),
             SettingItem::LineSpacing => c.line_spacing.to_string(),
             SettingItem::ParagraphSpacing => c.paragraph_spacing.to_string(),
             SettingItem::Justify => onoff(c.justify),
@@ -160,6 +163,7 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
                     I(ViewMode),
                     I(SidePadding),
                     I(PageGap),
+                    I(CoverOffset),
                     I(LineSpacing),
                     I(ParagraphSpacing),
                     I(Justify),
@@ -334,6 +338,7 @@ impl App {
             SettingItem::PageGap => {
                 c.page_gap = (c.page_gap as i32 + delta).clamp(0, MAX_PAGE_GAP as i32) as u16
             }
+            SettingItem::CoverOffset => c.cover_offset = !c.cover_offset,
             SettingItem::LineSpacing => {
                 c.line_spacing =
                     (c.line_spacing as i32 + delta).clamp(0, MAX_LINE_SPACING as i32) as u8

@@ -48,6 +48,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.tidy_spacing = config.tidy_spacing;
     reader.paged = config.paged;
     reader.spread = matches!(config.view_mode, ViewMode::TwoPage) && reader.is_paged_image();
+    reader.cover_offset = config.cover_offset;
     reader.chapter_lock = config.chapter_lock;
     let area = f.area();
 
@@ -455,13 +456,17 @@ fn render_two_page(
     reader.last_measure = col_w as usize;
 
     // PDF: a facing-page spread, rendered as two whole page images via the
-    // direct-Kitty PageDeck. Capture where to place each (current page left, the
-    // next right) and leave the columns empty for the placements.
+    // direct-Kitty PageDeck. The reader decides the pairing (cover-offset aware);
+    // a lone page (the cover, or a trailing odd page) centers across the whole
+    // area rather than sitting in one column. Leave the columns empty for the
+    // placements.
     if reader.is_paged_image() {
-        let mut spread = vec![(reader.section, left_area)];
-        if reader.section + 1 < reader.section_count() {
-            spread.push((reader.section + 1, right_area));
-        }
+        let pages = reader.spread_pages();
+        let spread: Vec<(usize, Rect)> = match pages.as_slice() {
+            [only] => vec![(*only, body)],
+            [l, r, ..] => vec![(*l, left_area), (*r, right_area)],
+            [] => Vec::new(),
+        };
         capture_pdf_targets(reader, images, &spread);
         return;
     }
