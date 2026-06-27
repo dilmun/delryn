@@ -589,36 +589,15 @@ pub fn transmit_image_seq(id: u32, png: &[u8]) -> String {
 
 /// Kitty: display the already-transmitted image `id` at terminal cell
 /// (`col`,`row`) (1-based), scaled to fill `cols`×`rows` cells (`a=p`).
-/// `placement` MUST be unique across simultaneously-shown images: placements key
-/// on the (image-id, placement-id) pair, and a duplicate pair deletes the
-/// earlier placement — sharing one placement id across a two-page spread blanks
-/// the first page. The cursor is saved/restored so the TUI is undisturbed.
-pub fn place_image_seq(
-    id: u32,
-    placement: u32,
-    col: u16,
-    row: u16,
-    cols: u16,
-    rows: u16,
-) -> String {
-    // \x1b7 / \x1b8 save & restore cursor; CUP moves to the placement origin.
-    format!("\x1b7\x1b[{row};{col}H\x1b_Ga=p,i={id},p={placement},c={cols},r={rows},q=2\x1b\\\x1b8")
-}
-
-/// Kitty: remove the on-screen placement of image `id` but **keep its stored
-/// data** (lowercase `d=i`), so flipping back to it re-displays instantly with
-/// no re-transmit. Use [`delete_image_seq`] to also free the data.
-pub fn unplace_image_seq(id: u32) -> String {
-    format!("\x1b_Ga=d,d=i,i={id},q=2\x1b\\")
-}
-
-/// Kitty: remove **every** on-screen placement while **keeping all stored image
-/// data** (lowercase `d=a`), so the pages can be re-placed instantly with no
-/// re-transmit. Re-placing an image where a placement already exists is a no-op
-/// on some terminals, so the page swap clears placements first, then places the
-/// new spread fresh.
-pub fn clear_placements_seq() -> String {
-    "\x1b_Ga=d,d=a,q=2\x1b\\".to_string()
+///
+/// Deliberately **no placement id** (`p=`): placements key on the
+/// (image-id, placement-id) pair, so two images sharing a placement id make the
+/// second delete the first (the two-page spread's left page went blank). Without
+/// `p=`, each image gets its own placement and they coexist — the approach the
+/// reference kitty PDF viewer (`termpdf.py`) uses. The cursor is saved/restored
+/// (`\x1b7`/`\x1b8`) so the surrounding TUI is undisturbed.
+pub fn place_image_seq(id: u32, col: u16, row: u16, cols: u16, rows: u16) -> String {
+    format!("\x1b7\x1b[{row};{col}H\x1b_Ga=p,i={id},c={cols},r={rows},q=2\x1b\\\x1b8")
 }
 
 /// Decode, upscale-to-fill, and encode one image into a sliced protocol. This
