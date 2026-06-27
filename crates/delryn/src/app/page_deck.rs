@@ -29,21 +29,27 @@ use crate::media;
 /// Monotonic counter for unique page temp-file names.
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-/// Whether to use the temp-file transmit medium (a tiny escape instead of
-/// multi-MB inline base64). Opt-in via `FOLIO_KITTY_FILE` while it's validated:
-/// some terminals (Ghostty) render a black screen with it, so inline `t=d` — the
-/// medium known to work everywhere — stays the default. Read once.
-fn use_file_transmit() -> bool {
+/// Filename stem for page temp files. **Must** contain `tty-graphics-protocol`:
+/// the kitty graphics spec requires it in the path before a terminal will read
+/// (and delete) a `t=t` temporary file, and Ghostty enforces it — without it the
+/// transmit is silently rejected and the page never appears (a black screen).
+const TEMP_STEM: &str = "tty-graphics-protocol-delryn";
+
+/// Whether to force the inline (`t=d`) transmit medium instead of the temp-file
+/// one — an escape hatch (`DELRYN_KITTY_DIRECT`) for terminals that don't support
+/// file transmission. Read once.
+fn use_direct() -> bool {
     use std::sync::OnceLock;
-    static FILE: OnceLock<bool> = OnceLock::new();
-    *FILE.get_or_init(|| std::env::var_os("FOLIO_KITTY_FILE").is_some())
+    static DIRECT: OnceLock<bool> = OnceLock::new();
+    *DIRECT.get_or_init(|| std::env::var_os("DELRYN_KITTY_DIRECT").is_some())
 }
 
-/// Transmit `png` under `id`. Inline `t=d` by default (universally supported);
-/// the temp-file medium (tiny escape, no ~60ms-per-turn base64 stall) when
-/// opted in and the file can be written.
+/// Transmit `png` under `id`, preferring the temp-file medium so a turn pushes a
+/// tiny escape (the file path) instead of multi-MB of base64 — the ~60ms-per-turn
+/// stall that made held `j`/`k` drag. Falls back to inline `t=d` if the file
+/// can't be written or the escape hatch is set.
 fn transmit_seq(id: u32, png: &[u8]) -> String {
-    if use_file_transmit()
+    if !use_direct()
         && let Some(seq) = transmit_via_file(id, png)
     {
         return seq;
@@ -51,12 +57,13 @@ fn transmit_seq(id: u32, png: &[u8]) -> String {
     media::transmit_image_seq(id, png)
 }
 
-/// Write `png` to a fresh temp file and return the file-transmit escape. The
-/// terminal reads then deletes the file (`t=t`), so each call uses a unique name.
+/// Write `png` to a fresh temp file (in `$TMPDIR`, which Ghostty accepts) and
+/// return the file-transmit escape. The terminal reads then deletes the file
+/// (`t=t`), so each call uses a unique name.
 fn transmit_via_file(id: u32, png: &[u8]) -> Option<String> {
     let n = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
     let mut path = std::env::temp_dir();
-    path.push(format!("delryn-kitty-{n}.png"));
+    path.push(format!("{TEMP_STEM}-{n}.png"));
     std::fs::write(&path, png).ok()?;
     Some(media::transmit_file_seq(id, &path.to_string_lossy()))
 }
@@ -68,7 +75,7 @@ fn temp_cleanup() {
         for e in entries.flatten() {
             let name = e.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with("delryn-kitty-") && name.ends_with(".png") {
+            if name.starts_with(TEMP_STEM) && name.ends_with(".png") {
                 let _ = std::fs::remove_file(e.path());
             }
         }
