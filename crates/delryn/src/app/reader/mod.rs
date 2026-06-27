@@ -86,6 +86,12 @@ pub struct Reader {
     /// Paginated reading (set each render from config): vertical nav flips whole
     /// pages snapped to page boundaries instead of scrolling line by line.
     pub paged: bool,
+    /// A two-page paged-image spread is on screen (set each render): a page flip
+    /// turns a whole leaf (2 sections) so consecutive spreads don't overlap.
+    pub spread: bool,
+    /// Show the first page alone in a spread (book cover), then pair (2,3),
+    /// (4,5)… so facing pages line up as in a physical book (set each render).
+    pub cover_offset: bool,
     /// PDF page placements for this frame (section + absolute cell rect),
     /// captured by the view and consumed by the direct-Kitty [`PageDeck`]. One
     /// entry single-page, two for a spread.
@@ -264,6 +270,8 @@ impl Reader {
             wrap_tidy: true,
             chapter_lock: false,
             paged: false,
+            spread: false,
+            cover_offset: false,
             pdf_targets: Vec::new(),
             nav_back: false,
             heading_lines: Vec::new(),
@@ -1031,14 +1039,16 @@ impl Reader {
         })
     }
 
-    /// The sections that should be on screen now: the current page, plus the
-    /// facing page in `spread` mode when one exists.
+    /// The sections that should be on screen now — matching exactly what the view
+    /// places (so the deck keep-alive doesn't wait on or spin over the wrong
+    /// pages): the spread's pages (cover-offset aware) in `spread` mode, else the
+    /// current page alone.
     pub fn visible_sections(&self, spread: bool) -> Vec<usize> {
-        let mut v = vec![self.section];
-        if spread && self.section + 1 < self.doc.section_count() {
-            v.push(self.section + 1);
+        if spread {
+            self.spread_pages()
+        } else {
+            vec![self.section]
         }
-        v
     }
 
     /// Whether `section`'s page is rasterized and placeable (a non-empty image is
@@ -1091,6 +1101,59 @@ impl Reader {
         self.scroll_pending = 0;
     }
 
+    /// The left page of the two-page tile containing `section`. Without a cover
+    /// offset, tiles are (0,1),(2,3)…; with one, page 0 is alone, then (1,2),
+    /// (3,4)… so the left page is odd.
+    fn spread_left(&self, section: usize) -> usize {
+        if !self.cover_offset {
+            section - section % 2
+        } else if section == 0 {
+            0
+        } else if section % 2 == 1 {
+            section
+        } else {
+            section - 1
+        }
+    }
+
+    /// The page(s) of the current two-page spread: one for a lone page (the cover
+    /// under a cover offset, or a trailing odd page), else the facing pair.
+    pub fn spread_pages(&self) -> Vec<usize> {
+        let left = self.spread_left(self.section);
+        if self.cover_offset && left == 0 {
+            return vec![0];
+        }
+        let mut v = vec![left];
+        if left + 1 < self.doc.section_count() {
+            v.push(left + 1);
+        }
+        v
+    }
+
+    /// The section a forward flip lands on — the next tile's left in a spread
+    /// (cover-offset aware), else the next page.
+    fn next_page_section(&self) -> usize {
+        if !self.spread {
+            return self.section + 1;
+        }
+        let left = self.spread_left(self.section);
+        let width = if self.cover_offset && left == 0 { 1 } else { 2 };
+        left + width
+    }
+
+    /// The section a backward flip lands on — the previous tile's left.
+    fn prev_page_section(&self) -> usize {
+        if !self.spread {
+            return self.section.saturating_sub(1);
+        }
+        let left = self.spread_left(self.section);
+        if left <= 1 {
+            0 // back to the cover (offset) or the first leaf
+        } else {
+            left - 2
+        }
+    }
+
     /// Flip to the next page (snapped to a page boundary), flowing into the next
     /// chapter at the bottom edge. Used in paged mode.
     pub fn page_forward(&mut self) {
@@ -1098,8 +1161,14 @@ impl Reader {
         if self.scroll < self.max_scroll() {
             self.scroll = (self.scroll / page + 1) * page;
             self.clamp_scroll();
-        } else if !self.chapter_lock && self.section + 1 < self.doc.section_count() {
-            self.load(self.section + 1);
+        } else if !self.chapter_lock {
+            // Advance a leaf, clamped to the last page (so a spread whose facing
+            // page is the last one still steps onto it).
+            let last = self.doc.section_count().saturating_sub(1);
+            let target = self.next_page_section().min(last);
+            if target > self.section {
+                self.load(target);
+            }
         }
         self.scroll_pending = 0;
     }
@@ -1112,12 +1181,35 @@ impl Reader {
             // Previous boundary, or this page's start when mid-page.
             self.scroll = self.scroll.saturating_sub(1) / page * page;
         } else if !self.chapter_lock && self.section > 0 {
-            self.load(self.section - 1);
+            self.load(self.prev_page_section());
             self.scroll = usize::MAX;
             self.clamp_scroll();
             self.snap_to_page();
         }
         self.scroll_pending = 0;
+    }
+
+    /// Flip `pages` pages at once (a count-prefixed `j`/`k`, e.g. `10j`). For a
+    /// paged-image doc one page is one section, so it jumps the section directly
+    /// (clamped) — bypassing the per-frame flip throttle, which is only meant to
+    /// pace a *held* key. Reflowable page mode steps page by page.
+    pub fn page_jump(&mut self, pages: isize) {
+        if pages == 0 {
+            return;
+        }
+        if self.is_paged_image() {
+            let max = self.doc.section_count().saturating_sub(1) as isize;
+            let target = (self.section as isize + pages).clamp(0, max) as usize;
+            self.load(target);
+        } else {
+            for _ in 0..pages.unsigned_abs() {
+                if pages > 0 {
+                    self.page_forward();
+                } else {
+                    self.page_backward();
+                }
+            }
+        }
     }
 
     /// Jump to the next/previous chapter (works regardless of chapter-lock).
@@ -1609,5 +1701,89 @@ mod tests {
         r.scroll = 6;
         r.page_backward();
         assert_eq!(r.scroll, 4, "mid-page back snaps to page start");
+    }
+
+    /// A count-prefixed flip (`10j`) jumps that many pages in a paged-image doc,
+    /// clamped to the document bounds.
+    #[test]
+    fn paged_page_jump_moves_by_count_and_clamps() {
+        let doc = MockDoc::new((0..10).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.load(2);
+        r.page_jump(5);
+        assert_eq!(r.section, 7);
+        r.page_jump(-3);
+        assert_eq!(r.section, 4);
+        r.page_jump(100);
+        assert_eq!(r.section, 9, "clamps to the last page");
+        r.page_jump(-100);
+        assert_eq!(r.section, 0, "clamps to the first page");
+    }
+
+    /// A two-page spread flips a whole leaf (2 pages) so consecutive spreads
+    /// don't overlap, clamping onto the last page at the end.
+    #[test]
+    fn paged_spread_flips_a_whole_leaf() {
+        let doc = MockDoc::new((0..10).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.spread = true;
+        r.load(0);
+        r.page_forward();
+        assert_eq!(r.section, 2, "a spread turns two pages");
+        r.page_forward();
+        assert_eq!(r.section, 4);
+        r.page_backward();
+        assert_eq!(r.section, 2);
+        r.load(8); // last leaf is the single page 9
+        r.page_forward();
+        assert_eq!(r.section, 9, "steps onto the last page");
+        r.page_forward();
+        assert_eq!(r.section, 9, "no-op at the last page");
+    }
+
+    /// With a cover offset, a spread shows the first page alone, then facing
+    /// pairs (1,2),(3,4)…; flips and back-flips walk those tiles.
+    #[test]
+    fn paged_spread_cover_offset_shows_first_page_alone() {
+        let doc = MockDoc::new((0..10).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.spread = true;
+        r.cover_offset = true;
+        r.load(0);
+        assert_eq!(r.spread_pages(), vec![0], "cover shown alone");
+        r.page_forward();
+        assert_eq!(r.section, 1);
+        assert_eq!(r.spread_pages(), vec![1, 2], "then facing pairs");
+        r.page_forward();
+        assert_eq!(r.section, 3);
+        assert_eq!(r.spread_pages(), vec![3, 4]);
+        r.page_backward();
+        assert_eq!(r.section, 1);
+        r.page_backward();
+        assert_eq!(r.section, 0, "back to the cover");
+        assert_eq!(r.spread_pages(), vec![0]);
+    }
+
+    /// Scroll-spy for a PDF: the sidebar tracks the outline entry whose page is at
+    /// or before the current one (PDFs have no text locators, so spy by section).
+    #[test]
+    fn paged_scroll_spy_tracks_current_page_section() {
+        let doc = MockDoc::new((0..10).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        let item = |section| OutlineItem {
+            label: format!("Ch@{section}"),
+            depth: 0,
+            section,
+            locator: None,
+        };
+        r.outline = vec![item(0), item(3), item(7)];
+        r.section = 0;
+        assert_eq!(r.active_outline(), Some(0));
+        r.section = 5; // between Ch@3 and Ch@7 → Ch@3
+        assert_eq!(r.active_outline(), Some(1));
+        r.section = 8; // at/after Ch@7 → Ch@7
+        assert_eq!(r.active_outline(), Some(2));
+        r.section = 2; // before Ch@3 → Ch@0
+        assert_eq!(r.active_outline(), Some(0));
     }
 }

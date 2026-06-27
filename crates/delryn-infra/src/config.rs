@@ -355,6 +355,9 @@ pub struct Config {
     pub side_padding: u16,
     /// Gap (in cells) between the two columns of the two-page spread.
     pub page_gap: u16,
+    /// In two-page mode, show the first page alone (like a book cover), then pair
+    /// (2,3), (4,5)… so facing pages line up as in a physical book.
+    pub cover_offset: bool,
     /// Extra blank lines between wrapped text lines (0 = single-spaced).
     pub line_spacing: u8,
     /// Blank lines between blocks/paragraphs.
@@ -425,6 +428,7 @@ impl Default for Config {
         Self {
             side_padding: 6,
             page_gap: 5,
+            cover_offset: false,
             line_spacing: 0,
             paragraph_spacing: 1,
             view_mode: ViewMode::Center,
@@ -457,6 +461,7 @@ impl Default for Config {
 struct ConfigFile {
     side_padding: u16,
     page_gap: u16,
+    cover_offset: bool,
     line_spacing: u8,
     paragraph_spacing: u8,
     view_mode: String,
@@ -486,6 +491,7 @@ impl Default for ConfigFile {
         Self {
             side_padding: c.side_padding,
             page_gap: c.page_gap,
+            cover_offset: c.cover_offset,
             line_spacing: c.line_spacing,
             paragraph_spacing: c.paragraph_spacing,
             view_mode: c.view_mode.label().to_string(),
@@ -563,6 +569,7 @@ impl Config {
         };
         c.side_padding = cf.side_padding.min(MAX_SIDE_PADDING);
         c.page_gap = cf.page_gap.min(MAX_PAGE_GAP);
+        c.cover_offset = cf.cover_offset;
         c.line_spacing = cf.line_spacing.min(MAX_LINE_SPACING);
         c.paragraph_spacing = cf.paragraph_spacing.min(3);
         c.view_mode = ViewMode::from_label(&cf.view_mode);
@@ -601,6 +608,7 @@ impl Config {
         let cf = ConfigFile {
             side_padding: self.side_padding,
             page_gap: self.page_gap,
+            cover_offset: self.cover_offset,
             line_spacing: self.line_spacing,
             paragraph_spacing: self.paragraph_spacing,
             view_mode: self.view_mode.label().to_string(),
