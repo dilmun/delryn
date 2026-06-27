@@ -290,10 +290,13 @@ fn draw(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()>
     let t_draw = Instant::now();
     terminal.draw(|f| view::render(f, app))?;
     let draw_us = t_draw.elapsed().as_micros();
-    // Full PDF pages are managed directly via the kitty protocol (transmit-once
-    // + placement), not through ratatui's cell buffer. Emit their escapes inside
-    // the synchronized frame so a page appears atomically with the chrome.
+    // Full PDF pages are managed directly via the kitty protocol (temp-file
+    // transmit + placement), not through ratatui's cell buffer. Building the
+    // escapes writes the page temp files; emit them inside the synchronized frame
+    // so a page appears atomically with the chrome.
+    let t_build = Instant::now();
     let escapes = app.page_escapes();
+    let build_us = t_build.elapsed().as_micros();
     let esc_bytes: usize = escapes.iter().map(String::len).sum();
     let t_write = Instant::now();
     for esc in escapes {
@@ -302,17 +305,17 @@ fn draw(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()>
     if sync {
         execute!(io::stdout(), EndSynchronizedUpdate)?;
     }
-    // Profiling for the PDF page path (the kitty transmit is the suspected
-    // bottleneck on fast turns): records draw/write time and the bytes pushed to
-    // the terminal per frame. Gated on DELRYN_KITTY_LOG; zero cost otherwise.
+    // Profiling for the PDF page path: draw time, escape-build time (includes the
+    // temp-file writes), stdout-write time, and bytes pushed to the terminal per
+    // frame. Gated on DELRYN_KITTY_LOG; zero cost otherwise.
     if esc_bytes > 0 && std::env::var_os("DELRYN_KITTY_LOG").is_some() {
-        log_page_timing(draw_us, t_write.elapsed().as_micros(), esc_bytes);
+        log_page_timing(draw_us, build_us, t_write.elapsed().as_micros(), esc_bytes);
     }
     Ok(())
 }
 
 /// Append one PDF-frame timing line to `/tmp/delryn-kitty.log` (see `draw`).
-fn log_page_timing(draw_us: u128, write_us: u128, esc_bytes: usize) {
+fn log_page_timing(draw_us: u128, build_us: u128, write_us: u128, esc_bytes: usize) {
     use std::io::Write as _;
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -321,7 +324,7 @@ fn log_page_timing(draw_us: u128, write_us: u128, esc_bytes: usize) {
     {
         let _ = writeln!(
             f,
-            "timing draw={draw_us}us write={write_us}us bytes={esc_bytes}"
+            "timing draw={draw_us}us build={build_us}us write={write_us}us bytes={esc_bytes}"
         );
     }
 }

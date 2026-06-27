@@ -20,9 +20,60 @@
 //! The deck holds no terminal handle; it returns escape strings for the render
 //! loop to write inside the synchronized-update frame, with the chrome.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use ratatui::layout::Rect;
 
 use crate::media;
+
+/// Monotonic counter for unique page temp-file names.
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+/// Whether to force the inline (`t=d`) transmit medium instead of the temp-file
+/// one — an escape hatch (`DELRYN_KITTY_DIRECT`) in case a terminal mishandles
+/// file transmission. Read once.
+fn use_direct() -> bool {
+    use std::sync::OnceLock;
+    static DIRECT: OnceLock<bool> = OnceLock::new();
+    *DIRECT.get_or_init(|| std::env::var_os("DELRYN_KITTY_DIRECT").is_some())
+}
+
+/// Transmit `png` under `id`, preferring the temp-file medium so a turn pushes a
+/// tiny escape instead of multi-MB of base64 (the ~60ms-per-turn stall that made
+/// held `j`/`k` drag). Falls back to inline `t=d` if the file can't be written or
+/// the escape hatch is set.
+fn transmit_seq(id: u32, png: &[u8]) -> String {
+    if !use_direct()
+        && let Some(seq) = transmit_via_file(id, png)
+    {
+        return seq;
+    }
+    media::transmit_image_seq(id, png)
+}
+
+/// Write `png` to a fresh temp file and return the file-transmit escape. The
+/// terminal reads then deletes the file (`t=t`), so each call uses a unique name.
+fn transmit_via_file(id: u32, png: &[u8]) -> Option<String> {
+    let n = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    let mut path = std::env::temp_dir();
+    path.push(format!("delryn-kitty-{n}.png"));
+    std::fs::write(&path, png).ok()?;
+    Some(media::transmit_file_seq(id, &path.to_string_lossy()))
+}
+
+/// Best-effort sweep of any page temp files the terminal didn't delete (it should
+/// remove `t=t` files itself). Cheap; run when tearing the deck down.
+fn temp_cleanup() {
+    if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("delryn-kitty-") && name.ends_with(".png") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
 
 /// Append a line to `/tmp/delryn-kitty.log` when `DELRYN_KITTY_LOG` is set — a
 /// diagnostic for the placement decisions, since terminal graphics can't be
@@ -104,7 +155,7 @@ impl PageDeck {
             out.push(media::delete_image_seq(Self::id(*sec)));
         }
         for (&(sec, rect), png) in targets.iter().zip(&pngs) {
-            out.push(media::transmit_image_seq(Self::id(sec), png));
+            out.push(transmit_seq(Self::id(sec), png));
             out.push(media::place_image_seq(
                 Self::id(sec),
                 rect.x + 1,
@@ -134,6 +185,7 @@ impl PageDeck {
             .map(|(s, _)| media::delete_image_seq(Self::id(*s)))
             .collect();
         self.shown.clear();
+        temp_cleanup();
         out
     }
 }

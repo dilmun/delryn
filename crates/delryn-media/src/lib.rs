@@ -587,6 +587,19 @@ pub fn transmit_image_seq(id: u32, png: &[u8]) -> String {
     out
 }
 
+/// Kitty: transmit an image stored at `path` under `id` **without displaying it**
+/// (`a=t`), reading the pixel data from a *temporary file* (`t=t`) instead of
+/// streaming it inline. The terminal opens the file directly and **deletes it
+/// after reading**, so the escape carries only the (base64) path — a few dozen
+/// bytes — rather than megabytes of base64. This is what makes fast page turns
+/// cheap: streaming a full-page raster inline (`t=d`) blocks the loop ~60ms per
+/// turn; via a file it's a small write plus a tiny escape. `f=100` = PNG.
+pub fn transmit_file_seq(id: u32, path: &str) -> String {
+    use base64::Engine;
+    let payload = base64::engine::general_purpose::STANDARD.encode(path.as_bytes());
+    format!("\x1b_Gq=2,i={id},a=t,f=100,t=t;{payload}\x1b\\")
+}
+
 /// Kitty: display the already-transmitted image `id` at terminal cell
 /// (`col`,`row`) (1-based), scaled to fill `cols`×`rows` cells (`a=p`).
 ///
@@ -1074,5 +1087,20 @@ mod tests {
         )
         .to_rgba8();
         assert_eq!(out.get_pixel(10, 10).0, photo.get_pixel(10, 10).0);
+    }
+
+    /// The file transmit carries only the (base64) path — a tiny escape, not the
+    /// multi-MB base64 blast of the inline `t=d` medium.
+    #[test]
+    fn file_transmit_carries_only_the_base64_path() {
+        use base64::Engine;
+        let seq = transmit_file_seq(0x0F00_0001, "/tmp/delryn-kitty-7.png");
+        assert!(seq.contains("a=t"), "transmit (store, don't display)");
+        assert!(seq.contains("t=t"), "temporary-file medium");
+        assert!(seq.contains("f=100"), "PNG format");
+        assert!(seq.contains("i=251658241"), "image id");
+        let payload = base64::engine::general_purpose::STANDARD.encode("/tmp/delryn-kitty-7.png");
+        assert!(seq.contains(&payload), "base64-encoded path payload");
+        assert!(seq.len() < 120, "tiny escape, not a multi-MB blast");
     }
 }
