@@ -86,10 +86,6 @@ pub struct Reader {
     /// Paginated reading (set each render from config): vertical nav flips whole
     /// pages snapped to page boundaries instead of scrolling line by line.
     pub paged: bool,
-    /// A two-page paged-image spread is on screen (set each render): the facing
-    /// page (next section) is visible, so it's built eagerly + kept warm, and the
-    /// image look-ahead reaches one section further so page turns are instant.
-    pub spread: bool,
     /// PDF page placements for this frame (section + absolute cell rect),
     /// captured by the view and consumed by the direct-Kitty [`PageDeck`]. One
     /// entry single-page, two for a spread.
@@ -268,7 +264,6 @@ impl Reader {
             wrap_tidy: true,
             chapter_lock: false,
             paged: false,
-            spread: false,
             pdf_targets: Vec::new(),
             nav_back: false,
             heading_lines: Vec::new(),
@@ -1027,28 +1022,6 @@ impl Reader {
         self.doc.section_count()
     }
 
-    /// The image-cache key for `section`'s full page at the geometry the last
-    /// [`Reader::sync_images`] settled on — matches what neighbour-prefetch
-    /// builds, so the facing page is already warm.
-    fn page_key(&self, section: usize) -> ImgKey {
-        let (_, avail, max_rows, max_px, target_pct) = self.images_key;
-        ImgKey {
-            section,
-            idx: 0,
-            avail,
-            max_rows,
-            max_px,
-            target_pct,
-            policy: self.images_policy,
-        }
-    }
-
-    /// The built full-page image for `section`, if it's cached — used to draw
-    /// the facing page of a two-page spread.
-    pub fn page_plan(&self, section: usize) -> Option<&ImagePlan> {
-        self.image_cache.peek(&self.page_key(section))
-    }
-
     /// The rasterized PNG bytes of `section`'s page, if it's been loaded into the
     /// section cache — the source the direct-Kitty [`PageDeck`] transmits.
     pub fn page_png(&self, section: usize) -> Option<Vec<u8>> {
@@ -1108,68 +1081,6 @@ impl Reader {
     /// is what otherwise drains the loader).
     pub fn poll_loader(&mut self) {
         self.drain_loader();
-    }
-
-    /// Whether the facing page (the next section) of a paged-image spread is not
-    /// yet built. Keeps the redraw loop alive until it appears — it builds
-    /// asynchronously, just *after* the current page, so without this the loop
-    /// would idle and the right page would never pop in. False when there is no
-    /// facing page or its build has failed, so the loop can settle.
-    pub fn facing_page_pending(&self) -> bool {
-        if !self.is_paged_image() {
-            return false;
-        }
-        let next = self.section + 1;
-        if next >= self.doc.section_count() {
-            return false;
-        }
-        let key = self.page_key(next);
-        !self.image_cache.contains(&key) && !self.img_failed.contains(&key)
-    }
-
-    /// In a paged-image reader, the Kitty upload sequences for built-but-not-yet-
-    /// transmitted neighbour pages, so the app can send them to the terminal
-    /// *before* a turn reveals them — eliminating the first-render upload that
-    /// made the just-revealed page flash / appear to load slowly. Idempotent per
-    /// page (the protocol's transmit flag); a no-op for reflowable formats. The
-    /// caller must write the returned bytes to the terminal.
-    pub fn take_pretransmits(&self) -> Vec<String> {
-        if !self.is_paged_image() {
-            return Vec::new();
-        }
-        let n = self.doc.section_count();
-        let lo = self.section.saturating_sub(2);
-        let hi = (self.section + 3).min(n);
-        let mut out = Vec::new();
-        for sec in lo..hi {
-            if let Some(plan) = self.image_cache.peek(&self.page_key(sec))
-                && let Some(seq) = plan.pretransmit()
-            {
-                out.push(seq);
-            }
-        }
-        out
-    }
-
-    /// Whether any look-ahead page is still building or built-but-not-yet-uploaded
-    /// — used to keep the redraw loop alive until the warm window is fully ready,
-    /// so the pages are pre-uploaded before a turn reveals them (else the loop
-    /// idles mid-warmup and the first turn flashes). A no-op for reflowable books.
-    pub fn warm_pending(&self) -> bool {
-        if !self.is_paged_image() {
-            return false;
-        }
-        let n = self.doc.section_count();
-        let lo = self.section.saturating_sub(2);
-        let hi = (self.section + 3).min(n);
-        (lo..hi).any(|sec| {
-            let key = self.page_key(sec);
-            self.img_requested.contains(&key)
-                || self
-                    .image_cache
-                    .peek(&key)
-                    .is_some_and(|p| p.needs_pretransmit())
-        })
     }
 
     /// Snap the position to the start of its page (so paged mode shows a clean
@@ -1631,136 +1542,6 @@ mod tests {
             vec![8, 9],
             "both pages ready → the whole spread is placeable"
         );
-    }
-
-    /// Regression + optimization: in a paged-image two-page spread, the current
-    /// page (0), its eagerly-built facing page (1), and the look-ahead page (2,
-    /// warmed for the next turn) must all build and become drawable. Exercises
-    /// the per-frame loader drain, the eager facing build, and the look-ahead.
-    /// Drives the real pipeline headlessly (halfblocks `Picker`, no tty).
-    #[test]
-    fn paged_spread_builds_facing_and_lookahead() {
-        let png = page_png();
-        let page = || {
-            vec![Block::Image {
-                src: String::new(),
-                alt: String::new(),
-                data: png.clone(),
-                caption: Vec::new(),
-                math: false,
-                width: delryn_model::ImageWidth::Full,
-            }]
-        };
-        let doc = MockDoc::new(vec![page(), page(), page()]).paged();
-        let mut r = Reader::new(Box::new(doc)).unwrap();
-        r.spread = true; // the view sets this each render in two-page mode
-        r.load(0); // re-run neighbour prefetch now that spread warms section 2
-
-        let picker = Picker::halfblocks();
-        let builder = ImageBuilder::new(picker.clone());
-        let policy = media::RenderPolicy {
-            tint: media::Ink {
-                ink: [0, 0, 0],
-                paper: [255, 255, 255],
-            },
-            mode: media::ImageMode::default(),
-        };
-
-        // Simulate spread frames (no navigation) until the current, facing, and
-        // look-ahead pages have all built, or time out.
-        let mut ok = false;
-        for _ in 0..400 {
-            r.sync_images(&builder, &picker, 40, 40, 0, 85, policy);
-            if r.page_plan(0).is_some() && r.page_plan(1).is_some() && r.page_plan(2).is_some() {
-                ok = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(
-            ok,
-            "current, facing, and look-ahead pages must all build in a spread"
-        );
-    }
-
-    /// The pre-upload pipeline: with a Kitty protocol, look-ahead pages must
-    /// produce upload sequences (so the app can transmit them ahead of display),
-    /// and the warm window must settle once they're built + uploaded — otherwise
-    /// the redraw loop would either spin forever or idle before uploading. Drives
-    /// the real pipeline headlessly with a Kitty-forced `Picker` (the protocol is
-    /// built from bytes; no terminal needed).
-    #[test]
-    fn paged_spread_preuploads_lookahead() {
-        let png = page_png();
-        let page = || {
-            vec![Block::Image {
-                src: String::new(),
-                alt: String::new(),
-                data: png.clone(),
-                caption: Vec::new(),
-                math: false,
-                width: delryn_model::ImageWidth::Full,
-            }]
-        };
-        let doc = MockDoc::new(vec![page(), page(), page(), page()]).paged();
-        let mut r = Reader::new(Box::new(doc)).unwrap();
-        r.spread = true;
-        r.load(0);
-
-        let mut picker = Picker::halfblocks();
-        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
-        let builder = ImageBuilder::new(picker.clone());
-        let policy = media::RenderPolicy {
-            tint: media::Ink {
-                ink: [0, 0, 0],
-                paper: [255, 255, 255],
-            },
-            mode: media::ImageMode::default(),
-        };
-
-        let mut produced_uploads = false;
-        let mut settled = false;
-        for _ in 0..400 {
-            r.sync_images(&builder, &picker, 40, 40, 0, 85, policy);
-            if !r.take_pretransmits().is_empty() {
-                produced_uploads = true; // look-ahead pages were uploaded ahead of display
-            }
-            if !r.warm_pending() && r.page_plan(2).is_some() {
-                settled = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(
-            produced_uploads,
-            "look-ahead pages must produce upload sequences"
-        );
-        assert!(settled, "the warm window must settle once built + uploaded");
-        // Once-only: nothing left to pre-upload, so the loop can idle.
-        assert!(r.take_pretransmits().is_empty(), "pre-upload is idempotent");
-        assert!(!r.warm_pending(), "no pending warmup after settle");
-    }
-
-    #[test]
-    fn facing_page_pending_only_paged_and_bounded() {
-        // Reflowable (non-paged) documents never wait on a facing page.
-        let r = reader_with(vec![para()]);
-        assert!(!r.is_paged_image());
-        assert!(!r.facing_page_pending());
-
-        // A paged-image document waits for the facing page on a middle page (its
-        // image isn't built in these no-picker tests) but settles on the last
-        // page — so the redraw loop can converge rather than spin forever.
-        let doc = MockDoc::new(vec![vec![para()], vec![para()], vec![para()]]).paged();
-        let mut r = Reader::new(Box::new(doc)).unwrap();
-        assert!(r.is_paged_image());
-        r.load(0);
-        assert!(
-            r.facing_page_pending(),
-            "a middle page waits for its facing page"
-        );
-        r.load(2);
-        assert!(!r.facing_page_pending(), "the last page has no facing page");
     }
 
     #[test]
