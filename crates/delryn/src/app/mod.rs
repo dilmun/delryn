@@ -4,7 +4,10 @@
 //! Library is a stub; the Reader is the working EPUB vertical slice. See
 //! `DESIGN.md` §4, §6.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use std::num::NonZeroUsize;
+
+use lru::LruCache;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
@@ -81,6 +84,11 @@ const CACHE_CAP: usize = 11;
 /// terminal. Reused across section revisits; LRU-evicted (and deleted from the
 /// terminal) beyond this.
 const IMAGE_CACHE_CAP: usize = 32;
+/// Library cover thumbnails kept built / terminal-resident at once. Bounded so a
+/// big library doesn't transmit hundreds of Kitty images until the terminal runs
+/// out of image memory and blanks them; evicted covers are deleted from the
+/// terminal and rebuilt on scroll-back. Several screens' worth.
+const LIB_COVER_CAP: usize = 96;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -224,8 +232,12 @@ pub struct App {
     /// Grid view: number of columns from the last render (for 2D navigation).
     pub lib_grid_cols: usize,
     /// Grid view: lazily-built cover protocols, keyed by book path
-    /// (`None` = no cover / failed, so we don't retry every frame).
-    pub lib_grid_covers: HashMap<String, Option<media::CoverImage>>,
+    /// (`None` = no cover / failed, so we don't retry every frame). A bounded LRU
+    /// (rendering bumps each visible cover to most-recently-used) so terminal
+    /// image memory stays capped; evicted covers feed `lib_grid_deletes`.
+    pub lib_grid_covers: LruCache<String, Option<media::CoverImage>>,
+    /// Terminal image ids of covers evicted from `lib_grid_covers`, to delete.
+    pub lib_grid_deletes: Vec<u32>,
     /// Grid view: visible covers still waiting to be built (keeps redrawing).
     pub lib_grid_pending: bool,
     /// Cover-tab preview image protocol + the URL it was built for, plus the
@@ -443,7 +455,8 @@ impl App {
             lib_cover_target: String::new(),
             lib_cover_at: Instant::now(),
             lib_grid_cols: 1,
-            lib_grid_covers: HashMap::new(),
+            lib_grid_covers: LruCache::new(NonZeroUsize::new(LIB_COVER_CAP).unwrap()),
+            lib_grid_deletes: Vec::new(),
             lib_grid_pending: false,
             edit_cover: None,
             edit_cover_url: String::new(),
@@ -513,7 +526,8 @@ impl App {
             lib_cover_target: String::new(),
             lib_cover_at: Instant::now(),
             lib_grid_cols: 1,
-            lib_grid_covers: HashMap::new(),
+            lib_grid_covers: LruCache::new(NonZeroUsize::new(LIB_COVER_CAP).unwrap()),
+            lib_grid_deletes: Vec::new(),
             lib_grid_pending: false,
             edit_cover: None,
             edit_cover_url: String::new(),
@@ -587,12 +601,14 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// Terminal image ids to delete (evicted from the reader's cache).
+    /// Terminal image ids to delete: covers evicted from the library grid cache,
+    /// plus images evicted from the reader's cache.
     pub fn take_image_deletes(&mut self) -> Vec<u32> {
-        self.reader
-            .as_mut()
-            .map(|r| r.take_image_deletes())
-            .unwrap_or_default()
+        let mut ids = std::mem::take(&mut self.lib_grid_deletes);
+        if let Some(r) = self.reader.as_mut() {
+            ids.extend(r.take_image_deletes());
+        }
+        ids
     }
 
     /// Whether full PDF pages should be on screen right now: reading a PDF with
