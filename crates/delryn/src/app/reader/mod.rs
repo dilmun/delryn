@@ -1077,6 +1077,13 @@ impl Reader {
         })
     }
 
+    /// Whether `section` resolved but can't be shown (the loader returned it with
+    /// no image — a rasterize failure). The flip throttle treats it as "done" so
+    /// a broken page can't soft-lock navigation.
+    pub fn page_unrenderable(&self, section: usize) -> bool {
+        self.cache.contains_key(&section) && !self.page_ready(section)
+    }
+
     /// Whether any visible page is still being rasterized (not yet in the cache),
     /// so the render loop should keep spinning until it lands.
     pub fn pages_loading(&self, spread: bool) -> bool {

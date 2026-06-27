@@ -287,15 +287,41 @@ fn draw(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()>
     if sync {
         execute!(io::stdout(), BeginSynchronizedUpdate)?;
     }
+    let t_draw = Instant::now();
     terminal.draw(|f| view::render(f, app))?;
+    let draw_us = t_draw.elapsed().as_micros();
     // Full PDF pages are managed directly via the kitty protocol (transmit-once
     // + placement), not through ratatui's cell buffer. Emit their escapes inside
     // the synchronized frame so a page appears atomically with the chrome.
-    for esc in app.page_escapes() {
+    let escapes = app.page_escapes();
+    let esc_bytes: usize = escapes.iter().map(String::len).sum();
+    let t_write = Instant::now();
+    for esc in escapes {
         execute!(io::stdout(), Print(esc))?;
     }
     if sync {
         execute!(io::stdout(), EndSynchronizedUpdate)?;
     }
+    // Profiling for the PDF page path (the kitty transmit is the suspected
+    // bottleneck on fast turns): records draw/write time and the bytes pushed to
+    // the terminal per frame. Gated on DELRYN_KITTY_LOG; zero cost otherwise.
+    if esc_bytes > 0 && std::env::var_os("DELRYN_KITTY_LOG").is_some() {
+        log_page_timing(draw_us, t_write.elapsed().as_micros(), esc_bytes);
+    }
     Ok(())
+}
+
+/// Append one PDF-frame timing line to `/tmp/delryn-kitty.log` (see `draw`).
+fn log_page_timing(draw_us: u128, write_us: u128, esc_bytes: usize) {
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/delryn-kitty.log")
+    {
+        let _ = writeln!(
+            f,
+            "timing draw={draw_us}us write={write_us}us bytes={esc_bytes}"
+        );
+    }
 }
