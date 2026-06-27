@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::LibLayout;
 use crate::media;
@@ -228,8 +228,23 @@ impl App {
         if self.lib_books.is_empty() {
             return;
         }
+        if delta > 0 {
+            self.lib_nav_down = true;
+        } else if delta < 0 {
+            self.lib_nav_down = false;
+        }
         let last = self.lib_books.len() as isize - 1;
         self.lib_sel = (self.lib_sel as isize + delta).clamp(0, last) as usize;
+    }
+
+    /// Move the focused list/sidebar cursor by `rows` rows (signed) — for
+    /// half/full-page vim navigation. In the grid a row is `cols` cells wide.
+    fn lib_page_move(&mut self, rows: isize) {
+        match self.lib_pane {
+            LibPane::Sidebar => self.lib_side_move(rows),
+            LibPane::List => self.lib_move(rows * self.grid_step()),
+            LibPane::Detail => {}
+        }
     }
 
     fn lib_favorite(&mut self) {
@@ -537,7 +552,19 @@ impl App {
         }
         let pane = self.lib_pane;
         let grid = self.is_grid();
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // Page sizes (rows) for vim-style half/full-page navigation.
+        let rows = self.lib_visible_rows.max(1) as isize;
+        let half = (rows / 2).max(1);
         match key.code {
+            // Vim half/full-page nav (Ctrl-d/u/f/b) + Page keys. Guarded on Ctrl
+            // so plain d/b/f keep their meanings (detail / sidebar / favorite).
+            KeyCode::Char('d') if ctrl => self.lib_page_move(half),
+            KeyCode::Char('u') if ctrl => self.lib_page_move(-half),
+            KeyCode::Char('f') if ctrl => self.lib_page_move(rows),
+            KeyCode::Char('b') if ctrl => self.lib_page_move(-rows),
+            KeyCode::PageDown => self.lib_page_move(rows),
+            KeyCode::PageUp => self.lib_page_move(-rows),
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Esc => {
                 if self.lib_visual.is_some() || !self.lib_marked.is_empty() {

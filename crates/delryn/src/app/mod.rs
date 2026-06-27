@@ -231,6 +231,11 @@ pub struct App {
     lib_cover_at: Instant,
     /// Grid view: number of columns from the last render (for 2D navigation).
     pub lib_grid_cols: usize,
+    /// Visible rows from the last list/grid render (for half/full-page nav).
+    pub lib_visible_rows: usize,
+    /// Last list navigation went down (toward higher indices) — so cover
+    /// prefetch loads ahead in the direction of travel.
+    pub lib_nav_down: bool,
     /// Grid view: lazily-built cover protocols, keyed by book path
     /// (`None` = no cover / failed, so we don't retry every frame). A bounded LRU
     /// (rendering bumps each visible cover to most-recently-used) so terminal
@@ -455,6 +460,8 @@ impl App {
             lib_cover_target: String::new(),
             lib_cover_at: Instant::now(),
             lib_grid_cols: 1,
+            lib_visible_rows: 1,
+            lib_nav_down: true,
             lib_grid_covers: LruCache::new(NonZeroUsize::new(LIB_COVER_CAP).unwrap()),
             lib_grid_deletes: Vec::new(),
             lib_grid_pending: false,
@@ -526,6 +533,8 @@ impl App {
             lib_cover_target: String::new(),
             lib_cover_at: Instant::now(),
             lib_grid_cols: 1,
+            lib_visible_rows: 1,
+            lib_nav_down: true,
             lib_grid_covers: LruCache::new(NonZeroUsize::new(LIB_COVER_CAP).unwrap()),
             lib_grid_deletes: Vec::new(),
             lib_grid_pending: false,

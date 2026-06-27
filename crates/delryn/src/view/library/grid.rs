@@ -83,9 +83,23 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
             )
         })
         .collect();
-    let paths: Vec<String> = visible.iter().map(|(_, p, _, _)| p.clone()).collect();
+    // Cover build list: the visible cells first, then a screenful ahead in the
+    // travel direction — so idle frames pre-build the covers a held j/k is about
+    // to scroll into, instead of building them only once they're on screen.
+    let mut paths: Vec<String> = visible.iter().map(|(_, p, _, _)| p.clone()).collect();
+    let ahead = rows_screen * cols;
+    if app.lib_nav_down {
+        paths.extend((end..(end + ahead).min(len)).map(|i| app.lib_books[i].path.clone()));
+    } else {
+        paths.extend(
+            (start.saturating_sub(ahead)..start)
+                .rev()
+                .map(|i| app.lib_books[i].path.clone()),
+        );
+    }
 
     app.lib_grid_cols = cols;
+    app.lib_visible_rows = rows_screen;
     app.ensure_grid_covers(&paths, GRID_BUILD_PER_FRAME);
     let mut book_hits: Vec<(usize, Rect)> = Vec::with_capacity(visible.len());
 
