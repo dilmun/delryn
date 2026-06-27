@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::LibLayout;
 use crate::media;
@@ -228,8 +228,23 @@ impl App {
         if self.lib_books.is_empty() {
             return;
         }
+        if delta > 0 {
+            self.lib_nav_down = true;
+        } else if delta < 0 {
+            self.lib_nav_down = false;
+        }
         let last = self.lib_books.len() as isize - 1;
         self.lib_sel = (self.lib_sel as isize + delta).clamp(0, last) as usize;
+    }
+
+    /// Move the focused list/sidebar cursor by `rows` rows (signed) — for
+    /// half/full-page vim navigation. In the grid a row is `cols` cells wide.
+    fn lib_page_move(&mut self, rows: isize) {
+        match self.lib_pane {
+            LibPane::Sidebar => self.lib_side_move(rows),
+            LibPane::List => self.lib_move(rows * self.grid_step()),
+            LibPane::Detail => {}
+        }
     }
 
     fn lib_favorite(&mut self) {
@@ -313,10 +328,7 @@ impl App {
     /// The book path the detail cover should show (empty when no cover pane is
     /// relevant, so we treat it as "nothing to do").
     fn cover_target_path(&self) -> String {
-        if self.mode != Mode::Library
-            || !self.lib_detail
-            || self.config.library_layout == LibLayout::Grid
-        {
+        if self.mode != Mode::Library || !self.lib_detail || self.is_grid() {
             return self.lib_cover_path.clone();
         }
         self.lib_books
@@ -362,7 +374,7 @@ impl App {
         let mut built = 0;
         let mut pending = false;
         for path in paths {
-            if self.lib_grid_covers.contains_key(path) {
+            if self.lib_grid_covers.contains(path) {
                 continue;
             }
             if built >= limit {
@@ -373,7 +385,13 @@ impl App {
                 (Some(picker), Some(bytes)) => media::build_cover(picker, &bytes),
                 _ => None,
             };
-            self.lib_grid_covers.insert(path.clone(), cover);
+            // Bounded LRU: an eviction must free its terminal image too, else
+            // image memory grows until the terminal blanks everything.
+            if let Some((_, Some(evicted))) = self.lib_grid_covers.push(path.clone(), cover)
+                && let Some(id) = evicted.image_id()
+            {
+                self.lib_grid_deletes.push(id);
+            }
             built += 1;
         }
         self.lib_grid_pending = pending;
@@ -381,11 +399,11 @@ impl App {
 
     /// Whether the grid is still building visible covers (keeps the loop drawing).
     pub fn lib_grid_pending(&self) -> bool {
-        self.mode == Mode::Library
-            && self.config.library_layout == LibLayout::Grid
-            && self.lib_grid_pending
+        self.mode == Mode::Library && self.is_grid() && self.lib_grid_pending
     }
 
+    /// The cover-grid view: navigates by grid columns, lazily builds cover
+    /// thumbnails, and has no detail pane.
     pub fn is_grid(&self) -> bool {
         self.config.library_layout == LibLayout::Grid
     }
@@ -406,8 +424,9 @@ impl App {
             panes.push(LibPane::Sidebar);
         }
         panes.push(LibPane::List);
-        // The detail pane only exists alongside the list views.
-        if self.lib_detail && self.config.library_layout != LibLayout::Grid {
+        // The detail pane only exists alongside the list views (cover views have
+        // no detail pane).
+        if self.lib_detail && !self.is_grid() {
             panes.push(LibPane::Detail);
         }
         panes
@@ -533,7 +552,19 @@ impl App {
         }
         let pane = self.lib_pane;
         let grid = self.is_grid();
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // Page sizes (rows) for vim-style half/full-page navigation.
+        let rows = self.lib_visible_rows.max(1) as isize;
+        let half = (rows / 2).max(1);
         match key.code {
+            // Vim half/full-page nav (Ctrl-d/u/f/b) + Page keys. Guarded on Ctrl
+            // so plain d/b/f keep their meanings (detail / sidebar / favorite).
+            KeyCode::Char('d') if ctrl => self.lib_page_move(half),
+            KeyCode::Char('u') if ctrl => self.lib_page_move(-half),
+            KeyCode::Char('f') if ctrl => self.lib_page_move(rows),
+            KeyCode::Char('b') if ctrl => self.lib_page_move(-rows),
+            KeyCode::PageDown => self.lib_page_move(rows),
+            KeyCode::PageUp => self.lib_page_move(-rows),
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Esc => {
                 if self.lib_visual.is_some() || !self.lib_marked.is_empty() {

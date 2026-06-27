@@ -74,6 +74,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     let view_rows = (area.height as usize)
         .saturating_sub(header_h as usize)
         .max(1);
+    app.lib_visible_rows = view_rows;
     let max_off = rows.len().saturating_sub(view_rows);
     let centered_off = sel_row.saturating_sub(view_rows / 2).min(max_off);
 

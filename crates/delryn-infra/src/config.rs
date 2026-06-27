@@ -645,6 +645,20 @@ impl Config {
 mod tests {
     use super::*;
 
+    /// The library layout cycles through all modes and round-trips through its
+    /// persisted label.
+    #[test]
+    fn lib_layout_cycles_and_round_trips() {
+        let order = [LibLayout::List, LibLayout::Compact, LibLayout::Grid];
+        // next() walks the order and wraps; prev() is its inverse.
+        for (i, &l) in order.iter().enumerate() {
+            assert_eq!(l.next(), order[(i + 1) % order.len()]);
+            assert_eq!(l.next().prev(), l);
+            // label ↔ from_label round-trips.
+            assert_eq!(LibLayout::from_label(l.label()), l);
+        }
+    }
+
     #[test]
     fn reading_mode_apply_and_derive() {
         let mut c = Config::default();

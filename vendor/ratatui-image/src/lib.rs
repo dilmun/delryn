@@ -385,6 +385,10 @@ pub enum Resize {
     ///
     /// Same as `Resize::Fit` except it resizes the image even if the image is smaller than the render area
     Scale(Option<FilterType>),
+    /// Stretch the image to exactly fill the area, ignoring aspect ratio (CSS
+    /// `object-fit: fill`). Leaves no gaps; distorts an aspect that doesn't match
+    /// the area. Defaults to a smooth (Triangle) filter.
+    Stretch(Option<FilterType>),
 }
 
 impl Default for Resize {
@@ -465,7 +469,7 @@ impl Resize {
 
         // Check if resize is needed at all.
         if !force
-            && !matches!(self, &Resize::Scale(_))
+            && !matches!(self, &Resize::Scale(_) | &Resize::Stretch(_))
             && desired.width <= target.width
             && desired.height <= target.height
             && (current.is_none() || current == Some(desired))
@@ -516,6 +520,9 @@ impl Resize {
                 };
                 image.crop_imm(x, y, width, height)
             }
+            Self::Stretch(filter_type) => {
+                image.resize_exact(width, height, filter_type.unwrap_or(FilterType::Triangle))
+            }
         }
     }
 
@@ -530,6 +537,8 @@ impl Resize {
 
             Self::Crop(_) => (min(image.width(), width), min(image.height(), height)),
             Self::Scale(_) => fit_area_proportionally(image.width(), image.height(), width, height),
+            // Fill exactly: the target pixel area, ignoring the image's aspect.
+            Self::Stretch(_) => (width, height),
         }
     }
 
