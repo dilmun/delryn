@@ -604,6 +604,15 @@ pub fn unplace_image_seq(id: u32) -> String {
     format!("\x1b_Ga=d,d=i,i={id},q=2\x1b\\")
 }
 
+/// Kitty: remove **every** on-screen placement while **keeping all stored image
+/// data** (lowercase `d=a`), so the pages can be re-placed instantly with no
+/// re-transmit. Re-placing an image where a placement already exists is a no-op
+/// on some terminals, so the page swap clears placements first, then places the
+/// new spread fresh.
+pub fn clear_placements_seq() -> String {
+    "\x1b_Ga=d,d=a,q=2\x1b\\".to_string()
+}
+
 /// Decode, upscale-to-fill, and encode one image into a sliced protocol. This
 /// is the expensive step (RGBA encode), so it runs on the [`ImageBuilder`]
 /// worker.
