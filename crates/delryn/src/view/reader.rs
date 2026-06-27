@@ -329,9 +329,13 @@ fn capture_pdf_targets(reader: &mut Reader, images: Images, areas: &[(usize, Rec
         }
     }
     reader.pdf_targets = targets;
+    // Keep a few pages each side resident in the terminal so fast j/k navigation
+    // turns to an already-transmitted page (just a placement, instant) instead of
+    // waiting on a rasterize+transmit.
+    const LOOKAHEAD: usize = 4;
     let count = reader.section_count();
-    let lo = reader.section.saturating_sub(1);
-    let hi = (reader.section + areas.len() + 1).min(count);
+    let lo = reader.section.saturating_sub(LOOKAHEAD);
+    let hi = (reader.section + areas.len() + LOOKAHEAD).min(count);
     reader.pdf_window = lo..hi;
 }
 
