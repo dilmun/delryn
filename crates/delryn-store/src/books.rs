@@ -201,6 +201,9 @@ impl Store {
         let where_clause = match section {
             LibrarySection::Recent => "b.last_opened > 0",
             LibrarySection::All => "1 = 1",
+            // Format filters, by file extension — auto-populated from the path.
+            LibrarySection::Pdf => "LOWER(b.path) LIKE '%.pdf'",
+            LibrarySection::Epub => "LOWER(b.path) LIKE '%.epub'",
             LibrarySection::Favorites => "b.favorite = 1",
             LibrarySection::Reading => {
                 "b.last_opened > 0 AND p.path IS NOT NULL \
@@ -220,9 +223,11 @@ impl Store {
             LibrarySection::Series => {
                 "b.series COLLATE NOCASE, b.series_index, b.title COLLATE NOCASE"
             }
-            LibrarySection::All | LibrarySection::Favorites | LibrarySection::Duplicates => {
-                "b.title COLLATE NOCASE"
-            }
+            LibrarySection::All
+            | LibrarySection::Pdf
+            | LibrarySection::Epub
+            | LibrarySection::Favorites
+            | LibrarySection::Duplicates => "b.title COLLATE NOCASE",
             _ => "b.last_opened DESC",
         };
         self.query_books(where_clause, order)
