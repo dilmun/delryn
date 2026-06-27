@@ -270,13 +270,22 @@ fn first_content_image(doc: &mut EpubDoc<BufReader<File>>) -> Option<(Vec<u8>, S
     None
 }
 
-/// The `src` of the first `<img>` in a section.
+/// The source of the first `<img>` or SVG `<image>` in a section.
 fn first_img_src(xhtml: &str) -> Option<String> {
     use scraper::{Html, Selector};
     let doc = Html::parse_document(xhtml);
-    let sel = Selector::parse("img").ok()?;
-    doc.select(&sel)
-        .find_map(|e| e.value().attr("src").map(str::to_string))
+    // `<img>` or the SVG `<image>` many EPUB cover pages use; the latter's source
+    // is `xlink:href` (local name `href`, or the literal `xlink:href` when not
+    // namespaced) rather than `src`.
+    let sel = Selector::parse("img, image").ok()?;
+    doc.select(&sel).find_map(|e| {
+        let e = e.value();
+        e.attr("src").map(str::to_string).or_else(|| {
+            e.attrs()
+                .find(|(k, _)| *k == "href" || k.ends_with(":href"))
+                .map(|(_, v)| v.to_string())
+        })
+    })
 }
 
 /// Guess an image mime from a filename extension (defaults to JPEG).
@@ -451,6 +460,13 @@ mod tests {
         assert_eq!(
             first_img_src("<html><body><img src=\"images/cover.jpeg\" class=\"c\"/></body></html>"),
             Some("images/cover.jpeg".into())
+        );
+        // SVG-wrapped cover (xlink:href) — common in EPUB cover pages.
+        assert_eq!(
+            first_img_src(
+                "<html><body><svg><image xlink:href=\"css/cover.jpeg\"/></svg></body></html>"
+            ),
+            Some("css/cover.jpeg".into())
         );
         assert_eq!(
             first_img_src("<html><body><p>no image</p></body></html>"),

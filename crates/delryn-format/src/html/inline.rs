@@ -6,8 +6,23 @@ use super::*;
 /// A "real" image is a figure/cover — not a math equation or a UI icon.
 pub(super) fn is_real_image(e: &scraper::node::Element) -> bool {
     let alt = e.attr("alt").unwrap_or("");
-    let src = e.attr("src").unwrap_or("");
-    !delryn_model::math::is_math(alt) && !is_icon_src(src)
+    let src = img_src(e).unwrap_or_default();
+    !delryn_model::math::is_math(alt) && !is_icon_src(&src)
+}
+
+/// An image element's source: an `<img>`'s `src`, or an SVG `<image>`'s
+/// `xlink:href` / `href`. The latter is namespaced, so scraper's `attr("href")`
+/// misses it — iterate the attributes and match the local name instead. EPUB
+/// covers are very often an `<svg><image xlink:href="cover.jpg"/></svg>`.
+pub(super) fn img_src(e: &scraper::node::Element) -> Option<String> {
+    if let Some(s) = e.attr("src") {
+        return Some(s.to_string());
+    }
+    // `href` when scraper namespaces `xlink:href` (local name `href`), or the
+    // literal `xlink:href` when it doesn't — match either.
+    e.attrs()
+        .find(|(k, _)| *k == "href" || k.ends_with(":href"))
+        .map(|(_, v)| v.to_string())
 }
 
 fn is_icon_src(src: &str) -> bool {
