@@ -112,8 +112,9 @@ jump-by-type + a reader cursor.
       status + chapter-lock + paged (deliberately *not* view layout — that's the
       reader's choice); the active preset is *derived* from the live settings
       (shows "custom" once any are hand-tweaked, so it never lies).
-- [~] Pagination models: continuous + **virtual pages** (page mode, snapped to
-      `page_lines`, flows across chapters at edges). *Still: book pages (PDF).*
+- [x] Pagination models: continuous + **virtual pages** (page mode, snapped to
+      `page_lines`, flows across chapters at edges) + **book pages** (PDF
+      page-images, the direct-Kitty `PageDeck`).
 - [x] **Text layout: justify + soft hyphens + spacing tidy** (`delryn-render::
       layout`). The greedy line filler now breaks long words at embedded soft
       hyphens (U+00AD dropped, a real `-` shown on break) and supports full
@@ -288,36 +289,29 @@ only framed/matted to sit in the theme.
       recognized format (EPUB → full metadata; PDF/MOBI/AZW3 → by filename, so
       they show in the library now, badged); opening a non-EPUB reports cleanly
       on the status row. This is the seam the backends below plug into.
-- [ ] **PDF — page-as-image (v2)** (`delryn-format::pdf`, behind a `Document` impl):
-      v1 (text extraction via `pdf-extract`, branch `feat/pdf`) was rejected — a
-      reflowed PDF loses the document's real layout. PDF v2 renders each page as
-      an image, like macOS Preview, preserving exact visual fidelity.
-      - **Engine:** `pdfium-render` (Chromium's PDFium) for true-to-original
-        rendering. Runtime binding: bundled `libpdfium` next to the binary →
-        system-library fallback. `thread_safe` (default) sequences all calls, so
-        the foreground handle + the background loader's own handle are safe.
-      - **Model:** one `Section` per page, holding a single full-bleed
-        `Block::Image` (new `ImageWidth::Full` sizing → fills the pane). Page
-        navigation = section navigation; honors "book pages" mode (Phase 2).
-      - **Rasterization:** the background `SectionLoader` (its own lazily-opened
-        PDFium handle, on the loader thread) rasterizes each page once at a
-        generous fixed width → PNG. The existing `ImageBuilder` downscales it to
-        the pane and transmits via the patched PNG Kitty path. Rasterize-once +
-        re-downscale-on-resize (no re-rasterization on resize), reusing the LRU +
-        neighbour prefetch already in the reader.
-      - **Outline:** PDFium bookmark tree → `TocEntry`/`OutlineItem`; flat
-        "Page N" fallback when a PDF has no outline.
-      - **Metadata:** title/author from PDFium's Info dictionary; size from the
-        file; title falls back to the cleaned file name.
-      - **Fallback:** when `libpdfium` is absent or the terminal has no graphics
-        protocol, opening a PDF reports cleanly on the status row (no crash, no
-        half-render). Text-extraction-as-fallback deferred (revisit post-v2).
-      - **Out of scope for v2:** zoom/fit modes, pan, in-page search/selection
-        (PDFium exposes a text layer with bounding boxes — design the seam so a
-        future invisible text layer can land without rework).
-      - **Validation:** needs real PDFs + a graphics-capable terminal (Ghostty);
-        unit-test outline mapping, metadata fallback, and full-bleed sizing math
-        independent of rendering. Real-PDF rendering is the user's to confirm.
+- [x] **PDF — page-as-image (v2)** (`delryn-format::pdf`) — **shipped & confirmed
+      on Ghostty** (renders, fast page-flipping forward/back, single + two-page).
+      Each page renders as an image (macOS-Preview fidelity), not reflowed text;
+      v1 text-extraction (`feat/pdf`) was rejected.
+      - **Engine:** `pdfium-render` (PDFium), runtime-bound (bundled `libpdfium`
+        beside the binary → system fallback). One `Section`/page = one full-bleed
+        `Block::Image` (`ImageWidth::Full`). Outline ← PDFium bookmark tree (flat
+        "Page N" fallback); metadata ← Info dict. Clean status-row message when
+        `libpdfium` or a graphics protocol is absent.
+      - **Rendering (the hard part, solved):** full pages bypass `ratatui-image`
+        and drive the **Kitty graphics protocol directly** via `app/page_deck.rs`
+        (`PageDeck`), the `termpdf.py` model — transmit (`a=t`) + place (`a=p`, no
+        placement id so spread pages coexist), swap only once all new pages are
+        rasterized (never blanks). Pages load **async** off the main thread
+        (`fetch_blocks`), the loader drops pages scrolled past (`LOADER_RADIUS`),
+        flips are **throttled to the drawn frame** so a held key can't skip pages,
+        and transmits go through a **temp file** (`t=t`, must be named
+        `tty-graphics-protocol-*`) instead of multi-MB inline base64 — see
+        [[delryn-ghostty-graphics]].
+      - **Out of scope (later):** zoom/fit/pan, in-page search/selection (PDFium
+        text-layer seam left for Phase 6/7). Optional future perf: transmit-once +
+        `a=p`-only flips (no temp-file write per turn) — current per-turn temp-file
+        transmit is already fast enough.
 - [ ] **MOBI / AZW3**: parse the PalmDB/MOBI header + record stream; KF8 (AZW3)
       is essentially zipped XHTML — reuse the existing `html` → `Block` pipeline
       once records are decompressed (PalmDOC/HUFF-CDIC). Evaluate `mobi` crate
