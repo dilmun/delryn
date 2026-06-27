@@ -660,14 +660,19 @@ fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config, th
     if sf.view {
         parts.push(config.view_mode.label().to_string());
     }
-    if reader.paged {
-        parts.push(format!(
-            "p {}/{}",
-            reader.current_page(),
-            reader.page_count()
-        ));
+    if reader.paged || reader.is_paged_image() {
+        // A paged-image (PDF) page is the section itself; reflowable page mode
+        // counts virtual pages within the section.
+        let (cur, total) = if reader.is_paged_image() {
+            (reader.section + 1, reader.section_count())
+        } else {
+            (reader.current_page(), reader.page_count())
+        };
+        parts.push(format!("p {cur}/{total}"));
     }
-    if sf.position {
+    // For a paged-image doc the page indicator already *is* section+1/total, so
+    // skip the otherwise-identical position field.
+    if sf.position && !reader.is_paged_image() {
         parts.push(format!(
             "{}/{}",
             reader.section + 1,

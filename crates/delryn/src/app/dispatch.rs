@@ -471,13 +471,17 @@ impl App {
                 self.mode = Mode::Library;
                 save = true;
             }
-            // In paged mode, vertical content navigation flips whole pages.
+            // In paged mode, vertical content navigation flips whole pages. A
+            // count prefix (`10j`) jumps that many pages at once; a bare/held key
+            // flips one, paced by the throttle.
             Action::Down(n) => match reader.focus {
+                Focus::Content if paged && n > 1 => reader.page_jump(n as isize),
                 Focus::Content if paged => page_forward(reader),
                 Focus::Content => reader.queue_scroll(n as isize),
                 Focus::Sidebar => reader.sidebar_move(n as isize),
             },
             Action::Up(n) => match reader.focus {
+                Focus::Content if paged && n > 1 => reader.page_jump(-(n as isize)),
                 Focus::Content if paged => page_backward(reader),
                 Focus::Content => reader.queue_scroll(-(n as isize)),
                 Focus::Sidebar => reader.sidebar_move(-(n as isize)),
@@ -503,6 +507,11 @@ impl App {
                 } else {
                     reader.scroll = reader.max_scroll();
                 }
+            }
+            // `NG`: jump to page/section N (1-based), clamped. Records history.
+            Action::Goto(n) => {
+                let last = reader.section_count().saturating_sub(1);
+                reader.jump_to(n.saturating_sub(1).min(last), None);
             }
             Action::ToggleStatus => self.config.show_status = !self.config.show_status,
             Action::CycleView => {
