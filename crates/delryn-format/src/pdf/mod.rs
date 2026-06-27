@@ -34,10 +34,6 @@ use crate::{
 /// The v2 quality/perf knob.
 const PAGE_RASTER_WIDTH: i32 = 1400;
 
-/// Cap the rasterized height so a pathologically tall page can't allocate a
-/// huge bitmap; 4× the width covers any real page aspect ratio.
-const PAGE_RASTER_MAX_HEIGHT: i32 = PAGE_RASTER_WIDTH * 4;
-
 // ---------------------------------------------------------------------------
 // PDFium binding (process-global, bound once)
 // ---------------------------------------------------------------------------
@@ -201,10 +197,16 @@ fn render_page(doc: &PdfiumDoc, index: usize) -> Vec<Block> {
 /// Rasterize page `index` to PNG bytes at [`PAGE_RASTER_WIDTH`] (aspect
 /// preserved). `None` if the page is out of range or rendering/encoding fails.
 fn rasterize_page_png(doc: &PdfiumDoc, index: usize) -> Option<Vec<u8>> {
+    rasterize_page_png_at(doc, index, PAGE_RASTER_WIDTH)
+}
+
+/// Rasterize page `index` to PNG bytes at `width` px (aspect preserved, height
+/// capped at 4×). `None` if the page is out of range or rendering/encoding fails.
+fn rasterize_page_png_at(doc: &PdfiumDoc, index: usize, width: i32) -> Option<Vec<u8>> {
     let page = doc.pages().get(index as i32).ok()?;
     let config = PdfRenderConfig::new()
-        .set_target_width(PAGE_RASTER_WIDTH)
-        .set_maximum_height(PAGE_RASTER_MAX_HEIGHT);
+        .set_target_width(width)
+        .set_maximum_height(width.saturating_mul(4));
     let bitmap = page.render_with_config(&config).ok()?;
     let image = bitmap.as_image().ok()?;
     let mut png = Vec::new();
@@ -212,6 +214,19 @@ fn rasterize_page_png(doc: &PdfiumDoc, index: usize) -> Option<Vec<u8>> {
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .ok()?;
     Some(png)
+}
+
+/// Width (px) for a rendered library cover thumbnail — ample for the largest
+/// cover card; the terminal downscales it to the cell box.
+const COVER_WIDTH: i32 = 480;
+
+/// Render a PDF's first page to PNG bytes for use as a library cover (a PDF has
+/// no embedded cover image — its first page *is* the cover). `None` when the file
+/// can't be opened or rasterized (e.g. PDFium unavailable), so the caller can
+/// fall back to a placeholder. Opens its own short-lived PDFium handle.
+pub fn render_cover(path: impl AsRef<Path>) -> Option<Vec<u8>> {
+    let doc = open_pdfium_doc(path.as_ref()).ok()?;
+    rasterize_page_png_at(&doc, 0, COVER_WIDTH)
 }
 
 /// Placeholder shown in place of a page that couldn't be rendered.

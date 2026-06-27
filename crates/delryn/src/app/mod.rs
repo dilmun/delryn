@@ -246,15 +246,33 @@ fn fmt_series_index(i: f32) -> String {
     }
 }
 
-/// Cover image bytes for a book: a fetched cover from the cache if present,
-/// otherwise the EPUB's own cover. `None` if neither exists.
+/// Cover image bytes for a book: a fetched cover from the cache if present, else
+/// the file's own cover — an EPUB's embedded cover, or a PDF's first page
+/// rendered to an image (and cached, since rasterizing is comparatively dear).
+/// `None` if none is available.
 fn load_cover_bytes(path: &str) -> Option<Vec<u8>> {
     if path.is_empty() {
         return None;
     }
-    match std::fs::read(online::cover_cache_path(path)) {
+    let cache = online::cover_cache_path(path);
+    match std::fs::read(&cache) {
         Ok(bytes) if !bytes.is_empty() => return Some(bytes),
         _ => {}
+    }
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if ext == "pdf" {
+        // A PDF has no embedded cover; render its first page, then cache it so we
+        // don't re-rasterize next session. (A later online fetch overwrites it.)
+        let bytes = crate::document::pdf::render_cover(path)?;
+        if let Some(dir) = cache.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&cache, &bytes);
+        return Some(bytes);
     }
     // Declared cover, else the first content image (converted files declare none).
     epub::extract_cover(path).map(|(b, _)| b)
