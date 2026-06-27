@@ -83,6 +83,12 @@ pub struct Reader {
     /// page (next section) is visible, so it's built eagerly + kept warm, and the
     /// image look-ahead reaches one section further so page turns are instant.
     pub spread: bool,
+    /// PDF page placements for this frame (section + absolute cell rect),
+    /// captured by the view and consumed by the direct-Kitty [`PageDeck`]. One
+    /// entry single-page, two for a spread.
+    pub pdf_targets: Vec<(usize, ratatui::layout::Rect)>,
+    /// Sections to keep resident in the terminal (warm) for instant page turns.
+    pub pdf_window: std::ops::Range<usize>,
     /// Cached (outline index, line) for the current section's entries, recomputed
     /// on re-wrap; drives the TOC scroll-spy cheaply.
     heading_lines: Vec<(usize, usize)>,
@@ -239,6 +245,8 @@ impl Reader {
             chapter_lock: false,
             paged: false,
             spread: false,
+            pdf_targets: Vec::new(),
+            pdf_window: 0..0,
             heading_lines: Vec::new(),
             anchors: Vec::new(),
             footnote_def_line: HashMap::new(),
@@ -987,6 +995,22 @@ impl Reader {
     /// the facing page of a two-page spread.
     pub fn page_plan(&self, section: usize) -> Option<&ImagePlan> {
         self.image_cache.peek(&self.page_key(section))
+    }
+
+    /// The rasterized PNG bytes of `section`'s page, if it's been loaded into the
+    /// section cache — the source the direct-Kitty [`PageDeck`] transmits.
+    pub fn page_png(&self, section: usize) -> Option<Vec<u8>> {
+        self.cache.get(&section)?.iter().find_map(|b| match b {
+            Block::Image { data, .. } if !data.is_empty() => Some(data.clone()),
+            _ => None,
+        })
+    }
+
+    /// Collect any pages the background loader has finished into the cache.
+    /// Driven each frame in PDF mode (the direct path skips `sync_images`, which
+    /// is what otherwise drains the loader).
+    pub fn poll_loader(&mut self) {
+        self.drain_loader();
     }
 
     /// Whether the facing page (the next section) of a paged-image spread is not

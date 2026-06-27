@@ -1012,6 +1012,7 @@ dependencies = [
 name = "delryn-media"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "delryn-infra",
  "image",
  "ratatui",
