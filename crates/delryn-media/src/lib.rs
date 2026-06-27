@@ -2,6 +2,7 @@
 //! `ratatui-image` so the rest of the app doesn't depend on it directly.
 //! See `DESIGN.md` §0 (graphics protocols).
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -403,6 +404,9 @@ pub enum SizeHint {
     Pct(f32),
     /// An absolute CSS-pixel width.
     Px(u32),
+    /// Fill the pane (preserving aspect), bounded only by the cols×rows box —
+    /// for page-as-image content (PDF), not inline figures.
+    Full,
 }
 
 /// Per-image sizing intent passed to [`target_cells`] / the build worker.
@@ -465,12 +469,17 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
         // Equations read best at native size, proportional to the surrounding
         // text; only shrink to fit, never enlarge.
         cap.min(1.0)
+    } else if matches!(spec.hint, SizeHint::Full) {
+        // A full-bleed page (PDF): fill the pane box, preserving aspect —
+        // enlarging a small page or shrinking a large one to the cols×rows box.
+        cap
     } else {
         // The display width we want this figure to occupy, in pixels.
         let want_px = match spec.hint {
             SizeHint::Pct(p) => f64::from(fit.cols) * fwf * f64::from(p).clamp(0.0, 1.0),
             SizeHint::Px(px) => f64::from(px),
             SizeHint::Auto => f64::from(fit.cols) * fwf * f64::from(fit.target_pct) / 100.0,
+            SizeHint::Full => unreachable!("full-bleed handled above"),
         };
         // Reach it (up- or down-scaling), but never blow up tiny art past the
         // upscale cap and never exceed the box.
@@ -480,8 +489,10 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
         scale = cap.min(1.0);
     }
 
+    // A full-bleed page is bounded by the pane itself; the per-figure pixel cap
+    // (which bounds inline-figure transfers) would only letterbox it, so skip it.
     let longest = (wf * scale).max(hf * scale);
-    if fit.max_px > 0 && longest > f64::from(fit.max_px) {
+    if fit.max_px > 0 && longest > f64::from(fit.max_px) && !matches!(spec.hint, SizeHint::Full) {
         scale *= f64::from(fit.max_px) / longest;
     }
     let cols = ((wf * scale / fwf).ceil() as u16).clamp(1, fit.cols.max(1));
@@ -520,11 +531,86 @@ impl ImagePlan {
     pub fn image_id(&self) -> Option<u32> {
         self.proto.image_id()
     }
+
+    /// The Kitty upload sequence if this image hasn't been transmitted yet, so a
+    /// look-ahead page can be uploaded to the terminal *ahead* of display (no
+    /// first-render upload flash). `None` for non-Kitty protocols or once sent.
+    /// The caller MUST write the returned bytes to the terminal.
+    pub fn pretransmit(&self) -> Option<String> {
+        self.proto.pretransmit()
+    }
+
+    /// Whether this image still needs uploading to the terminal (non-consuming),
+    /// so the reader can keep the loop alive until look-ahead pages are uploaded.
+    pub fn needs_pretransmit(&self) -> bool {
+        self.proto.needs_pretransmit()
+    }
 }
 
 /// Kitty escape sequence to delete an image (and free its data) by id.
 pub fn delete_image_seq(id: u32) -> String {
     format!("\x1b_Ga=d,d=I,i={id}\x1b\\")
+}
+
+// ── Direct Kitty image management (for full-page PDF rendering) ───────────────
+//
+// The unicode-placeholder path (above) is for inline figures that flow with
+// text. A full PDF page is better managed directly, the way kitty's own `icat`
+// does it: transmit the page to the terminal *once* as a stored image (`a=t`),
+// then *display* it with a cheap placement (`a=p`) that re-uses the stored data.
+// Swapping pages then never re-transmits — and the previous page can stay on
+// screen until the next placement lands, so a page turn has no black gap.
+
+/// Kitty: transmit `png` to the terminal and store it under `id` **without
+/// displaying it** (`a=t`). Chunked at the protocol's 4096-base64-char limit.
+/// Show it later with [`place_image_seq`]; `id` and the data persist until
+/// [`delete_image_seq`]. `q=2` suppresses the terminal's responses.
+pub fn transmit_image_seq(id: u32, png: &[u8]) -> String {
+    use base64::Engine;
+    // 4096 base64 chars ⇒ 3072 source bytes per chunk.
+    const CHUNK: usize = (4096 / 4) * 3;
+    let chunks = png.chunks(CHUNK);
+    let n = chunks.len().max(1);
+    let mut out = String::with_capacity(png.len() * 4 / 3 + n * 24);
+    for (i, chunk) in chunks.enumerate() {
+        out.push_str("\x1b_Gq=2,");
+        if i == 0 {
+            // a=t: transmit only (store, don't display). f=100: PNG (kitty reads
+            // the dimensions from the header). t=d: data is inline (direct).
+            let _ = write!(out, "i={id},a=t,f=100,t=d,");
+        }
+        let more = u8::from(i + 1 < n);
+        let _ = write!(out, "m={more};");
+        base64::engine::general_purpose::STANDARD.encode_string(chunk, &mut out);
+        out.push_str("\x1b\\");
+    }
+    out
+}
+
+/// Kitty: transmit an image stored at `path` under `id` **without displaying it**
+/// (`a=t`), reading the pixel data from a *temporary file* (`t=t`) instead of
+/// streaming it inline. The terminal opens the file directly and **deletes it
+/// after reading**, so the escape carries only the (base64) path — a few dozen
+/// bytes — rather than megabytes of base64. This is what makes fast page turns
+/// cheap: streaming a full-page raster inline (`t=d`) blocks the loop ~60ms per
+/// turn; via a file it's a small write plus a tiny escape. `f=100` = PNG.
+pub fn transmit_file_seq(id: u32, path: &str) -> String {
+    use base64::Engine;
+    let payload = base64::engine::general_purpose::STANDARD.encode(path.as_bytes());
+    format!("\x1b_Gq=2,i={id},a=t,f=100,t=t;{payload}\x1b\\")
+}
+
+/// Kitty: display the already-transmitted image `id` at terminal cell
+/// (`col`,`row`) (1-based), scaled to fill `cols`×`rows` cells (`a=p`).
+///
+/// Deliberately **no placement id** (`p=`): placements key on the
+/// (image-id, placement-id) pair, so two images sharing a placement id make the
+/// second delete the first (the two-page spread's left page went blank). Without
+/// `p=`, each image gets its own placement and they coexist — the approach the
+/// reference kitty PDF viewer (`termpdf.py`) uses. The cursor is saved/restored
+/// (`\x1b7`/`\x1b8`) so the surrounding TUI is undisturbed.
+pub fn place_image_seq(id: u32, col: u16, row: u16, cols: u16, rows: u16) -> String {
+    format!("\x1b7\x1b[{row};{col}H\x1b_Ga=p,i={id},c={cols},r={rows},q=2\x1b\\\x1b8")
 }
 
 /// Decode, upscale-to-fill, and encode one image into a sliced protocol. This
@@ -943,6 +1029,38 @@ mod tests {
     }
 
     #[test]
+    fn full_bleed_page_fills_the_pane() {
+        // A full-bleed page (PDF) fills the pane, unlike a figure: it is bounded
+        // only by the cols×rows box, ignoring the upscale cap and the px cap.
+        let page = SizeSpec {
+            hint: SizeHint::Full,
+            math: false,
+        };
+        // A portrait (A4-ish) page in a wide-enough pane fills the column width.
+        let (cols, _) = target_cells(1240, 1750, fit(100, 200), page);
+        assert!(
+            (i32::from(cols) - 100).abs() <= 1,
+            "page fills width: {cols}"
+        );
+
+        // A small page is enlarged to fill — no MAX_UPSCALE cap (a figure of the
+        // same size would stay near native size).
+        let (small, _) = target_cells(80, 113, fit(100, 200), page);
+        assert!(small >= 90, "small page upscales to fill: {small}");
+
+        // The per-figure pixel cap must not letterbox a page (the pane bounds it).
+        let capped = FitBox {
+            max_px: 100,
+            ..fit(100, 200)
+        };
+        let (cols_capped, _) = target_cells(1240, 1750, capped, page);
+        assert!(
+            (i32::from(cols_capped) - 100).abs() <= 1,
+            "max_px does not shrink a full-bleed page: {cols_capped}"
+        );
+    }
+
+    #[test]
     fn flatten_composites_transparency_onto_paper() {
         let mut img = RgbaImage::from_pixel(4, 4, Rgba([0, 0, 0, 0]));
         img.put_pixel(0, 0, Rgba([255, 255, 255, 255])); // opaque white passes through
@@ -969,5 +1087,20 @@ mod tests {
         )
         .to_rgba8();
         assert_eq!(out.get_pixel(10, 10).0, photo.get_pixel(10, 10).0);
+    }
+
+    /// The file transmit carries only the (base64) path — a tiny escape, not the
+    /// multi-MB base64 blast of the inline `t=d` medium.
+    #[test]
+    fn file_transmit_carries_only_the_base64_path() {
+        use base64::Engine;
+        let seq = transmit_file_seq(0x0F00_0001, "/tmp/delryn-kitty-7.png");
+        assert!(seq.contains("a=t"), "transmit (store, don't display)");
+        assert!(seq.contains("t=t"), "temporary-file medium");
+        assert!(seq.contains("f=100"), "PNG format");
+        assert!(seq.contains("i=251658241"), "image id");
+        let payload = base64::engine::general_purpose::STANDARD.encode("/tmp/delryn-kitty-7.png");
+        assert!(seq.contains(&payload), "base64-encoded path payload");
+        assert!(seq.len() < 120, "tiny escape, not a multi-MB blast");
     }
 }

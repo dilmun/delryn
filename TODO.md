@@ -112,8 +112,9 @@ jump-by-type + a reader cursor.
       status + chapter-lock + paged (deliberately *not* view layout — that's the
       reader's choice); the active preset is *derived* from the live settings
       (shows "custom" once any are hand-tweaked, so it never lies).
-- [~] Pagination models: continuous + **virtual pages** (page mode, snapped to
-      `page_lines`, flows across chapters at edges). *Still: book pages (PDF).*
+- [x] Pagination models: continuous + **virtual pages** (page mode, snapped to
+      `page_lines`, flows across chapters at edges) + **book pages** (PDF
+      page-images, the direct-Kitty `PageDeck`).
 - [x] **Text layout: justify + soft hyphens + spacing tidy** (`delryn-render::
       layout`). The greedy line filler now breaks long words at embedded soft
       hyphens (U+00AD dropped, a real `-` shown on break) and supports full
@@ -288,24 +289,29 @@ only framed/matted to sit in the theme.
       recognized format (EPUB → full metadata; PDF/MOBI/AZW3 → by filename, so
       they show in the library now, badged); opening a non-EPUB reports cleanly
       on the status row. This is the seam the backends below plug into.
-- [ ] **PDF** (`delryn-format::pdf`, behind a `Document` impl):
-      - Crate: evaluate `lopdf` (pure-Rust, low-level: page tree + content
-        streams + font maps — most control, most work) vs `pdf-extract` (text
-        out of the box, heavier, less layout fidelity). Lean `lopdf` for the
-        page model + a thin text-extraction layer so figures/positions stay
-        reachable later.
-      - Page model: one `Section` per page (or per outline entry if present);
-        map the PDF outline → `TocEntry`/`OutlineItem`.
-      - Text: extract text runs with positions; group into `Block::Para` by
-        line/column gaps; detect headings by font size; preserve reading order
-        across columns (sort by column then y).
-      - Figures: extract `XObject` images → `Block::Image` (reuse the existing
-        image pipeline). Math stays rasterized (no MathML in PDF).
-      - Pagination: PDF is inherently paged — honor "book pages" mode (Phase 2).
-      - **Validation:** needs real PDFs + a graphics-capable terminal; build
-        against a corpus of varied PDFs (single/multi-column, scanned-vs-text,
-        with/without outline) before shipping. Unit-test the text-grouping and
-        outline-mapping logic on small fixtures independent of rendering.
+- [x] **PDF — page-as-image (v2)** (`delryn-format::pdf`) — **shipped & confirmed
+      on Ghostty** (renders, fast page-flipping forward/back, single + two-page).
+      Each page renders as an image (macOS-Preview fidelity), not reflowed text;
+      v1 text-extraction (`feat/pdf`) was rejected.
+      - **Engine:** `pdfium-render` (PDFium), runtime-bound (bundled `libpdfium`
+        beside the binary → system fallback). One `Section`/page = one full-bleed
+        `Block::Image` (`ImageWidth::Full`). Outline ← PDFium bookmark tree (flat
+        "Page N" fallback); metadata ← Info dict. Clean status-row message when
+        `libpdfium` or a graphics protocol is absent.
+      - **Rendering (the hard part, solved):** full pages bypass `ratatui-image`
+        and drive the **Kitty graphics protocol directly** via `app/page_deck.rs`
+        (`PageDeck`), the `termpdf.py` model — transmit (`a=t`) + place (`a=p`, no
+        placement id so spread pages coexist), swap only once all new pages are
+        rasterized (never blanks). Pages load **async** off the main thread
+        (`fetch_blocks`), the loader drops pages scrolled past (`LOADER_RADIUS`),
+        flips are **throttled to the drawn frame** so a held key can't skip pages,
+        and transmits go through a **temp file** (`t=t`, must be named
+        `tty-graphics-protocol-*`) instead of multi-MB inline base64 — see
+        [[delryn-ghostty-graphics]].
+      - **Out of scope (later):** zoom/fit/pan, in-page search/selection (PDFium
+        text-layer seam left for Phase 6/7). Optional future perf: transmit-once +
+        `a=p`-only flips (no temp-file write per turn) — current per-turn temp-file
+        transmit is already fast enough.
 - [ ] **MOBI / AZW3**: parse the PalmDB/MOBI header + record stream; KF8 (AZW3)
       is essentially zipped XHTML — reuse the existing `html` → `Block` pipeline
       once records are decompressed (PalmDOC/HUFF-CDIC). Evaluate `mobi` crate
@@ -327,3 +333,87 @@ only framed/matted to sit in the theme.
         via `load_section`); add an LRU of parsed `Section`s.
       - Caching at scale: persist wrapped-layout + cover thumbnails keyed by
         (path, mtime, width, theme) so re-opens are instant.
+
+## Phase 7 — Advanced reading layout system
+
+Generalize the two view modes (`Center` / `TwoPage`) into a **composition
+engine** that renders *N* page tiles per view, parameterized rather than
+hardcoded — so a new layout is a strategy + preset, not a new `if`. Grounded in
+delryn's reality: it's a **terminal** (ratatui + Kitty graphics, a cell grid, no
+GPU/smooth-pixel-scroll), and content is one of two kinds — **reflowable** (EPUB:
+`Block`s → wrapped lines; "pages" are emergent) or **paged-image** (PDF, later
+comics: one fixed page image per section). Most spread/grid modes are paged-only;
+reflowable supports single/multi-column + scroll + presentation. The key
+insight: the draft's ~16 "modes" are ~4 strategies + parameters. *Build the
+engine + high-value presets; defer niche modes behind the interface (dev docs:
+no premature abstraction, no speculative modes).*
+
+- [ ] **7.1 Composition engine (the seam — refactor, no new user modes yet).** A
+      `LayoutStrategy` mapping (viewport cells, position, content) → a list of
+      *placements* (a cell `Rect` + what to draw: a page-image plan or a reflowed
+      text-column slice); the renderer just draws placements. Port today's
+      `Center` and `TwoPage`/PDF-spread onto it. New module `view/layout/` — not
+      more bulk in `view/reader.rs` (pays down its 196-line `render` + the
+      `reader/mod.rs` size debt). **Stable interface = adding a mode never edits
+      the renderer.**
+- [ ] **7.2 Cross-cutting plumbing.** Content-kind **registry** (which modes a
+      format allows — `Document::paged_image()` already distinguishes them);
+      **position preservation across switches** (paged↔paged = page index, trivial;
+      reflow re-wrap = map by section + `within_frac`, already stored); per-strategy
+      **keymap** (arrows scroll vs move a tile selection; ←/→ turn pages; Enter in a
+      grid jumps); **presentation/chrome** as an orthogonal toggle (hide header/
+      status/gutter, maximize area), layerable on any mode.
+- [ ] **7.3 Tiled-pages presets (paged) — ONE parameterized strategy.** Params:
+      tiles (rows×cols), step (1 = sliding / N = non-overlapping spreads),
+      start-offset (cover-alone odd/even binding), direction (LTR / **manga RTL**),
+      fit (width / height / page / fixed-zoom). The presets fall out: Single,
+      Two-Page spread, Offset/Facing, Continuous-spread (step 1), Sliding window
+      (step k), N-up, Manga. Plus **fit modes + manual zoom/pan** (re-rasterize the
+      page at higher DPI — the zoom deferred from PDF v2 lands here). RTL also flips
+      the gutter side + page-turn keys.
+- [ ] **7.4 Distinct strategies (not presets).** Continuous **scroll across
+      sections** (the long-missing chapter-join, for reflow *and* paged); **grid /
+      thumbnail browser** as a visual page-jump complementing the TOC sidebar
+      (arrows move selection, Enter opens).
+- [ ] **7.5 Deferred behind the interface (cheap once 7.1 exists — build on
+      demand, NOT speculatively).** Film strip (current page large + neighbours
+      small); Comparison (pin arbitrary non-sequential pages — needs a "pinned
+      pages" model distinct from current position); digital-magazine reflow.
+- [ ] **Config** (Settings tab): pages-per-view, step/overlap, reading direction,
+      fit strategy, gap/margin/alignment, presentation toggle; per-book layout
+      memory (like KOReader).
+- [ ] **Performance — reuse + measure, don't speculate.** The image pipeline
+      already gives async decode + LRU + neighbour-prefetch + viewport-cull +
+      deferred-on-scroll, and `ImgKey` caches per tile-size, so the engine plugs
+      straight in. Grids transmit many Kitty images at once: downscale thumbnails
+      hard, transmit on settle, cull off-screen. Add predictive prefetch / retained-
+      page caps **only against a profile**. No GPU path — rasterize-once + cache +
+      cull is the terminal-correct model.
+- [ ] **Research spike** (informs the preset set, before 7.3): what KOReader
+      (per-book layout + RTL), SumatraPDF (continuous-facing + cover offset), Okular,
+      Calibre, Apple Books/Kindle, and comic/manga readers (CDisplayEx, Tachiyomi)
+      actually expose — adopt the wins, skip GUI-only smooth-scroll + auto-magazine
+      reflow. Folio-tuned, not a feature-clone.
+
+## Tech debt — chip away, don't grow (dev docs size guidelines)
+
+Soft "review/refactor triggers," not hard gates. Logged 2026-06-26 against the
+updated dev docs; none block the build (`cargo fmt` + `clippy` are clean
+workspace-wide). Address opportunistically when touching the area — and do not
+grow these further.
+
+- [ ] `app/reader/mod.rs` (~1210 non-test lines; `impl Reader` ~1024) — regrew
+      past the 1000-line refactor trigger after the Phase 0 split to 601. Image
+      lifecycle, sidebar, and search are already child modules; the remaining
+      bulk is the decode/wrap/scroll/nav/history core. Carve further as PDF v2's
+      page path lands, so it doesn't grow again.
+- [ ] `delryn-render/src/layout.rs` (~1008 non-test lines) — the text-wrap engine.
+      `wrap_blocks` is 287 lines (refactor trigger); decompose by block kind.
+- [ ] `app/dispatch.rs::apply` (234 lines) — the action match; split by action
+      group if it grows.
+- [ ] `view/image.rs::render` (196 lines) — full-screen image view render.
+- [ ] 2× undocumented `#[allow(clippy::too_many_arguments)]` in
+      `app/reader/images.rs` (`sync_images`, `remap_section_images`) — regrew
+      after Phase 0's cleanup. Bundle the (avail, max_rows, max_px, width_pct,
+      policy) geometry into a struct to remove them. (The two `Store` row-writer
+      allows are already documented — compliant.)

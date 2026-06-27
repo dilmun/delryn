@@ -11,7 +11,7 @@ use std::time::Instant;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
-use crate::config::Config;
+use crate::config::{Config, ViewMode};
 use crate::document::epub::{self, EpubDocument};
 use crate::document::epub_write;
 use crate::input::{self, Action, Pending};
@@ -66,12 +66,17 @@ mod dispatch;
 mod palette;
 pub use palette::{Command, Palette, PaletteItem};
 
+mod page_deck;
+use page_deck::PageDeck;
+
 /// How long the library selection must hold still before the detail-pane cover
 /// is (re)built, so holding j/k stays smooth.
 const COVER_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(110);
 
-/// Number of decoded sections kept in memory (current ± neighbours).
-const CACHE_CAP: usize = 9;
+/// Number of decoded sections kept in memory (current ± neighbours). Sized to
+/// hold a PDF's full pre-rasterization window (current ± 4 pages) so the
+/// direct-Kitty deck can transmit them ahead for fast navigation.
+const CACHE_CAP: usize = 11;
 /// Number of built image protocols kept in memory / GPU-resident in the
 /// terminal. Reused across section revisits; LRU-evicted (and deleted from the
 /// terminal) beyond this.
@@ -157,6 +162,8 @@ pub struct App {
     pub picker: Option<Picker>,
     /// Background builder for inline-image protocols.
     pub image_builder: Option<ImageBuilder>,
+    /// Direct-Kitty manager for full PDF page images (transmit-once + place).
+    page_deck: PageDeck,
     /// Start of the current reading session, for time tracking.
     session_start: Option<Instant>,
     store: Option<Store>,
@@ -303,19 +310,33 @@ fn str_delete_at(s: &mut String, cursor: usize) {
 
 /// Build a reader for `path`, applying global config and any saved per-book
 /// overrides (theme, view mode, resume position).
-fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, String)> {
-    // Dispatch by file format. Only EPUB has a `Document` backend today; other
-    // recognized formats report cleanly here instead of failing deep in the EPUB
-    // parser with a cryptic error. See the Phase 5 plan in `TODO.md`.
+fn build_reader(
+    path: &str,
+    store: &Option<Store>,
+    has_graphics: bool,
+) -> Result<(Reader, Config, String)> {
+    // Dispatch by file format. EPUB and PDF have `Document` backends; other
+    // recognized formats report cleanly here instead of failing deep in a parser
+    // with a cryptic error. See the Phase 5 plan in `TODO.md`.
     let fmt = crate::document::BookFormat::from_path(path);
     if !fmt.is_readable() {
         anyhow::bail!(
-            "{} files aren't readable yet — only EPUB opens for now",
+            "{} files aren't readable yet — EPUB and PDF open for now",
             fmt.label()
         );
     }
-    let doc = EpubDocument::open(path)?;
-    let mut reader = Reader::new(Box::new(doc))?;
+    // PDF renders each page as an image, so it needs a graphics-capable terminal
+    // (Kitty/iTerm2/sixel). Report cleanly rather than opening to blank pages.
+    if fmt == crate::document::BookFormat::Pdf && !has_graphics {
+        anyhow::bail!("PDF needs a graphics-capable terminal (e.g. Ghostty, Kitty, iTerm2)");
+    }
+    let doc: Box<dyn crate::document::Document> = match fmt {
+        crate::document::BookFormat::Pdf => {
+            Box::new(crate::document::pdf::PdfDocument::open(path)?)
+        }
+        _ => Box::new(EpubDocument::open(path)?),
+    };
+    let mut reader = Reader::new(doc)?;
     let mut config = Config::load();
     let book_path = std::fs::canonicalize(path)
         .map(|p| p.to_string_lossy().into_owned())
@@ -343,9 +364,9 @@ fn build_reader(path: &str, store: &Option<Store>) -> Result<(Reader, Config, St
 }
 
 impl App {
-    pub fn open_book(path: &str) -> Result<Self> {
+    pub fn open_book(path: &str, has_graphics: bool) -> Result<Self> {
         let store = Store::open_default().ok();
-        let (reader, config, book_path) = build_reader(path, &store)?;
+        let (reader, config, book_path) = build_reader(path, &store, has_graphics)?;
         if let Some(s) = &store {
             s.mark_opened(&book_path);
         }
@@ -374,6 +395,7 @@ impl App {
             pending_clipboard_image: None,
             picker: None,
             image_builder: None,
+            page_deck: PageDeck::default(),
             session_start: Some(Instant::now()),
             store,
             book_path,
@@ -443,6 +465,7 @@ impl App {
             pending_clipboard_image: None,
             picker: None,
             image_builder: None,
+            page_deck: PageDeck::default(),
             session_start: None,
             store,
             book_path: String::new(),
@@ -488,7 +511,7 @@ impl App {
             return;
         };
         self.flush_reading_time();
-        match build_reader(&path, &self.store) {
+        match build_reader(&path, &self.store, self.picker.is_some()) {
             Ok((reader, config, book_path)) => {
                 self.reader = Some(reader);
                 self.config = config;
@@ -554,6 +577,97 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Whether full PDF pages should be on screen right now: reading a PDF with
+    /// no overlay open. Kitty images draw *above* the cell grid, so while a popup
+    /// is up we take the page down (it's torn down and re-placed on resume) so
+    /// the popup isn't hidden behind it.
+    fn in_pdf(&self) -> bool {
+        self.mode == Mode::Reader
+            && !self.any_overlay_open()
+            && self.reader.as_ref().is_some_and(|r| r.is_paged_image())
+    }
+
+    /// Drain finished page rasterizations each frame (the direct path skips
+    /// `sync_images`, which is what otherwise drains them) and report whether the
+    /// terminal isn't yet showing the target pages — so the loop keeps drawing
+    /// until a turn's new pages have rasterized and been placed.
+    pub fn poll_pages(&mut self) -> bool {
+        if !self.in_pdf() {
+            return false;
+        }
+        if let Some(r) = self.reader.as_mut() {
+            r.poll_loader();
+        }
+        self.pdf_pages_pending()
+    }
+
+    /// Whether a PDF page flip should be honoured right now: only when the deck is
+    /// actually displaying the current page. The deck updates only on a draw, so
+    /// while a held `j`/`k` drains a burst of key-repeats (no draw in between) the
+    /// deck stays "behind" and this gates out every flip after the first — so the
+    /// page advances one *visible* page per drawn frame instead of racing ahead
+    /// and skipping pages. Always true for reflowable/page-snap (non-PDF) modes,
+    /// which have nothing to throttle.
+    fn pdf_flip_ready(&self) -> bool {
+        let Some(r) = self.reader.as_ref() else {
+            return true;
+        };
+        if !r.is_paged_image() {
+            return true;
+        }
+        // Normal: the deck is showing the current page → ok to advance.
+        // Escape hatch: the current page resolved but can't be shown (render
+        // failed), so don't soft-lock — let the user move past it.
+        self.page_deck.shown_sections().contains(&r.section) || r.page_unrenderable(r.section)
+    }
+
+    /// Whether the PDF page deck needs another frame: a visible page is still
+    /// rasterizing (loaded async off the main thread), or every visible page is
+    /// ready but the deck hasn't placed them yet (capture + place happen on the
+    /// draw that follows the load). Pure — no draining. Drives both the redraw
+    /// flag and the loop's busy/timeout, so async pages pop in without a keypress.
+    fn pdf_pages_pending(&self) -> bool {
+        if !self.in_pdf() {
+            return false;
+        }
+        let Some(r) = self.reader.as_ref() else {
+            return false;
+        };
+        let spread = matches!(self.config.view_mode, ViewMode::TwoPage);
+        if r.pages_loading(spread) {
+            return true;
+        }
+        let placeable = r.placeable_sections(spread);
+        // Nothing placeable (e.g. a page failed to rasterize): settle and keep
+        // whatever's up, rather than spinning forever on a page that won't show.
+        !placeable.is_empty() && self.page_deck.shown_sections() != placeable
+    }
+
+    /// Escapes to reconcile the terminal's PDF page images with the current
+    /// frame: show the visible page(s) and tear everything down when leaving the
+    /// reader. Written inside the synchronized frame, alongside the chrome.
+    pub fn page_escapes(&mut self) -> Vec<String> {
+        if !self.in_pdf() {
+            // Leaving a PDF (or never in one): free any page images. No-op once
+            // the deck is empty.
+            return if self.page_deck.is_empty() {
+                Vec::new()
+            } else {
+                self.page_deck.clear()
+            };
+        }
+        let Some(r) = self.reader.as_ref() else {
+            return Vec::new();
+        };
+        let targets = r.pdf_targets.clone();
+        // No targets means a visible page isn't rasterized yet — hold the current
+        // page(s) up rather than tearing them down (which would blank the screen).
+        if targets.is_empty() {
+            return Vec::new();
+        }
+        self.page_deck.render(&targets, |s| r.page_png(s))
+    }
+
     /// Text queued for the system clipboard (OSC 52), if any.
     pub fn take_clipboard(&mut self) -> Option<String> {
         self.reader.as_mut().and_then(|r| r.take_clipboard())
@@ -584,7 +698,13 @@ impl App {
         let Some(r) = self.reader.as_ref() else {
             return false;
         };
-        r.is_scrolling() || (self.mode == Mode::Reader && r.images_pending())
+        let in_reader = self.mode == Mode::Reader;
+        r.is_scrolling()
+            || (in_reader && r.images_pending())
+            // PDF: keep redrawing while a visible page is still rasterizing
+            // (async, off the main thread) or is ready but not yet placed, so it
+            // pops in without needing a keypress.
+            || self.pdf_pages_pending()
     }
 
     /// Advance one frame of smooth scrolling; returns whether anything moved.

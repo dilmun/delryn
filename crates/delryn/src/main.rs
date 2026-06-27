@@ -98,7 +98,7 @@ fn main() -> Result<()> {
     }
 
     let mut app = match args.first() {
-        Some(path) => App::open_book(path)?,
+        Some(path) => App::open_book(path, picker.is_some())?,
         None => {
             // Clean out dead entries (deleted/moved files) so the library has no
             // un-openable duplicates. Cheap stat per book; skips offline roots.
@@ -197,6 +197,12 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         if app.animating() {
             dirty = true;
         }
+        // Drain finished PDF page rasterizations and keep drawing until the
+        // look-ahead pages are resident in the terminal, so page turns are
+        // instant (the page is already there, just placed).
+        if app.poll_pages() {
+            dirty = true;
+        }
 
         // Free terminal-side images evicted from the cache.
         for id in app.take_image_deletes() {
@@ -273,10 +279,45 @@ fn add_library(dir: Option<&str>) -> Result<()> {
 fn draw(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> {
     if sync {
         execute!(io::stdout(), BeginSynchronizedUpdate)?;
-        terminal.draw(|f| view::render(f, app))?;
+    }
+    let t_draw = Instant::now();
+    terminal.draw(|f| view::render(f, app))?;
+    let draw_us = t_draw.elapsed().as_micros();
+    // Full PDF pages are managed directly via the kitty protocol (temp-file
+    // transmit + placement), not through ratatui's cell buffer. Building the
+    // escapes writes the page temp files; emit them inside the synchronized frame
+    // so a page appears atomically with the chrome.
+    let t_build = Instant::now();
+    let escapes = app.page_escapes();
+    let build_us = t_build.elapsed().as_micros();
+    let esc_bytes: usize = escapes.iter().map(String::len).sum();
+    let t_write = Instant::now();
+    for esc in escapes {
+        execute!(io::stdout(), Print(esc))?;
+    }
+    if sync {
         execute!(io::stdout(), EndSynchronizedUpdate)?;
-    } else {
-        terminal.draw(|f| view::render(f, app))?;
+    }
+    // Profiling for the PDF page path: draw time, escape-build time (includes the
+    // temp-file writes), stdout-write time, and bytes pushed to the terminal per
+    // frame. Gated on DELRYN_KITTY_LOG; zero cost otherwise.
+    if esc_bytes > 0 && std::env::var_os("DELRYN_KITTY_LOG").is_some() {
+        log_page_timing(draw_us, build_us, t_write.elapsed().as_micros(), esc_bytes);
     }
     Ok(())
+}
+
+/// Append one PDF-frame timing line to `/tmp/delryn-kitty.log` (see `draw`).
+fn log_page_timing(draw_us: u128, build_us: u128, write_us: u128, esc_bytes: usize) {
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/delryn-kitty.log")
+    {
+        let _ = writeln!(
+            f,
+            "timing draw={draw_us}us build={build_us}us write={write_us}us bytes={esc_bytes}"
+        );
+    }
 }
