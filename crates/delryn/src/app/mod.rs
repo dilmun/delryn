@@ -597,9 +597,9 @@ impl App {
     }
 
     /// Drain finished page rasterizations each frame (the direct path skips
-    /// `sync_images`, which is what otherwise drains them) and report whether any
-    /// windowed page is loaded but not yet transmitted — so the loop keeps
-    /// drawing until the look-ahead is resident and turns are instant.
+    /// `sync_images`, which is what otherwise drains them) and report whether the
+    /// terminal isn't yet showing the target pages — so the loop keeps drawing
+    /// until a turn's new pages have rasterized and been placed.
     pub fn poll_pages(&mut self) -> bool {
         if !self.in_pdf() {
             return false;
@@ -610,15 +610,12 @@ impl App {
         let Some(r) = self.reader.as_ref() else {
             return false;
         };
-        r.pdf_window
-            .clone()
-            .any(|s| !self.page_deck.is_resident(s) && r.page_png(s).is_some())
+        !r.pdf_targets.is_empty() && !self.page_deck.shows(&r.pdf_targets)
     }
 
     /// Escapes to reconcile the terminal's PDF page images with the current
-    /// frame: transmit look-ahead pages, place the visible one(s), and tear
-    /// everything down when leaving the reader. Written inside the synchronized
-    /// frame, alongside the chrome.
+    /// frame: show the visible page(s) and tear everything down when leaving the
+    /// reader. Written inside the synchronized frame, alongside the chrome.
     pub fn page_escapes(&mut self) -> Vec<String> {
         if !self.in_pdf() {
             // Leaving a PDF (or never in one): free any page images. No-op once
@@ -633,8 +630,7 @@ impl App {
             return Vec::new();
         };
         let targets = r.pdf_targets.clone();
-        let window = r.pdf_window.clone();
-        self.page_deck.render(&targets, window, |s| r.page_png(s))
+        self.page_deck.render(&targets, |s| r.page_png(s))
     }
 
     /// Text queued for the system clipboard (OSC 52), if any.

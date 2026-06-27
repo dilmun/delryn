@@ -87,8 +87,6 @@ pub struct Reader {
     /// captured by the view and consumed by the direct-Kitty [`PageDeck`]. One
     /// entry single-page, two for a spread.
     pub pdf_targets: Vec<(usize, ratatui::layout::Rect)>,
-    /// Sections to keep resident in the terminal (warm) for instant page turns.
-    pub pdf_window: std::ops::Range<usize>,
     /// The last navigation was backward (to a lower section). Prefetch loads the
     /// direction of travel first, so reverse paging isn't starved.
     nav_back: bool,
@@ -249,7 +247,6 @@ impl Reader {
             paged: false,
             spread: false,
             pdf_targets: Vec::new(),
-            pdf_window: 0..0,
             nav_back: false,
             heading_lines: Vec::new(),
             anchors: Vec::new(),
