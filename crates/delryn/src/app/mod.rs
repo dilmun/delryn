@@ -577,15 +577,6 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Kitty upload sequences for look-ahead PDF pages, to transmit ahead of
-    /// display so a page turn reveals an already-decoded image (no upload flash).
-    pub fn take_pretransmits(&self) -> Vec<String> {
-        self.reader
-            .as_ref()
-            .map(|r| r.take_pretransmits())
-            .unwrap_or_default()
-    }
-
     /// Whether full PDF pages should be on screen right now: reading a PDF with
     /// no overlay open. Kitty images draw *above* the cell grid, so while a popup
     /// is up we take the page down (it's torn down and re-placed on resume) so
