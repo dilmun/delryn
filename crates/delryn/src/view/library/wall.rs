@@ -87,6 +87,7 @@ pub(crate) fn render_wall(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
 
     app.lib_grid_cols = cols;
     app.ensure_grid_covers(&paths, GRID_BUILD_PER_FRAME);
+    let font = crate::view::image_font(app);
     let mut book_hits: Vec<(usize, Rect)> = Vec::with_capacity(visible.len());
 
     for (i, path, title, marked) in &visible {
@@ -103,20 +104,27 @@ pub(crate) fn render_wall(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
 
         match app.lib_grid_covers.get_mut(path) {
             Some(Some(cover)) => {
-                // Fill the whole cell, cropping the overflow (like CSS object-fit:
-                // cover), so every cover is the same size — a clean, uniform wall
-                // rather than ragged letterboxed thumbnails. The default crop
-                // keeps the top-left, so a cover's title stays visible.
-                let w = StatefulImage::default().resize(Resize::Crop(None));
-                f.render_stateful_widget(w, card, &mut cover.proto);
+                // A subtle uniform panel fills every cell; the cover is shown
+                // whole (bounded, never cropped) and centered on it. So mixed
+                // aspects — a wide PDF page next to a tall book — read as a tidy,
+                // even wall: the cells are identical, the letterbox slack is just
+                // panel. (Cropping to fill instead zoomed covers past the cell.)
+                f.render_widget(
+                    Block::default().style(Style::default().bg(theme.status_bg)),
+                    card,
+                );
+                let rect = crate::view::cover_image_rect(card, font, cover.dims);
+                let w = StatefulImage::default().resize(Resize::Scale(None));
+                f.render_stateful_widget(w, rect, &mut cover.proto);
             }
-            // Coverless book: show its title (the only identifier here), centered.
+            // Coverless book: the same panel, with its title (the only identifier
+            // here) centered on it.
             _ => {
                 f.render_widget(
                     Paragraph::new(crate::view::truncate(title, (cover_w as usize) * 2))
                         .alignment(Alignment::Center)
                         .wrap(Wrap { trim: true })
-                        .style(Style::default().fg(theme.muted)),
+                        .style(Style::default().fg(theme.muted).bg(theme.status_bg)),
                     card,
                 );
             }
