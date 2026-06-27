@@ -62,6 +62,12 @@ impl Reader {
     /// (scroll-spy), falling back to the section's first entry. Reads the cached
     /// `heading_lines` so it's cheap per frame.
     pub fn active_outline(&self) -> Option<usize> {
+        // Paged-image (PDF): the position *is* the section, and there are no text
+        // locators (so `heading_lines` is empty). Spy by section instead — the
+        // last outline entry whose page is at or before the current one.
+        if self.is_paged_image() {
+            return self.outline_for_section(self.section);
+        }
         let mut best: Option<(usize, usize)> = None; // (line, outline index)
         for &(oi, line) in &self.heading_lines {
             // Greatest line at/above the viewport top; on ties keep the earlier
@@ -72,6 +78,19 @@ impl Reader {
         }
         best.map(|(_, oi)| oi)
             .or_else(|| self.heading_lines.first().map(|&(oi, _)| oi))
+    }
+
+    /// The outline index whose target page is the greatest at or before
+    /// `section` — scroll-spy for paged-image (PDF) documents, where the outline
+    /// targets sections directly. On ties (several entries on one page) the last
+    /// (deepest) wins.
+    fn outline_for_section(&self, section: usize) -> Option<usize> {
+        self.outline
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.section <= section)
+            .max_by_key(|(_, it)| it.section)
+            .map(|(i, _)| i)
     }
 
     /// Position of `active_outline` within the visible (collapsed-aware) list.
