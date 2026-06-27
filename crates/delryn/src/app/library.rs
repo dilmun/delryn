@@ -381,13 +381,10 @@ impl App {
         self.mode == Mode::Library && self.is_grid() && self.lib_grid_pending
     }
 
-    /// A cover-image view (the card grid or the cover wall): navigates by grid
-    /// columns, lazily builds cover thumbnails, and has no detail pane.
+    /// The cover-grid view: navigates by grid columns, lazily builds cover
+    /// thumbnails, and has no detail pane.
     pub fn is_grid(&self) -> bool {
-        matches!(
-            self.config.library_layout,
-            LibLayout::Grid | LibLayout::Wall
-        )
+        self.config.library_layout == LibLayout::Grid
     }
 
     /// Vertical step for j/k: one grid row in grid view, else one list row.

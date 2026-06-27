@@ -769,14 +769,12 @@ mod tests {
         let mut app = App::library();
         assert_eq!(app.lib_books.len(), 1, "seeded book loads into the list");
 
-        // v cycles the layout: List → Compact → Grid → Wall → List.
+        // v cycles the layout: List → Compact → Grid → List.
         assert_eq!(app.config.library_layout, LibLayout::List);
         app.on_key(key('v'));
         assert_eq!(app.config.library_layout, LibLayout::Compact);
         app.on_key(key('v'));
         assert_eq!(app.config.library_layout, LibLayout::Grid);
-        app.on_key(key('v'));
-        assert_eq!(app.config.library_layout, LibLayout::Wall);
         app.on_key(key('v'));
         assert_eq!(
             app.config.library_layout,

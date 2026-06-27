@@ -22,8 +22,6 @@ use crate::theme::Theme;
 /// gets cramped, matching the reader's comfortable collapse.
 const MIN_LIST: u16 = 48;
 
-/// Title rows under each grid cover.
-const LABEL_H: u16 = 2;
 /// Cover protocols built per frame, so a screenful pops in over a few frames.
 const GRID_BUILD_PER_FRAME: usize = 2;
 
@@ -34,7 +32,6 @@ mod detail;
 mod grid;
 mod sections;
 mod status;
-mod wall;
 
 pub(crate) use books::sort_cycle;
 
@@ -68,10 +65,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
         sections::render_sections(f, sb, app, theme, app.lib_pane == LibPane::Sidebar);
     }
     let focused = app.lib_pane == LibPane::List;
-    match app.config.library_layout {
-        LibLayout::Grid => grid::render_grid(f, list_area, app, theme, focused),
-        LibLayout::Wall => wall::render_wall(f, list_area, app, theme, focused),
-        _ => books::render_books(f, list_area, app, theme, focused),
+    if cover_view {
+        grid::render_grid(f, list_area, app, theme, focused);
+    } else {
+        books::render_books(f, list_area, app, theme, focused);
     }
     if let Some(d) = detail {
         detail::render_detail(f, d, app, theme, app.lib_pane == LibPane::Detail);

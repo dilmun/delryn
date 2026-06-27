@@ -162,14 +162,12 @@ impl ReadingMode {
     }
 }
 
-/// How the library lists books: a metadata table, a dense table, a cover-card
-/// grid, or an immersive cover wall.
+/// How the library lists books: a metadata table, a dense table, or a cover grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibLayout {
     List,
     Compact,
     Grid,
-    Wall,
 }
 
 impl LibLayout {
@@ -177,17 +175,15 @@ impl LibLayout {
         match self {
             LibLayout::List => LibLayout::Compact,
             LibLayout::Compact => LibLayout::Grid,
-            LibLayout::Grid => LibLayout::Wall,
-            LibLayout::Wall => LibLayout::List,
+            LibLayout::Grid => LibLayout::List,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            LibLayout::List => LibLayout::Wall,
+            LibLayout::List => LibLayout::Grid,
             LibLayout::Compact => LibLayout::List,
             LibLayout::Grid => LibLayout::Compact,
-            LibLayout::Wall => LibLayout::Grid,
         }
     }
 
@@ -196,7 +192,6 @@ impl LibLayout {
             LibLayout::List => "list",
             LibLayout::Compact => "compact",
             LibLayout::Grid => "grid",
-            LibLayout::Wall => "wall",
         }
     }
 
@@ -204,7 +199,6 @@ impl LibLayout {
         match s {
             "compact" => LibLayout::Compact,
             "grid" => LibLayout::Grid,
-            "wall" => LibLayout::Wall,
             _ => LibLayout::List,
         }
     }
@@ -651,16 +645,11 @@ impl Config {
 mod tests {
     use super::*;
 
-    /// The library layout cycles through all four modes and round-trips through
-    /// its persisted label.
+    /// The library layout cycles through all modes and round-trips through its
+    /// persisted label.
     #[test]
     fn lib_layout_cycles_and_round_trips() {
-        let order = [
-            LibLayout::List,
-            LibLayout::Compact,
-            LibLayout::Grid,
-            LibLayout::Wall,
-        ];
+        let order = [LibLayout::List, LibLayout::Compact, LibLayout::Grid];
         // next() walks the order and wraps; prev() is its inverse.
         for (i, &l) in order.iter().enumerate() {
             assert_eq!(l.next(), order[(i + 1) % order.len()]);
