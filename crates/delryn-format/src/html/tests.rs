@@ -29,6 +29,25 @@ fn block_text(blocks: &[Block]) -> String {
         .join(" ")
 }
 
+/// EPUB cover pages commonly wrap the cover in an SVG `<image xlink:href>`
+/// rather than a plain `<img>`; the parser must still emit a `Block::Image`
+/// with the referenced source (scraper exposes `xlink:href` as local `href`).
+#[test]
+fn svg_image_becomes_block_image() {
+    let blocks = parse_blocks(
+        r#"<html><body><svg version="1.1"><image width="827" height="1246" xlink:href="css/cover.jpeg"/></svg></body></html>"#,
+    );
+    let src = blocks.iter().find_map(|b| match b {
+        Block::Image { src, .. } => Some(src.as_str()),
+        _ => None,
+    });
+    assert_eq!(
+        src,
+        Some("css/cover.jpeg"),
+        "SVG <image> href → Block::Image"
+    );
+}
+
 #[test]
 fn div_class_becomes_callout() {
     let blocks =

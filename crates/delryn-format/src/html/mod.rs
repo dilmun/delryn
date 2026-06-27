@@ -119,7 +119,7 @@ fn is_block(node: NodeRef<Node>) -> bool {
     match node.value() {
         // Real figure/cover images render block-level; math/icon images stay
         // inline (handled in collect_inline).
-        Node::Element(e) if e.name() == "img" => is_real_image(e),
+        Node::Element(e) if matches!(e.name(), "img" | "image") => is_real_image(e),
         // Display (block) MathML is a block; inline math stays inline.
         Node::Element(e) if is_math_element(e) => is_display_math(e),
         Node::Element(e) => matches!(
@@ -153,6 +153,9 @@ fn is_block(node: NodeRef<Node>) -> bool {
                 | "tr"
                 | "td"
                 | "th"
+                // SVG wrapper (e.g. an EPUB cover page) — a block container so
+                // the walk recurses to its <image> child.
+                | "svg"
         ),
         _ => false,
     }
@@ -269,7 +272,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
         ElementRole::DefList => emit_deflist(node, &ctx.tightened(), out),
         ElementRole::Rule => out.push(Block::Rule),
         ElementRole::Image => out.push(Block::Image {
-            src: e.attr("src").unwrap_or("").to_string(),
+            src: img_src(e).unwrap_or_default(),
             alt: e.attr("alt").unwrap_or("").to_string(),
             data: Vec::new(),
             caption: Vec::new(),
