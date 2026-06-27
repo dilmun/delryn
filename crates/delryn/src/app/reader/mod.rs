@@ -5,6 +5,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
@@ -20,6 +22,11 @@ use delryn_model::{Anchor, find_footnote};
 use ratatui_image::picker::Picker;
 
 use super::{CACHE_CAP, Focus, IMAGE_CACHE_CAP};
+
+/// How far from the reader's current section the background loader still honours
+/// a request before treating it as stale. Must cover the neighbour-prefetch
+/// window (±4) so the look-ahead pages aren't dropped, with a little margin.
+const LOADER_RADIUS: usize = 6;
 
 // Separable reader concerns; each contributes an `impl Reader` block and reaches
 // the core's helpers (find_line, fetch_blocks, …) via the parent module.
@@ -190,32 +197,48 @@ pub struct Reader {
     requested: HashSet<usize>,
     /// Channel to ask the background loader for a section.
     req_tx: Sender<usize>,
-    /// Channel of decoded sections from the background loader.
-    res_rx: Receiver<(usize, Vec<Block>)>,
+    /// Channel of decoded sections from the background loader. `None` blocks mean
+    /// the loader dropped a request as stale (the reader scrolled far past it),
+    /// so it's left uncached and re-requestable.
+    res_rx: Receiver<(usize, Option<Vec<Block>>)>,
+    /// The section the reader is currently on, shared with the loader thread so it
+    /// can skip rasterizing pages flown past during a fast `j`/`k` scroll.
+    loader_current: Arc<AtomicUsize>,
 }
 
 impl Reader {
     pub fn new(mut doc: Box<dyn Document>) -> Result<Self> {
         let outline = doc.outline().to_vec();
 
-        // Background loader: a worker thread that decodes sections on request.
-        let mut loader = doc.loader();
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<usize>();
-        let (res_tx, res_rx) = std::sync::mpsc::channel::<(usize, Vec<Block>)>();
-        thread::spawn(move || {
-            while let Ok(index) = req_rx.recv() {
-                let blocks = loader.load(index);
-                if res_tx.send((index, blocks)).is_err() {
-                    break; // reader dropped
-                }
-            }
-        });
-
         // Open at the body-matter start (skipping front matter) when the book
         // declares it; saved progress, if any, overrides this afterwards.
         let start = doc
             .start_section()
             .min(doc.section_count().saturating_sub(1));
+
+        // Background loader: a worker thread that decodes sections on request. It
+        // tracks where the reader is (`loader_current`) and drops requests for
+        // pages scrolled far past, so a fast `j`/`k` burst reaches the page you
+        // actually stopped on instead of grinding through every page in between.
+        let mut loader = doc.loader();
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<usize>();
+        let (res_tx, res_rx) = std::sync::mpsc::channel::<(usize, Option<Vec<Block>>)>();
+        let loader_current = Arc::new(AtomicUsize::new(start));
+        let worker_current = Arc::clone(&loader_current);
+        thread::spawn(move || {
+            while let Ok(index) = req_rx.recv() {
+                let cur = worker_current.load(Ordering::Relaxed);
+                let msg = if index.abs_diff(cur) > LOADER_RADIUS {
+                    (index, None) // stale: reader moved on; leave it re-requestable
+                } else {
+                    (index, Some(loader.load(index)))
+                };
+                if res_tx.send(msg).is_err() {
+                    break; // reader dropped
+                }
+            }
+        });
+
         let first = doc.load_section(start).unwrap_or_default().blocks;
         let mut cache = HashMap::new();
         cache.insert(start, first.clone());
@@ -301,24 +324,41 @@ impl Reader {
             requested: HashSet::new(),
             req_tx,
             res_rx,
+            loader_current,
         };
         reader.prefetch_neighbors();
         Ok(reader)
     }
 
-    /// Collect any sections the loader has finished into the cache.
+    /// Collect any sections the loader has finished into the cache. A `None`
+    /// payload is a stale request the loader dropped; clear it from `requested`
+    /// (don't cache) so it can be re-requested if the reader returns to it.
     fn drain_loader(&mut self) {
         while let Ok((index, blocks)) = self.res_rx.try_recv() {
             self.requested.remove(&index);
-            self.cache.insert(index, blocks);
+            if let Some(blocks) = blocks {
+                self.cache.insert(index, blocks);
+            }
         }
     }
 
-    /// Blocks for a section: cache first, else decode synchronously.
+    /// Blocks for a section: cache first, else decode.
+    ///
+    /// For paged-image documents (PDF) a cache miss is fetched *asynchronously* —
+    /// rasterizing a page costs tens of ms and doing it on the main thread would
+    /// stall fast `j`/`k` turns. The empty result lets the [`PageDeck`] hold the
+    /// previous page up until this one lands. Reflowable formats decode inline so
+    /// the text is ready to wrap this frame.
     fn fetch_blocks(&mut self, section: usize) -> Vec<Block> {
         self.drain_loader();
         if let Some(blocks) = self.cache.get(&section) {
             return blocks.clone();
+        }
+        if self.is_paged_image() {
+            if self.requested.insert(section) {
+                let _ = self.req_tx.send(section);
+            }
+            return Vec::new();
         }
         let blocks = self
             .doc
@@ -911,6 +951,7 @@ impl Reader {
         }
         self.nav_back = section < self.section;
         self.section = section;
+        self.loader_current.store(section, Ordering::Relaxed);
         self.blocks = self.fetch_blocks(section);
         self.scroll = 0;
         self.anchor_sel = None; // a new section has a different anchor set
@@ -1015,6 +1056,44 @@ impl Reader {
             Block::Image { data, .. } if !data.is_empty() => Some(data.clone()),
             _ => None,
         })
+    }
+
+    /// The sections that should be on screen now: the current page, plus the
+    /// facing page in `spread` mode when one exists.
+    pub fn visible_sections(&self, spread: bool) -> Vec<usize> {
+        let mut v = vec![self.section];
+        if spread && self.section + 1 < self.doc.section_count() {
+            v.push(self.section + 1);
+        }
+        v
+    }
+
+    /// Whether `section`'s page is rasterized and placeable (a non-empty image is
+    /// cached). Cheaper than [`Reader::page_png`] — it doesn't clone the bytes.
+    pub fn page_ready(&self, section: usize) -> bool {
+        self.cache.get(&section).is_some_and(|bs| {
+            bs.iter()
+                .any(|b| matches!(b, Block::Image { data, .. } if !data.is_empty()))
+        })
+    }
+
+    /// Whether any visible page is still being rasterized (not yet in the cache),
+    /// so the render loop should keep spinning until it lands.
+    pub fn pages_loading(&self, spread: bool) -> bool {
+        self.visible_sections(spread)
+            .iter()
+            .any(|s| !self.cache.contains_key(s))
+    }
+
+    /// The visible pages the deck should place — all of them once every one is
+    /// ready (an atomic spread swap), otherwise none (hold the previous pages).
+    pub fn placeable_sections(&self, spread: bool) -> Vec<usize> {
+        let v = self.visible_sections(spread);
+        if v.iter().all(|&s| self.page_ready(s)) {
+            v
+        } else {
+            Vec::new()
+        }
     }
 
     /// Collect any pages the background loader has finished into the cache.
@@ -1457,6 +1536,94 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
             .unwrap();
         buf
+    }
+
+    /// A small image block, for paged-image (PDF) navigation tests.
+    fn image_page() -> Vec<Block> {
+        vec![Block::Image {
+            src: String::new(),
+            alt: String::new(),
+            data: page_png(),
+            caption: Vec::new(),
+            math: false,
+            width: delryn_model::ImageWidth::Full,
+        }]
+    }
+
+    /// A PDF page load must not block: rasterizing on the main thread would stall
+    /// fast `j`/`k` turns. So navigating returns immediately with empty blocks and
+    /// merely *requests* the page; it lands later via the background loader, at
+    /// which point it's ready to place.
+    #[test]
+    fn paged_load_is_async_and_lands_via_loader() {
+        let doc = MockDoc::new((0..12).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+
+        // Page 8 is outside the start's prefetch window, so it's a fresh miss:
+        // the load returns at once without rasterizing it on the main thread.
+        r.load(8);
+        assert_eq!(r.section, 8);
+        assert!(
+            r.blocks.is_empty(),
+            "load must not block rasterizing the page"
+        );
+        assert!(r.pages_loading(false), "the page is still loading");
+        assert!(
+            r.placeable_sections(false).is_empty(),
+            "nothing is placeable until the page lands"
+        );
+
+        // The loader fills it in the background; once drained it's placeable.
+        let mut ready = false;
+        for _ in 0..200 {
+            r.poll_loader();
+            if r.page_ready(8) {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(ready, "the requested page must land via the loader");
+        assert!(!r.pages_loading(false));
+        assert_eq!(r.placeable_sections(false), vec![8]);
+    }
+
+    /// A spread is placed atomically: until *both* pages are ready, nothing is
+    /// placeable (so the deck holds the previous spread rather than flicker a
+    /// half one).
+    #[test]
+    fn paged_spread_placeable_is_all_or_nothing() {
+        let doc = MockDoc::new((0..12).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.load(8);
+
+        // Drain until at least the current page (8) has landed.
+        for _ in 0..200 {
+            r.poll_loader();
+            if r.page_ready(8) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // In spread mode the facing page (9) is also required to place anything.
+        if !r.page_ready(9) {
+            assert!(
+                r.placeable_sections(true).is_empty(),
+                "a half-ready spread places nothing"
+            );
+        }
+        for _ in 0..200 {
+            r.poll_loader();
+            if r.page_ready(9) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            r.placeable_sections(true),
+            vec![8, 9],
+            "both pages ready → the whole spread is placeable"
+        );
     }
 
     /// Regression + optimization: in a paged-image two-page spread, the current

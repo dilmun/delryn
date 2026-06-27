@@ -607,10 +607,29 @@ impl App {
         if let Some(r) = self.reader.as_mut() {
             r.poll_loader();
         }
+        self.pdf_pages_pending()
+    }
+
+    /// Whether the PDF page deck needs another frame: a visible page is still
+    /// rasterizing (loaded async off the main thread), or every visible page is
+    /// ready but the deck hasn't placed them yet (capture + place happen on the
+    /// draw that follows the load). Pure — no draining. Drives both the redraw
+    /// flag and the loop's busy/timeout, so async pages pop in without a keypress.
+    fn pdf_pages_pending(&self) -> bool {
+        if !self.in_pdf() {
+            return false;
+        }
         let Some(r) = self.reader.as_ref() else {
             return false;
         };
-        !r.pdf_targets.is_empty() && !self.page_deck.shows(&r.pdf_targets)
+        let spread = matches!(self.config.view_mode, ViewMode::TwoPage);
+        if r.pages_loading(spread) {
+            return true;
+        }
+        let placeable = r.placeable_sections(spread);
+        // Nothing placeable (e.g. a page failed to rasterize): settle and keep
+        // whatever's up, rather than spinning forever on a page that won't show.
+        !placeable.is_empty() && self.page_deck.shown_sections() != placeable
     }
 
     /// Escapes to reconcile the terminal's PDF page images with the current
@@ -630,6 +649,11 @@ impl App {
             return Vec::new();
         };
         let targets = r.pdf_targets.clone();
+        // No targets means a visible page isn't rasterized yet — hold the current
+        // page(s) up rather than tearing them down (which would blank the screen).
+        if targets.is_empty() {
+            return Vec::new();
+        }
         self.page_deck.render(&targets, |s| r.page_png(s))
     }
 
@@ -666,14 +690,10 @@ impl App {
         let in_reader = self.mode == Mode::Reader;
         r.is_scrolling()
             || (in_reader && r.images_pending())
-            // A two-page PDF spread's facing page builds just after the current
-            // page; keep redrawing until it lands so the right page pops in.
-            || (in_reader
-                && matches!(self.config.view_mode, ViewMode::TwoPage)
-                && r.facing_page_pending())
-            // Keep redrawing while look-ahead pages build / await pre-upload, so
-            // they're uploaded to the terminal before a turn reveals them.
-            || (in_reader && r.warm_pending())
+            // PDF: keep redrawing while a visible page is still rasterizing
+            // (async, off the main thread) or is ready but not yet placed, so it
+            // pops in without needing a keypress.
+            || self.pdf_pages_pending()
     }
 
     /// Advance one frame of smooth scrolling; returns whether anything moved.
