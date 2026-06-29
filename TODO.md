@@ -195,9 +195,10 @@ jump-by-type + a reader cursor.
       row) after one confirm, then the overlay refreshes/closes.
 - [x] Thorough duplicate scan (user-triggered, off the default path): in the
       Duplicates view, `R` runs a **content** deep scan — a worker thread samples a
-      bounded chunk of each book's text from the *middle* (body prose, aligned
-      across formats, no boilerplate — `epub`/`pdf::extract_text_sample`; PDF reads
-      its text layer), reduces it to bare lowercase alphanumerics, and SimHashes it
+      bounded chunk of each book's text from the *front* (the printed title page,
+      author, copyright year, and TOC — where the book states its identity, reads
+      the same across formats, and is distinctive — `epub`/`pdf::extract_text_sample`;
+      PDF reads its text layer), reduces it to bare lowercase alphanumerics, SimHashes it
       (`dedup::text_simhash`, 64-bit, char-12-gram). Pairs within
       `CONTENT_HAMMING_MAX` bits (`dedup::content_link_candidates`) persist to
       `dup_links`, which the grouping (`duplicate_groups_with_links`) folds in.
