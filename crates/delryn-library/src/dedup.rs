@@ -73,7 +73,10 @@ const TOC_MIN_LABELS: usize = 4;
 const TOC_MIN_SHARED: usize = 4;
 /// Shared labels as a fraction of the shorter list (overlap coefficient, so a
 /// finer-grained TOC on one side — sub-sections the other lacks — still matches).
-const TOC_OVERLAP_MIN: f32 = 0.6;
+/// High, so the shorter chapter list must be *almost entirely* contained in the
+/// other: the two tables of contents have to genuinely coincide, not merely share a
+/// few entries.
+const TOC_OVERLAP_MIN: f32 = 0.85;
 
 /// A content identity read from a book's own pages (not its metadata): its
 /// table-of-contents chapter labels.
