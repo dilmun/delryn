@@ -38,7 +38,7 @@ pub fn render(f: &mut Frame, app: &App) {
         ))
         .title_bottom(
             Line::from(Span::styled(
-                " ↑↓ move · space toggle · a auto · u none · d delete · Esc ",
+                " ↑↓ move · space toggle · a auto · u none · n keep group · d delete · Esc ",
                 Style::default().fg(theme.muted),
             ))
             .alignment(Alignment::Center),

@@ -101,10 +101,12 @@ impl App {
         // Loaded once per refresh and reused below for the Duplicates view, the
         // search filter, and the Duplicates sidebar count — so a refresh scans
         // the whole table at most once. The duplicate set uses cross-format
-        // detection (ISBN, else normalized title+author), richer than a
-        // title-only SQL match.
+        // detection (canonical ISBN-13 and/or normalized title+author, grouped by
+        // connected components), richer than a title-only SQL match.
         let all_books = store.all_books();
-        let dup_paths = crate::library::dedup::duplicate_paths(&all_books);
+        // Groups the reader dismissed ("keep both") are not flagged again.
+        let dismissed = store.dismissed_duplicate_groups();
+        let dup_paths = crate::library::dedup::duplicate_paths_excluding(&all_books, &dismissed);
         let books = if self.lib_filter.trim().is_empty() {
             match &view {
                 LibView::Section(LibrarySection::Duplicates) => all_books

@@ -13,6 +13,7 @@ use delryn_infra::config::ViewMode;
 // `impl Store` block (the schema, shared book query, and `now_secs` live here).
 mod annotations;
 mod books;
+mod dups;
 mod progress;
 mod search;
 mod shelves;
@@ -67,6 +68,9 @@ CREATE TABLE IF NOT EXISTS shelves (
 );
 CREATE TABLE IF NOT EXISTS collections (
     name TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS dismissed_dups (
+    signature TEXT PRIMARY KEY
 );
 ";
 

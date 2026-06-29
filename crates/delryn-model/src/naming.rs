@@ -209,6 +209,43 @@ pub fn normalize_isbn(raw: &str) -> Option<String> {
     }
 }
 
+/// Canonical ISBN-13 for *matching* (not display): normalizes the identifier and
+/// converts a valid ISBN-10 to its ISBN-13 form (`978` prefix + recomputed EAN-13
+/// check digit). This collapses a book's ISBN-10 and ISBN-13 to one key, so two
+/// files carrying different-but-equivalent ISBNs are recognized as the same work.
+/// Returns `None` for ASINs and malformed identifiers.
+pub fn canonical_isbn13(raw: &str) -> Option<String> {
+    let n = normalize_isbn(raw)?;
+    match n.len() {
+        13 => Some(n),
+        10 => isbn10_to_isbn13(&n),
+        _ => None,
+    }
+}
+
+/// Convert a normalized 10-char ISBN-10 (digits, optional trailing `X` check) to
+/// ISBN-13. The first 9 characters must be digits; the original check digit is
+/// discarded and the EAN-13 check digit recomputed.
+fn isbn10_to_isbn13(isbn10: &str) -> Option<String> {
+    let body9 = isbn10.get(..9)?;
+    if !body9.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut out = format!("978{body9}");
+    // EAN-13 check digit over the 12 leading digits (weights 1,3,1,3,…).
+    let sum: u32 = out
+        .bytes()
+        .enumerate()
+        .map(|(i, b)| {
+            let d = u32::from(b - b'0');
+            if i % 2 == 0 { d } else { d * 3 }
+        })
+        .sum();
+    let check = (10 - (sum % 10)) % 10;
+    out.push(char::from(b'0' + check as u8));
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
