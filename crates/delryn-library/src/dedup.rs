@@ -1,49 +1,30 @@
-//! Duplicate detection across formats. Each book contributes *several* match
-//! keys — a canonical ISBN-13 (when present) **and** a normalized title+author —
-//! and books are grouped by connected components, so any shared key links a
-//! group. Matching on more than one key (rather than one rigid key with ISBN
-//! precedence) is what lets a copy with no ISBN still join its ISBN-bearing twin,
-//! and lets two editions whose ISBNs differ still meet on title+author.
-//!
-//! Everything here is pure, in-memory string work over already-loaded rows — no
-//! I/O — so it stays cheap to run on demand for the whole library.
+//! Duplicate detection by **content**. Books are grouped solely by table-of-contents
+//! matches found by the thorough scan (`R`) — each match is a `(path, path)` link,
+//! and connected components of those links are the duplicate groups. The TOC is the
+//! one reliable cross-format signal (see [`content_link_candidates`]); messy
+//! metadata (ISBN/title/author) is deliberately *not* used. A book with no usable
+//! TOC simply isn't flagged. Pure, in-memory union-find over the links.
 
 use std::collections::{HashMap, HashSet};
 
-use delryn_model::naming::{canonical_isbn13, main_title};
 use delryn_store::BookRow;
 
-/// Groups of book indices that are duplicates of one another (each group has ≥2
-/// members, members in ascending index order), ordered by first appearance.
+/// Groups of book indices that are duplicates of one another. With no links this is
+/// always empty — matches come only from the content scan, via
+/// [`duplicate_groups_with_links`].
 pub fn duplicate_groups(books: &[BookRow]) -> Vec<Vec<usize>> {
     duplicate_groups_with_links(books, &[])
 }
 
-/// Like [`duplicate_groups`], but additionally treats each `(path_a, path_b)` in
-/// `links` as a duplicate edge. These come from the thorough content scan (see
-/// [`content_link_candidates`]) — discovered out-of-band and persisted — so books
-/// with no shared metadata (e.g. a PDF and an EPUB) still group when their text
-/// matches.
+/// Group books into duplicate sets from the content-scan `links`: each
+/// `(path_a, path_b)` is an edge, and each connected component of ≥2 books is a
+/// group (members in ascending index order; groups in document order). Paths no
+/// longer in the library are silently skipped.
 pub fn duplicate_groups_with_links(
     books: &[BookRow],
     links: &[(String, String)],
 ) -> Vec<Vec<usize>> {
     let mut uf = UnionFind::new(books.len());
-    // First book index seen for each match key; subsequent books sharing the key
-    // are unioned into the same component.
-    let mut first: HashMap<String, usize> = HashMap::new();
-    for (i, b) in books.iter().enumerate() {
-        for key in match_keys(b) {
-            match first.entry(key) {
-                std::collections::hash_map::Entry::Occupied(e) => uf.union(*e.get(), i),
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(i);
-                }
-            }
-        }
-    }
-    // Content-scan (or other out-of-band) links, resolved by path. Paths no longer
-    // in the library are silently skipped.
     if !links.is_empty() {
         let idx: HashMap<&str, usize> = books
             .iter()
@@ -243,161 +224,6 @@ pub fn group_signature(group: &[usize], books: &[BookRow]) -> String {
     paths.join("\n")
 }
 
-/// The exact-metadata match keys for a book — the cheap first tier, run on every
-/// refresh. A canonical ISBN-13 key (when the ISBN is valid), and a normalized
-/// title + author-surname key **per author** (when there's a title), so a copy
-/// matches any twin that shares the ISBN, or the title and *any one* author. A
-/// titled book with no usable author still emits a title-only key, so two
-/// author-less copies of the same title match.
-fn match_keys(b: &BookRow) -> Vec<String> {
-    let mut keys = Vec::new();
-    if let Some(isbn) = canonical_isbn13(&b.isbn) {
-        keys.push(format!("isbn:{isbn}"));
-    }
-    let title = norm_title(&b.title);
-    if !title.is_empty() {
-        let surnames = author_surnames(&b.author);
-        if surnames.is_empty() {
-            keys.push(format!("ta:{title}|"));
-        } else {
-            for surname in surnames {
-                keys.push(format!("ta:{title}|{surname}"));
-            }
-        }
-    }
-    keys
-}
-
-/// Normalized title for matching: subtitle stripped (via `main_title`), lowercased
-/// and diacritics folded, punctuation removed, a leading article dropped, trailing
-/// edition noise ("2nd ed", "revised edition") removed, whitespace collapsed.
-/// Volume/part markers are deliberately *kept* so different entries in a series
-/// don't collapse together.
-fn norm_title(title: &str) -> String {
-    let base = main_title(title).to_lowercase();
-    let cleaned: String = base
-        .chars()
-        .map(fold_diacritic)
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect();
-    let mut words: Vec<&str> = cleaned.split_whitespace().collect();
-    if matches!(words.first(), Some(&("the" | "a" | "an"))) && words.len() > 1 {
-        words.remove(0);
-    }
-    strip_edition_noise(&mut words);
-    words.join(" ")
-}
-
-/// Every author's normalized surname, so a multi-author book matches a copy that
-/// lists the same work with *any one* author in common (and in any order). The
-/// byline is split on the usual multi-author separators (`&`, `;`, ` and `); each
-/// name is reduced to its surname by [`surname_of`].
-fn author_surnames(author: &str) -> Vec<String> {
-    author
-        .split(['&', ';'])
-        .flat_map(|s| s.split(" and "))
-        .map(surname_of)
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-/// Normalized surname of a single author (diacritics folded, lowercased
-/// alphanumerics), so "Frank Herbert" and "Herbert, Frank" match — and "Müller"
-/// matches "Muller".
-fn surname_of(name: &str) -> String {
-    let name = name.trim();
-    let surname = if let Some((last, _)) = name.split_once(',') {
-        last.trim() // "Herbert, Frank" → "Herbert"
-    } else {
-        name.split_whitespace().last().unwrap_or(name) // "Frank Herbert" → "Herbert"
-    };
-    surname
-        .to_lowercase()
-        .chars()
-        .map(fold_diacritic)
-        .filter(char::is_ascii_alphanumeric)
-        .collect()
-}
-
-/// Fold a (lowercased) Latin letter with a diacritic to its base ASCII letter, so
-/// accented spellings bucket together. Matching-only — not for display — so a
-/// pragmatic table of common Latin-1 / Latin-Extended-A letters is enough.
-fn fold_diacritic(c: char) -> char {
-    match c {
-        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
-        'ç' | 'ć' | 'č' | 'ċ' => 'c',
-        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => 'e',
-        'ì' | 'í' | 'î' | 'ï' | 'ī' | 'į' | 'ı' => 'i',
-        'ñ' | 'ń' | 'ň' => 'n',
-        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => 'o',
-        'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' => 'u',
-        'ý' | 'ÿ' => 'y',
-        'ß' | 'š' | 'ś' | 'ş' => 's',
-        'ž' | 'ź' | 'ż' => 'z',
-        'ł' => 'l',
-        'đ' | 'ð' => 'd',
-        'þ' => 't',
-        'æ' => 'a',
-        _ => c,
-    }
-}
-
-/// Edition/printing qualifiers that don't distinguish content, stripped only from
-/// the *end* of a title (where editions live). An ordinal directly preceding an
-/// "edition"/"ed" is dropped with it ("2nd ed" → gone).
-const EDITION_WORDS: &[&str] = &[
-    "edition",
-    "ed",
-    "revised",
-    "annotated",
-    "illustrated",
-    "unabridged",
-    "reprint",
-    "anniversary",
-    "deluxe",
-];
-
-fn strip_edition_noise(words: &mut Vec<&str>) {
-    while let Some(&last) = words.last() {
-        if !EDITION_WORDS.contains(&last) {
-            break;
-        }
-        let edition_marker = matches!(last, "edition" | "ed");
-        words.pop();
-        if edition_marker && words.last().is_some_and(|w| is_ordinal(w)) {
-            words.pop();
-        }
-    }
-}
-
-/// An ordinal that qualifies an edition ("2nd", "second", or a bare number) — used
-/// only to drop the count in front of a stripped "edition"/"ed".
-fn is_ordinal(w: &str) -> bool {
-    matches!(
-        w,
-        "1st"
-            | "2nd"
-            | "3rd"
-            | "4th"
-            | "5th"
-            | "6th"
-            | "7th"
-            | "8th"
-            | "9th"
-            | "10th"
-            | "first"
-            | "second"
-            | "third"
-            | "fourth"
-            | "fifth"
-            | "sixth"
-            | "seventh"
-            | "eighth"
-            | "ninth"
-            | "tenth"
-    ) || w.chars().all(|c| c.is_ascii_digit())
-}
-
 /// Disjoint-set forest (union by rank, path compression) for grouping books that
 /// share any match key into connected components.
 struct UnionFind {
@@ -470,152 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn matches_across_format_by_normalized_title_author() {
-        let books = vec![
-            book("/a/Dune.epub", "Dune", "Frank Herbert", ""),
-            book("/b/dune.epub", "DUNE: A Novel", "Herbert, Frank", ""),
-            book("/c/Other.epub", "Something Else", "Someone", ""),
-        ];
-        let groups = duplicate_groups(&books);
-        assert_eq!(groups.len(), 1, "one duplicate group");
-        assert_eq!(groups[0], vec![0, 1]);
-        let paths = duplicate_paths(&books);
-        assert!(paths.contains("/a/Dune.epub") && paths.contains("/b/dune.epub"));
-        assert!(!paths.contains("/c/Other.epub"));
-    }
-
-    #[test]
-    fn matches_when_any_one_author_is_shared() {
-        // Multi-author book vs. a copy crediting one of them (different order/format).
-        // Sharing a single author is enough; a same-title book with no shared author
-        // is not grouped.
-        let books = vec![
-            book(
-                "/a.epub",
-                "Deep Learning",
-                "Ian Goodfellow & Yoshua Bengio & Aaron Courville",
-                "",
-            ),
-            book("/b.pdf", "Deep Learning", "Bengio, Yoshua", ""),
-            book("/c.epub", "Deep Learning", "Someone Else", ""),
-        ];
-        let groups = duplicate_groups(&books);
-        assert_eq!(groups.len(), 1, "shared author groups a+b, c stays out");
-        assert_eq!(groups[0], vec![0, 1]);
-    }
-
-    #[test]
-    fn isbn_takes_precedence_over_title() {
-        // Same ISBN, different displayed title → still duplicates.
-        let books = vec![
-            book("/a.epub", "The Art of War", "Sun Tzu", "978-0-14-045991-9"),
-            book(
-                "/b.epub",
-                "Art of War (Annotated)",
-                "Tzu, Sun",
-                "9780140459919",
-            ),
-        ];
-        assert_eq!(duplicate_groups(&books).len(), 1);
-    }
-
-    #[test]
-    fn leading_article_and_subtitle_ignored() {
-        let books = vec![
-            book("/a.epub", "The Rust Programming Language", "Klabnik", ""),
-            book(
-                "/b.epub",
-                "Rust Programming Language: 2nd Ed",
-                "Klabnik",
-                "",
-            ),
-        ];
-        assert_eq!(duplicate_groups(&books).len(), 1);
-    }
-
-    #[test]
-    fn distinct_books_are_not_grouped() {
-        let books = vec![
-            book("/a.epub", "Book One", "Author A", ""),
-            book("/b.epub", "Book Two", "Author B", ""),
-        ];
-        assert!(duplicate_groups(&books).is_empty());
-        assert!(duplicate_paths(&books).is_empty());
-    }
-
-    #[test]
-    fn asymmetric_isbn_still_matches_on_title_author() {
-        // The classic cross-format miss: the EPUB carries an ISBN, the converted
-        // copy carries none. They must still group on title+author.
-        let books = vec![
-            book("/dune.epub", "Dune", "Frank Herbert", "9780441013593"),
-            book("/dune.pdf", "Dune", "Frank Herbert", ""),
-        ];
-        assert_eq!(duplicate_groups(&books).len(), 1);
-    }
-
-    #[test]
-    fn isbn10_and_isbn13_of_same_book_match() {
-        let books = vec![
-            book("/a.epub", "Whatever Title", "Someone", "0441013597"),
-            book(
-                "/b.epub",
-                "Totally Different Display",
-                "Else",
-                "9780441013593",
-            ),
-        ];
-        // 0441013597 (ISBN-10) canonicalizes to 9780441013593 (ISBN-13).
-        assert_eq!(duplicate_groups(&books).len(), 1, "ISBN-10/13 collapse");
-    }
-
-    #[test]
-    fn different_isbns_still_meet_on_title_author() {
-        // Two editions with different ISBNs (so the ISBN keys differ) still group
-        // because the title+author key is shared — the old ISBN-precedence model
-        // missed this.
-        let books = vec![
-            book("/a.epub", "Clean Code", "Robert Martin", "9780132350884"),
-            book("/b.epub", "Clean Code", "Martin, Robert", "9780136083238"),
-        ];
-        assert_eq!(duplicate_groups(&books).len(), 1);
-    }
-
-    #[test]
-    fn diacritics_are_folded() {
-        let books = vec![
-            book("/a.epub", "Café Society", "Müller", ""),
-            book("/b.epub", "Cafe Society", "Muller", ""),
-        ];
-        assert_eq!(duplicate_groups(&books).len(), 1);
-    }
-
-    #[test]
-    fn trailing_edition_noise_ignored() {
-        let books = vec![
-            book("/a.epub", "The C Programming Language", "Kernighan", ""),
-            book(
-                "/b.epub",
-                "C Programming Language, 2nd Edition",
-                "Kernighan",
-                "",
-            ),
-        ];
-        assert_eq!(duplicate_groups(&books).len(), 1);
-    }
-
-    #[test]
-    fn series_volumes_are_not_merged() {
-        // Volume markers must survive normalization so distinct series entries
-        // don't collapse into one false duplicate.
-        let books = vec![
-            book("/a.epub", "Mistborn Volume 1", "Sanderson", ""),
-            book("/b.epub", "Mistborn Volume 2", "Sanderson", ""),
-        ];
-        assert!(duplicate_groups(&books).is_empty());
-    }
-
-    #[test]
     fn group_signature_is_order_independent() {
         let books = vec![
             book("/z.epub", "Dune", "Herbert", ""),
@@ -631,28 +311,28 @@ mod tests {
     fn dismissed_groups_are_excluded() {
         let books = vec![
             book("/a.epub", "Dune", "Herbert", ""),
-            book("/b.epub", "Dune", "Herbert", ""),
+            book("/b.pdf", "Dune", "", ""),
         ];
-        let groups = duplicate_groups(&books);
+        let links = vec![("/a.epub".to_string(), "/b.pdf".to_string())];
+        let groups = duplicate_groups_with_links(&books, &links);
         let sig = group_signature(&groups[0], &books);
         let dismissed: HashSet<String> = [sig].into_iter().collect();
-        assert!(duplicate_paths_excluding(&books, &[], &dismissed).is_empty());
+        assert!(duplicate_paths_excluding(&books, &links, &dismissed).is_empty());
         assert_eq!(
-            duplicate_paths(&books).len(),
+            duplicate_paths_excluding(&books, &links, &HashSet::new()).len(),
             2,
             "still flagged without the dismissal"
         );
     }
 
     #[test]
-    fn out_of_band_links_group_books_with_no_shared_metadata() {
-        // Two files with nothing in common metadata-wise (the PDF case) — only a
-        // content-scan link ties them together.
+    fn links_group_books_otherwise_unmatched() {
+        // Only a content-scan link ties these together — no metadata is used.
         let books = vec![
             book("/scan.pdf", "9912_ocr", "", ""),
             book("/clean.epub", "The Pragmatic Programmer", "Hunt", ""),
         ];
-        assert!(duplicate_groups(&books).is_empty(), "no metadata overlap");
+        assert!(duplicate_groups(&books).is_empty(), "nothing without links");
         let links = vec![("/scan.pdf".to_string(), "/clean.epub".to_string())];
         let groups = duplicate_groups_with_links(&books, &links);
         assert_eq!(groups.len(), 1, "the content link groups them");
