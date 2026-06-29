@@ -111,8 +111,8 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 /// One copy row: cursor marker, keep/delete checkbox, distinguishing attributes,
-/// and the file's full path (left-elided to `width` so the filename stays visible;
-/// the whole path shows when the overlay is full-screen).
+/// and the file's path (directory kept, an over-long filename trimmed to fit
+/// `width`; the whole path shows when the overlay is full-screen).
 fn member_line(
     m: &crate::app::DupMember,
     focused: bool,
@@ -144,7 +144,7 @@ fn member_line(
     // The path takes whatever width is left after the marker, box, and attributes.
     let prefix = marker.chars().count() + box_txt.chars().count() + 2 + attrs.chars().count() + 3;
     let budget = width.saturating_sub(prefix).max(12);
-    let location = elide_left(&m.path, budget);
+    let location = elide_path(&m.path, budget);
 
     let name_style = if m.checked {
         Style::default().fg(theme.muted)
@@ -161,15 +161,29 @@ fn member_line(
     ])
 }
 
-/// Truncate `s` from the left to at most `max` characters, prefixing an ellipsis
-/// when shortened — so the meaningful tail (here, the filename) stays visible.
-fn elide_left(s: &str, max: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max {
-        return s.to_string();
+/// Fit a file path into `max` columns, keeping the **directory** visible and
+/// trimming an over-long **filename** on the right (`a/b/c/longfilename…`) — the
+/// location is what tells copies apart, and titles baked into filenames are the
+/// usual offenders. If the directory alone won't fit, fall back to left-eliding
+/// the whole path so at least the filename shows.
+fn elide_path(path: &str, max: usize) -> String {
+    let total = path.chars().count();
+    if total <= max {
+        return path.to_string();
     }
-    let tail: String = chars[chars.len() - max.saturating_sub(1)..]
-        .iter()
-        .collect();
-    format!("…{tail}")
+    let (dir, file) = match path.rfind('/') {
+        Some(i) => (&path[..=i], &path[i + 1..]),
+        None => ("", path),
+    };
+    let dir_len = dir.chars().count();
+    // Keep the whole directory when it leaves room for a few filename chars + "…".
+    if dir_len + 8 <= max {
+        let head_budget = max - dir_len - 1; // reserve a column for the ellipsis
+        let head: String = file.chars().take(head_budget).collect();
+        format!("{dir}{head}…")
+    } else {
+        // Directory too long to show whole — keep the path tail (incl. filename).
+        let tail: String = path.chars().skip(total - max.saturating_sub(1)).collect();
+        format!("…{tail}")
+    }
 }
