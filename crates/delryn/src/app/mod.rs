@@ -47,6 +47,7 @@ mod tags;
 pub use tags::TagInput;
 
 mod dup_resolve;
+mod dup_scan;
 pub use dup_resolve::{DupGroup, DupMember, DupResolve};
 
 mod editor;
@@ -222,6 +223,9 @@ pub struct App {
     /// Receiver for async Open Library results (search / cover), if a request
     /// from the editor's Online tab is in flight.
     pub online_rx: Option<Receiver<OnlineMsg>>,
+    /// In-flight thorough duplicate scan (cover hashing on a worker thread), if
+    /// the reader triggered one from the Duplicates view.
+    pub dup_scan: Option<dup_scan::DupScan>,
     /// Show the right-hand detail pane (cover + metadata).
     pub lib_detail: bool,
     /// Cover image protocol for the detail pane, rebuilt when the selection
@@ -458,6 +462,7 @@ impl App {
             lib_flash: None,
             shelf_picker: None,
             online_rx: None,
+            dup_scan: None,
             lib_detail: true,
             lib_cover: None,
             lib_cover_path: String::new(),
@@ -532,6 +537,7 @@ impl App {
             lib_flash: None,
             shelf_picker: None,
             online_rx: None,
+            dup_scan: None,
             lib_detail: true,
             lib_cover: None,
             lib_cover_path: String::new(),

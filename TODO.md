@@ -193,6 +193,17 @@ jump-by-type + a reader cursor.
       re-auto, `u` clears, `n` **keeps the group** ("not a duplicate" — persisted
       in `dismissed_dups`, never flagged again), `d` deletes all checked (file +
       row) after one confirm, then the overlay refreshes/closes.
+- [x] Thorough duplicate scan (user-triggered, off the default path): in the
+      Duplicates view, `R` runs a cover-based deep scan — a worker thread
+      perceptually hashes every book's cover (`delryn_media::cover_dhash`, a 64-bit
+      dHash; cache-first so already-built covers cost only a decode), streaming
+      progress to the status bar; matches within a Hamming threshold become
+      candidate links (`dedup::cover_link_candidates`) persisted to `dup_links`,
+      which the grouping (`duplicate_groups_with_links`) folds in. Catches the
+      misses metadata can't — chiefly **PDFs** (little/no metadata, but a cover from
+      the rendered first page). Recall-oriented + human-confirmed: the overlay's `n`
+      ("keep both") discards false candidates. DB writes stay on the main thread
+      (Connection isn't `Send`); the worker computes pure data.
 - [ ] Dedup, further tiers (only if duplicates still slip through — all kept
       cheap/lazy, no library-wide content scan): **(2)** bounded fuzzy title
       fallback, blocked by author-surname / first title token to stay near-linear;
@@ -201,7 +212,8 @@ jump-by-type + a reader cursor.
       incremental behind the mtime/size check, rayon-parallel) for zero-false-
       positive "Exact Duplicate"; **(5)** lazy content fingerprint computed *only*
       for the few books in a group being resolved (reuse `read_fulltext`), never
-      at scan time.
+      at scan time; **(6)** PDF↔EPUB content matching once the PDFium text layer is
+      wired up (deferred in PDF v2).
 - [x] Metadata diff view (current vs remote, selective apply): picking an online
       candidate (editor Lookup tab → ⏎) opens a diff overlay — one row per field
       with current vs remote, fields that differ pre-ticked; space toggles, `a`
