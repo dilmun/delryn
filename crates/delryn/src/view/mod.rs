@@ -198,6 +198,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.dup_resolve.is_some() {
         dup_resolve::render(f, app);
     }
+    if app.ignored_view.is_some() {
+        dup_resolve::render_ignored(f, app);
+    }
     // An open overlay shows its shortcuts on the shared bottom status row,
     // drawn last so it sits above the popup (which never reaches that row).
     let a = f.area();

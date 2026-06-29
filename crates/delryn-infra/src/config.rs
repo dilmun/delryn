@@ -348,6 +348,28 @@ pub const MAX_IMAGE_PX: u16 = 4096;
 pub const MIN_IMAGE_WIDTH_PCT: u16 = 20;
 pub const MAX_IMAGE_WIDTH_PCT: u16 = 100;
 
+/// Book-format labels in the default duplicate keep-priority (high → low). Kept as
+/// labels (not `BookFormat`, which lives in a crate that depends on this one).
+pub const DUP_FORMAT_ORDER: [&str; 4] = ["EPUB", "PDF", "MOBI", "AZW3"];
+
+/// Reconcile a stored format keep-order with the known formats: drop unknown/
+/// duplicate labels, keep the user's order, and append any missing formats at the
+/// end — so the list is always the complete set in the user's preferred order.
+fn normalize_format_order(stored: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(DUP_FORMAT_ORDER.len());
+    for f in stored {
+        if DUP_FORMAT_ORDER.contains(&f.as_str()) && !out.contains(&f) {
+            out.push(f);
+        }
+    }
+    for f in DUP_FORMAT_ORDER {
+        if !out.iter().any(|x| x == f) {
+            out.push(f.to_string());
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Text padding from each edge, as a percent of the content pane width, so
@@ -405,6 +427,12 @@ pub struct Config {
     /// Visible optional library columns (keys from [`LIB_COLUMNS`]); user-
     /// toggleable. The star + Title columns are always shown.
     pub library_columns: Vec<String>,
+    /// Duplicate auto-select: always mark a converted/repackaged copy for deletion
+    /// when an un-converted alternative is in the same group.
+    pub dup_converted_delete: bool,
+    /// Duplicate auto-select: book-format keep priority (high → low), as format
+    /// labels ("EPUB", "PDF", …). Earlier = preferred to keep.
+    pub dup_format_order: Vec<String>,
 }
 
 impl Config {
@@ -419,6 +447,33 @@ impl Config {
             self.library_columns.remove(i);
         } else {
             self.library_columns.push(key.to_string());
+        }
+    }
+
+    /// Keep-priority rank of a format label (0 = most preferred to keep); an
+    /// unknown label sorts last.
+    pub fn dup_format_rank(&self, label: &str) -> usize {
+        self.dup_format_order
+            .iter()
+            .position(|f| f == label)
+            .unwrap_or(usize::MAX)
+    }
+
+    /// Move the format at `label` one step up (toward "keep", `up = true`) or down
+    /// in the keep-priority order. No-op if it's already at the end in that
+    /// direction or isn't present.
+    pub fn move_dup_format(&mut self, label: &str, up: bool) {
+        let Some(i) = self.dup_format_order.iter().position(|f| f == label) else {
+            return;
+        };
+        let j = if up {
+            i.checked_sub(1)
+        } else {
+            i.checked_add(1)
+                .filter(|&j| j < self.dup_format_order.len())
+        };
+        if let Some(j) = j {
+            self.dup_format_order.swap(i, j);
         }
     }
 }
@@ -451,6 +506,8 @@ impl Default for Config {
             library_layout: LibLayout::List,
             library_grid_size: GridSize::Medium,
             library_columns: LIB_COLUMNS.iter().map(|(k, _)| k.to_string()).collect(),
+            dup_converted_delete: false,
+            dup_format_order: DUP_FORMAT_ORDER.iter().map(|s| s.to_string()).collect(),
         }
     }
 }
@@ -483,6 +540,8 @@ struct ConfigFile {
     library_layout: String,
     library_grid_size: String,
     library_columns: Vec<String>,
+    dup_converted_delete: bool,
+    dup_format_order: Vec<String>,
 }
 
 impl Default for ConfigFile {
@@ -513,6 +572,8 @@ impl Default for ConfigFile {
             library_layout: c.library_layout.label().to_string(),
             library_grid_size: c.library_grid_size.label().to_string(),
             library_columns: c.library_columns.clone(),
+            dup_converted_delete: c.dup_converted_delete,
+            dup_format_order: c.dup_format_order.clone(),
         }
     }
 }
@@ -600,6 +661,8 @@ impl Config {
             .into_iter()
             .filter(|k| LIB_COLUMNS.iter().any(|(key, _)| key == k))
             .collect();
+        c.dup_converted_delete = cf.dup_converted_delete;
+        c.dup_format_order = normalize_format_order(cf.dup_format_order);
         c
     }
 
@@ -630,6 +693,8 @@ impl Config {
             library_layout: self.library_layout.label().to_string(),
             library_grid_size: self.library_grid_size.label().to_string(),
             library_columns: self.library_columns.clone(),
+            dup_converted_delete: self.dup_converted_delete,
+            dup_format_order: self.dup_format_order.clone(),
         };
         let path = config_path();
         if let Some(dir) = path.parent() {

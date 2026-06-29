@@ -229,6 +229,104 @@ pub fn render_cover(path: impl AsRef<Path>) -> Option<Vec<u8>> {
     rasterize_page_png_at(&doc, 0, COVER_WIDTH)
 }
 
+/// The PDF's bookmark labels (chapter titles), flattened depth-first — clean
+/// structured text for content-based duplicate detection. Empty when the PDF has no
+/// real outline: a PDF without bookmarks falls back to a synthetic "Page N" TOC
+/// (see `flat_page_toc`), which carries no identity, so that case returns nothing.
+pub fn toc_labels(path: impl AsRef<Path>) -> Vec<String> {
+    let Ok(doc) = PdfDocument::open(path) else {
+        return Vec::new();
+    };
+    let toc = doc.toc();
+    if toc.iter().all(|e| is_page_label(&e.label)) {
+        return Vec::new(); // synthetic page list, not a real table of contents
+    }
+    let mut out = Vec::new();
+    for entry in toc {
+        entry.collect_labels(&mut out);
+    }
+    out
+}
+
+/// A synthetic `flat_page_toc` label, e.g. "Page 12".
+fn is_page_label(label: &str) -> bool {
+    label
+        .strip_prefix("Page ")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Front-matter headings that look prominent but aren't the title — so a large
+/// "Contents" or "Preface" heading isn't mistaken for one.
+const NON_TITLE_HEADINGS: &[&str] = &[
+    "contents",
+    "table of contents",
+    "preface",
+    "introduction",
+    "copyright",
+    "index",
+    "acknowledgments",
+    "acknowledgements",
+    "dedication",
+    "about the author",
+    "about the authors",
+    "foreword",
+    "chapter",
+];
+
+/// The book's printed title, read from the PDF's own content (not metadata): the
+/// largest-font text run on the first couple of pages — i.e. the title page. `None`
+/// for a scanned PDF with no text layer, or when no title-like run is found. Opens
+/// its own short-lived PDFium handle.
+pub fn extract_title(path: impl AsRef<Path>) -> Option<String> {
+    let doc = open_pdfium_doc(path.as_ref()).ok()?;
+    let pages = doc.pages();
+    let count = pages.len().max(0) as usize;
+    let mut best_size = 0.0f32;
+    let mut best = String::new();
+    for i in 0..count.min(2) {
+        let Ok(page) = pages.get(i as i32) else {
+            continue;
+        };
+        let Ok(text) = page.text() else { continue };
+        // Walk the page's characters, grouping consecutive ones of the same font
+        // size into runs; the largest title-like run across the page wins.
+        let mut run_size = -1.0f32;
+        let mut run = String::new();
+        for ch in text.chars().iter() {
+            let size = ch.scaled_font_size().value;
+            if (size - run_size).abs() > 0.5 {
+                consider_title_run(&mut best_size, &mut best, run_size, &run);
+                run.clear();
+                run_size = size;
+            }
+            run.push(ch.unicode_char().unwrap_or(' '));
+        }
+        consider_title_run(&mut best_size, &mut best, run_size, &run);
+    }
+    (!best.is_empty()).then_some(best)
+}
+
+/// Keep `run` as the best title candidate if it's the largest-font run so far and
+/// looks title-like (enough letters, not an absurd paragraph, not a stock heading).
+fn consider_title_run(best_size: &mut f32, best: &mut String, size: f32, run: &str) {
+    let cleaned = run.split_whitespace().collect::<Vec<_>>().join(" ");
+    let alnum = cleaned.chars().filter(|c| c.is_alphanumeric()).count();
+    if !(4..=160).contains(&alnum) {
+        return;
+    }
+    let lower = cleaned.to_lowercase();
+    if NON_TITLE_HEADINGS
+        .iter()
+        .any(|h| lower == *h || lower.starts_with(&format!("{h} ")))
+    {
+        return;
+    }
+    if size > *best_size + 0.5 {
+        *best_size = size;
+        *best = cleaned;
+    }
+}
+
 /// Placeholder shown in place of a page that couldn't be rendered.
 fn render_failed(index: usize) -> Block {
     Block::Para {

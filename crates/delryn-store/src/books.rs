@@ -195,12 +195,16 @@ impl Store {
         );
     }
 
-    /// List books for a section (filtering by `query` substring is done by the
-    /// caller).
-    pub fn list_books(&self, section: LibrarySection) -> Vec<BookRow> {
-        let where_clause = match section {
+    /// The SQL `WHERE` predicate selecting a section's books, over the standard
+    /// `books b LEFT JOIN progress p` shape. Shared by `list_books` (rows) and
+    /// `count_books` (totals) so the two never drift.
+    fn section_where(section: LibrarySection) -> &'static str {
+        match section {
             LibrarySection::Recent => "b.last_opened > 0",
             LibrarySection::All => "1 = 1",
+            // Format filters, by file extension — auto-populated from the path.
+            LibrarySection::Pdf => "LOWER(b.path) LIKE '%.pdf'",
+            LibrarySection::Epub => "LOWER(b.path) LIKE '%.epub'",
             LibrarySection::Favorites => "b.favorite = 1",
             LibrarySection::Reading => {
                 "b.last_opened > 0 AND p.path IS NOT NULL \
@@ -214,18 +218,41 @@ impl Store {
                  (SELECT LOWER(title) FROM books WHERE title <> '' \
                   GROUP BY LOWER(title) HAVING COUNT(*) > 1)"
             }
-        };
+        }
+    }
+
+    /// List books for a section (filtering by `query` substring is done by the
+    /// caller).
+    pub fn list_books(&self, section: LibrarySection) -> Vec<BookRow> {
+        let where_clause = Self::section_where(section);
         let order = match section {
             // Within the Series view, sort by series then position then title.
             LibrarySection::Series => {
                 "b.series COLLATE NOCASE, b.series_index, b.title COLLATE NOCASE"
             }
-            LibrarySection::All | LibrarySection::Favorites | LibrarySection::Duplicates => {
-                "b.title COLLATE NOCASE"
-            }
+            LibrarySection::All
+            | LibrarySection::Pdf
+            | LibrarySection::Epub
+            | LibrarySection::Favorites
+            | LibrarySection::Duplicates => "b.title COLLATE NOCASE",
             _ => "b.last_opened DESC",
         };
         self.query_books(where_clause, order)
+    }
+
+    /// Number of books in a section (mirrors `list_books`' filter). The in-app
+    /// cross-format Duplicates view is counted by the caller via `dedup`, so its
+    /// SQL count here is title-only and unused by the sidebar.
+    pub fn count_books(&self, section: LibrarySection) -> usize {
+        let where_clause = Self::section_where(section);
+        let sql = format!(
+            "SELECT COUNT(*) FROM books b LEFT JOIN progress p ON p.path = b.path \
+             WHERE {where_clause}"
+        );
+        self.conn
+            .query_row(&sql, [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0)
+            .max(0) as usize
     }
 
     /// All books, ordered by title (used for library-wide search).

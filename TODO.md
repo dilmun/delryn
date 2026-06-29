@@ -178,13 +178,58 @@ jump-by-type + a reader cursor.
       Paused/Dropped/Reference) beyond the progress-derived unread/reading/
       finished — `m` cycles it, shown as its own toggleable `Status` column +
       detail line, sortable, DSL-filterable.
-- [x] Duplicate detection + resolution: `delryn-library::dedup` (ISBN, else
-      normalized title + author surname); a "Duplicates" library section lists
-      members. `D` opens a **resolution overlay** — every group with a checkbox
-      per copy; a **smart auto-select** keeps the best (engagement > original >
-      EPUB > richer metadata > larger) and pre-checks the worse ones; `space`
-      toggles, `a` re-auto, `u` clears, `d` deletes all checked (file + row) after
-      one confirm, then the overlay refreshes/closes.
+- [x] Duplicate detection + resolution: `delryn-library::dedup`. **Content-only** —
+      books are grouped *solely* by table-of-contents matches from the thorough scan
+      (`R`, below): each match is a `(path, path)` link and connected components of
+      those links (union-find) are the groups. The TOC is the one reliable
+      cross-format signal; messy metadata (ISBN/title/author) is deliberately **not**
+      used, and a book with no usable TOC simply isn't flagged (acceptable by design).
+      Run `R` to populate; the "Duplicates" library section then lists the matched
+      members. `D`
+      opens a **resolution overlay** — every group with a checkbox per copy; a
+      **smart auto-select** keeps the best (engagement > original > configured
+      format keep-order > richer metadata > larger) and pre-checks the worse ones;
+      `space` toggles, `a` re-auto, `u` clears, `n` **ignores the group** (stop
+      flagging it — persisted in `dismissed_dups`), `I` opens the **ignored-groups
+      manager** (list/restore one with `u`/⏎ or restore all with `C`), `p`
+      **previews** the selected copy in the reader (q/Esc returns to the overlay —
+      stashed in `dup_preview`), `r` **reveals** it in the OS file manager, `f`
+      **full-screen** toggle, `o` opens the resolver's **preferences** (Library
+      Settings → Duplicates: a "converted: always delete" rule + a per-format keep
+      priority you reorder with l/h — `config.dup_converted_delete`/`dup_format_order`),
+      `d` deletes all checked after one confirm. Rows are an **aligned table** under a
+      fixed header (keep/delete · format · size · source · read-flags · path); the
+      path keeps its directory and trims a long filename (whole path full-screen).
+- [x] Thorough duplicate scan (user-triggered, off the default path): in the
+      Duplicates view, `R` reads the **table of contents** of *every* book (so a
+      content match can join copies metadata missed — grouping unions all tiers, no
+      misses) from its own structure (NOT metadata): EPUB nav + PDF bookmark outline
+      (`epub`/`pdf::toc_labels`;
+      PDF's synthetic "Page N" fallback is rejected). Each chapter label is reduced
+      to its distinctive part — leading "Chapter N"/"Part N" stripped, generic
+      boilerplate ("Preface"/"Summary"/"Index"/…) dropped — and hashed into a set
+      (`dedup::content_link_candidates`). Two books link when their distinctive-label
+      sets share ≥4 titles at overlap-coefficient ≥0.6 (overlap, not Jaccard, so a
+      finer-grained outline on one side still matches). Matching the chapter *list as
+      a whole* is what stops topic-word collisions ("Artificial Intelligence and…")
+      and publisher templates that broke every earlier attempt (cover+title; middle-
+      text SimHash; front-text SimHash on Packt boilerplate; single-title token-set/
+      prefix overlap). Links persist to `dup_links`, folded into grouping
+      (`duplicate_groups_with_links`); covers every combo (epub↔epub, pdf↔pdf,
+      pdf↔epub). Limits: a book with no real TOC (PDF without bookmarks, bare EPUB) is
+      skipped; structural-only TOCs ("Chapter 1".."Chapter N") yield no fingerprint.
+      Human-confirmed via overlay `n` ("keep both"). Tunables: TOC_MIN_LABELS,
+      TOC_MIN_SHARED, TOC_OVERLAP_MIN.
+- [ ] Dedup, further tiers (only if duplicates still slip through — all kept
+      cheap/lazy, no library-wide content scan): **(2)** bounded fuzzy title
+      fallback, blocked by author-surname / first title token to stay near-linear;
+      **(3)** confidence tiers (Exact / Likely / Possible) shown + sorted in the
+      overlay; **(4)** cached `content_hash` column (blake3 of file bytes,
+      incremental behind the mtime/size check, rayon-parallel) for zero-false-
+      positive "Exact Duplicate"; **(5)** lazy content fingerprint computed *only*
+      for the few books in a group being resolved (reuse `read_fulltext`), never
+      at scan time; **(6)** PDF↔EPUB content matching once the PDFium text layer is
+      wired up (deferred in PDF v2).
 - [x] Metadata diff view (current vs remote, selective apply): picking an online
       candidate (editor Lookup tab → ⏎) opens a diff overlay — one row per field
       with current vs remote, fields that differ pre-ticked; space toggles, `a`

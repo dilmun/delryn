@@ -45,6 +45,10 @@ impl App {
             self.dup_resolve_key(key);
             return;
         }
+        if self.ignored_view.is_some() {
+            self.ignored_view_key(key);
+            return;
+        }
         if self.shelf_picker.is_some() {
             self.shelf_picker_key(key);
             return;
@@ -97,7 +101,13 @@ impl App {
                 if let Some(r) = self.reader.as_mut() {
                     r.flash = None;
                 }
-                let action = input::map_key(key, &mut self.pending);
+                // While previewing a book from the duplicate resolver, Esc also
+                // returns (in normal reading Esc clears the selection anchor).
+                let action = if self.dup_preview.is_some() && key.code == KeyCode::Esc {
+                    input::Action::Back
+                } else {
+                    input::map_key(key, &mut self.pending)
+                };
                 self.apply(action);
                 // An activated external link asks for confirmation before opening.
                 if let Some(url) = self.reader.as_mut().and_then(|r| r.take_pending_open()) {
@@ -107,8 +117,12 @@ impl App {
                         super::confirm::ConfirmAction::OpenUrl(url),
                     );
                 }
-                // Returning to the library (Back) should reflect the latest state.
+                // Returning to the library (Back) should reflect the latest state —
+                // and restore the duplicate overlay if this was a preview.
                 if self.mode == Mode::Library {
+                    if let Some(dr) = self.dup_preview.take() {
+                        self.dup_resolve = Some(dr);
+                    }
                     self.refresh_library();
                 }
             }
