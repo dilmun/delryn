@@ -676,6 +676,12 @@ impl App {
             {
                 self.start_dup_scan()
             }
+            // `I` (Duplicates view) manages the groups you've ignored (restore/clear).
+            KeyCode::Char('I')
+                if matches!(self.lib_view, LibView::Section(LibrarySection::Duplicates)) =>
+            {
+                self.open_ignored_view()
+            }
             // Book actions operate on the selected book regardless of focus.
             KeyCode::Char('f') => {
                 if self.lib_marked.is_empty() {

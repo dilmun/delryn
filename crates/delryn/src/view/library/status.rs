@@ -73,7 +73,7 @@ pub(crate) fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) 
     } else if marked > 0 {
         "space/A pick · e edit · r rename · T tag · f favorite · c shelf · Esc clear"
     } else if dups {
-        "hjkl move · ⏎ open · D resolve · R deep scan (contents) · e edit · s sort · q"
+        "hjkl move · ⏎ open · D resolve · R deep scan · I ignored · e edit · s sort · q"
     } else if app.is_grid() {
         "hjkl move · ⏎ open · e edit · T tag · D dedup · c shelf · s sort · +/- size · q"
     } else {

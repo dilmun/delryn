@@ -5,6 +5,8 @@
 //! The format priority and a "converted: always delete" rule are configurable
 //! (Library Settings → Duplicates, reachable via `o`). The reader adjusts the
 //! checkboxes manually, can toggle full-screen with `f`, then deletes all checked.
+//! `n` *ignores* a group (stop flagging it); the ignored-groups manager (`I`)
+//! lists them to restore or clear.
 
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -92,6 +94,17 @@ impl DupResolve {
             .filter(|m| m.checked)
             .count()
     }
+}
+
+/// Manager for the groups the reader has *ignored* (pressed `n` on) — so they can
+/// be reviewed, restored individually, or cleared. Each entry is one ignored
+/// group's member paths (decoded from its stored signature).
+pub struct IgnoredView {
+    /// Member paths per ignored group, parallel to `signatures`.
+    pub groups: Vec<Vec<String>>,
+    /// The stored signatures, parallel to `groups` (the key to restore each).
+    pub signatures: Vec<String>,
+    pub cursor: usize,
 }
 
 impl App {
@@ -212,9 +225,12 @@ impl App {
                     }
                 }
             }
+            // Open the ignored-groups manager (restore / clear).
+            KeyCode::Char('I') => self.open_ignored_view(),
             KeyCode::Char('n') => {
-                // "Keep both": dismiss the group under the cursor so it's never
-                // flagged again, then rebuild to drop it from the overlay.
+                // "Ignore": stop flagging the group under the cursor as a duplicate,
+                // then rebuild to drop it from the overlay. Reversible via the
+                // ignored-groups manager (`I`).
                 let sig = self.dup_resolve.as_ref().and_then(|dr| {
                     let (gi, _) = dr.rows().get(dr.cursor).copied()?;
                     Some(dr.groups[gi].signature.clone())
@@ -223,7 +239,7 @@ impl App {
                     if let Some(store) = &self.store {
                         store.dismiss_duplicate_group(&sig);
                     }
-                    self.lib_flash = Some("kept this group; it won't be flagged again".into());
+                    self.lib_flash = Some("ignored — won't be flagged again (I to undo)".into());
                     self.refresh_dup_resolve();
                 }
             }
@@ -259,6 +275,90 @@ impl App {
         let config = &self.config;
         if let Some(dr) = self.dup_resolve.as_mut() {
             auto_select(dr, config);
+        }
+    }
+
+    /// Open the ignored-groups manager. Closes the resolver if it was open. Flashes
+    /// (and doesn't open) when nothing has been ignored.
+    pub(crate) fn open_ignored_view(&mut self) {
+        let Some(view) = self.build_ignored_view() else {
+            self.lib_flash = Some("no ignored duplicate groups".into());
+            return;
+        };
+        self.dup_resolve = None;
+        self.ignored_view = Some(view);
+    }
+
+    /// Build the ignored-groups list from the store, or `None` if empty.
+    fn build_ignored_view(&self) -> Option<IgnoredView> {
+        let store = self.store.as_ref()?;
+        let mut signatures: Vec<String> = store.dismissed_duplicate_groups().into_iter().collect();
+        signatures.sort();
+        if signatures.is_empty() {
+            return None;
+        }
+        let groups = signatures
+            .iter()
+            .map(|s| s.split('\n').map(String::from).collect())
+            .collect();
+        Some(IgnoredView {
+            groups,
+            signatures,
+            cursor: 0,
+        })
+    }
+
+    /// Keys while the ignored-groups manager is open.
+    pub(crate) fn ignored_view_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.ignored_view = None,
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(v) = self.ignored_view.as_mut() {
+                    let last = v.signatures.len().saturating_sub(1);
+                    v.cursor = (v.cursor + 1).min(last);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(v) = self.ignored_view.as_mut() {
+                    v.cursor = v.cursor.saturating_sub(1);
+                }
+            }
+            // Restore (un-ignore) the selected group.
+            KeyCode::Char('u') | KeyCode::Enter => {
+                let sig = self
+                    .ignored_view
+                    .as_ref()
+                    .and_then(|v| v.signatures.get(v.cursor).cloned());
+                if let Some(sig) = sig {
+                    if let Some(store) = &self.store {
+                        store.restore_duplicate_group(&sig);
+                    }
+                    self.refresh_library();
+                    // Rebuild the list (keeping the cursor near where it was); close
+                    // and flash when nothing's left.
+                    let cursor = self.ignored_view.as_ref().map_or(0, |v| v.cursor);
+                    match self.build_ignored_view() {
+                        Some(mut v) => {
+                            v.cursor = cursor.min(v.signatures.len() - 1);
+                            self.ignored_view = Some(v);
+                        }
+                        None => {
+                            self.ignored_view = None;
+                            self.lib_flash = Some("restored — no ignored groups left".into());
+                        }
+                    }
+                }
+            }
+            // Restore all.
+            KeyCode::Char('C') => {
+                if let Some(store) = &self.store {
+                    store.clear_dismissed_duplicates();
+                }
+                self.ignored_view = None;
+                self.lib_flash = Some("restored all ignored groups".into());
+                self.refresh_library();
+            }
+            _ => {}
         }
     }
 

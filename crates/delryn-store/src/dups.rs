@@ -39,6 +39,14 @@ impl Store {
         let _ = self.conn.execute("DELETE FROM dismissed_dups", []);
     }
 
+    /// Un-ignore a single group — flag it as a duplicate again.
+    pub fn restore_duplicate_group(&self, signature: &str) {
+        let _ = self.conn.execute(
+            "DELETE FROM dismissed_dups WHERE signature = ?1",
+            params![signature],
+        );
+    }
+
     /// Out-of-band duplicate links — candidate pairs the thorough content scan
     /// discovered. The grouping unions these in so content-matched books (e.g. a
     /// PDF and an EPUB with no shared metadata) land in one duplicate group.

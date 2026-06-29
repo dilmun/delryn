@@ -43,7 +43,7 @@ pub fn render(f: &mut Frame, app: &App) {
         ))
         .title_bottom(
             Line::from(Span::styled(
-                " ↑↓ space · p preview · r reveal · d delete · a auto · u none · n keep · o prefs · f full · q ",
+                " ↑↓ space · p preview · r reveal · d delete · a auto · u none · n ignore · I ignored · o prefs · f full · q ",
                 Style::default().fg(theme.muted),
             ))
             .alignment(Alignment::Center),
@@ -168,6 +168,95 @@ fn member_line(
         Span::styled(attrs, Style::default().fg(theme.muted)),
         Span::styled(location, name_style),
     ])
+}
+
+/// The ignored-groups manager: one ignored duplicate group per row (its member
+/// filenames), with keys to restore one or all.
+pub fn render_ignored(f: &mut Frame, app: &App) {
+    let Some(v) = &app.ignored_view else {
+        return;
+    };
+    let theme = app.config.theme;
+    let area = super::centered(f.area(), 78, 22);
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            format!(" Ignored Duplicate Groups — {} ", v.signatures.len()),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(
+            Line::from(Span::styled(
+                " ↑↓ move · u/⏎ restore · C restore all · q ",
+                Style::default().fg(theme.muted),
+            ))
+            .alignment(Alignment::Center),
+        )
+        .style(Style::default().fg(theme.fg).bg(theme.paper()));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let body_width = inner.width as usize;
+    let h = inner.height as usize;
+    let lines: Vec<Line> = v
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(i, group)| {
+            let focused = i == v.cursor;
+            let marker = if focused { "▸ " } else { "  " };
+            let count = format!("{}× ", group.len());
+            let names = group
+                .iter()
+                .map(|p| basename(p))
+                .collect::<Vec<_>>()
+                .join("  ·  ");
+            let budget = body_width
+                .saturating_sub(marker.chars().count() + count.chars().count())
+                .max(12);
+            let style = if focused {
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.muted)
+            };
+            Line::from(vec![
+                Span::styled(marker.to_string(), Style::default().fg(theme.accent)),
+                Span::styled(count, Style::default().fg(theme.muted)),
+                Span::styled(truncate_end(&names, budget), style),
+            ])
+        })
+        .collect();
+
+    let offset = v
+        .cursor
+        .saturating_sub(h / 2)
+        .min(lines.len().saturating_sub(h));
+    let visible: Vec<Line> = lines.into_iter().skip(offset).take(h).collect();
+    f.render_widget(Paragraph::new(visible), inner);
+}
+
+/// Basename of a path.
+fn basename(p: &str) -> String {
+    std::path::Path::new(p)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.to_string())
+}
+
+/// Truncate `s` from the right to at most `max` characters, ending with an ellipsis
+/// when shortened.
+fn truncate_end(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_string();
+    }
+    let head: String = chars[..max.saturating_sub(1)].iter().collect();
+    format!("{head}…")
 }
 
 /// Fit a file path into `max` columns, keeping the **directory** visible and
