@@ -22,7 +22,9 @@ pub fn render(f: &mut Frame, app: &App) {
     let area = if dr.fullscreen {
         f.area()
     } else {
-        super::centered(f.area(), 78, 26)
+        // Wide enough for the full key hint + roomy path column (clamped to the
+        // window on narrow terminals by `centered`).
+        super::centered(f.area(), 100, 30)
     };
     f.render_widget(Clear, area);
 
@@ -43,7 +45,7 @@ pub fn render(f: &mut Frame, app: &App) {
         ))
         .title_bottom(
             Line::from(Span::styled(
-                " ↑↓ space · p preview · r reveal · d delete · a auto · u none · n ignore · I ignored · o prefs · f full · q ",
+                " ↑↓ space · p preview · r open location · d delete · n ignore · I ignored · o prefs · f full · q ",
                 Style::default().fg(theme.muted),
             ))
             .alignment(Alignment::Center),
