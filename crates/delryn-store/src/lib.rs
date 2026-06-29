@@ -454,6 +454,61 @@ mod tests {
     }
 
     #[test]
+    fn count_books_matches_list_books_per_section() {
+        let tmp = std::env::temp_dir().join(format!("delryn_count_{}", std::process::id()));
+        let _env = delryn_infra::test_env_guard();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let store = Store::open_default().unwrap();
+
+        store
+            .upsert_book(
+                "/a.pdf",
+                "Alpha",
+                "Au",
+                None,
+                1,
+                1,
+                1,
+                "Saga",
+                Some(1.0),
+                "",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        store
+            .upsert_book(
+                "/b.epub", "Beta", "Au", None, 1, 1, 1, "", None, "", "", "", "",
+            )
+            .unwrap();
+        store
+            .upsert_book(
+                "/c.EPUB", "Gamma", "Au", None, 1, 1, 1, "", None, "", "", "", "",
+            )
+            .unwrap();
+        store.set_favorite("/a.pdf", true);
+
+        // Format filters are case-insensitive on the extension.
+        assert_eq!(store.count_books(LibrarySection::All), 3);
+        assert_eq!(store.count_books(LibrarySection::Pdf), 1);
+        assert_eq!(store.count_books(LibrarySection::Epub), 2);
+        assert_eq!(store.count_books(LibrarySection::Favorites), 1);
+        assert_eq!(store.count_books(LibrarySection::Series), 1);
+
+        // The count must never drift from the row list it mirrors.
+        for s in LibrarySection::ALL {
+            assert_eq!(
+                store.count_books(s),
+                store.list_books(s).len(),
+                "count_books != list_books for {s:?}",
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn series_section_sorts_by_series_then_index() {
         let tmp = std::env::temp_dir().join(format!("delryn_series_{}", std::process::id()));
         let _env = delryn_infra::test_env_guard();

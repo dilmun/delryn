@@ -189,6 +189,9 @@ pub struct App {
     pub lib_detail_pct: u16,
     /// Cached (collection name, book count), refreshed with the book list.
     pub lib_shelves: Vec<(String, usize)>,
+    /// Per-section book counts, parallel to `LibrarySection::ALL`; refreshed with
+    /// the book list so the sidebar can show a right-aligned count per group.
+    pub lib_section_counts: Vec<usize>,
     pub lib_books: Vec<BookRow>,
     pub lib_sel: usize,
     /// Effective multi-selection for bulk actions, keyed by book path. The union
@@ -440,6 +443,7 @@ impl App {
             lib_sidebar_pct: 20,
             lib_detail_pct: 30,
             lib_shelves: Vec::new(),
+            lib_section_counts: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_marked: HashSet::new(),
@@ -513,6 +517,7 @@ impl App {
             lib_sidebar_pct: 20,
             lib_detail_pct: 30,
             lib_shelves: Vec::new(),
+            lib_section_counts: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_marked: HashSet::new(),

@@ -98,15 +98,19 @@ impl App {
             }
             v => v.clone(),
         };
+        // Loaded once per refresh and reused below for the Duplicates view, the
+        // search filter, and the Duplicates sidebar count — so a refresh scans
+        // the whole table at most once. The duplicate set uses cross-format
+        // detection (ISBN, else normalized title+author), richer than a
+        // title-only SQL match.
+        let all_books = store.all_books();
+        let dup_paths = crate::library::dedup::duplicate_paths(&all_books);
         let books = if self.lib_filter.trim().is_empty() {
             match &view {
-                // Cross-format duplicate detection (ISBN, else normalized
-                // title+author) — richer than a title-only SQL match.
-                LibView::Section(LibrarySection::Duplicates) => {
-                    let all = store.all_books();
-                    let dups = crate::library::dedup::duplicate_paths(&all);
-                    all.into_iter().filter(|b| dups.contains(&b.path)).collect()
-                }
+                LibView::Section(LibrarySection::Duplicates) => all_books
+                    .into_iter()
+                    .filter(|b| dup_paths.contains(&b.path))
+                    .collect(),
                 LibView::Section(s) => store.list_books(*s),
                 LibView::Shelf(name) => store.books_in_shelf(name),
             }
@@ -117,16 +121,11 @@ impl App {
             // series/publisher substring + full-text body match.
             let q = crate::library::query::parse(&self.lib_filter);
             if q.is_structured() {
-                store
-                    .all_books()
-                    .into_iter()
-                    .filter(|b| q.matches(b))
-                    .collect()
+                all_books.into_iter().filter(|b| q.matches(b)).collect()
             } else {
                 let f = self.lib_filter.to_lowercase();
                 let fts: HashSet<String> = store.fts_paths(&self.lib_filter).into_iter().collect();
-                store
-                    .all_books()
+                all_books
                     .into_iter()
                     .filter(|b| {
                         b.title.to_lowercase().contains(&f)
@@ -138,7 +137,18 @@ impl App {
                     .collect()
             }
         };
+        // Per-section totals for the sidebar (computed under the live `store`
+        // borrow). Duplicates reuses the cross-format set above so its count
+        // matches the view, not the title-only SQL filter.
+        let section_counts: Vec<usize> = LibrarySection::ALL
+            .iter()
+            .map(|s| match s {
+                LibrarySection::Duplicates => dup_paths.len(),
+                s => store.count_books(*s),
+            })
+            .collect();
         self.lib_shelves = shelves;
+        self.lib_section_counts = section_counts;
         self.lib_view = view;
         self.lib_books = books;
         // A width-agnostic sort cycle (all enabled columns) so `s` works before
