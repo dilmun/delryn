@@ -5,6 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, Mode};
 use crate::config::Config;
+use crate::document::BookFormat;
 
 /// Open settings popup. Scoped to the mode it was opened from — Reading settings
 /// in the reader, Library settings in the library — so the two never mix. Options
@@ -49,6 +50,10 @@ pub enum SettingItem {
     GridSize,
     /// Show/hide an optional library column (carries its key from `LIB_COLUMNS`).
     Column(&'static str),
+    /// Duplicate resolver: always mark converted copies for deletion.
+    DupConvertedDelete,
+    /// Duplicate resolver: a format's keep priority (carries its label, e.g. "PDF").
+    DupFormat(&'static str),
 }
 
 impl SettingItem {
@@ -86,6 +91,8 @@ impl SettingItem {
                 .find(|(k, _)| *k == key)
                 .map(|(_, label)| *label)
                 .unwrap_or(key),
+            SettingItem::DupConvertedDelete => "Converted copies: always delete",
+            SettingItem::DupFormat(label) => label,
         }
     }
 
@@ -127,6 +134,11 @@ impl SettingItem {
             SettingItem::LibLayout => c.library_layout.label().to_string(),
             SettingItem::GridSize => c.library_grid_size.label().to_string(),
             SettingItem::Column(key) => onoff(c.column_on(key)),
+            SettingItem::DupConvertedDelete => onoff(c.dup_converted_delete),
+            SettingItem::DupFormat(label) => match c.dup_format_rank(label) {
+                usize::MAX => "—".into(),
+                rank => format!("keep #{}", rank + 1),
+            },
         }
     }
 }
@@ -209,9 +221,18 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
                     .iter()
                     .map(|(key, _)| I(Column(key))),
             );
+            // Duplicate-resolver preferences: a converted-copies toggle and the
+            // per-format keep priority (l/h on a format raises/lowers its rank).
+            let mut dups = vec![
+                S("Auto-select"),
+                I(DupConvertedDelete),
+                S("Keep priority — l/h"),
+            ];
+            dups.extend(BookFormat::ALL.iter().map(|f| I(DupFormat(f.label()))));
             vec![
                 tab("View", vec![S("Layout"), I(LibLayout), I(GridSize)]),
                 tab("Columns", columns),
+                tab("Duplicates", dups),
                 tab(
                     "General",
                     vec![S("Appearance"), I(Theme), S("Input"), I(Mouse)],
@@ -395,6 +416,22 @@ impl App {
                 }
             }
             SettingItem::Column(key) => c.toggle_column(key),
+            SettingItem::DupConvertedDelete => c.dup_converted_delete = !c.dup_converted_delete,
+            // l/right/Enter (delta > 0) promotes the format toward "keep #1".
+            SettingItem::DupFormat(label) => c.move_dup_format(label, delta > 0),
         }
+    }
+
+    /// Open Library settings on the Duplicates tab — the resolve overlay's
+    /// preferences. Closes the overlay (settings replaces it); reopen with `D`.
+    pub(crate) fn open_dup_settings(&mut self) {
+        self.dup_resolve = None;
+        let scope = Mode::Library;
+        let tab = settings_tabs(scope)
+            .iter()
+            .position(|t| t.title == "Duplicates")
+            .unwrap_or(0);
+        let row = first_setting_row(scope, tab);
+        self.settings = Some(Settings { scope, tab, row });
     }
 }

@@ -16,6 +16,21 @@ pub enum BookFormat {
 }
 
 impl BookFormat {
+    /// Every real book format (excludes [`BookFormat::Unknown`]), in a sensible
+    /// default keep-preference order. Used to enumerate formats for settings.
+    pub const ALL: [BookFormat; 4] = [
+        BookFormat::Epub,
+        BookFormat::Pdf,
+        BookFormat::Mobi,
+        BookFormat::Azw3,
+    ];
+
+    /// The format whose [`label`](BookFormat::label) is `label` (e.g. "PDF"), if
+    /// any — the inverse of `label()` for the real formats.
+    pub fn from_label(label: &str) -> Option<BookFormat> {
+        BookFormat::ALL.into_iter().find(|f| f.label() == label)
+    }
+
     /// Classify a path by its file extension (case-insensitive).
     pub fn from_path(path: &(impl AsRef<std::path::Path> + ?Sized)) -> BookFormat {
         let ext = path
