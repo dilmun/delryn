@@ -229,11 +229,13 @@ pub fn render_cover(path: impl AsRef<Path>) -> Option<Vec<u8>> {
     rasterize_page_png_at(&doc, 0, COVER_WIDTH)
 }
 
-/// A bounded plain-text sample from the text layer of pages in the *middle* of the
-/// PDF, for content-based duplicate detection (mirrors the EPUB sampler so the two
-/// formats fingerprint the same content — see `epub::extract_text_sample`). The
-/// middle avoids the cover/title/TOC front matter. Reads at most `max_pages` pages
-/// and ~`max_chars` of text. `None` for image-only/scanned PDFs (no text layer) or
+/// A bounded plain-text sample from the text layer of the *front* pages of the PDF
+/// — the printed title page, author, copyright year, and table of contents — for
+/// content-based duplicate detection (mirrors `epub::extract_text_sample` so the
+/// two formats fingerprint the same opening). The front is where the book states
+/// its identity, so it matches across formats and is distinctive. Reads at most
+/// `max_pages` pages and ~`max_chars` of text; an image-only page contributes no
+/// text and is skipped over. `None` for image-only/scanned PDFs (no text layer) or
 /// when PDFium is unavailable — those simply aren't content-matched.
 pub fn extract_text_sample(
     path: impl AsRef<Path>,
@@ -246,10 +248,9 @@ pub fn extract_text_sample(
     if count == 0 {
         return None;
     }
-    let start = count / 2; // middle = body text, no front-matter boilerplate
     let mut out = String::new();
-    let mut i = start;
-    while i < count && i - start < max_pages && out.len() < max_chars {
+    let mut i = 0; // from the title page / front matter onward
+    while i < count && i < max_pages && out.len() < max_chars {
         if let Ok(page) = pages.get(i as i32)
             && let Ok(text) = page.text()
         {

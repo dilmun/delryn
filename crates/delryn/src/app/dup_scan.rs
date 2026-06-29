@@ -5,10 +5,12 @@
 //! relies on — so this catches same-work files (notably EPUB↔PDF) whatever their
 //! metadata says.
 //!
-//! Each book is sampled from the *middle* (body prose, aligned across formats, no
-//! front/back-matter boilerplate — see `epub`/`pdf::extract_text_sample`), reduced
-//! to bare letters/digits, and SimHashed. Image-only/scanned PDFs (no text layer)
-//! yield no fingerprint and are simply skipped, never falsely matched.
+//! Each book is sampled from the *front* — the printed title page, author,
+//! copyright year, and table of contents (see `epub`/`pdf::extract_text_sample`),
+//! which is where the book states its own identity and reads the same across
+//! formats. That text is reduced to bare letters/digits and SimHashed. Image-only/
+//! scanned PDFs (no text layer) yield no fingerprint and are skipped, never falsely
+//! matched.
 //!
 //! It's deliberately *off the default path*: sampling means opening and decoding
 //! each file, so it only runs when the reader asks. The worker computes pure data
