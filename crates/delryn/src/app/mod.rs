@@ -47,7 +47,8 @@ mod tags;
 pub use tags::TagInput;
 
 mod dup_resolve;
-pub use dup_resolve::{DupGroup, DupMember, DupResolve};
+mod dup_scan;
+pub use dup_resolve::{DupGroup, DupMember, DupResolve, IgnoredView};
 
 mod editor;
 pub use editor::{
@@ -153,6 +154,12 @@ pub struct App {
     pub tag_edit: Option<TagInput>,
     /// Duplicate-resolution overlay, if open.
     pub dup_resolve: Option<DupResolve>,
+    /// The duplicate-resolution overlay stashed while previewing a book from it —
+    /// kept out of `dup_resolve` so the dispatcher and renderer ignore it during the
+    /// preview; restored when the reader returns (`q`/Esc).
+    pub dup_preview: Option<DupResolve>,
+    /// Manager listing the "ignored" duplicate groups, to restore or clear them.
+    pub ignored_view: Option<IgnoredView>,
     /// A destructive action awaiting a yes/no confirmation, if any. Intercepts
     /// input ahead of every popup and is answered with y/⏎ or n/Esc.
     pub pending_confirm: Option<PendingConfirm>,
@@ -189,6 +196,9 @@ pub struct App {
     pub lib_detail_pct: u16,
     /// Cached (collection name, book count), refreshed with the book list.
     pub lib_shelves: Vec<(String, usize)>,
+    /// Per-section book counts, parallel to `LibrarySection::ALL`; refreshed with
+    /// the book list so the sidebar can show a right-aligned count per group.
+    pub lib_section_counts: Vec<usize>,
     pub lib_books: Vec<BookRow>,
     pub lib_sel: usize,
     /// Effective multi-selection for bulk actions, keyed by book path. The union
@@ -219,6 +229,9 @@ pub struct App {
     /// Receiver for async Open Library results (search / cover), if a request
     /// from the editor's Online tab is in flight.
     pub online_rx: Option<Receiver<OnlineMsg>>,
+    /// In-flight thorough duplicate scan (cover hashing on a worker thread), if
+    /// the reader triggered one from the Duplicates view.
+    pub dup_scan: Option<dup_scan::DupScan>,
     /// Show the right-hand detail pane (cover + metadata).
     pub lib_detail: bool,
     /// Cover image protocol for the detail pane, rebuilt when the selection
@@ -423,6 +436,8 @@ impl App {
             lib_coll_edit: None,
             tag_edit: None,
             dup_resolve: None,
+            dup_preview: None,
+            ignored_view: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
@@ -440,6 +455,7 @@ impl App {
             lib_sidebar_pct: 20,
             lib_detail_pct: 30,
             lib_shelves: Vec::new(),
+            lib_section_counts: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_marked: HashSet::new(),
@@ -454,6 +470,7 @@ impl App {
             lib_flash: None,
             shelf_picker: None,
             online_rx: None,
+            dup_scan: None,
             lib_detail: true,
             lib_cover: None,
             lib_cover_path: String::new(),
@@ -496,6 +513,8 @@ impl App {
             lib_coll_edit: None,
             tag_edit: None,
             dup_resolve: None,
+            dup_preview: None,
+            ignored_view: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
@@ -513,6 +532,7 @@ impl App {
             lib_sidebar_pct: 20,
             lib_detail_pct: 30,
             lib_shelves: Vec::new(),
+            lib_section_counts: Vec::new(),
             lib_books: Vec::new(),
             lib_sel: 0,
             lib_marked: HashSet::new(),
@@ -527,6 +547,7 @@ impl App {
             lib_flash: None,
             shelf_picker: None,
             online_rx: None,
+            dup_scan: None,
             lib_detail: true,
             lib_cover: None,
             lib_cover_path: String::new(),
@@ -845,9 +866,9 @@ mod tests {
         app.on_key(key('h'));
         assert_eq!(app.lib_pane, LibPane::Sidebar);
 
-        // j/k now walk the sections (All → Favorites → All), not the book list.
+        // j/k now walk the sections (All → PDFs → All), not the book list.
         app.on_key(key('j'));
-        assert_eq!(app.lib_view, LibView::Section(LibrarySection::Favorites));
+        assert_eq!(app.lib_view, LibView::Section(LibrarySection::Pdf));
         app.on_key(key('k'));
         assert_eq!(app.lib_view, LibView::Section(LibrarySection::All));
 
@@ -1366,8 +1387,6 @@ mod tests {
         );
         {
             let store = Store::open_default().unwrap();
-            // Same title/author → duplicates; distinct sizes → deterministic keep
-            // (larger wins the tiebreak).
             store
                 .upsert_book(
                     &sbig, "Same", "Auth", None, 9_000_000, 1, 1, "", None, "", "", "", "",
@@ -1378,6 +1397,9 @@ mod tests {
                     &ssmall, "Same", "Auth", None, 1000, 1, 1, "", None, "", "", "", "",
                 )
                 .unwrap();
+            // Grouping is content-scan only; link the two so they form a group.
+            // Distinct sizes → deterministic keep (larger wins the tiebreak).
+            store.replace_scan_dup_links(&[(sbig.clone(), ssmall.clone())]);
         }
 
         let mut app = App::library();

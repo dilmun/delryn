@@ -13,6 +13,7 @@ use delryn_infra::config::ViewMode;
 // `impl Store` block (the schema, shared book query, and `now_secs` live here).
 mod annotations;
 mod books;
+mod dups;
 mod progress;
 mod search;
 mod shelves;
@@ -68,6 +69,15 @@ CREATE TABLE IF NOT EXISTS shelves (
 CREATE TABLE IF NOT EXISTS collections (
     name TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS dismissed_dups (
+    signature TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS dup_links (
+    a      TEXT NOT NULL,
+    b      TEXT NOT NULL,
+    signal TEXT NOT NULL DEFAULT 'cover',
+    PRIMARY KEY (a, b)
+);
 ";
 
 /// A bookmark or note, anchored to content by a text quote (reflow-stable).
@@ -87,6 +97,8 @@ pub struct Annotation {
 pub enum LibrarySection {
     Recent,
     All,
+    Pdf,
+    Epub,
     Favorites,
     Reading,
     Series,
@@ -95,9 +107,11 @@ pub enum LibrarySection {
 
 impl LibrarySection {
     /// The fixed sections, in sidebar / Tab-cycle order.
-    pub const ALL: [LibrarySection; 6] = [
+    pub const ALL: [LibrarySection; 8] = [
         LibrarySection::Recent,
         LibrarySection::All,
+        LibrarySection::Pdf,
+        LibrarySection::Epub,
         LibrarySection::Favorites,
         LibrarySection::Reading,
         LibrarySection::Series,
@@ -108,6 +122,8 @@ impl LibrarySection {
         match self {
             LibrarySection::Recent => "Recent",
             LibrarySection::All => "All Books",
+            LibrarySection::Pdf => "PDFs",
+            LibrarySection::Epub => "EPUBs",
             LibrarySection::Favorites => "Favorites",
             LibrarySection::Reading => "Currently Reading",
             LibrarySection::Series => "Series",
@@ -443,6 +459,61 @@ mod tests {
         let dups = store.list_books(LibrarySection::Duplicates);
         assert_eq!(dups.len(), 2, "both 'Dune' editions are duplicates");
         assert!(dups.iter().all(|b| b.title.eq_ignore_ascii_case("dune")));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn count_books_matches_list_books_per_section() {
+        let tmp = std::env::temp_dir().join(format!("delryn_count_{}", std::process::id()));
+        let _env = delryn_infra::test_env_guard();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let store = Store::open_default().unwrap();
+
+        store
+            .upsert_book(
+                "/a.pdf",
+                "Alpha",
+                "Au",
+                None,
+                1,
+                1,
+                1,
+                "Saga",
+                Some(1.0),
+                "",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        store
+            .upsert_book(
+                "/b.epub", "Beta", "Au", None, 1, 1, 1, "", None, "", "", "", "",
+            )
+            .unwrap();
+        store
+            .upsert_book(
+                "/c.EPUB", "Gamma", "Au", None, 1, 1, 1, "", None, "", "", "", "",
+            )
+            .unwrap();
+        store.set_favorite("/a.pdf", true);
+
+        // Format filters are case-insensitive on the extension.
+        assert_eq!(store.count_books(LibrarySection::All), 3);
+        assert_eq!(store.count_books(LibrarySection::Pdf), 1);
+        assert_eq!(store.count_books(LibrarySection::Epub), 2);
+        assert_eq!(store.count_books(LibrarySection::Favorites), 1);
+        assert_eq!(store.count_books(LibrarySection::Series), 1);
+
+        // The count must never drift from the row list it mirrors.
+        for s in LibrarySection::ALL {
+            assert_eq!(
+                store.count_books(s),
+                store.list_books(s).len(),
+                "count_books != list_books for {s:?}",
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

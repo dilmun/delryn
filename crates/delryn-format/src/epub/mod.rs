@@ -212,6 +212,20 @@ pub fn read_fulltext(path: impl AsRef<Path>) -> Result<String> {
     Ok(out)
 }
 
+/// The book's table-of-contents labels (chapter titles), flattened depth-first.
+/// Clean structured text — no page numbers, images, or symbols — for content-based
+/// duplicate detection. Empty if the book can't be opened or has no TOC.
+pub fn toc_labels(path: impl AsRef<Path>) -> Vec<String> {
+    let Ok(doc) = EpubDocument::open(path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in doc.toc() {
+        entry.collect_labels(&mut out);
+    }
+    out
+}
+
 /// Best-effort title (and subtitle) guessed from the book's *content* — for
 /// converted files whose metadata title and filename are both opaque IDs. Reads
 /// the first few content sections and picks the most prominent real heading; a

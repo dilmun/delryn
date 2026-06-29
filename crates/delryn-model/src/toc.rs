@@ -9,6 +9,17 @@ pub struct TocEntry {
     pub children: Vec<TocEntry>,
 }
 
+impl TocEntry {
+    /// Append this entry's label and all of its descendants' labels, depth-first,
+    /// to `out` — the flat list of chapter titles used for content-based matching.
+    pub fn collect_labels(&self, out: &mut Vec<String>) {
+        out.push(self.label.clone());
+        for child in &self.children {
+            child.collect_labels(out);
+        }
+    }
+}
+
 /// A single navigable row for the sidebar outline. Flattened (with `depth`)
 /// rather than a tree: top-level rows are sections, deeper rows are the
 /// headings within them.
