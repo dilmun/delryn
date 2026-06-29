@@ -154,6 +154,10 @@ pub struct App {
     pub tag_edit: Option<TagInput>,
     /// Duplicate-resolution overlay, if open.
     pub dup_resolve: Option<DupResolve>,
+    /// The duplicate-resolution overlay stashed while previewing a book from it —
+    /// kept out of `dup_resolve` so the dispatcher and renderer ignore it during the
+    /// preview; restored when the reader returns (`q`/Esc).
+    pub dup_preview: Option<DupResolve>,
     /// A destructive action awaiting a yes/no confirmation, if any. Intercepts
     /// input ahead of every popup and is answered with y/⏎ or n/Esc.
     pub pending_confirm: Option<PendingConfirm>,
@@ -430,6 +434,7 @@ impl App {
             lib_coll_edit: None,
             tag_edit: None,
             dup_resolve: None,
+            dup_preview: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
@@ -505,6 +510,7 @@ impl App {
             lib_coll_edit: None,
             tag_edit: None,
             dup_resolve: None,
+            dup_preview: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,

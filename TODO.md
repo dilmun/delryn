@@ -195,12 +195,15 @@ jump-by-type + a reader cursor.
       **smart auto-select** keeps the best (engagement > original > configured
       format keep-order > richer metadata > larger) and pre-checks the worse ones;
       `space` toggles, `a` re-auto, `u` clears, `n` **keeps the group** ("not a
-      duplicate" — persisted in `dismissed_dups`, never flagged again), `f`
+      duplicate" — persisted in `dismissed_dups`, never flagged again), `p`
+      **previews** the selected copy in the reader (q/Esc returns to the overlay —
+      stashed in `dup_preview`), `r` **reveals** it in the OS file manager, `f`
       **full-screen** toggle, `o` opens the resolver's **preferences** (Library
       Settings → Duplicates: a "converted: always delete" rule + a per-format keep
       priority you reorder with l/h — `config.dup_converted_delete`/`dup_format_order`),
-      `d` deletes all checked after one confirm. Each row shows the file's full
-      **path** (left-elided; whole path visible full-screen).
+      `d` deletes all checked after one confirm. Rows are an **aligned table** under a
+      fixed header (keep/delete · format · size · source · read-flags · path); the
+      path keeps its directory and trims a long filename (whole path full-screen).
 - [x] Thorough duplicate scan (user-triggered, off the default path): in the
       Duplicates view, `R` reads the **table of contents** of *every* book (so a
       content match can join copies metadata missed — grouping unions all tiers, no
