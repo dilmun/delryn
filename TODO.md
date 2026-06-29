@@ -197,13 +197,16 @@ jump-by-type + a reader cursor.
       Duplicates view, `R` runs a cover-based deep scan — a worker thread
       perceptually hashes every book's cover (`delryn_media::cover_dhash`, a 64-bit
       dHash; cache-first so already-built covers cost only a decode), streaming
-      progress to the status bar; matches within a Hamming threshold become
-      candidate links (`dedup::cover_link_candidates`) persisted to `dup_links`,
-      which the grouping (`duplicate_groups_with_links`) folds in. Catches the
-      misses metadata can't — chiefly **PDFs** (little/no metadata, but a cover from
-      the rendered first page). Recall-oriented + human-confirmed: the overlay's `n`
-      ("keep both") discards false candidates. DB writes stay on the main thread
-      (Connection isn't `Send`); the worker computes pure data.
+      progress to the status bar; a pair becomes a candidate link when its covers
+      are within a Hamming threshold **and** its titles agree (overlap coefficient
+      ≥ 0.6, ≥2 shared tokens — `dedup::cover_link_candidates`). Links persist to
+      `dup_links`, which the grouping (`duplicate_groups_with_links`) folds in.
+      Catches the misses metadata can't — chiefly **PDFs** (author/ISBN absent, so
+      the metadata key can't match, though title+cover do). The title gate is the
+      precision fix: cover similarity alone collides on shared publisher templates /
+      generic title pages and then chains unrelated books via union-find. Human-
+      confirmed: the overlay's `n` ("keep both") discards false candidates. DB
+      writes stay on the main thread (Connection isn't `Send`); worker is pure.
 - [ ] Dedup, further tiers (only if duplicates still slip through — all kept
       cheap/lazy, no library-wide content scan): **(2)** bounded fuzzy title
       fallback, blocked by author-surname / first title token to stay near-linear;

@@ -85,30 +85,70 @@ pub fn duplicate_paths_excluding(
         .collect()
 }
 
-/// Candidate duplicate pairs found by cover similarity: every pair of books whose
-/// cover dHashes are within `max_distance` bits (see `delryn_media::cover_dhash`).
+/// Two cover-matched books are only linked when their titles also agree by at
+/// least this overlap fraction (shared tokens ÷ shorter title). Cover similarity
+/// alone is unreliable — publishers reuse near-identical cover templates and many
+/// PDFs open on a generic title page — so the title is the precision gate.
+const TITLE_OVERLAP_MIN: f32 = 0.6;
+
+/// Candidate duplicate pairs from the thorough scan: pairs whose cover dHashes are
+/// within `max_distance` bits (see `delryn_media::cover_dhash`) **and** whose titles
+/// agree (see [`titles_overlap`]). Each item is `(path, title, cover_hash)`.
 /// Returned as canonically-ordered `(a, b)` path pairs with `a < b`.
 ///
-/// This is an O(n²) scan over the hashed set — fine at personal-library scale (a
-/// few thousand books is a few million 64-bit pop-counts, milliseconds) and far
-/// simpler than an LSH index. It's a *candidate* generator: the reader confirms
-/// real duplicates in the resolution overlay, so a permissive distance favours
-/// recall (catching cross-format twins) over precision.
-pub fn cover_link_candidates(hashes: &[(String, u64)], max_distance: u32) -> Vec<(String, String)> {
+/// The cover compare is an O(n²) scan over the hashed set — fine at personal-library
+/// scale (a few thousand books is a few million 64-bit pop-counts, milliseconds).
+/// Requiring title agreement is what stops shared *template* covers (a publisher's
+/// series look, a generic title page) from linking unrelated books — and, because
+/// each link is then precise, stops the union-find from chaining different books
+/// into one bloated group. It's still a *candidate* generator: the reader confirms
+/// in the overlay (and `n` keeps false ones apart).
+pub fn cover_link_candidates(
+    items: &[(String, String, u64)],
+    max_distance: u32,
+) -> Vec<(String, String)> {
+    // Normalize each title to a token set once.
+    let tokens: Vec<HashSet<String>> = items
+        .iter()
+        .map(|(_, title, _)| {
+            norm_title(title)
+                .split_whitespace()
+                .map(String::from)
+                .collect()
+        })
+        .collect();
     let mut out = Vec::new();
-    for i in 0..hashes.len() {
-        for j in (i + 1)..hashes.len() {
-            if (hashes[i].1 ^ hashes[j].1).count_ones() <= max_distance {
-                let (a, b) = (&hashes[i].0, &hashes[j].0);
-                if a < b {
-                    out.push((a.clone(), b.clone()));
-                } else {
-                    out.push((b.clone(), a.clone()));
-                }
+    for i in 0..items.len() {
+        for j in (i + 1)..items.len() {
+            if (items[i].2 ^ items[j].2).count_ones() > max_distance {
+                continue;
+            }
+            if !titles_overlap(&tokens[i], &tokens[j]) {
+                continue;
+            }
+            let (a, b) = (&items[i].0, &items[j].0);
+            if a < b {
+                out.push((a.clone(), b.clone()));
+            } else {
+                out.push((b.clone(), a.clone()));
             }
         }
     }
     out
+}
+
+/// Do two normalized-title token sets agree enough to call the books the same?
+/// Requires at least two shared tokens (so a lone generic word like "python"
+/// doesn't qualify) and an overlap coefficient — shared ÷ shorter set — of at
+/// least [`TITLE_OVERLAP_MIN`]. The overlap coefficient (not Jaccard) so a short
+/// filename-derived PDF title still matches its longer full-title EPUB twin.
+fn titles_overlap(a: &HashSet<String>, b: &HashSet<String>) -> bool {
+    let shared = a.intersection(b).count();
+    if shared < 2 {
+        return false;
+    }
+    let shorter = a.len().min(b.len());
+    shorter > 0 && shared as f32 / shorter as f32 >= TITLE_OVERLAP_MIN
 }
 
 /// A stable identity for a duplicate group, independent of member order: the
@@ -511,15 +551,54 @@ mod tests {
     }
 
     #[test]
-    fn cover_candidates_pair_near_hashes_canonically() {
-        let near = (0b1011u64, 0b1010u64); // distance 1
-        let far = 0b0101_0101u64; // far from both
-        let hashes = vec![
-            ("/z.pdf".to_string(), near.0),
-            ("/a.epub".to_string(), near.1),
-            ("/x.epub".to_string(), far),
+    fn cover_candidates_need_near_hash_and_title_agreement() {
+        // Same near-identical cover hash for all three. Only the pair that also
+        // shares a title is linked; the third (different title) is not.
+        let h = 0b1010_1100u64;
+        let items = vec![
+            (
+                "/dl.pdf".to_string(),
+                "Applied Deep Learning with TensorFlow 2".to_string(),
+                h,
+            ),
+            (
+                "/dl.epub".to_string(),
+                "Applied Deep Learning with TensorFlow 2: Learn to Implement".to_string(),
+                h ^ 0b1, // distance 1
+            ),
+            (
+                "/nlp.pdf".to_string(),
+                "Applied Natural Language Processing with Python".to_string(),
+                h, // identical cover (shared publisher template), different title
+            ),
         ];
-        let pairs = cover_link_candidates(&hashes, 4);
-        assert_eq!(pairs, vec![("/a.epub".to_string(), "/z.pdf".to_string())]);
+        let pairs = cover_link_candidates(&items, 4);
+        assert_eq!(
+            pairs,
+            vec![("/dl.epub".to_string(), "/dl.pdf".to_string())],
+            "title agreement gates the template-cover collision"
+        );
+    }
+
+    #[test]
+    fn cover_candidates_reject_far_hashes_even_if_titles_match() {
+        let items = vec![
+            ("/a.epub".to_string(), "Clean Code".to_string(), 0u64),
+            ("/b.pdf".to_string(), "Clean Code".to_string(), u64::MAX),
+        ];
+        assert!(cover_link_candidates(&items, 4).is_empty());
+    }
+
+    #[test]
+    fn titles_overlap_rejects_single_shared_generic_token() {
+        let a: HashSet<String> = ["learning", "python"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let b: HashSet<String> = ["mastering", "python"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(!titles_overlap(&a, &b), "one shared word is not enough");
     }
 }

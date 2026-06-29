@@ -1,7 +1,9 @@
 //! Thorough duplicate scan: a user-triggered pass that perceptually hashes every
-//! book's cover on a worker thread, then links books whose covers match. This
-//! catches duplicates the metadata pass can't — chiefly PDFs, which carry little
-//! or no usable title/author/ISBN but do have a cover (their rendered first page).
+//! book's cover on a worker thread, then links books whose covers *and* titles
+//! agree (see `dedup::cover_link_candidates`). This catches duplicates the default
+//! pass misses — chiefly PDFs, whose author/ISBN is usually absent so the
+//! metadata key can't match, even though their title and cover do. The title gate
+//! keeps shared publisher cover templates from linking unrelated books.
 //!
 //! It's deliberately *off the default path*: the metadata grouping runs on every
 //! refresh, but cover hashing means decoding (and, for PDFs, rasterizing) an image
@@ -13,10 +15,9 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use super::App;
 
-/// Cover dHashes within this many bits are treated as the same cover. Permissive
-/// by design — it generates *candidates* the reader confirms in the overlay, so we
-/// favour recall (catching cross-format twins through recompression/scaling noise)
-/// over precision.
+/// Cover dHashes within this many bits are treated as the same cover. Kept a touch
+/// permissive (recompression/scaling noise) because precision comes from the title
+/// gate in `dedup::cover_link_candidates`, not from this distance alone.
 const COVER_HAMMING_MAX: u32 = 8;
 
 /// State of an in-flight cover scan. `done`/`total` drive the progress message;
@@ -110,10 +111,26 @@ impl App {
     }
 
     /// Compute the cover-match candidates from the collected hashes, persist them,
-    /// and refresh so the Duplicates view reflects the new groups.
+    /// and refresh so the Duplicates view reflects the new groups. A cover match is
+    /// only kept when the titles also agree (see `dedup::cover_link_candidates`), so
+    /// shared publisher templates don't link unrelated books — hence the titles.
     fn finish_dup_scan(&mut self, scan: DupScan) {
-        let pairs = crate::library::dedup::cover_link_candidates(&scan.hashes, COVER_HAMMING_MAX);
+        let mut pairs = Vec::new();
         if let Some(store) = &self.store {
+            let titles: std::collections::HashMap<String, String> = store
+                .all_books()
+                .into_iter()
+                .map(|b| (b.path, b.title))
+                .collect();
+            let items: Vec<(String, String, u64)> = scan
+                .hashes
+                .iter()
+                .map(|(path, hash)| {
+                    let title = titles.get(path).cloned().unwrap_or_default();
+                    (path.clone(), title, *hash)
+                })
+                .collect();
+            pairs = crate::library::dedup::cover_link_candidates(&items, COVER_HAMMING_MAX);
             store.replace_cover_dup_links(&pairs);
         }
         self.refresh_library();
