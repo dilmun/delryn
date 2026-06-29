@@ -212,6 +212,33 @@ pub fn read_fulltext(path: impl AsRef<Path>) -> Result<String> {
     Ok(out)
 }
 
+/// A bounded plain-text sample from the *middle* of the book, for content-based
+/// duplicate detection. The middle is chosen deliberately: it's body prose in
+/// every format (no title page, copyright, TOC, or index), so an EPUB and a PDF of
+/// the same work sample the same text and fingerprint alike — while front/back
+/// matter, which differs by edition and format, is skipped. Stops after roughly
+/// `max_chars` (a chapter or two — never the whole book). `None` if no text.
+pub fn extract_text_sample(path: impl AsRef<Path>, max_chars: usize) -> Option<String> {
+    let mut doc = EpubDoc::new(path.as_ref()).ok()?;
+    let n = doc.get_num_chapters();
+    if n == 0 {
+        return None;
+    }
+    let mut out = String::new();
+    let mut i = n / 2; // middle chapter
+    while i < n && out.len() < max_chars {
+        if doc.set_current_chapter(i)
+            && let Some((xhtml, _)) = doc.get_current_str()
+            && let Ok(text) = html2text::from_read(xhtml.as_bytes(), EXTRACT_WIDTH)
+        {
+            out.push_str(&text);
+            out.push('\n');
+        }
+        i += 1;
+    }
+    (!out.trim().is_empty()).then_some(out)
+}
+
 /// Best-effort title (and subtitle) guessed from the book's *content* — for
 /// converted files whose metadata title and filename are both opaque IDs. Reads
 /// the first few content sections and picks the most prominent real heading; a

@@ -46,42 +46,6 @@ pub fn decode(bytes: &[u8]) -> Option<DynamicImage> {
         .ok()
 }
 
-/// Perceptual **difference hash** (dHash) of a cover image: a 64-bit fingerprint
-/// robust to scaling and mild recompression, so the same cover art in two files
-/// (e.g. a PDF's first page and an EPUB's embedded cover) hashes alike. Compare
-/// two hashes with [`hamming`]: a small distance means visually similar.
-///
-/// The image is reduced to 9×8 greyscale and each pixel compared to its right
-/// neighbour (left brighter → 1 bit). Returns `None` if the bytes don't decode or
-/// the cover is too flat to fingerprint (a near-blank page or solid colour — those
-/// would otherwise all collide), so callers can simply skip it.
-pub fn cover_dhash(bytes: &[u8]) -> Option<u64> {
-    let small = decode(bytes)?
-        .grayscale()
-        .resize_exact(9, 8, image::imageops::FilterType::Triangle)
-        .to_luma8();
-    let mut hash = 0u64;
-    let mut bit = 0u32;
-    for y in 0..8u32 {
-        for x in 0..8u32 {
-            if small.get_pixel(x, y)[0] > small.get_pixel(x + 1, y)[0] {
-                hash |= 1 << bit;
-            }
-            bit += 1;
-        }
-    }
-    // A near-uniform image yields almost all 0s or all 1s; such hashes aren't
-    // distinctive and would match each other, so reject them.
-    let set = hash.count_ones();
-    (6..=58).contains(&set).then_some(hash)
-}
-
-/// Hamming distance between two [`cover_dhash`] values — the number of differing
-/// bits (0 = identical, 64 = opposite).
-pub fn hamming(a: u64, b: u64) -> u32 {
-    (a ^ b).count_ones()
-}
-
 // ── Theme-aware ink rendering ────────────────────────────────────────────────
 //
 // Many EPUBs ship math equations (and other line drawings) as PNGs of black ink

@@ -1,13 +1,17 @@
-//! Thorough duplicate scan: a user-triggered pass that perceptually hashes every
-//! book's cover on a worker thread, then links books whose covers *and* titles
-//! agree (see `dedup::cover_link_candidates`). This catches duplicates the default
-//! pass misses — chiefly PDFs, whose author/ISBN is usually absent so the
-//! metadata key can't match, even though their title and cover do. The title gate
-//! keeps shared publisher cover templates from linking unrelated books.
+//! Thorough duplicate scan: a user-triggered pass that fingerprints every book's
+//! *content* on a worker thread, then links books whose text matches closely (see
+//! `dedup::text_simhash` / `dedup::content_link_candidates`). Content is the ground
+//! truth — independent of the messy titles, authors, and ISBNs the default pass
+//! relies on — so this catches same-work files (notably EPUB↔PDF) whatever their
+//! metadata says.
 //!
-//! It's deliberately *off the default path*: the metadata grouping runs on every
-//! refresh, but cover hashing means decoding (and, for PDFs, rasterizing) an image
-//! per book, so it only runs when the reader asks. The worker computes pure data
+//! Each book is sampled from the *middle* (body prose, aligned across formats, no
+//! front/back-matter boilerplate — see `epub`/`pdf::extract_text_sample`), reduced
+//! to bare letters/digits, and SimHashed. Image-only/scanned PDFs (no text layer)
+//! yield no fingerprint and are simply skipped, never falsely matched.
+//!
+//! It's deliberately *off the default path*: sampling means opening and decoding
+//! each file, so it only runs when the reader asks. The worker computes pure data
 //! and streams progress + results back; the main thread persists the discovered
 //! links (the DB connection isn't `Send`) and the existing grouping folds them in.
 
@@ -15,13 +19,14 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use super::App;
 
-/// Cover dHashes within this many bits are treated as the same cover. Kept a touch
-/// permissive (recompression/scaling noise) because precision comes from the title
-/// gate in `dedup::cover_link_candidates`, not from this distance alone.
-const COVER_HAMMING_MAX: u32 = 8;
+/// Plain-text budget sampled per book — a chapter or two, never the whole book.
+const SAMPLE_CHARS: usize = 16_000;
+/// Most PDF pages to pull text from (from the middle outward).
+const PDF_SAMPLE_PAGES: usize = 10;
 
-/// State of an in-flight cover scan. `done`/`total` drive the progress message;
-/// `hashes` accumulates each book's cover fingerprint as the worker reports it.
+/// State of an in-flight content scan. `done`/`total` drive the progress message;
+/// `hashes` accumulates each book's content fingerprint as the worker reports it
+/// (books with too little text to fingerprint are counted but not stored).
 pub struct DupScan {
     rx: Receiver<(String, Option<u64>)>,
     total: usize,
@@ -30,10 +35,10 @@ pub struct DupScan {
 }
 
 impl App {
-    /// Kick off a thorough cover scan over the whole library. No-op (with a flash)
-    /// if one is already running or there are no books. The worker thread reads
-    /// each cover (cache-first, so already-built covers cost only a decode) and
-    /// sends back its perceptual hash; [`App::poll_dup_scan`] drains the results.
+    /// Kick off a thorough content scan over the whole library. No-op (with a
+    /// flash) if one is already running or there are no books. The worker thread
+    /// samples each book's text and sends back its SimHash (or `None`);
+    /// [`App::poll_dup_scan`] drains the results.
     pub(crate) fn start_dup_scan(&mut self) {
         if self.dup_scan.is_some() {
             return;
@@ -50,8 +55,7 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for path in paths {
-                let hash =
-                    super::load_cover_bytes(&path).and_then(|b| crate::media::cover_dhash(&b));
+                let hash = sample_text(&path).and_then(|t| crate::library::dedup::text_simhash(&t));
                 // A send error means the receiver was dropped (scan abandoned); stop.
                 if tx.send((path, hash)).is_err() {
                     break;
@@ -60,7 +64,7 @@ impl App {
             // Dropping `tx` here disconnects the channel — the signal that the scan
             // has finished (see the `Disconnected` arm in `poll_dup_scan`).
         });
-        self.lib_flash = Some(format!("scanning covers 0/{total}…"));
+        self.lib_flash = Some(format!("fingerprinting 0/{total}…"));
         self.dup_scan = Some(DupScan {
             rx,
             total,
@@ -69,14 +73,14 @@ impl App {
         });
     }
 
-    /// True while a cover scan is running — keeps the main loop polling.
+    /// True while a content scan is running — keeps the main loop polling.
     pub fn dup_scan_pending(&self) -> bool {
         self.dup_scan.is_some()
     }
 
     /// Drain whatever the scan worker has produced. Updates the progress flash as
-    /// hashes arrive and, once the worker finishes, persists the cover links and
-    /// refreshes the library. Returns `true` if anything changed (request a redraw).
+    /// fingerprints arrive and, once the worker finishes, persists the content links
+    /// and refreshes. Returns `true` if anything changed (request a redraw).
     pub fn poll_dup_scan(&mut self) -> bool {
         let Some(scan) = self.dup_scan.as_mut() else {
             return false;
@@ -105,41 +109,43 @@ impl App {
             return true;
         }
         if progressed {
-            self.lib_flash = Some(format!("scanning covers {}/{}…", scan.done, scan.total));
+            self.lib_flash = Some(format!("fingerprinting {}/{}…", scan.done, scan.total));
         }
         progressed
     }
 
-    /// Compute the cover-match candidates from the collected hashes, persist them,
-    /// and refresh so the Duplicates view reflects the new groups. A cover match is
-    /// only kept when the titles also agree (see `dedup::cover_link_candidates`), so
-    /// shared publisher templates don't link unrelated books — hence the titles.
+    /// Pair up the collected content fingerprints, persist the links, and refresh so
+    /// the Duplicates view reflects the new groups.
     fn finish_dup_scan(&mut self, scan: DupScan) {
-        let mut pairs = Vec::new();
+        let pairs = crate::library::dedup::content_link_candidates(
+            &scan.hashes,
+            crate::library::dedup::CONTENT_HAMMING_MAX,
+        );
         if let Some(store) = &self.store {
-            let titles: std::collections::HashMap<String, String> = store
-                .all_books()
-                .into_iter()
-                .map(|b| (b.path, b.title))
-                .collect();
-            let items: Vec<(String, String, u64)> = scan
-                .hashes
-                .iter()
-                .map(|(path, hash)| {
-                    let title = titles.get(path).cloned().unwrap_or_default();
-                    (path.clone(), title, *hash)
-                })
-                .collect();
-            pairs = crate::library::dedup::cover_link_candidates(&items, COVER_HAMMING_MAX);
-            store.replace_cover_dup_links(&pairs);
+            store.replace_scan_dup_links(&pairs);
         }
         self.refresh_library();
         self.lib_flash = Some(format!(
-            "deep scan done: {} cover{} hashed, {} match{} — press D to resolve",
+            "deep scan done: fingerprinted {}/{}, {} match{} — press D to resolve",
             scan.hashes.len(),
-            if scan.hashes.len() == 1 { "" } else { "s" },
+            scan.total,
             pairs.len(),
             if pairs.len() == 1 { "" } else { "es" },
         ));
+    }
+}
+
+/// Sample a bounded chunk of a book's text for fingerprinting, dispatching by file
+/// type. `None` for unsupported types or files with no extractable text.
+fn sample_text(path: &str) -> Option<String> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match ext.as_str() {
+        "epub" => crate::document::epub::extract_text_sample(path, SAMPLE_CHARS),
+        "pdf" => crate::document::pdf::extract_text_sample(path, PDF_SAMPLE_PAGES, SAMPLE_CHARS),
+        _ => None,
     }
 }
