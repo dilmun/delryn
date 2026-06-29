@@ -1387,8 +1387,6 @@ mod tests {
         );
         {
             let store = Store::open_default().unwrap();
-            // Same title/author → duplicates; distinct sizes → deterministic keep
-            // (larger wins the tiebreak).
             store
                 .upsert_book(
                     &sbig, "Same", "Auth", None, 9_000_000, 1, 1, "", None, "", "", "", "",
@@ -1399,6 +1397,9 @@ mod tests {
                     &ssmall, "Same", "Auth", None, 1000, 1, 1, "", None, "", "", "", "",
                 )
                 .unwrap();
+            // Grouping is content-scan only; link the two so they form a group.
+            // Distinct sizes → deterministic keep (larger wins the tiebreak).
+            store.replace_scan_dup_links(&[(sbig.clone(), ssmall.clone())]);
         }
 
         let mut app = App::library();

@@ -178,19 +178,14 @@ jump-by-type + a reader cursor.
       Paused/Dropped/Reference) beyond the progress-derived unread/reading/
       finished — `m` cycles it, shown as its own toggleable `Status` column +
       detail line, sortable, DSL-filterable.
-- [x] Duplicate detection + resolution: `delryn-library::dedup`. **Cheap-to-expensive
-      cascade.** Tier 1+2 (exact metadata, instant every refresh): each book emits a
-      canonical ISBN-13 key (ISBN-10↔13 collapsed) *and* a normalized title key **per
-      author** (title + each author's surname), joined by connected components
-      (union-find). Matching on *any* shared key catches the common misses: a copy
-      with no ISBN joins its ISBN-bearing twin; editions with different ISBNs meet on
-      title+author; a multi-author book matches a copy crediting **any one** of its
-      authors (any order/format). Title normalization trims subtitle/divider/paren
-      tails (`main_title`), folds diacritics, strips trailing edition noise ("2nd ed")
-      while keeping volume/part markers so series entries don't collapse. Tier 3 is
-      the on-demand content scan (`R`, below); grouping **unions all tiers** (ISBN ∪
-      title+author ∪ TOC links via union-find), so any one matching links a group and
-      no tier's matches are lost. A "Duplicates" library section lists members. `D`
+- [x] Duplicate detection + resolution: `delryn-library::dedup`. **Content-only** —
+      books are grouped *solely* by table-of-contents matches from the thorough scan
+      (`R`, below): each match is a `(path, path)` link and connected components of
+      those links (union-find) are the groups. The TOC is the one reliable
+      cross-format signal; messy metadata (ISBN/title/author) is deliberately **not**
+      used, and a book with no usable TOC simply isn't flagged (acceptable by design).
+      Run `R` to populate; the "Duplicates" library section then lists the matched
+      members. `D`
       opens a **resolution overlay** — every group with a checkbox per copy; a
       **smart auto-select** keeps the best (engagement > original > configured
       format keep-order > richer metadata > larger) and pre-checks the worse ones;
