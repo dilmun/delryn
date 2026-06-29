@@ -212,32 +212,18 @@ pub fn read_fulltext(path: impl AsRef<Path>) -> Result<String> {
     Ok(out)
 }
 
-/// A bounded plain-text sample from the *front* of the book — the printed title
-/// page, author, copyright year, and table of contents — for content-based
-/// duplicate detection. This is where the book states its own identity, so it
-/// matches across formats (an EPUB and a PDF of the same work open the same way)
-/// and is distinctive (the title/author/TOC, not generic body prose or boilerplate)
-/// — unlike metadata, which is often wrong. Stops after roughly `max_chars` (the
-/// opening sections — never the whole book). `None` if no text.
-pub fn extract_text_sample(path: impl AsRef<Path>, max_chars: usize) -> Option<String> {
-    let mut doc = EpubDoc::new(path.as_ref()).ok()?;
-    let n = doc.get_num_chapters();
-    if n == 0 {
-        return None;
+/// The book's table-of-contents labels (chapter titles), flattened depth-first.
+/// Clean structured text — no page numbers, images, or symbols — for content-based
+/// duplicate detection. Empty if the book can't be opened or has no TOC.
+pub fn toc_labels(path: impl AsRef<Path>) -> Vec<String> {
+    let Ok(doc) = EpubDocument::open(path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in doc.toc() {
+        entry.collect_labels(&mut out);
     }
-    let mut out = String::new();
-    let mut i = 0; // from the title page / front matter onward
-    while i < n && out.len() < max_chars {
-        if doc.set_current_chapter(i)
-            && let Some((xhtml, _)) = doc.get_current_str()
-            && let Ok(text) = html2text::from_read(xhtml.as_bytes(), EXTRACT_WIDTH)
-        {
-            out.push_str(&text);
-            out.push('\n');
-        }
-        i += 1;
-    }
-    (!out.trim().is_empty()).then_some(out)
+    out
 }
 
 /// Best-effort title (and subtitle) guessed from the book's *content* — for
