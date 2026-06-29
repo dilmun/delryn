@@ -188,8 +188,9 @@ jump-by-type + a reader cursor.
       authors (any order/format). Title normalization trims subtitle/divider/paren
       tails (`main_title`), folds diacritics, strips trailing edition noise ("2nd ed")
       while keeping volume/part markers so series entries don't collapse. Tier 3 is
-      the on-demand content scan (`R`, below), which only opens files metadata
-      *didn't* already group. A "Duplicates" library section lists members. `D`
+      the on-demand content scan (`R`, below); grouping **unions all tiers** (ISBN ∪
+      title+author ∪ TOC links via union-find), so any one matching links a group and
+      no tier's matches are lost. A "Duplicates" library section lists members. `D`
       opens a **resolution overlay** — every group with a checkbox per copy; a
       **smart auto-select** keeps the best (engagement > original > configured
       format keep-order > richer metadata > larger) and pre-checks the worse ones;
@@ -201,10 +202,10 @@ jump-by-type + a reader cursor.
       `d` deletes all checked after one confirm. Each row shows the file's full
       **path** (left-elided; whole path visible full-screen).
 - [x] Thorough duplicate scan (user-triggered, off the default path): in the
-      Duplicates view, `R` reads the **table of contents** of each book *metadata
-      didn't already group* (the cascade's tier 3 — skips files matched by ISBN/
-      title+author, so it opens far fewer) from its own structure (NOT metadata):
-      EPUB nav + PDF bookmark outline (`epub`/`pdf::toc_labels`;
+      Duplicates view, `R` reads the **table of contents** of *every* book (so a
+      content match can join copies metadata missed — grouping unions all tiers, no
+      misses) from its own structure (NOT metadata): EPUB nav + PDF bookmark outline
+      (`epub`/`pdf::toc_labels`;
       PDF's synthetic "Page N" fallback is rejected). Each chapter label is reduced
       to its distinctive part — leading "Chapter N"/"Part N" stripped, generic
       boilerplate ("Preface"/"Summary"/"Index"/…) dropped — and hashed into a set

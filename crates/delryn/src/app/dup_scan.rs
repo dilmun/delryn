@@ -6,6 +6,10 @@
 //! matches every combination (EPUB↔EPUB, PDF↔PDF, PDF↔EPUB) without colliding on
 //! shared topics or publisher templates.
 //!
+//! It scans *every* book (not just those the metadata tiers missed): the grouping
+//! unions all signals — ISBN, title+author, and these TOC links — so a content
+//! match can still join, say, a metadata-less third copy to an already-paired book.
+//!
 //! Per format: an EPUB's TOC is its navigation document; a PDF's is its bookmark
 //! outline (`epub`/`pdf::toc_labels`). A book with no real TOC — a PDF with no
 //! bookmarks, a bare EPUB — yields no labels and is skipped.
@@ -15,7 +19,6 @@
 //! thread persists the links (the DB connection isn't `Send`) and the existing
 //! grouping folds them in.
 
-use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use super::App;
@@ -27,22 +30,20 @@ type IdResult = (String, Vec<String>);
 
 /// State of an in-flight content scan. `done`/`total` drive the progress message;
 /// `ids` accumulates each book's table-of-contents as the worker reports it.
-/// `skipped` is the count already matched by metadata (not scanned).
 pub struct DupScan {
     rx: Receiver<IdResult>,
     total: usize,
     done: usize,
     ids: Vec<ContentId>,
-    skipped: usize,
 }
 
 impl App {
-    /// Kick off a thorough content scan. The cheap exact-metadata tiers (ISBN, then
-    /// title + any author) already group what they can on every refresh, so the
-    /// content scan only opens files for the *leftovers* — books metadata couldn't
-    /// match. No-op (with a flash) if one is already running or there are no books.
-    /// The worker reads each remaining book's table-of-contents and sends it back;
-    /// [`App::poll_dup_scan`] drains the results.
+    /// Kick off a thorough content scan over *every* book. The exact-metadata tiers
+    /// already group what they can on each refresh, but the content scan still reads
+    /// every book so a TOC match can join copies metadata missed — the grouping
+    /// unions all signals, so no tier's matches are lost. No-op (with a flash) if
+    /// one is already running or there are no books. The worker reads each book's
+    /// table-of-contents and sends it back; [`App::poll_dup_scan`] drains it.
     pub(crate) fn start_dup_scan(&mut self) {
         if self.dup_scan.is_some() {
             return;
@@ -50,34 +51,10 @@ impl App {
         let Some(store) = &self.store else {
             return;
         };
-        let all = store.all_books();
-        if all.is_empty() {
-            self.lib_flash = Some("no books to scan".into());
-            return;
-        }
-        // Tier 1+2 (exact metadata): books already in a metadata duplicate group are
-        // resolved — skip opening their files.
-        let grouped: HashSet<String> = crate::library::dedup::duplicate_groups(&all)
-            .into_iter()
-            .flatten()
-            .map(|i| all[i].path.clone())
-            .collect();
-        let skipped = grouped.len();
-        let paths: Vec<String> = all
-            .into_iter()
-            .map(|b| b.path)
-            .filter(|p| !grouped.contains(p))
-            .collect();
+        let paths: Vec<String> = store.all_books().into_iter().map(|b| b.path).collect();
         let total = paths.len();
         if total == 0 {
-            // Everything is matched by metadata; drop any stale content links.
-            if let Some(store) = &self.store {
-                store.replace_scan_dup_links(&[]);
-            }
-            self.refresh_library();
-            self.lib_flash = Some(format!(
-                "{skipped} matched by metadata — no content scan needed"
-            ));
+            self.lib_flash = Some("no books to scan".into());
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -98,7 +75,6 @@ impl App {
             total,
             done: 0,
             ids: Vec::with_capacity(total),
-            skipped,
         });
     }
 
@@ -155,8 +131,7 @@ impl App {
         }
         self.refresh_library();
         self.lib_flash = Some(format!(
-            "deep scan done: {} matched by metadata, read {}/{} contents, {} more match{} — D to resolve",
-            scan.skipped,
+            "deep scan done: read {}/{} contents, {} content match{} — press D to resolve",
             with_toc,
             scan.total,
             pairs.len(),
