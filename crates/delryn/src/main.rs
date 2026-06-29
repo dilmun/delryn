@@ -145,7 +145,8 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
             || app.online_active()
             || app.lib_grid_pending()
             || app.cover_pending()
-            || app.preview_pending();
+            || app.preview_pending()
+            || app.dup_scan_pending();
         let timeout = if dirty || busy {
             FRAME.saturating_sub(last_draw.elapsed())
         } else {
@@ -175,6 +176,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
 
         // Pick up finished Open Library results (editor's Online tab).
         if app.poll_online() {
+            dirty = true;
+        }
+        // Advance the thorough duplicate scan (cover hashing on a worker thread).
+        if app.poll_dup_scan() {
             dirty = true;
         }
         // Keep redrawing while the grid is still building visible covers.

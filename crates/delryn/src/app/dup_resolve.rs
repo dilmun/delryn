@@ -92,49 +92,54 @@ impl App {
             return;
         };
         let all = store.all_books();
-        // Groups the reader dismissed ("keep both") shouldn't be offered again.
+        // Cover-scan links fold in metadata-less matches; dismissed groups ("keep
+        // both") shouldn't be offered again.
         let dismissed = store.dismissed_duplicate_groups();
-        let groups: Vec<DupGroup> = crate::library::dedup::duplicate_groups(&all)
-            .into_iter()
-            .filter(|idxs| !dismissed.contains(&crate::library::dedup::group_signature(idxs, &all)))
-            .map(|idxs| {
-                let signature = crate::library::dedup::group_signature(&idxs, &all);
-                let members = idxs
-                    .iter()
-                    .map(|&i| {
-                        let b = &all[i];
-                        DupMember {
-                            path: b.path.clone(),
-                            file: file_name(&b.path),
-                            format: crate::document::BookFormat::from_path(&b.path)
-                                .label()
-                                .to_string(),
-                            size: b.size,
-                            converted: b.converted,
-                            pct: b.pct,
-                            favorite: b.favorite,
-                            rating: b.rating,
-                            meta: [
-                                !b.isbn.is_empty(),
-                                !b.publisher.is_empty(),
-                                !b.series.is_empty(),
-                                b.year.is_some(),
-                            ]
-                            .into_iter()
-                            .filter(|x| *x)
-                            .count() as u8,
-                            checked: false,
-                        }
-                    })
-                    .collect();
-                let label = all[idxs[0]].title.clone();
-                DupGroup {
-                    label,
-                    members,
-                    signature,
-                }
-            })
-            .collect();
+        let links = store.dup_links();
+        let groups: Vec<DupGroup> =
+            crate::library::dedup::duplicate_groups_with_links(&all, &links)
+                .into_iter()
+                .filter(|idxs| {
+                    !dismissed.contains(&crate::library::dedup::group_signature(idxs, &all))
+                })
+                .map(|idxs| {
+                    let signature = crate::library::dedup::group_signature(&idxs, &all);
+                    let members = idxs
+                        .iter()
+                        .map(|&i| {
+                            let b = &all[i];
+                            DupMember {
+                                path: b.path.clone(),
+                                file: file_name(&b.path),
+                                format: crate::document::BookFormat::from_path(&b.path)
+                                    .label()
+                                    .to_string(),
+                                size: b.size,
+                                converted: b.converted,
+                                pct: b.pct,
+                                favorite: b.favorite,
+                                rating: b.rating,
+                                meta: [
+                                    !b.isbn.is_empty(),
+                                    !b.publisher.is_empty(),
+                                    !b.series.is_empty(),
+                                    b.year.is_some(),
+                                ]
+                                .into_iter()
+                                .filter(|x| *x)
+                                .count() as u8,
+                                checked: false,
+                            }
+                        })
+                        .collect();
+                    let label = all[idxs[0]].title.clone();
+                    DupGroup {
+                        label,
+                        members,
+                        signature,
+                    }
+                })
+                .collect();
         if groups.is_empty() {
             self.lib_flash = Some("no duplicates found".into());
             return;

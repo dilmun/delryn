@@ -104,9 +104,12 @@ impl App {
         // detection (canonical ISBN-13 and/or normalized title+author, grouped by
         // connected components), richer than a title-only SQL match.
         let all_books = store.all_books();
-        // Groups the reader dismissed ("keep both") are not flagged again.
+        // Cover-scan links fold in books with no shared metadata; dismissed
+        // groups ("keep both") are not flagged again.
         let dismissed = store.dismissed_duplicate_groups();
-        let dup_paths = crate::library::dedup::duplicate_paths_excluding(&all_books, &dismissed);
+        let links = store.dup_links();
+        let dup_paths =
+            crate::library::dedup::duplicate_paths_excluding(&all_books, &links, &dismissed);
         let books = if self.lib_filter.trim().is_empty() {
             match &view {
                 LibView::Section(LibrarySection::Duplicates) => all_books
@@ -663,6 +666,14 @@ impl App {
             // `D` opens the duplicate-resolution overlay (all groups, checkboxes,
             // smart auto-select + manual select, bulk delete).
             KeyCode::Char('D') if pane != LibPane::Sidebar => self.open_dup_resolve(),
+            // `R` (Duplicates view only) runs a thorough cover scan, finding
+            // duplicates the metadata pass misses — chiefly PDFs matched by cover.
+            KeyCode::Char('R')
+                if pane != LibPane::Sidebar
+                    && matches!(self.lib_view, LibView::Section(LibrarySection::Duplicates)) =>
+            {
+                self.start_dup_scan()
+            }
             // Book actions operate on the selected book regardless of focus.
             KeyCode::Char('f') => {
                 if self.lib_marked.is_empty() {

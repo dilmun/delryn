@@ -72,6 +72,12 @@ CREATE TABLE IF NOT EXISTS collections (
 CREATE TABLE IF NOT EXISTS dismissed_dups (
     signature TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS dup_links (
+    a      TEXT NOT NULL,
+    b      TEXT NOT NULL,
+    signal TEXT NOT NULL DEFAULT 'cover',
+    PRIMARY KEY (a, b)
+);
 ";
 
 /// A bookmark or note, anchored to content by a text quote (reflow-stable).

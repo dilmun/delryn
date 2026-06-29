@@ -38,4 +38,32 @@ impl Store {
     pub fn clear_dismissed_duplicates(&self) {
         let _ = self.conn.execute("DELETE FROM dismissed_dups", []);
     }
+
+    /// Out-of-band duplicate links — candidate pairs the thorough cover scan
+    /// discovered. The grouping unions these in so cover-matched books (e.g. a PDF
+    /// and an EPUB with no shared metadata) land in one duplicate group.
+    pub fn dup_links(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT a, b FROM dup_links")
+            && let Ok(rows) =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        {
+            out.extend(rows.flatten());
+        }
+        out
+    }
+
+    /// Replace the cover-derived links with a fresh set (one transaction), leaving
+    /// any links from other signals intact. Called when a cover scan finishes.
+    pub fn replace_cover_dup_links(&self, pairs: &[(String, String)]) {
+        let _ = self
+            .conn
+            .execute("DELETE FROM dup_links WHERE signal = 'cover'", []);
+        for (a, b) in pairs {
+            let _ = self.conn.execute(
+                "INSERT OR IGNORE INTO dup_links (a, b, signal) VALUES (?1, ?2, 'cover')",
+                params![a, b],
+            );
+        }
+    }
 }

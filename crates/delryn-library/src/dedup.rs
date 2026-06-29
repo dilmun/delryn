@@ -16,6 +16,17 @@ use delryn_store::BookRow;
 /// Groups of book indices that are duplicates of one another (each group has ≥2
 /// members, members in ascending index order), ordered by first appearance.
 pub fn duplicate_groups(books: &[BookRow]) -> Vec<Vec<usize>> {
+    duplicate_groups_with_links(books, &[])
+}
+
+/// Like [`duplicate_groups`], but additionally treats each `(path_a, path_b)` in
+/// `links` as a duplicate edge. These come from the thorough cover scan (see
+/// [`cover_link_candidates`]) — discovered out-of-band and persisted — so books
+/// with no shared metadata (e.g. PDFs matched only by cover art) still group.
+pub fn duplicate_groups_with_links(
+    books: &[BookRow],
+    links: &[(String, String)],
+) -> Vec<Vec<usize>> {
     let mut uf = UnionFind::new(books.len());
     // First book index seen for each match key; subsequent books sharing the key
     // are unioned into the same component.
@@ -30,6 +41,20 @@ pub fn duplicate_groups(books: &[BookRow]) -> Vec<Vec<usize>> {
             }
         }
     }
+    // Cover-scan (or other out-of-band) links, resolved by path. Paths no longer
+    // in the library are silently skipped.
+    if !links.is_empty() {
+        let idx: HashMap<&str, usize> = books
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.path.as_str(), i))
+            .collect();
+        for (a, b) in links {
+            if let (Some(&ia), Some(&ib)) = (idx.get(a.as_str()), idx.get(b.as_str())) {
+                uf.union(ia, ib);
+            }
+        }
+    }
     let mut by_root: HashMap<usize, Vec<usize>> = HashMap::new();
     for i in 0..books.len() {
         by_root.entry(uf.find(i)).or_default().push(i); // pushed in ascending i
@@ -41,21 +66,49 @@ pub fn duplicate_groups(books: &[BookRow]) -> Vec<Vec<usize>> {
 
 /// The set of paths that belong to some duplicate group.
 pub fn duplicate_paths(books: &[BookRow]) -> HashSet<String> {
-    duplicate_paths_excluding(books, &HashSet::new())
+    duplicate_paths_excluding(books, &[], &HashSet::new())
 }
 
-/// Like [`duplicate_paths`], but groups the user has dismissed ("keep both") are
-/// left out — their signatures (see [`group_signature`]) are in `dismissed`.
+/// Like [`duplicate_paths`], but folds in cover-scan `links` and leaves out groups
+/// the user has dismissed ("keep both") — whose signatures (see [`group_signature`])
+/// are in `dismissed`.
 pub fn duplicate_paths_excluding(
     books: &[BookRow],
+    links: &[(String, String)],
     dismissed: &HashSet<String>,
 ) -> HashSet<String> {
-    duplicate_groups(books)
+    duplicate_groups_with_links(books, links)
         .into_iter()
         .filter(|g| !dismissed.contains(&group_signature(g, books)))
         .flatten()
         .map(|i| books[i].path.clone())
         .collect()
+}
+
+/// Candidate duplicate pairs found by cover similarity: every pair of books whose
+/// cover dHashes are within `max_distance` bits (see `delryn_media::cover_dhash`).
+/// Returned as canonically-ordered `(a, b)` path pairs with `a < b`.
+///
+/// This is an O(n²) scan over the hashed set — fine at personal-library scale (a
+/// few thousand books is a few million 64-bit pop-counts, milliseconds) and far
+/// simpler than an LSH index. It's a *candidate* generator: the reader confirms
+/// real duplicates in the resolution overlay, so a permissive distance favours
+/// recall (catching cross-format twins) over precision.
+pub fn cover_link_candidates(hashes: &[(String, u64)], max_distance: u32) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for i in 0..hashes.len() {
+        for j in (i + 1)..hashes.len() {
+            if (hashes[i].1 ^ hashes[j].1).count_ones() <= max_distance {
+                let (a, b) = (&hashes[i].0, &hashes[j].0);
+                if a < b {
+                    out.push((a.clone(), b.clone()));
+                } else {
+                    out.push((b.clone(), a.clone()));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// A stable identity for a duplicate group, independent of member order: the
@@ -426,11 +479,47 @@ mod tests {
         let groups = duplicate_groups(&books);
         let sig = group_signature(&groups[0], &books);
         let dismissed: HashSet<String> = [sig].into_iter().collect();
-        assert!(duplicate_paths_excluding(&books, &dismissed).is_empty());
+        assert!(duplicate_paths_excluding(&books, &[], &dismissed).is_empty());
         assert_eq!(
             duplicate_paths(&books).len(),
             2,
             "still flagged without the dismissal"
         );
+    }
+
+    #[test]
+    fn cover_links_group_books_with_no_shared_metadata() {
+        // Two files with nothing in common metadata-wise (the PDF case) — only a
+        // cover-scan link ties them together.
+        let books = vec![
+            book("/scan.pdf", "9912_ocr", "", ""),
+            book("/clean.epub", "The Pragmatic Programmer", "Hunt", ""),
+        ];
+        assert!(duplicate_groups(&books).is_empty(), "no metadata overlap");
+        let links = vec![("/scan.pdf".to_string(), "/clean.epub".to_string())];
+        let groups = duplicate_groups_with_links(&books, &links);
+        assert_eq!(groups.len(), 1, "the cover link groups them");
+        assert_eq!(groups[0], vec![0, 1]);
+    }
+
+    #[test]
+    fn stale_links_are_ignored() {
+        let books = vec![book("/a.epub", "One", "A", "")];
+        // A link referencing a path no longer in the library must not panic.
+        let links = vec![("/a.epub".to_string(), "/gone.pdf".to_string())];
+        assert!(duplicate_groups_with_links(&books, &links).is_empty());
+    }
+
+    #[test]
+    fn cover_candidates_pair_near_hashes_canonically() {
+        let near = (0b1011u64, 0b1010u64); // distance 1
+        let far = 0b0101_0101u64; // far from both
+        let hashes = vec![
+            ("/z.pdf".to_string(), near.0),
+            ("/a.epub".to_string(), near.1),
+            ("/x.epub".to_string(), far),
+        ];
+        let pairs = cover_link_candidates(&hashes, 4);
+        assert_eq!(pairs, vec![("/a.epub".to_string(), "/z.pdf".to_string())]);
     }
 }
