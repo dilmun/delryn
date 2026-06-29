@@ -664,13 +664,15 @@ impl App {
             // Cycle the manual reading status (none → paused → dropped → reference).
             KeyCode::Char('m') => self.lib_cycle_status(),
             // `D` opens the duplicate-resolution overlay (all groups, checkboxes,
-            // smart auto-select + manual select, bulk delete).
-            KeyCode::Char('D') if pane != LibPane::Sidebar => self.open_dup_resolve(),
-            // `R` (Duplicates view only) runs a thorough cover scan, finding
-            // duplicates the metadata pass misses — chiefly PDFs matched by cover.
+            // smart auto-select + manual select, bulk delete). A library-wide
+            // action, so it works from any pane — including the sidebar.
+            KeyCode::Char('D') => self.open_dup_resolve(),
+            // `R` (Duplicates view) runs a thorough cover scan, finding duplicates
+            // the metadata pass misses — chiefly PDFs matched by cover. Works from
+            // any pane: with zero current duplicates the focus sits on the sidebar,
+            // which is exactly where the reader presses it.
             KeyCode::Char('R')
-                if pane != LibPane::Sidebar
-                    && matches!(self.lib_view, LibView::Section(LibrarySection::Duplicates)) =>
+                if matches!(self.lib_view, LibView::Section(LibrarySection::Duplicates)) =>
             {
                 self.start_dup_scan()
             }
