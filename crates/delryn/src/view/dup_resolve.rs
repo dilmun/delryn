@@ -18,7 +18,11 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = super::centered(f.area(), 78, 26);
+    let area = if dr.fullscreen {
+        f.area()
+    } else {
+        super::centered(f.area(), 78, 26)
+    };
     f.render_widget(Clear, area);
 
     let to_delete = dr.checked_count();
@@ -38,7 +42,7 @@ pub fn render(f: &mut Frame, app: &App) {
         ))
         .title_bottom(
             Line::from(Span::styled(
-                " ↑↓ move · space toggle · a auto · u none · n keep group · d delete · Esc ",
+                " ↑↓ · space · a auto · u none · n keep · o prefs · f screen · d delete · Esc ",
                 Style::default().fg(theme.muted),
             ))
             .alignment(Alignment::Center),
@@ -57,6 +61,8 @@ pub fn render(f: &mut Frame, app: &App) {
     );
 
     // Build display lines (group headers + member rows), tracking the cursor line.
+    // Leave a column for the scrollbar so the path tail isn't clipped.
+    let body_width = (chunks[1].width as usize).saturating_sub(1);
     let rows = dr.rows();
     let cursor_row = rows.get(dr.cursor).copied();
     let mut lines: Vec<Line> = Vec::new();
@@ -75,7 +81,12 @@ pub fn render(f: &mut Frame, app: &App) {
             if cursor_row == Some((gi, mi)) {
                 sel_line = lines.len();
             }
-            lines.push(member_line(m, cursor_row == Some((gi, mi)), theme));
+            lines.push(member_line(
+                m,
+                cursor_row == Some((gi, mi)),
+                theme,
+                body_width,
+            ));
         }
     }
 
@@ -100,11 +111,13 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 /// One copy row: cursor marker, keep/delete checkbox, distinguishing attributes,
-/// and the file name.
+/// and the file's full path (left-elided to `width` so the filename stays visible;
+/// the whole path shows when the overlay is full-screen).
 fn member_line(
     m: &crate::app::DupMember,
     focused: bool,
     theme: crate::theme::Theme,
+    width: usize,
 ) -> Line<'static> {
     let marker = if focused { "▸ " } else { "  " };
     let (box_txt, box_color) = if m.checked {
@@ -128,6 +141,11 @@ fn member_line(
         attrs.push_str(&format!(" · {}%", m.pct));
     }
 
+    // The path takes whatever width is left after the marker, box, and attributes.
+    let prefix = marker.chars().count() + box_txt.chars().count() + 2 + attrs.chars().count() + 3;
+    let budget = width.saturating_sub(prefix).max(12);
+    let location = elide_left(&m.path, budget);
+
     let name_style = if m.checked {
         Style::default().fg(theme.muted)
     } else {
@@ -139,6 +157,19 @@ fn member_line(
             Style::default().fg(box_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("{attrs}   "), Style::default().fg(theme.muted)),
-        Span::styled(m.file.clone(), name_style),
+        Span::styled(location, name_style),
     ])
+}
+
+/// Truncate `s` from the left to at most `max` characters, prefixing an ellipsis
+/// when shortened — so the meaningful tail (here, the filename) stays visible.
+fn elide_left(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_string();
+    }
+    let tail: String = chars[chars.len() - max.saturating_sub(1)..]
+        .iter()
+        .collect();
+    format!("…{tail}")
 }

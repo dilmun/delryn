@@ -188,11 +188,15 @@ jump-by-type + a reader cursor.
       ("2nd ed", "revised edition") while keeping volume/part markers so series
       entries don't collapse. A "Duplicates" library section lists members. `D`
       opens a **resolution overlay** — every group with a checkbox per copy; a
-      **smart auto-select** keeps the best (engagement > original > EPUB > richer
-      metadata > larger) and pre-checks the worse ones; `space` toggles, `a`
-      re-auto, `u` clears, `n` **keeps the group** ("not a duplicate" — persisted
-      in `dismissed_dups`, never flagged again), `d` deletes all checked (file +
-      row) after one confirm, then the overlay refreshes/closes.
+      **smart auto-select** keeps the best (engagement > original > configured
+      format keep-order > richer metadata > larger) and pre-checks the worse ones;
+      `space` toggles, `a` re-auto, `u` clears, `n` **keeps the group** ("not a
+      duplicate" — persisted in `dismissed_dups`, never flagged again), `f`
+      **full-screen** toggle, `o` opens the resolver's **preferences** (Library
+      Settings → Duplicates: a "converted: always delete" rule + a per-format keep
+      priority you reorder with l/h — `config.dup_converted_delete`/`dup_format_order`),
+      `d` deletes all checked after one confirm. Each row shows the file's full
+      **path** (left-elided; whole path visible full-screen).
 - [x] Thorough duplicate scan (user-triggered, off the default path): in the
       Duplicates view, `R` reads each book's **table of contents** from its own
       structure (NOT metadata): EPUB nav + PDF bookmark outline (`epub`/`pdf::toc_labels`;

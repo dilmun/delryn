@@ -1,13 +1,16 @@
 //! Duplicate-resolution overlay: every duplicate group with a checkbox per copy.
 //! A smart auto-select keeps the best copy of each group and marks the rest for
-//! deletion (original beats converted, EPUB beats other formats, richer metadata
-//! and any copy you've read/rated/favourited win, larger breaks ties). The reader
-//! adjusts the checkboxes manually, then deletes all checked at once.
+//! deletion — any copy you've read/rated/favourited wins, then originals over
+//! converted and the configured format keep-order, then metadata richness and size.
+//! The format priority and a "converted: always delete" rule are configurable
+//! (Library Settings → Duplicates, reachable via `o`). The reader adjusts the
+//! checkboxes manually, can toggle full-screen with `f`, then deletes all checked.
 
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::App;
 use super::confirm::ConfirmAction;
+use crate::config::Config;
 
 /// One copy within a duplicate group.
 pub struct DupMember {
@@ -28,15 +31,15 @@ pub struct DupMember {
 
 impl DupMember {
     /// Keep-priority: higher wins (is kept). Engagement dominates so a copy you've
-    /// read/rated/favourited is never auto-deleted; then original > converted,
-    /// format, metadata richness, and finally size as a tiebreak.
-    fn keep_score(&self) -> i64 {
-        let fmt = match self.format.as_str() {
-            "EPUB" => 3,
-            "AZW3" | "MOBI" => 2,
-            "PDF" => 1,
-            _ => 0,
-        };
+    /// read/rated/favourited is never auto-deleted; then original > converted, the
+    /// configured format preference, metadata richness, and finally size as a
+    /// tiebreak. Format ranking comes from `config.dup_format_order`.
+    fn keep_score(&self, config: &Config) -> i64 {
+        // Earlier in the keep-order → higher score; an unknown format → 0.
+        let order = &config.dup_format_order;
+        let fmt = order
+            .len()
+            .saturating_sub(config.dup_format_rank(&self.format)) as i64;
         i64::from(self.favorite) * 100_000
             + i64::from(self.rating) * 10_000
             + i64::from(self.pct) * 100
@@ -61,6 +64,8 @@ pub struct DupResolve {
     pub groups: Vec<DupGroup>,
     /// Flat cursor over member rows (group headers aren't selectable).
     pub cursor: usize,
+    /// Expand to fill the whole window instead of the centered box.
+    pub fullscreen: bool,
 }
 
 impl DupResolve {
@@ -144,35 +149,63 @@ impl App {
             self.lib_flash = Some("no duplicates found".into());
             return;
         }
-        let mut dr = DupResolve { groups, cursor: 0 };
-        auto_select(&mut dr);
+        let mut dr = DupResolve {
+            groups,
+            cursor: 0,
+            fullscreen: false,
+        };
+        auto_select(&mut dr, &self.config);
         self.dup_resolve = Some(dr);
     }
 
     /// Keys while the overlay is open.
     pub(crate) fn dup_resolve_key(&mut self, key: KeyEvent) {
-        let Some(dr) = self.dup_resolve.as_mut() else {
-            return;
-        };
-        let rows = dr.rows();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.dup_resolve = None,
-            KeyCode::Char('j') | KeyCode::Down => {
-                dr.cursor = (dr.cursor + 1).min(rows.len().saturating_sub(1));
+            // Re-run the (config-driven) auto-select.
+            KeyCode::Char('a') => self.auto_select_dups(),
+            // Toggle full-window vs. the centered box.
+            KeyCode::Char('f') => {
+                if let Some(dr) = self.dup_resolve.as_mut() {
+                    dr.fullscreen = !dr.fullscreen;
+                }
             }
-            KeyCode::Char('k') | KeyCode::Up => dr.cursor = dr.cursor.saturating_sub(1),
+            // Open this overlay's preferences (Library Settings → Duplicates).
+            KeyCode::Char('o') => self.open_dup_settings(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(dr) = self.dup_resolve.as_mut() {
+                    let last = dr.rows().len().saturating_sub(1);
+                    dr.cursor = (dr.cursor + 1).min(last);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(dr) = self.dup_resolve.as_mut() {
+                    dr.cursor = dr.cursor.saturating_sub(1);
+                }
+            }
             KeyCode::Char(' ') => {
-                if let Some(&(gi, mi)) = rows.get(dr.cursor) {
+                if let Some(dr) = self.dup_resolve.as_mut()
+                    && let Some(&(gi, mi)) = dr.rows().get(dr.cursor)
+                {
                     let m = &mut dr.groups[gi].members[mi];
                     m.checked = !m.checked;
                 }
             }
-            KeyCode::Char('a') => auto_select(dr),
+            KeyCode::Char('u') => {
+                if let Some(dr) = self.dup_resolve.as_mut() {
+                    for m in dr.groups.iter_mut().flat_map(|g| &mut g.members) {
+                        m.checked = false;
+                    }
+                }
+            }
             KeyCode::Char('n') => {
                 // "Keep both": dismiss the group under the cursor so it's never
                 // flagged again, then rebuild to drop it from the overlay.
-                if let Some(&(gi, _)) = rows.get(dr.cursor) {
-                    let sig = dr.groups[gi].signature.clone();
+                let sig = self.dup_resolve.as_ref().and_then(|dr| {
+                    let (gi, _) = dr.rows().get(dr.cursor).copied()?;
+                    Some(dr.groups[gi].signature.clone())
+                });
+                if let Some(sig) = sig {
                     if let Some(store) = &self.store {
                         store.dismiss_duplicate_group(&sig);
                     }
@@ -180,21 +213,19 @@ impl App {
                     self.refresh_dup_resolve();
                 }
             }
-            KeyCode::Char('u') => {
-                for g in &mut dr.groups {
-                    for m in &mut g.members {
-                        m.checked = false;
-                    }
-                }
-            }
             KeyCode::Char('d') | KeyCode::Enter => {
-                let paths: Vec<String> = dr
-                    .groups
-                    .iter()
-                    .flat_map(|g| &g.members)
-                    .filter(|m| m.checked)
-                    .map(|m| m.path.clone())
-                    .collect();
+                let paths: Vec<String> = self
+                    .dup_resolve
+                    .as_ref()
+                    .map(|dr| {
+                        dr.groups
+                            .iter()
+                            .flat_map(|g| &g.members)
+                            .filter(|m| m.checked)
+                            .map(|m| m.path.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 if paths.is_empty() {
                     self.lib_flash = Some("nothing checked to delete".into());
                     return;
@@ -209,6 +240,14 @@ impl App {
         }
     }
 
+    /// Re-apply the smart auto-select to the open overlay using the current prefs.
+    fn auto_select_dups(&mut self) {
+        let config = &self.config;
+        if let Some(dr) = self.dup_resolve.as_mut() {
+            auto_select(dr, config);
+        }
+    }
+
     /// After the confirmed deletion, rebuild the overlay so it reflects what's
     /// left (closing it when no duplicates remain).
     pub(crate) fn refresh_dup_resolve(&mut self) {
@@ -220,14 +259,18 @@ impl App {
     }
 }
 
-/// Keep the highest-scoring copy of each group; check the rest for deletion.
-fn auto_select(dr: &mut DupResolve) {
+/// Keep the highest-scoring copy of each group; check the rest for deletion. When
+/// "converted always delete" is on and a group has an un-converted copy, only
+/// un-converted copies are eligible to be kept (every converted one is checked).
+fn auto_select(dr: &mut DupResolve, config: &Config) {
     for g in &mut dr.groups {
+        let only_originals = config.dup_converted_delete && g.members.iter().any(|m| !m.converted);
         let best = g
             .members
             .iter()
             .enumerate()
-            .max_by_key(|(_, m)| m.keep_score())
+            .filter(|(_, m)| !only_originals || !m.converted)
+            .max_by_key(|(_, m)| m.keep_score(config))
             .map(|(i, _)| i)
             .unwrap_or(0);
         for (i, m) in g.members.iter_mut().enumerate() {
