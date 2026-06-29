@@ -86,49 +86,50 @@ pub fn duplicate_paths_excluding(
         .collect()
 }
 
-/// A title match needs the shorter title's tokens covered by at least this
-/// fraction (overlap coefficient — so a short PDF title still matches its longer
-/// title+subtitle EPUB twin).
-const TITLE_OVERLAP_MIN: f32 = 0.75;
-/// …and at least this many shared title tokens, so the title is distinctive enough
-/// to stand on its own (a 1–2 word overlap like "python programming" isn't).
-const TITLE_MIN_SHARED: usize = 3;
+/// A book needs at least this many distinctive chapter labels to fingerprint on.
+const TOC_MIN_LABELS: usize = 4;
+/// …and a matching pair must share at least this many of them.
+const TOC_MIN_SHARED: usize = 4;
+/// Shared labels as a fraction of the shorter list (overlap coefficient, so a
+/// finer-grained TOC on one side — sub-sections the other lacks — still matches).
+const TOC_OVERLAP_MIN: f32 = 0.6;
 
-/// A content identity read from a book's own pages (not its metadata): the printed
-/// title (with subtitle folded in) and the copyright year if one was found.
+/// A content identity read from a book's own pages (not its metadata): its
+/// table-of-contents chapter labels.
 pub struct ContentId {
     pub path: String,
-    pub title: String,
-    pub year: Option<i32>,
+    pub toc_labels: Vec<String>,
 }
 
 /// Candidate duplicate pairs from the thorough content scan. Each [`ContentId`] is
-/// the identity extracted from a book's own title page — title (+ subtitle) and
-/// copyright year — so matching ignores wrong/missing metadata. Two books link when
-/// their normalized titles overlap strongly; a copyright year that's present on both
-/// and more than a year apart vetoes the match (a different edition). Returned as
-/// canonically-ordered `(a, b)` path pairs with `a < b`.
+/// the chapter-title list read from a book's own table of contents — distinctive,
+/// already-clean text (no page numbers, images, or symbols), and the same work
+/// across formats. Generic structural labels ("Preface", "Index", "Chapter N", …)
+/// are dropped; each remaining title is hashed into a set, and two books link when
+/// their sets overlap by at least [`TOC_OVERLAP_MIN`] (and share ≥ [`TOC_MIN_SHARED`]
+/// titles). Matching the chapter list *as a whole* means books that merely share a
+/// topic don't collide. Returned as canonically-ordered `(a, b)` pairs with `a < b`.
 ///
-/// Pure token work, O(n²) over the identified set — milliseconds at personal-library
-/// scale. It's a *candidate* generator: the reader confirms in the overlay (and `n`
-/// keeps false ones apart).
+/// O(n²) over the fingerprinted set — milliseconds at personal-library scale. A
+/// *candidate* generator: the reader confirms in the overlay (and `n` keeps false
+/// ones apart).
 pub fn content_link_candidates(items: &[ContentId]) -> Vec<(String, String)> {
-    let tokens: Vec<HashSet<String>> = items
+    let sets: Vec<HashSet<u64>> = items
         .iter()
-        .map(|it| {
-            norm_title(&it.title)
-                .split_whitespace()
-                .map(String::from)
-                .collect()
-        })
+        .map(|it| label_hashes(&it.toc_labels))
         .collect();
     let mut out = Vec::new();
     for i in 0..items.len() {
-        if tokens[i].len() < TITLE_MIN_SHARED {
-            continue; // too few title tokens to match distinctively
+        if sets[i].len() < TOC_MIN_LABELS {
+            continue;
         }
         for j in (i + 1)..items.len() {
-            if titles_match(&tokens[i], &tokens[j], items[i].year, items[j].year) {
+            if sets[j].len() < TOC_MIN_LABELS {
+                continue;
+            }
+            let shared = sets[i].intersection(&sets[j]).count();
+            let coeff = shared as f32 / sets[i].len().min(sets[j].len()) as f32;
+            if shared >= TOC_MIN_SHARED && coeff >= TOC_OVERLAP_MIN {
                 let (a, b) = (&items[i].path, &items[j].path);
                 if a < b {
                     out.push((a.clone(), b.clone()));
@@ -141,27 +142,95 @@ pub fn content_link_candidates(items: &[ContentId]) -> Vec<(String, String)> {
     out
 }
 
-/// Do two content-title token sets identify the same work? Requires a strong token
-/// overlap (distinctive, not a generic 1–2 word match); a copyright year present on
-/// both that differs by more than one year vetoes it (a different edition).
-fn titles_match(
-    a: &HashSet<String>,
-    b: &HashSet<String>,
-    ya: Option<i32>,
-    yb: Option<i32>,
-) -> bool {
-    let shared = a.intersection(b).count();
-    let shorter = a.len().min(b.len());
-    if shorter == 0 || shared < TITLE_MIN_SHARED {
-        return false;
+/// Hash the *distinctive* chapter labels of a TOC into a set: each label's leading
+/// "Chapter N" / "Part N" structural prefix is dropped, the rest reduced to bare
+/// lowercase letters/digits, and generic boilerplate ("Preface", "Summary", …)
+/// discarded. A set, so labels repeated across chapters (Packt's "Summary",
+/// "Questions") collapse and don't inflate a match.
+fn label_hashes(labels: &[String]) -> HashSet<u64> {
+    labels.iter().filter_map(|l| distinctive_label(l)).collect()
+}
+
+/// The distinctive part of a TOC label, FNV-hashed — or `None` if the label is
+/// purely structural ("Chapter 3", "Index", "Part II") with no real title.
+fn distinctive_label(label: &str) -> Option<u64> {
+    let lower = label.to_lowercase();
+    let mut words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    // Drop a leading "chapter"/"part"/"section"/"appendix" and its number/numeral,
+    // keeping any real title that follows ("Chapter 1: Event Loops" → "eventloops").
+    while matches!(
+        words.first(),
+        Some(&("chapter" | "ch" | "part" | "section" | "appendix" | "unit" | "lesson"))
+    ) {
+        words.remove(0);
+        if words
+            .first()
+            .is_some_and(|w| w.bytes().all(|b| b.is_ascii_digit()) || is_roman(w))
+        {
+            words.remove(0);
+        }
     }
-    if (shared as f32 / shorter as f32) < TITLE_OVERLAP_MIN {
-        return false;
+    let joined: String = words.concat();
+    (joined.len() >= 4 && !is_generic_label(&joined)).then(|| fnv1a(joined.as_bytes()))
+}
+
+/// A lowercase token that's a Roman numeral (i, ii, iv, xii, …).
+fn is_roman(w: &str) -> bool {
+    !w.is_empty() && w.len() <= 7 && w.bytes().all(|b| b"ivxlcdm".contains(&b))
+}
+
+/// Whether a reduced (bare-letters) label is generic structural boilerplate rather
+/// than a distinctive chapter title.
+fn is_generic_label(norm: &str) -> bool {
+    const GENERIC: &[&str] = &[
+        "preface",
+        "introduction",
+        "contents",
+        "tableofcontents",
+        "index",
+        "summary",
+        "questions",
+        "exercises",
+        "furtherreading",
+        "technicalrequirements",
+        "glossary",
+        "bibliography",
+        "references",
+        "foreword",
+        "acknowledgments",
+        "acknowledgements",
+        "dedication",
+        "abouttheauthor",
+        "abouttheauthors",
+        "aboutthereviewer",
+        "aboutthereviewers",
+        "conclusion",
+        "notes",
+        "prologue",
+        "epilogue",
+        "copyright",
+        "title",
+        "titlepage",
+        "cover",
+        "frontmatter",
+        "backmatter",
+        "contributors",
+        "afterword",
+    ];
+    GENERIC.contains(&norm)
+}
+
+/// Jaccard-free FNV-1a hash of bytes (a stable per-label hash).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    match (ya, yb) {
-        (Some(x), Some(y)) => (x - y).abs() <= 1,
-        _ => true,
-    }
+    h
 }
 
 /// A stable identity for a duplicate group, independent of member order: the
@@ -563,84 +632,116 @@ mod tests {
         assert!(duplicate_groups_with_links(&books, &links).is_empty());
     }
 
-    fn id(path: &str, title: &str, year: Option<i32>) -> ContentId {
+    fn toc(path: &str, labels: &[&str]) -> ContentId {
         ContentId {
             path: path.into(),
-            title: title.into(),
-            year,
+            toc_labels: labels.iter().map(|s| s.to_string()).collect(),
         }
     }
 
     #[test]
-    fn content_links_match_same_title_across_formats() {
-        // The PDF carries the bare title; the EPUB has title + subtitle. The shorter
-        // (PDF) title's tokens are fully covered, so they match across formats — and
-        // the unrelated third book does not.
-        let items = vec![
-            id(
-                "/a.epub",
-                "Asynchronous Programming with C++ Build Blazingly Concurrent Apps",
-                Some(2024),
-            ),
-            id("/b.pdf", "Asynchronous Programming with C++", Some(2024)),
-            id(
-                "/c.epub",
-                "C High Performance for Financial Systems",
-                Some(2023),
-            ),
-        ];
+    fn content_links_match_books_with_the_same_chapter_list() {
+        // Same book: the PDF prefixes chapters with "Chapter N:" and adds a
+        // sub-section the EPUB lacks; the distinctive titles still match (prefix
+        // stripped, the extra sub-section only widens one side). The unrelated third
+        // book shares no chapter titles.
+        let epub = toc(
+            "/a.epub",
+            &[
+                "Preface",
+                "Exploring Async Patterns",
+                "Building Event Loops",
+                "Coroutines in Depth",
+                "Lock-Free Queues",
+                "Index",
+            ],
+        );
+        let pdf = toc(
+            "/b.pdf",
+            &[
+                "Chapter 1: Exploring Async Patterns",
+                "Chapter 2: Building Event Loops",
+                "Chapter 3: Coroutines in Depth",
+                "Chapter 4: Lock-Free Queues",
+                "Summary",
+            ],
+        );
+        let other = toc(
+            "/c.epub",
+            &[
+                "Financial Time Series",
+                "Risk Models",
+                "Portdelryn Optimization",
+                "Backtesting Strategies",
+                "Market Microstructure",
+            ],
+        );
         assert_eq!(
-            content_link_candidates(&items),
+            content_link_candidates(&[epub, pdf, other]),
             vec![("/a.epub".to_string(), "/b.pdf".to_string())]
         );
     }
 
     #[test]
-    fn content_links_do_not_chain_books_sharing_a_publisher_template() {
-        // The exact failure to avoid: distinct titles must never link, however
-        // identical their (Packt) front matter is.
-        let items = vec![
-            id("/1", "Building Low Latency Applications with C++", None),
-            id("/2", "C High Performance for Financial Systems", None),
-            id("/3", "Hands-On Machine Learning with C++", None),
-            id("/4", "Mastering NLP from Foundations to LLMs", None),
-        ];
-        assert!(content_link_candidates(&items).is_empty());
-    }
-
-    #[test]
-    fn content_links_veto_on_different_year() {
-        let same = vec![
-            id(
-                "/a.epub",
-                "Deep Learning with Python Second Edition",
-                Some(2021),
-            ),
-            id("/b.pdf", "Deep Learning with Python", Some(2021)),
-        ];
-        assert_eq!(content_link_candidates(&same).len(), 1);
-        let diff = vec![
-            id(
-                "/a.epub",
-                "Deep Learning with Python Second Edition",
-                Some(2021),
-            ),
-            id("/b.pdf", "Deep Learning with Python", Some(2017)),
-        ];
-        assert!(
-            content_link_candidates(&diff).is_empty(),
-            "a copyright year >1 apart marks a different edition"
+    fn content_links_separate_books_with_different_chapter_lists() {
+        let a = toc(
+            "/a",
+            &[
+                "Neural Networks",
+                "Backpropagation",
+                "Convolutional Layers",
+                "Attention and Transformers",
+            ],
         );
+        let b = toc(
+            "/b",
+            &[
+                "Hash Tables",
+                "Balanced Trees",
+                "Graph Algorithms",
+                "Dynamic Programming",
+            ],
+        );
+        assert!(content_link_candidates(&[a, b]).is_empty());
     }
 
     #[test]
-    fn content_links_reject_weak_generic_title_overlap() {
-        // Only two shared tokens (below the distinctive minimum) → not a match even
-        // with the same year.
-        let items = vec![
-            id("/a", "Python Programming Cookbook", Some(2020)),
-            id("/b", "Python Programming Guide", Some(2020)),
-        ];
-        assert!(content_link_candidates(&items).is_empty());
+    fn content_links_skip_generic_only_tocs() {
+        // Nothing but structural labels → no distinctive fingerprint → no match,
+        // even though the two lists are identical.
+        let a = toc(
+            "/a",
+            &[
+                "Preface",
+                "Chapter 1",
+                "Chapter 2",
+                "Chapter 3",
+                "Index",
+                "Summary",
+            ],
+        );
+        let b = toc(
+            "/b",
+            &[
+                "Preface",
+                "Chapter 1",
+                "Chapter 2",
+                "Chapter 3",
+                "Index",
+                "Summary",
+            ],
+        );
+        assert!(content_link_candidates(&[a, b]).is_empty());
+    }
+
+    #[test]
+    fn distinctive_label_strips_structure_and_drops_boilerplate() {
+        assert_eq!(
+            distinctive_label("Chapter 12: Lock-Free Queues"),
+            distinctive_label("Lock-Free Queues")
+        );
+        assert_eq!(distinctive_label("Part IV"), None);
+        assert_eq!(distinctive_label("Summary"), None);
+        assert!(distinctive_label("Exploring Async Patterns").is_some());
     }
 }

@@ -229,37 +229,30 @@ pub fn render_cover(path: impl AsRef<Path>) -> Option<Vec<u8>> {
     rasterize_page_png_at(&doc, 0, COVER_WIDTH)
 }
 
-/// A bounded plain-text sample from the text layer of the *front* pages of the PDF
-/// — the printed title page, author, copyright year, and table of contents — for
-/// content-based duplicate detection (mirrors `epub::extract_text_sample` so the
-/// two formats fingerprint the same opening). The front is where the book states
-/// its identity, so it matches across formats and is distinctive. Reads at most
-/// `max_pages` pages and ~`max_chars` of text; an image-only page contributes no
-/// text and is skipped over. `None` for image-only/scanned PDFs (no text layer) or
-/// when PDFium is unavailable — those simply aren't content-matched.
-pub fn extract_text_sample(
-    path: impl AsRef<Path>,
-    max_pages: usize,
-    max_chars: usize,
-) -> Option<String> {
-    let doc = open_pdfium_doc(path.as_ref()).ok()?;
-    let pages = doc.pages();
-    let count = pages.len().max(0) as usize;
-    if count == 0 {
-        return None;
+/// The PDF's bookmark labels (chapter titles), flattened depth-first — clean
+/// structured text for content-based duplicate detection. Empty when the PDF has no
+/// real outline: a PDF without bookmarks falls back to a synthetic "Page N" TOC
+/// (see `flat_page_toc`), which carries no identity, so that case returns nothing.
+pub fn toc_labels(path: impl AsRef<Path>) -> Vec<String> {
+    let Ok(doc) = PdfDocument::open(path) else {
+        return Vec::new();
+    };
+    let toc = doc.toc();
+    if toc.iter().all(|e| is_page_label(&e.label)) {
+        return Vec::new(); // synthetic page list, not a real table of contents
     }
-    let mut out = String::new();
-    let mut i = 0; // from the title page / front matter onward
-    while i < count && i < max_pages && out.len() < max_chars {
-        if let Ok(page) = pages.get(i as i32)
-            && let Ok(text) = page.text()
-        {
-            out.push_str(&text.all());
-            out.push('\n');
-        }
-        i += 1;
+    let mut out = Vec::new();
+    for entry in toc {
+        entry.collect_labels(&mut out);
     }
-    (!out.trim().is_empty()).then_some(out)
+    out
+}
+
+/// A synthetic `flat_page_toc` label, e.g. "Page 12".
+fn is_page_label(label: &str) -> bool {
+    label
+        .strip_prefix("Page ")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Front-matter headings that look prominent but aren't the title — so a large

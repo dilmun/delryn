@@ -194,22 +194,23 @@ jump-by-type + a reader cursor.
       in `dismissed_dups`, never flagged again), `d` deletes all checked (file +
       row) after one confirm, then the overlay refreshes/closes.
 - [x] Thorough duplicate scan (user-triggered, off the default path): in the
-      Duplicates view, `R` reads each book's **printed identity** from its own pages
-      (NOT metadata, which is often wrong): the EPUB title from its most prominent
-      heading (`epub::extract_content_title`), the PDF title from the largest-font
-      text on its title page (`pdf::extract_title` via PDFium per-char font sizes),
-      plus the copyright year from the opening text. Books link when their normalized
-      titles overlap strongly (`dedup::content_link_candidates`: overlap-coefficient
-      ≥0.75 over the shorter title, ≥3 shared tokens; a copyright year present on both
-      and >1 apart vetoes it as a different edition). Links persist to `dup_links`,
-      folded into the grouping (`duplicate_groups_with_links`). Covers every combo
-      (epub↔epub, pdf↔pdf, pdf↔epub). Earlier blob attempts failed: cover+title
-      collided on publisher cover templates; middle-text SimHash misaligned
-      cross-format and choked on table/math books; front-text SimHash collided on
-      shared publisher front-matter boilerplate (Packt) — the title-extraction
-      approach avoids all three by keying only on the distinctive title. Limits:
-      needs a text layer, so **image-only/scanned PDFs** are skipped; depends on
-      title-extraction quality. Human-confirmed via overlay `n` ("keep both").
+      Duplicates view, `R` reads each book's **table of contents** from its own
+      structure (NOT metadata): EPUB nav + PDF bookmark outline (`epub`/`pdf::toc_labels`;
+      PDF's synthetic "Page N" fallback is rejected). Each chapter label is reduced
+      to its distinctive part — leading "Chapter N"/"Part N" stripped, generic
+      boilerplate ("Preface"/"Summary"/"Index"/…) dropped — and hashed into a set
+      (`dedup::content_link_candidates`). Two books link when their distinctive-label
+      sets share ≥4 titles at overlap-coefficient ≥0.6 (overlap, not Jaccard, so a
+      finer-grained outline on one side still matches). Matching the chapter *list as
+      a whole* is what stops topic-word collisions ("Artificial Intelligence and…")
+      and publisher templates that broke every earlier attempt (cover+title; middle-
+      text SimHash; front-text SimHash on Packt boilerplate; single-title token-set/
+      prefix overlap). Links persist to `dup_links`, folded into grouping
+      (`duplicate_groups_with_links`); covers every combo (epub↔epub, pdf↔pdf,
+      pdf↔epub). Limits: a book with no real TOC (PDF without bookmarks, bare EPUB) is
+      skipped; structural-only TOCs ("Chapter 1".."Chapter N") yield no fingerprint.
+      Human-confirmed via overlay `n` ("keep both"). Tunables: TOC_MIN_LABELS,
+      TOC_MIN_SHARED, TOC_OVERLAP_MIN.
 - [ ] Dedup, further tiers (only if duplicates still slip through — all kept
       cheap/lazy, no library-wide content scan): **(2)** bounded fuzzy title
       fallback, blocked by author-surname / first title token to stay near-linear;
