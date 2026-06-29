@@ -64,15 +64,11 @@ pub fn render(f: &mut Frame, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
     let mut sel_line = 0usize;
     for (gi, g) in dr.groups.iter().enumerate() {
+        // A blank line separates one duplicate group's rows from the next — no
+        // per-group title, so the table stays clean.
         if gi > 0 {
             lines.push(Line::raw(""));
         }
-        lines.push(Line::styled(
-            format!("{}  ({} copies)", g.label, g.members.len()),
-            Style::default()
-                .fg(theme.heading)
-                .add_modifier(Modifier::BOLD),
-        ));
         for (mi, m) in g.members.iter().enumerate() {
             if cursor_row == Some((gi, mi)) {
                 sel_line = lines.len();
@@ -112,13 +108,12 @@ const W_CHECK: usize = 8; // "[✓] keep" / "[✗] del"
 const W_FMT: usize = 4; // "EPUB" / "PDF"
 const W_SIZE: usize = 7; // right-aligned "131.0M"
 const W_SOURCE: usize = 9; // "converted" / "original"
-const W_FLAGS: usize = 9; // "★5 ♥ 100%"
 
 /// The fixed table header drawn above the scrolling rows.
 fn column_header(theme: crate::theme::Theme) -> Line<'static> {
     let text = format!(
-        "  {:<W_CHECK$} {:<W_FMT$} {:>W_SIZE$}  {:<W_SOURCE$} {:<W_FLAGS$} NAME",
-        "KEEP", "FMT", "SIZE", "SOURCE", "READ",
+        "  {:<W_CHECK$} {:<W_FMT$} {:>W_SIZE$}  {:<W_SOURCE$} NAME",
+        "KEEP", "FMT", "SIZE", "SOURCE",
     );
     Line::styled(
         text,
@@ -129,8 +124,8 @@ fn column_header(theme: crate::theme::Theme) -> Line<'static> {
 }
 
 /// One copy row as aligned columns — cursor marker, keep/delete, format, size,
-/// source (original/converted), read/rating/favourite flags, and the file path
-/// (directory kept, an over-long filename trimmed to fit; whole path full-screen).
+/// source (original/converted), and the file path (directory kept, an over-long
+/// filename trimmed to fit; whole path full-screen).
 fn member_line(
     m: &crate::app::DupMember,
     focused: bool,
@@ -145,21 +140,9 @@ fn member_line(
     };
     let source = if m.converted { "converted" } else { "original" };
 
-    let mut flags = String::new();
-    if m.rating > 0 {
-        flags.push_str(&format!("★{} ", m.rating));
-    }
-    if m.favorite {
-        flags.push_str("♥ ");
-    }
-    if m.pct > 0 {
-        flags.push_str(&format!("{}%", m.pct));
-    }
-    let flags = flags.trim_end();
-
     let check_cell = format!("{check:<W_CHECK$} ");
     let attrs = format!(
-        "{:<W_FMT$} {:>W_SIZE$}  {source:<W_SOURCE$} {flags:<W_FLAGS$} ",
+        "{:<W_FMT$} {:>W_SIZE$}  {source:<W_SOURCE$} ",
         m.format,
         fmt_size(m.size),
     );
