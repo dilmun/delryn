@@ -95,10 +95,29 @@ pub struct ContentId {
 /// *candidate* generator: the reader confirms in the overlay (and `n` keeps false
 /// ones apart).
 pub fn content_link_candidates(items: &[ContentId]) -> Vec<(String, String)> {
-    let sets: Vec<HashSet<u64>> = items
+    let raw: Vec<HashSet<u64>> = items
         .iter()
         .map(|it| label_hashes(&it.toc_labels))
         .collect();
+    // Document frequency: how many books carry each label. Publisher front matter
+    // ("Who this book is for", "Why subscribe?") and generic section names
+    // ("Implementation", "Summary", "Functions") recur across *many* books and
+    // would otherwise make any two same-publisher books share ≥4 "distinctive"
+    // labels. Drop the frequent ones so matching keys only on labels that are
+    // actually peculiar to a work (its real chapter titles).
+    let mut df: HashMap<u64, usize> = HashMap::new();
+    for set in &raw {
+        for &h in set {
+            *df.entry(h).or_default() += 1;
+        }
+    }
+    let with_toc = raw.iter().filter(|s| !s.is_empty()).count();
+    let max_df = (with_toc / 12).max(4);
+    let sets: Vec<HashSet<u64>> = raw
+        .iter()
+        .map(|s| s.iter().copied().filter(|h| df[h] <= max_df).collect())
+        .collect();
+
     let mut out = Vec::new();
     for i in 0..items.len() {
         if sets[i].len() < TOC_MIN_LABELS {
@@ -447,6 +466,90 @@ mod tests {
             ],
         );
         assert!(content_link_candidates(&[a, b]).is_empty());
+    }
+
+    #[test]
+    fn content_links_ignore_shared_publisher_boilerplate() {
+        // Front matter every same-publisher book repeats (Packt-style). It survives
+        // the per-label stoplist, but document-frequency filtering drops it, so only
+        // the two books that also share real chapter titles are linked.
+        let boiler = [
+            "Who this book is for",
+            "What this book covers",
+            "Conventions used",
+            "Why subscribe",
+            "Errata",
+            "Piracy",
+        ];
+        let cid = |path: &str, chapters: &[&str]| {
+            let mut v: Vec<String> = boiler.iter().map(|s| s.to_string()).collect();
+            v.extend(chapters.iter().map(|s| s.to_string()));
+            ContentId {
+                path: path.into(),
+                toc_labels: v,
+            }
+        };
+        let items = vec![
+            cid(
+                "/dup1.epub",
+                &[
+                    "Reactive Stream Topologies",
+                    "Lock Free Ring Buffers",
+                    "Coroutine Schedulers",
+                    "Zero Copy Serialization",
+                ],
+            ),
+            cid(
+                "/dup2.pdf",
+                &[
+                    "Reactive Stream Topologies",
+                    "Lock Free Ring Buffers",
+                    "Coroutine Schedulers",
+                    "Zero Copy Serialization",
+                ],
+            ),
+            cid(
+                "/other1.epub",
+                &[
+                    "Bayesian Priors",
+                    "Gibbs Sampling",
+                    "Variational Inference",
+                    "Hamiltonian Monte Carlo",
+                ],
+            ),
+            cid(
+                "/other2.epub",
+                &[
+                    "Sourdough Hydration",
+                    "Lamination Folds",
+                    "Crumb Structure",
+                    "Oven Spring",
+                ],
+            ),
+            cid(
+                "/other3.epub",
+                &[
+                    "Roman Aqueducts",
+                    "Gothic Arches",
+                    "Baroque Facades",
+                    "Brutalist Forms",
+                ],
+            ),
+            cid(
+                "/other4.epub",
+                &[
+                    "Tax Loss Harvesting",
+                    "Dividend Capture",
+                    "Options Greeks",
+                    "Yield Curves",
+                ],
+            ),
+        ];
+        assert_eq!(
+            content_link_candidates(&items),
+            vec![("/dup1.epub".to_string(), "/dup2.pdf".to_string())],
+            "shared boilerplate must not link different books"
+        );
     }
 
     #[test]
