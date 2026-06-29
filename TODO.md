@@ -194,8 +194,9 @@ jump-by-type + a reader cursor.
       opens a **resolution overlay** — every group with a checkbox per copy; a
       **smart auto-select** keeps the best (engagement > original > configured
       format keep-order > richer metadata > larger) and pre-checks the worse ones;
-      `space` toggles, `a` re-auto, `u` clears, `n` **keeps the group** ("not a
-      duplicate" — persisted in `dismissed_dups`, never flagged again), `p`
+      `space` toggles, `a` re-auto, `u` clears, `n` **ignores the group** (stop
+      flagging it — persisted in `dismissed_dups`), `I` opens the **ignored-groups
+      manager** (list/restore one with `u`/⏎ or restore all with `C`), `p`
       **previews** the selected copy in the reader (q/Esc returns to the overlay —
       stashed in `dup_preview`), `r` **reveals** it in the OS file manager, `f`
       **full-screen** toggle, `o` opens the resolver's **preferences** (Library

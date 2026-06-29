@@ -48,7 +48,7 @@ pub use tags::TagInput;
 
 mod dup_resolve;
 mod dup_scan;
-pub use dup_resolve::{DupGroup, DupMember, DupResolve};
+pub use dup_resolve::{DupGroup, DupMember, DupResolve, IgnoredView};
 
 mod editor;
 pub use editor::{
@@ -158,6 +158,8 @@ pub struct App {
     /// kept out of `dup_resolve` so the dispatcher and renderer ignore it during the
     /// preview; restored when the reader returns (`q`/Esc).
     pub dup_preview: Option<DupResolve>,
+    /// Manager listing the "ignored" duplicate groups, to restore or clear them.
+    pub ignored_view: Option<IgnoredView>,
     /// A destructive action awaiting a yes/no confirmation, if any. Intercepts
     /// input ahead of every popup and is answered with y/⏎ or n/Esc.
     pub pending_confirm: Option<PendingConfirm>,
@@ -435,6 +437,7 @@ impl App {
             tag_edit: None,
             dup_resolve: None,
             dup_preview: None,
+            ignored_view: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
@@ -511,6 +514,7 @@ impl App {
             tag_edit: None,
             dup_resolve: None,
             dup_preview: None,
+            ignored_view: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,

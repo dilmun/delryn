@@ -45,6 +45,10 @@ impl App {
             self.dup_resolve_key(key);
             return;
         }
+        if self.ignored_view.is_some() {
+            self.ignored_view_key(key);
+            return;
+        }
         if self.shelf_picker.is_some() {
             self.shelf_picker_key(key);
             return;
