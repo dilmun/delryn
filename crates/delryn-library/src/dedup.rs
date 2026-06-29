@@ -42,7 +42,7 @@ pub fn duplicate_groups_with_links(
             }
         }
     }
-    // Cover-scan (or other out-of-band) links, resolved by path. Paths no longer
+    // Content-scan (or other out-of-band) links, resolved by path. Paths no longer
     // in the library are silently skipped.
     if !links.is_empty() {
         let idx: HashMap<&str, usize> = books
@@ -86,83 +86,50 @@ pub fn duplicate_paths_excluding(
         .collect()
 }
 
-/// Char-shingle width for the content SimHash.
-const SIMHASH_SHINGLE: usize = 12;
-/// Cap on canonical (alphanumeric) characters fed to the SimHash — plenty for a
-/// stable fingerprint while bounding per-book work.
-const SIMHASH_MAX_CHARS: usize = 20_000;
-/// Below this many canonical characters there's too little text to fingerprint
-/// reliably (a stub chapter, or an image-only/scanned source with no text layer).
-const SIMHASH_MIN_CHARS: usize = 600;
-/// Content SimHashes within this many bits are treated as the same work. Tuned for
-/// "close, not identical": the same book across formats lands a few bits apart
-/// (conversion noise — hyphenation, headers, ligatures), unrelated text is ~32.
-pub const CONTENT_HAMMING_MAX: u32 = 12;
+/// A title match needs the shorter title's tokens covered by at least this
+/// fraction (overlap coefficient — so a short PDF title still matches its longer
+/// title+subtitle EPUB twin).
+const TITLE_OVERLAP_MIN: f32 = 0.75;
+/// …and at least this many shared title tokens, so the title is distinctive enough
+/// to stand on its own (a 1–2 word overlap like "python programming" isn't).
+const TITLE_MIN_SHARED: usize = 3;
 
-/// A 64-bit **SimHash** of a text sample, for near-duplicate detection. The text is
-/// reduced to bare lowercase alphanumerics — markup, spaces, punctuation, and case
-/// all dropped — so two formats of the same book canonicalize to nearly the same
-/// string; that string is shingled into overlapping `SIMHASH_SHINGLE`-char windows
-/// whose hashes vote on each output bit. Two samples of the same content land a
-/// small Hamming distance apart (see [`content_link_candidates`]); unrelated text
-/// is ~32 bits apart. `None` when there's too little text to be reliable.
-pub fn text_simhash(text: &str) -> Option<u64> {
-    let canon: Vec<char> = text
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .take(SIMHASH_MAX_CHARS)
-        .collect();
-    if canon.len() < SIMHASH_MIN_CHARS {
-        return None;
-    }
-    let mut votes = [0i32; 64];
-    for window in canon.windows(SIMHASH_SHINGLE) {
-        let h = shingle_hash(window);
-        for (b, v) in votes.iter_mut().enumerate() {
-            *v += if (h >> b) & 1 == 1 { 1 } else { -1 };
-        }
-    }
-    let mut sim = 0u64;
-    for (b, v) in votes.iter().enumerate() {
-        if *v > 0 {
-            sim |= 1 << b;
-        }
-    }
-    Some(sim)
+/// A content identity read from a book's own pages (not its metadata): the printed
+/// title (with subtitle folded in) and the copyright year if one was found.
+pub struct ContentId {
+    pub path: String,
+    pub title: String,
+    pub year: Option<i32>,
 }
 
-/// FNV-1a hash of a char shingle (folds each codepoint's bytes).
-fn shingle_hash(chars: &[char]) -> u64 {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for &c in chars {
-        let mut cp = c as u32;
-        for _ in 0..4 {
-            h ^= u64::from(cp & 0xff);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-            cp >>= 8;
-        }
-    }
-    h
-}
-
-/// Candidate duplicate pairs from the thorough content scan: every pair whose text
-/// SimHashes are within `max_distance` bits (see [`text_simhash`]). Each item is
-/// `(path, simhash)`. Returned as canonically-ordered `(a, b)` pairs with `a < b`.
+/// Candidate duplicate pairs from the thorough content scan. Each [`ContentId`] is
+/// the identity extracted from a book's own title page — title (+ subtitle) and
+/// copyright year — so matching ignores wrong/missing metadata. Two books link when
+/// their normalized titles overlap strongly; a copyright year that's present on both
+/// and more than a year apart vetoes the match (a different edition). Returned as
+/// canonically-ordered `(a, b)` path pairs with `a < b`.
 ///
-/// O(n²) over the fingerprinted set — a few million 64-bit pop-counts, milliseconds
-/// at personal-library scale. Content is the whole signal here (no title/cover
-/// gate), so it catches same-work files whatever their metadata says; the reader
-/// confirms in the overlay (and `n` keeps false ones apart).
-pub fn content_link_candidates(
-    items: &[(String, u64)],
-    max_distance: u32,
-) -> Vec<(String, String)> {
+/// Pure token work, O(n²) over the identified set — milliseconds at personal-library
+/// scale. It's a *candidate* generator: the reader confirms in the overlay (and `n`
+/// keeps false ones apart).
+pub fn content_link_candidates(items: &[ContentId]) -> Vec<(String, String)> {
+    let tokens: Vec<HashSet<String>> = items
+        .iter()
+        .map(|it| {
+            norm_title(&it.title)
+                .split_whitespace()
+                .map(String::from)
+                .collect()
+        })
+        .collect();
     let mut out = Vec::new();
     for i in 0..items.len() {
+        if tokens[i].len() < TITLE_MIN_SHARED {
+            continue; // too few title tokens to match distinctively
+        }
         for j in (i + 1)..items.len() {
-            if (items[i].1 ^ items[j].1).count_ones() <= max_distance {
-                let (a, b) = (&items[i].0, &items[j].0);
+            if titles_match(&tokens[i], &tokens[j], items[i].year, items[j].year) {
+                let (a, b) = (&items[i].path, &items[j].path);
                 if a < b {
                     out.push((a.clone(), b.clone()));
                 } else {
@@ -172,6 +139,29 @@ pub fn content_link_candidates(
         }
     }
     out
+}
+
+/// Do two content-title token sets identify the same work? Requires a strong token
+/// overlap (distinctive, not a generic 1–2 word match); a copyright year present on
+/// both that differs by more than one year vetoes it (a different edition).
+fn titles_match(
+    a: &HashSet<String>,
+    b: &HashSet<String>,
+    ya: Option<i32>,
+    yb: Option<i32>,
+) -> bool {
+    let shared = a.intersection(b).count();
+    let shorter = a.len().min(b.len());
+    if shorter == 0 || shared < TITLE_MIN_SHARED {
+        return false;
+    }
+    if (shared as f32 / shorter as f32) < TITLE_OVERLAP_MIN {
+        return false;
+    }
+    match (ya, yb) {
+        (Some(x), Some(y)) => (x - y).abs() <= 1,
+        _ => true,
+    }
 }
 
 /// A stable identity for a duplicate group, independent of member order: the
@@ -573,60 +563,84 @@ mod tests {
         assert!(duplicate_groups_with_links(&books, &links).is_empty());
     }
 
-    // A body-text paragraph repeated enough to exceed the fingerprint minimum.
-    fn body(seed: &str) -> String {
-        seed.repeat(40)
+    fn id(path: &str, title: &str, year: Option<i32>) -> ContentId {
+        ContentId {
+            path: path.into(),
+            title: title.into(),
+            year,
+        }
     }
 
     #[test]
-    fn simhash_ignores_formatting_whitespace_and_case() {
-        // Same words, but one copy is reformatted the way a different conversion
-        // would render it (uppercased, repunctuated, rewrapped). The canonical
-        // alphanumeric form is identical, so the fingerprints match closely.
-        let a = body("the system reads each record then writes the merged result to disk. ");
-        let b = a
-            .to_uppercase()
-            .replace(". ", ".\n\n    ")
-            .replace("the", "the—");
-        let (ha, hb) = (text_simhash(&a).unwrap(), text_simhash(&b).unwrap());
-        assert!(
-            (ha ^ hb).count_ones() <= CONTENT_HAMMING_MAX,
-            "same content should be close, was {} bits",
-            (ha ^ hb).count_ones()
-        );
-    }
-
-    #[test]
-    fn simhash_separates_different_content() {
-        let a = text_simhash(&body(
-            "the system reads each record then writes the result. ",
-        ))
-        .unwrap();
-        let b = text_simhash(&body(
-            "machine learning models need careful tuning of parameters. ",
-        ))
-        .unwrap();
-        assert!(
-            (a ^ b).count_ones() > CONTENT_HAMMING_MAX,
-            "different books should be far, was {} bits",
-            (a ^ b).count_ones()
-        );
-    }
-
-    #[test]
-    fn simhash_none_for_too_little_text() {
-        assert!(text_simhash("only a few words here").is_none());
-    }
-
-    #[test]
-    fn content_candidates_pair_near_simhashes_only() {
-        let base = 0b1010_1100_1111_0000u64;
+    fn content_links_match_same_title_across_formats() {
+        // The PDF carries the bare title; the EPUB has title + subtitle. The shorter
+        // (PDF) title's tokens are fully covered, so they match across formats — and
+        // the unrelated third book does not.
         let items = vec![
-            ("/z.pdf".to_string(), base),
-            ("/a.epub".to_string(), base ^ 0b11), // distance 2
-            ("/x.epub".to_string(), !base),       // far
+            id(
+                "/a.epub",
+                "Asynchronous Programming with C++ Build Blazingly Concurrent Apps",
+                Some(2024),
+            ),
+            id("/b.pdf", "Asynchronous Programming with C++", Some(2024)),
+            id(
+                "/c.epub",
+                "C High Performance for Financial Systems",
+                Some(2023),
+            ),
         ];
-        let pairs = content_link_candidates(&items, 4);
-        assert_eq!(pairs, vec![("/a.epub".to_string(), "/z.pdf".to_string())]);
+        assert_eq!(
+            content_link_candidates(&items),
+            vec![("/a.epub".to_string(), "/b.pdf".to_string())]
+        );
+    }
+
+    #[test]
+    fn content_links_do_not_chain_books_sharing_a_publisher_template() {
+        // The exact failure to avoid: distinct titles must never link, however
+        // identical their (Packt) front matter is.
+        let items = vec![
+            id("/1", "Building Low Latency Applications with C++", None),
+            id("/2", "C High Performance for Financial Systems", None),
+            id("/3", "Hands-On Machine Learning with C++", None),
+            id("/4", "Mastering NLP from Foundations to LLMs", None),
+        ];
+        assert!(content_link_candidates(&items).is_empty());
+    }
+
+    #[test]
+    fn content_links_veto_on_different_year() {
+        let same = vec![
+            id(
+                "/a.epub",
+                "Deep Learning with Python Second Edition",
+                Some(2021),
+            ),
+            id("/b.pdf", "Deep Learning with Python", Some(2021)),
+        ];
+        assert_eq!(content_link_candidates(&same).len(), 1);
+        let diff = vec![
+            id(
+                "/a.epub",
+                "Deep Learning with Python Second Edition",
+                Some(2021),
+            ),
+            id("/b.pdf", "Deep Learning with Python", Some(2017)),
+        ];
+        assert!(
+            content_link_candidates(&diff).is_empty(),
+            "a copyright year >1 apart marks a different edition"
+        );
+    }
+
+    #[test]
+    fn content_links_reject_weak_generic_title_overlap() {
+        // Only two shared tokens (below the distinctive minimum) → not a match even
+        // with the same year.
+        let items = vec![
+            id("/a", "Python Programming Cookbook", Some(2020)),
+            id("/b", "Python Programming Guide", Some(2020)),
+        ];
+        assert!(content_link_candidates(&items).is_empty());
     }
 }
