@@ -1,6 +1,7 @@
-//! Duplicate-resolution overlay: groups of duplicate copies, each row a checkbox
-//! (checked = will be deleted). The smart auto-select pre-checks the worse copies;
-//! the reader toggles manually, then deletes all checked at once.
+//! Duplicate-resolution overlay: groups of duplicate copies in an aligned table
+//! (keep/delete · format · size · source · read-flags · path) under a fixed column
+//! header. The smart auto-select pre-checks the worse copies; the reader toggles
+//! them, previews/reveals a copy, then deletes all checked at once.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout};
@@ -42,7 +43,7 @@ pub fn render(f: &mut Frame, app: &App) {
         ))
         .title_bottom(
             Line::from(Span::styled(
-                " ↑↓ · space · a auto · u none · n keep · o prefs · f screen · d delete · Esc ",
+                " ↑↓ space · p preview · r reveal · d delete · a auto · u none · n keep · o prefs · f full · q ",
                 Style::default().fg(theme.muted),
             ))
             .alignment(Alignment::Center),
@@ -52,13 +53,8 @@ pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(block, area);
 
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
-    f.render_widget(
-        Paragraph::new(Line::styled(
-            "Checked copies are deleted; one is kept per group. ✓ = keep, ✗ = delete.",
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
-        )),
-        chunks[0],
-    );
+    // Fixed column header above the scrolling body.
+    f.render_widget(Paragraph::new(column_header(theme)), chunks[0]);
 
     // Build display lines (group headers + member rows), tracking the cursor line.
     // Leave a column for the scrollbar so the path tail isn't clipped.
@@ -110,9 +106,31 @@ pub fn render(f: &mut Frame, app: &App) {
     }
 }
 
-/// One copy row: cursor marker, keep/delete checkbox, distinguishing attributes,
-/// and the file's path (directory kept, an over-long filename trimmed to fit
-/// `width`; the whole path shows when the overlay is full-screen).
+// Fixed column widths (chars) for the member table — shared by the rows and the
+// header so they line up. The name column takes the remaining width.
+const W_CHECK: usize = 8; // "[✓] keep" / "[✗] del"
+const W_FMT: usize = 4; // "EPUB" / "PDF"
+const W_SIZE: usize = 7; // right-aligned "131.0M"
+const W_SOURCE: usize = 9; // "converted" / "original"
+const W_FLAGS: usize = 9; // "★5 ♥ 100%"
+
+/// The fixed table header drawn above the scrolling rows.
+fn column_header(theme: crate::theme::Theme) -> Line<'static> {
+    let text = format!(
+        "  {:<W_CHECK$} {:<W_FMT$} {:>W_SIZE$}  {:<W_SOURCE$} {:<W_FLAGS$} NAME",
+        "KEEP", "FMT", "SIZE", "SOURCE", "READ",
+    );
+    Line::styled(
+        text,
+        Style::default()
+            .fg(theme.muted)
+            .add_modifier(Modifier::DIM | Modifier::BOLD),
+    )
+}
+
+/// One copy row as aligned columns — cursor marker, keep/delete, format, size,
+/// source (original/converted), read/rating/favourite flags, and the file path
+/// (directory kept, an over-long filename trimmed to fit; whole path full-screen).
 fn member_line(
     m: &crate::app::DupMember,
     focused: bool,
@@ -120,29 +138,34 @@ fn member_line(
     width: usize,
 ) -> Line<'static> {
     let marker = if focused { "▸ " } else { "  " };
-    let (box_txt, box_color) = if m.checked {
-        ("[✗] delete", theme.marker)
+    let (check, check_color) = if m.checked {
+        ("[✗] del", theme.marker)
     } else {
-        ("[✓] keep  ", theme.accent)
+        ("[✓] keep", theme.accent)
     };
+    let source = if m.converted { "converted" } else { "original" };
 
-    // Distinguishing attributes: format · size · converted · read%.
-    let mut attrs = format!("{} · {}", m.format, fmt_size(m.size));
-    if m.converted {
-        attrs.push_str(" · converted");
-    }
+    let mut flags = String::new();
     if m.rating > 0 {
-        attrs.push_str(&format!(" · ★{}", m.rating));
+        flags.push_str(&format!("★{} ", m.rating));
     }
     if m.favorite {
-        attrs.push_str(" · ♥");
+        flags.push_str("♥ ");
     }
     if m.pct > 0 {
-        attrs.push_str(&format!(" · {}%", m.pct));
+        flags.push_str(&format!("{}%", m.pct));
     }
+    let flags = flags.trim_end();
 
-    // The path takes whatever width is left after the marker, box, and attributes.
-    let prefix = marker.chars().count() + box_txt.chars().count() + 2 + attrs.chars().count() + 3;
+    let check_cell = format!("{check:<W_CHECK$} ");
+    let attrs = format!(
+        "{:<W_FMT$} {:>W_SIZE$}  {source:<W_SOURCE$} {flags:<W_FLAGS$} ",
+        m.format,
+        fmt_size(m.size),
+    );
+
+    // The name column takes whatever's left after the marker + fixed columns.
+    let prefix = marker.chars().count() + check_cell.chars().count() + attrs.chars().count();
     let budget = width.saturating_sub(prefix).max(12);
     let location = elide_path(&m.path, budget);
 
@@ -152,11 +175,14 @@ fn member_line(
         Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
     };
     Line::from(vec![
+        Span::styled(marker.to_string(), Style::default().fg(theme.accent)),
         Span::styled(
-            format!("{marker}{box_txt}  "),
-            Style::default().fg(box_color).add_modifier(Modifier::BOLD),
+            check_cell,
+            Style::default()
+                .fg(check_color)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("{attrs}   "), Style::default().fg(theme.muted)),
+        Span::styled(attrs, Style::default().fg(theme.muted)),
         Span::styled(location, name_style),
     ])
 }

@@ -78,6 +78,12 @@ impl DupResolve {
             .collect()
     }
 
+    /// Path of the copy under the cursor, if any.
+    pub fn selected_path(&self) -> Option<&str> {
+        let (gi, mi) = self.rows().get(self.cursor).copied()?;
+        Some(self.groups[gi].members[mi].path.as_str())
+    }
+
     /// Total copies marked for deletion across all groups.
     pub fn checked_count(&self) -> usize {
         self.groups
@@ -172,6 +178,14 @@ impl App {
             }
             // Open this overlay's preferences (Library Settings → Duplicates).
             KeyCode::Char('o') => self.open_dup_settings(),
+            // Preview: open the selected copy in the reader; q/Esc returns here.
+            KeyCode::Char('p') => self.preview_dup_book(),
+            // Reveal the selected copy in the OS file manager.
+            KeyCode::Char('r') => {
+                if let Some(path) = self.dup_resolve.as_ref().and_then(|dr| dr.selected_path()) {
+                    reveal_in_file_manager(path);
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(dr) = self.dup_resolve.as_mut() {
                     let last = dr.rows().len().saturating_sub(1);
@@ -213,7 +227,7 @@ impl App {
                     self.refresh_dup_resolve();
                 }
             }
-            KeyCode::Char('d') | KeyCode::Enter => {
+            KeyCode::Char('d') => {
                 let paths: Vec<String> = self
                     .dup_resolve
                     .as_ref()
@@ -245,6 +259,35 @@ impl App {
         let config = &self.config;
         if let Some(dr) = self.dup_resolve.as_mut() {
             auto_select(dr, config);
+        }
+    }
+
+    /// Open the copy under the cursor in the reader for a quick look, stashing the
+    /// overlay so the dispatcher/renderer ignore it; `q`/Esc restores it (see the
+    /// reader-return handling in `dispatch`). Mirrors `open_selected`. A flash
+    /// surfaces the reason when a book can't be opened (e.g. an unreadable format).
+    fn preview_dup_book(&mut self) {
+        let Some(path) = self
+            .dup_resolve
+            .as_ref()
+            .and_then(|dr| dr.selected_path().map(str::to_string))
+        else {
+            return;
+        };
+        self.flush_reading_time();
+        match super::build_reader(&path, &self.store, self.picker.is_some()) {
+            Ok((reader, config, book_path)) => {
+                self.reader = Some(reader);
+                self.config = config;
+                self.book_path = book_path;
+                self.mode = super::Mode::Reader;
+                self.session_start = Some(std::time::Instant::now());
+                if let Some(s) = &self.store {
+                    s.mark_opened(&self.book_path);
+                }
+                self.dup_preview = self.dup_resolve.take();
+            }
+            Err(e) => self.lib_flash = Some(e.to_string()),
         }
     }
 
@@ -284,4 +327,22 @@ fn file_name(path: &str) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string())
+}
+
+/// Reveal a file in the OS file manager (Finder on macOS), best-effort — a local
+/// reveal, so spawn-and-forget; it doesn't take over the terminal.
+fn reveal_in_file_manager(path: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer")
+        .arg(format!("/select,{path}"))
+        .spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    }
 }
