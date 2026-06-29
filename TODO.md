@@ -178,13 +178,30 @@ jump-by-type + a reader cursor.
       Paused/Dropped/Reference) beyond the progress-derived unread/reading/
       finished — `m` cycles it, shown as its own toggleable `Status` column +
       detail line, sortable, DSL-filterable.
-- [x] Duplicate detection + resolution: `delryn-library::dedup` (ISBN, else
-      normalized title + author surname); a "Duplicates" library section lists
-      members. `D` opens a **resolution overlay** — every group with a checkbox
-      per copy; a **smart auto-select** keeps the best (engagement > original >
-      EPUB > richer metadata > larger) and pre-checks the worse ones; `space`
-      toggles, `a` re-auto, `u` clears, `d` deletes all checked (file + row) after
-      one confirm, then the overlay refreshes/closes.
+- [x] Duplicate detection + resolution: `delryn-library::dedup`. **Multi-key
+      grouping** — each book emits a canonical ISBN-13 key (ISBN-10↔13 collapsed)
+      *and* a normalized title+author key, joined into groups by connected
+      components (union-find). Matching on *either* key (not one rigid ISBN-first
+      key) catches the common misses: a copy with no ISBN still joins its
+      ISBN-bearing twin, and two editions with different ISBNs meet on title+author.
+      Title normalization folds diacritics and strips trailing edition noise
+      ("2nd ed", "revised edition") while keeping volume/part markers so series
+      entries don't collapse. A "Duplicates" library section lists members. `D`
+      opens a **resolution overlay** — every group with a checkbox per copy; a
+      **smart auto-select** keeps the best (engagement > original > EPUB > richer
+      metadata > larger) and pre-checks the worse ones; `space` toggles, `a`
+      re-auto, `u` clears, `n` **keeps the group** ("not a duplicate" — persisted
+      in `dismissed_dups`, never flagged again), `d` deletes all checked (file +
+      row) after one confirm, then the overlay refreshes/closes.
+- [ ] Dedup, further tiers (only if duplicates still slip through — all kept
+      cheap/lazy, no library-wide content scan): **(2)** bounded fuzzy title
+      fallback, blocked by author-surname / first title token to stay near-linear;
+      **(3)** confidence tiers (Exact / Likely / Possible) shown + sorted in the
+      overlay; **(4)** cached `content_hash` column (blake3 of file bytes,
+      incremental behind the mtime/size check, rayon-parallel) for zero-false-
+      positive "Exact Duplicate"; **(5)** lazy content fingerprint computed *only*
+      for the few books in a group being resolved (reuse `read_fulltext`), never
+      at scan time.
 - [x] Metadata diff view (current vs remote, selective apply): picking an online
       candidate (editor Lookup tab → ⏎) opens a diff overlay — one row per field
       with current vs remote, fields that differ pre-ticked; space toggles, `a`

@@ -47,10 +47,13 @@ impl DupMember {
     }
 }
 
-/// A duplicate group (≥2 copies sharing an ISBN, else title+author).
+/// A duplicate group (≥2 copies linked by a shared ISBN or title+author).
 pub struct DupGroup {
     pub label: String,
     pub members: Vec<DupMember>,
+    /// Stable identity of the group (sorted member paths), used to remember it as
+    /// dismissed when the reader chooses to keep every copy.
+    pub signature: String,
 }
 
 /// The open resolution overlay.
@@ -89,9 +92,13 @@ impl App {
             return;
         };
         let all = store.all_books();
+        // Groups the reader dismissed ("keep both") shouldn't be offered again.
+        let dismissed = store.dismissed_duplicate_groups();
         let groups: Vec<DupGroup> = crate::library::dedup::duplicate_groups(&all)
             .into_iter()
+            .filter(|idxs| !dismissed.contains(&crate::library::dedup::group_signature(idxs, &all)))
             .map(|idxs| {
+                let signature = crate::library::dedup::group_signature(&idxs, &all);
                 let members = idxs
                     .iter()
                     .map(|&i| {
@@ -121,7 +128,11 @@ impl App {
                     })
                     .collect();
                 let label = all[idxs[0]].title.clone();
-                DupGroup { label, members }
+                DupGroup {
+                    label,
+                    members,
+                    signature,
+                }
             })
             .collect();
         if groups.is_empty() {
@@ -152,6 +163,18 @@ impl App {
                 }
             }
             KeyCode::Char('a') => auto_select(dr),
+            KeyCode::Char('n') => {
+                // "Keep both": dismiss the group under the cursor so it's never
+                // flagged again, then rebuild to drop it from the overlay.
+                if let Some(&(gi, _)) = rows.get(dr.cursor) {
+                    let sig = dr.groups[gi].signature.clone();
+                    if let Some(store) = &self.store {
+                        store.dismiss_duplicate_group(&sig);
+                    }
+                    self.lib_flash = Some("kept this group; it won't be flagged again".into());
+                    self.refresh_dup_resolve();
+                }
+            }
             KeyCode::Char('u') => {
                 for g in &mut dr.groups {
                     for m in &mut g.members {
