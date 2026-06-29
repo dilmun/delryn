@@ -178,15 +178,18 @@ jump-by-type + a reader cursor.
       Paused/Dropped/Reference) beyond the progress-derived unread/reading/
       finished — `m` cycles it, shown as its own toggleable `Status` column +
       detail line, sortable, DSL-filterable.
-- [x] Duplicate detection + resolution: `delryn-library::dedup`. **Multi-key
-      grouping** — each book emits a canonical ISBN-13 key (ISBN-10↔13 collapsed)
-      *and* a normalized title+author key, joined into groups by connected
-      components (union-find). Matching on *either* key (not one rigid ISBN-first
-      key) catches the common misses: a copy with no ISBN still joins its
-      ISBN-bearing twin, and two editions with different ISBNs meet on title+author.
-      Title normalization folds diacritics and strips trailing edition noise
-      ("2nd ed", "revised edition") while keeping volume/part markers so series
-      entries don't collapse. A "Duplicates" library section lists members. `D`
+- [x] Duplicate detection + resolution: `delryn-library::dedup`. **Cheap-to-expensive
+      cascade.** Tier 1+2 (exact metadata, instant every refresh): each book emits a
+      canonical ISBN-13 key (ISBN-10↔13 collapsed) *and* a normalized title key **per
+      author** (title + each author's surname), joined by connected components
+      (union-find). Matching on *any* shared key catches the common misses: a copy
+      with no ISBN joins its ISBN-bearing twin; editions with different ISBNs meet on
+      title+author; a multi-author book matches a copy crediting **any one** of its
+      authors (any order/format). Title normalization trims subtitle/divider/paren
+      tails (`main_title`), folds diacritics, strips trailing edition noise ("2nd ed")
+      while keeping volume/part markers so series entries don't collapse. Tier 3 is
+      the on-demand content scan (`R`, below), which only opens files metadata
+      *didn't* already group. A "Duplicates" library section lists members. `D`
       opens a **resolution overlay** — every group with a checkbox per copy; a
       **smart auto-select** keeps the best (engagement > original > configured
       format keep-order > richer metadata > larger) and pre-checks the worse ones;
@@ -198,8 +201,10 @@ jump-by-type + a reader cursor.
       `d` deletes all checked after one confirm. Each row shows the file's full
       **path** (left-elided; whole path visible full-screen).
 - [x] Thorough duplicate scan (user-triggered, off the default path): in the
-      Duplicates view, `R` reads each book's **table of contents** from its own
-      structure (NOT metadata): EPUB nav + PDF bookmark outline (`epub`/`pdf::toc_labels`;
+      Duplicates view, `R` reads the **table of contents** of each book *metadata
+      didn't already group* (the cascade's tier 3 — skips files matched by ISBN/
+      title+author, so it opens far fewer) from its own structure (NOT metadata):
+      EPUB nav + PDF bookmark outline (`epub`/`pdf::toc_labels`;
       PDF's synthetic "Page N" fallback is rejected). Each chapter label is reduced
       to its distinctive part — leading "Chapter N"/"Part N" stripped, generic
       boilerplate ("Preface"/"Summary"/"Index"/…) dropped — and hashed into a set

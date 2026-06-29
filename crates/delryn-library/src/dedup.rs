@@ -243,17 +243,27 @@ pub fn group_signature(group: &[usize], books: &[BookRow]) -> String {
     paths.join("\n")
 }
 
-/// The match keys for a book: a canonical ISBN-13 key (when the ISBN is valid)
-/// and a normalized title+author key (when there's a title). Both are emitted, so
-/// a book links to twins that share *either*.
+/// The exact-metadata match keys for a book — the cheap first tier, run on every
+/// refresh. A canonical ISBN-13 key (when the ISBN is valid), and a normalized
+/// title + author-surname key **per author** (when there's a title), so a copy
+/// matches any twin that shares the ISBN, or the title and *any one* author. A
+/// titled book with no usable author still emits a title-only key, so two
+/// author-less copies of the same title match.
 fn match_keys(b: &BookRow) -> Vec<String> {
-    let mut keys = Vec::with_capacity(2);
+    let mut keys = Vec::new();
     if let Some(isbn) = canonical_isbn13(&b.isbn) {
         keys.push(format!("isbn:{isbn}"));
     }
     let title = norm_title(&b.title);
     if !title.is_empty() {
-        keys.push(format!("ta:{title}|{}", norm_author(&b.author)));
+        let surnames = author_surnames(&b.author);
+        if surnames.is_empty() {
+            keys.push(format!("ta:{title}|"));
+        } else {
+            for surname in surnames {
+                keys.push(format!("ta:{title}|{surname}"));
+            }
+        }
     }
     keys
 }
@@ -278,23 +288,28 @@ fn norm_title(title: &str) -> String {
     words.join(" ")
 }
 
-/// Normalized first-author surname (diacritics folded, lowercased alphanumerics),
-/// so "Frank Herbert" and "Herbert, Frank" match — and "Müller" matches "Muller".
-/// Falls back to the whole first author.
-fn norm_author(author: &str) -> String {
-    // First author from a list separated by `&`, `;`, or " and ".
-    let first = author
+/// Every author's normalized surname, so a multi-author book matches a copy that
+/// lists the same work with *any one* author in common (and in any order). The
+/// byline is split on the usual multi-author separators (`&`, `;`, ` and `); each
+/// name is reduced to its surname by [`surname_of`].
+fn author_surnames(author: &str) -> Vec<String> {
+    author
         .split(['&', ';'])
-        .next()
-        .unwrap_or(author)
-        .split(" and ")
-        .next()
-        .unwrap_or(author)
-        .trim();
-    let surname = if let Some((last, _)) = first.split_once(',') {
+        .flat_map(|s| s.split(" and "))
+        .map(surname_of)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Normalized surname of a single author (diacritics folded, lowercased
+/// alphanumerics), so "Frank Herbert" and "Herbert, Frank" match — and "Müller"
+/// matches "Muller".
+fn surname_of(name: &str) -> String {
+    let name = name.trim();
+    let surname = if let Some((last, _)) = name.split_once(',') {
         last.trim() // "Herbert, Frank" → "Herbert"
     } else {
-        first.split_whitespace().last().unwrap_or(first) // "Frank Herbert" → "Herbert"
+        name.split_whitespace().last().unwrap_or(name) // "Frank Herbert" → "Herbert"
     };
     surname
         .to_lowercase()
@@ -467,6 +482,26 @@ mod tests {
         let paths = duplicate_paths(&books);
         assert!(paths.contains("/a/Dune.epub") && paths.contains("/b/dune.epub"));
         assert!(!paths.contains("/c/Other.epub"));
+    }
+
+    #[test]
+    fn matches_when_any_one_author_is_shared() {
+        // Multi-author book vs. a copy crediting one of them (different order/format).
+        // Sharing a single author is enough; a same-title book with no shared author
+        // is not grouped.
+        let books = vec![
+            book(
+                "/a.epub",
+                "Deep Learning",
+                "Ian Goodfellow & Yoshua Bengio & Aaron Courville",
+                "",
+            ),
+            book("/b.pdf", "Deep Learning", "Bengio, Yoshua", ""),
+            book("/c.epub", "Deep Learning", "Someone Else", ""),
+        ];
+        let groups = duplicate_groups(&books);
+        assert_eq!(groups.len(), 1, "shared author groups a+b, c stays out");
+        assert_eq!(groups[0], vec![0, 1]);
     }
 
     #[test]
