@@ -194,19 +194,21 @@ jump-by-type + a reader cursor.
       in `dismissed_dups`, never flagged again), `d` deletes all checked (file +
       row) after one confirm, then the overlay refreshes/closes.
 - [x] Thorough duplicate scan (user-triggered, off the default path): in the
-      Duplicates view, `R` runs a cover-based deep scan — a worker thread
-      perceptually hashes every book's cover (`delryn_media::cover_dhash`, a 64-bit
-      dHash; cache-first so already-built covers cost only a decode), streaming
-      progress to the status bar; a pair becomes a candidate link when its covers
-      are within a Hamming threshold **and** its titles agree (overlap coefficient
-      ≥ 0.6, ≥2 shared tokens — `dedup::cover_link_candidates`). Links persist to
+      Duplicates view, `R` runs a **content** deep scan — a worker thread samples a
+      bounded chunk of each book's text from the *middle* (body prose, aligned
+      across formats, no boilerplate — `epub`/`pdf::extract_text_sample`; PDF reads
+      its text layer), reduces it to bare lowercase alphanumerics, and SimHashes it
+      (`dedup::text_simhash`, 64-bit, char-12-gram). Pairs within
+      `CONTENT_HAMMING_MAX` bits (`dedup::content_link_candidates`) persist to
       `dup_links`, which the grouping (`duplicate_groups_with_links`) folds in.
-      Catches the misses metadata can't — chiefly **PDFs** (author/ISBN absent, so
-      the metadata key can't match, though title+cover do). The title gate is the
-      precision fix: cover similarity alone collides on shared publisher templates /
-      generic title pages and then chains unrelated books via union-find. Human-
-      confirmed: the overlay's `n` ("keep both") discards false candidates. DB
-      writes stay on the main thread (Connection isn't `Send`); worker is pure.
+      Content is the signal — independent of the messy titles/authors/ISBNs — so it
+      catches same-work files (notably EPUB↔PDF) whatever their metadata. Progress
+      streams to the status bar. Replaced the earlier cover+title approach, which
+      collided on shared publisher cover templates (101 false dups). Limits: needs a
+      text layer, so **image-only/scanned PDFs** are skipped (no false match);
+      cross-format alignment is approximate, hence "close, not 100%". Human-
+      confirmed: overlay's `n` ("keep both") discards false candidates. DB writes
+      stay on the main thread (Connection isn't `Send`); worker is pure.
 - [ ] Dedup, further tiers (only if duplicates still slip through — all kept
       cheap/lazy, no library-wide content scan): **(2)** bounded fuzzy title
       fallback, blocked by author-surname / first title token to stay near-linear;

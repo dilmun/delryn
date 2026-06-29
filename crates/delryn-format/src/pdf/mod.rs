@@ -229,6 +229,38 @@ pub fn render_cover(path: impl AsRef<Path>) -> Option<Vec<u8>> {
     rasterize_page_png_at(&doc, 0, COVER_WIDTH)
 }
 
+/// A bounded plain-text sample from the text layer of pages in the *middle* of the
+/// PDF, for content-based duplicate detection (mirrors the EPUB sampler so the two
+/// formats fingerprint the same content — see `epub::extract_text_sample`). The
+/// middle avoids the cover/title/TOC front matter. Reads at most `max_pages` pages
+/// and ~`max_chars` of text. `None` for image-only/scanned PDFs (no text layer) or
+/// when PDFium is unavailable — those simply aren't content-matched.
+pub fn extract_text_sample(
+    path: impl AsRef<Path>,
+    max_pages: usize,
+    max_chars: usize,
+) -> Option<String> {
+    let doc = open_pdfium_doc(path.as_ref()).ok()?;
+    let pages = doc.pages();
+    let count = pages.len().max(0) as usize;
+    if count == 0 {
+        return None;
+    }
+    let start = count / 2; // middle = body text, no front-matter boilerplate
+    let mut out = String::new();
+    let mut i = start;
+    while i < count && i - start < max_pages && out.len() < max_chars {
+        if let Ok(page) = pages.get(i as i32)
+            && let Ok(text) = page.text()
+        {
+            out.push_str(&text.all());
+            out.push('\n');
+        }
+        i += 1;
+    }
+    (!out.trim().is_empty()).then_some(out)
+}
+
 /// Placeholder shown in place of a page that couldn't be rendered.
 fn render_failed(index: usize) -> Block {
     Block::Para {
