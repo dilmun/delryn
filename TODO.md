@@ -194,22 +194,22 @@ jump-by-type + a reader cursor.
       in `dismissed_dups`, never flagged again), `d` deletes all checked (file +
       row) after one confirm, then the overlay refreshes/closes.
 - [x] Thorough duplicate scan (user-triggered, off the default path): in the
-      Duplicates view, `R` runs a **content** deep scan — a worker thread samples a
-      bounded chunk of each book's text from the *front* (the printed title page,
-      author, copyright year, and TOC — where the book states its identity, reads
-      the same across formats, and is distinctive — `epub`/`pdf::extract_text_sample`;
-      PDF reads its text layer), reduces it to bare lowercase alphanumerics, SimHashes it
-      (`dedup::text_simhash`, 64-bit, char-12-gram). Pairs within
-      `CONTENT_HAMMING_MAX` bits (`dedup::content_link_candidates`) persist to
-      `dup_links`, which the grouping (`duplicate_groups_with_links`) folds in.
-      Content is the signal — independent of the messy titles/authors/ISBNs — so it
-      catches same-work files (notably EPUB↔PDF) whatever their metadata. Progress
-      streams to the status bar. Replaced the earlier cover+title approach, which
-      collided on shared publisher cover templates (101 false dups). Limits: needs a
-      text layer, so **image-only/scanned PDFs** are skipped (no false match);
-      cross-format alignment is approximate, hence "close, not 100%". Human-
-      confirmed: overlay's `n` ("keep both") discards false candidates. DB writes
-      stay on the main thread (Connection isn't `Send`); worker is pure.
+      Duplicates view, `R` reads each book's **printed identity** from its own pages
+      (NOT metadata, which is often wrong): the EPUB title from its most prominent
+      heading (`epub::extract_content_title`), the PDF title from the largest-font
+      text on its title page (`pdf::extract_title` via PDFium per-char font sizes),
+      plus the copyright year from the opening text. Books link when their normalized
+      titles overlap strongly (`dedup::content_link_candidates`: overlap-coefficient
+      ≥0.75 over the shorter title, ≥3 shared tokens; a copyright year present on both
+      and >1 apart vetoes it as a different edition). Links persist to `dup_links`,
+      folded into the grouping (`duplicate_groups_with_links`). Covers every combo
+      (epub↔epub, pdf↔pdf, pdf↔epub). Earlier blob attempts failed: cover+title
+      collided on publisher cover templates; middle-text SimHash misaligned
+      cross-format and choked on table/math books; front-text SimHash collided on
+      shared publisher front-matter boilerplate (Packt) — the title-extraction
+      approach avoids all three by keying only on the distinctive title. Limits:
+      needs a text layer, so **image-only/scanned PDFs** are skipped; depends on
+      title-extraction quality. Human-confirmed via overlay `n` ("keep both").
 - [ ] Dedup, further tiers (only if duplicates still slip through — all kept
       cheap/lazy, no library-wide content scan): **(2)** bounded fuzzy title
       fallback, blocked by author-surname / first title token to stay near-linear;
