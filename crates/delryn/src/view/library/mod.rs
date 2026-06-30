@@ -31,7 +31,6 @@ mod books;
 mod detail;
 mod grid;
 mod sections;
-mod status;
 
 pub(crate) use books::sort_cycle;
 
@@ -73,7 +72,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if let Some(d) = detail {
         detail::render_detail(f, d, app, theme, app.library.pane == LibPane::Detail);
     }
-    status::render_status(f, rows[1], app, theme);
+    crate::view::status::render_library(f, rows[1], app, theme);
 }
 
 /// A bordered pane block whose border + title turn accent when the pane is
