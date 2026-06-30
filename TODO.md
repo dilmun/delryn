@@ -21,15 +21,19 @@ is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
       (`app/state/overlay.rs`) — "two overlays open at once" is now
       unrepresentable. `pending_confirm`/`dup_preview` stay separate by design.
       App: **67 → 24 fields**. Commits f86446d / 7d39aee / c71482d.
-- [ ] **`Reader` god-object (~79 fields) → sub-state structs.** `WrapKey`
-      (collapses the 19 `wrap_*` shadow fields into one `==`-compared key),
-      `ImageState`, `PageThemeState`, `NavState` (anchors/history/bookmarks),
-      `SectionCache` (loader channels + cache), `SearchState`. Reader coordinates.
-- [ ] **`delryn-media/src/lib.rs` (1358) → module tree:** `decode`, `recolor`,
-      `sizing`, `cover`, `kitty`, `builder`, `page` (+ shared `luma()`).
-- [ ] **`delryn-render/src/layout.rs` (1527) → `wrap/` tree:** `blocks`, `spans`,
-      `table`, `code`; `wrap_blocks` (287) becomes thin dispatch; `wrap_spans`
-      (171) splits flatten/fill/justify.
+- [x] **`Reader` god-object (80 fields) → sub-state structs.** ✅ Carved into
+      `app/reader/state/`: `WrapKey` (10 `wrap_*` shadows → one `==`-compared
+      key), `ImageState`, `PageThemeState`, `NavState`, `SearchState`,
+      `SectionCache` (loader channels + thread). Reader: **80 → 41** coordinator
+      fields. Commit b132430.
+- [x] **`delryn-media/src/lib.rs` (1358) → module tree:** ✅ `decode`, `recolor`,
+      `sizing`, `cover`, `kitty`, `builder`, `page`; lib.rs 27 lines, flat API
+      preserved. Commit fa91936. *(shared `luma()` → R-D.)*
+- [x] **`delryn-render/src/layout.rs` (1527) → `layout/` tree:** ✅ `blocks`,
+      `spans`, `table`, `code`; `wrap_blocks` 287→98 (thin dispatch), `wrap_spans`
+      split flatten/fill/emit; `delryn_render::layout::*` path preserved. Commit
+      5c6e6ce. *(Kept the dir named `layout` not `wrap` — preserves the public
+      path with zero shim; the engine IS the layout engine.)*
 
 ### R-B — P1 duplication & maintainability hazards
 
