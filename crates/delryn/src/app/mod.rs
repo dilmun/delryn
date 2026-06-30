@@ -729,7 +729,8 @@ impl App {
         if targets.is_empty() {
             return Vec::new();
         }
-        self.page_deck.render(&targets, |s| r.page_png(s))
+        let policy = r.page_policy();
+        self.page_deck.render(&targets, policy, |s| r.page_png(s))
     }
 
     /// Text queued for the system clipboard (OSC 52), if any.

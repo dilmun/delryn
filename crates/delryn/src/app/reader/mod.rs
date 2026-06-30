@@ -1074,6 +1074,13 @@ impl Reader {
             .map(|b| b.as_ref().clone())
     }
 
+    /// The theme/image policy the visible page(s) are themed and shown under (set
+    /// each frame by [`Reader::sync_pages`]). The [`PageDeck`] keys its transmit on
+    /// this so a theme/mode change re-sends the re-themed pages.
+    pub fn page_policy(&self) -> media::RenderPolicy {
+        self.page_policy
+    }
+
     /// The raw rasterized PNG bytes of `section`'s page from the section cache —
     /// the un-themed source the page themer adapts (and what Faithful mode shows).
     pub(super) fn raster_png(&self, section: usize) -> Option<Vec<u8>> {
