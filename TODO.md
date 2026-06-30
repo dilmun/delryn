@@ -63,11 +63,14 @@ is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
 
 ### R-C — Theming system + status bar (full)
 
-- [ ] **Theming: Palette + Roles, file-configurable.** `theme.rs` (415) →
-      `theme/{mod,palette,role,builtin,load,image}`. ~16-swatch `Palette` +
-      semantic `Role` tokens (every surface on a role; adding a role = one map
-      entry), `~/.config/delryn/themes/*.toml` user themes (built-ins same format),
-      contrast validation, shared `luma()`. Docs: `docs/theming.md`.
+- [~] **Theming: Palette + Roles, file-configurable.** `theme.rs` (415) →
+      `theme/{mod,builtin,palette,load}`. ✅ **User themes shipped** (330294e):
+      runtime registry = built-ins + `~/.config/delryn/themes/*.toml`; a `[palette]`
+      of hex swatches maps onto the flat `Theme` with derivations; `Theme` stays
+      `Copy` so views are untouched. **Remaining:** the semantic `Role` enum +
+      `theme.style(Role)` so every surface is on a role (migrate views off the flat
+      fields), `theme/role.rs` default map, optional `[roles]` overrides, contrast
+      validation, shared `luma()` (R-D dedup). Docs: `docs/theming.md`.
 - [ ] **Status bar: segment model, modern + useful + configurable + unified.**
       `view/status/{mod,segment,producers,layout}` — segments in Left/Center/Right
       zones (mode pill, position, slim progress bar, chapter, format, search
