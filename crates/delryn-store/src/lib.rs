@@ -80,6 +80,112 @@ CREATE TABLE IF NOT EXISTS dup_links (
 );
 ";
 
+/// Current schema version. Bump when you append a migration step in [`migrate`].
+const USER_VERSION: i64 = 2;
+
+/// Bring the database up to [`USER_VERSION`], guarded by SQLite's `user_version`
+/// pragma so each step runs **once** — not on every open as the old inline block
+/// did. Steps are append-only: add `if version < N { … }` and bump
+/// `USER_VERSION`; never edit a shipped step.
+fn migrate(conn: &Connection) -> Result<()> {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    // Step 1 — base schema (idempotent `CREATE … IF NOT EXISTS`): creates every
+    // table for a fresh database, a no-op for one that already has them.
+    if version < 1 {
+        conn.execute_batch(SCHEMA)?;
+        // Full-text index — graceful: skipped if FTS5 isn't compiled in.
+        let _ = conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(path UNINDEXED, body);",
+        );
+    }
+    // Step 2 — columns added after the original schema, for databases created
+    // before they existed. Idempotent (see [`legacy_column_backfill`]).
+    if version < 2 {
+        legacy_column_backfill(conn);
+    }
+    conn.pragma_update(None, "user_version", USER_VERSION)?;
+    Ok(())
+}
+
+/// The pre-versioning column/seed backfill ([`migrate`] step 2). Every statement
+/// is best-effort: an `ADD COLUMN` errors (and is ignored) when the column is
+/// already present, so this is safe to run on a fresh database too — the columns
+/// it can't add already came from `SCHEMA`. `user_version` gates it out after the
+/// first run, so it never executes on a steady-state database.
+fn legacy_column_backfill(conn: &Connection) {
+    // Reading progress predating the theme column.
+    let _ = conn.execute(
+        "ALTER TABLE progress ADD COLUMN theme TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    // Reading-time accounting.
+    let _ = conn.execute(
+        "ALTER TABLE books ADD COLUMN read_seconds INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    // Series / publisher metadata.
+    let _ = conn.execute(
+        "ALTER TABLE books ADD COLUMN series TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE books ADD COLUMN series_index REAL", []);
+    let _ = conn.execute(
+        "ALTER TABLE books ADD COLUMN publisher TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    // Manual-edit guard: 1 once a book's metadata is hand-edited, so a rescan
+    // won't overwrite it (see `upsert_book`).
+    let _ = conn.execute(
+        "ALTER TABLE books ADD COLUMN edited INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    // Extra descriptive fields.
+    for col in ["subtitle", "isbn", "language"] {
+        let _ = conn.execute(
+            &format!("ALTER TABLE books ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"),
+            [],
+        );
+    }
+    // Whether the EPUB looks converted/repackaged vs an original publisher file.
+    let _ = conn.execute(
+        "ALTER TABLE books ADD COLUMN converted INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    // User rating (0 unrated … 5 stars).
+    let _ = conn.execute(
+        "ALTER TABLE books ADD COLUMN rating INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    // Manual reading-status override (paused/dropped/reference; empty = derive).
+    let _ = conn.execute(
+        "ALTER TABLE books ADD COLUMN status TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    // User tags (free-form, normalised; library-only).
+    let _ = conn.execute(
+        "ALTER TABLE books ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    // Bookmark organisation: a custom name and a folder.
+    for col in ["name", "folder"] {
+        let _ = conn.execute(
+            &format!("ALTER TABLE annotations ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"),
+            [],
+        );
+    }
+    // Kind discriminator (0 = bookmark, 1 = note); tag pre-existing note rows.
+    let _ = conn.execute(
+        "ALTER TABLE annotations ADD COLUMN kind INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute("UPDATE annotations SET kind = 1 WHERE note <> ''", []);
+    // First-class collections: seed the names table from existing memberships.
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO collections (name) SELECT DISTINCT name FROM shelves",
+        [],
+    );
+}
+
 /// A bookmark or note, anchored to content by a text quote (reflow-stable).
 /// `name` is an optional user label (shown instead of the quote); `folder` is an
 /// optional group (empty = ungrouped).
@@ -187,88 +293,7 @@ impl Store {
         let dir = delryn_infra::paths::config_dir();
         std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join("delryn.db"))?;
-        conn.execute_batch(SCHEMA)?;
-        // Migrate older databases that predate the theme column.
-        let _ = conn.execute(
-            "ALTER TABLE progress ADD COLUMN theme TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-        // Reading-time accounting (migrate older databases).
-        let _ = conn.execute(
-            "ALTER TABLE books ADD COLUMN read_seconds INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
-        // Series / publisher metadata (migrate older databases).
-        let _ = conn.execute(
-            "ALTER TABLE books ADD COLUMN series TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-        let _ = conn.execute("ALTER TABLE books ADD COLUMN series_index REAL", []);
-        let _ = conn.execute(
-            "ALTER TABLE books ADD COLUMN publisher TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-        // Manual-edit guard: 1 once a book's metadata is hand-edited, so a
-        // rescan won't overwrite it (see `upsert_book`).
-        let _ = conn.execute(
-            "ALTER TABLE books ADD COLUMN edited INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
-        // Extra descriptive fields (migrate older databases).
-        for col in ["subtitle", "isbn", "language"] {
-            let _ = conn.execute(
-                &format!("ALTER TABLE books ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"),
-                [],
-            );
-        }
-        // Whether the EPUB looks converted/repackaged vs an original publisher
-        // file (a file fact, refreshed every index — not subject to `edited`).
-        let _ = conn.execute(
-            "ALTER TABLE books ADD COLUMN converted INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
-        // User rating (0 unrated … 5 stars); user-set, preserved across rescans.
-        let _ = conn.execute(
-            "ALTER TABLE books ADD COLUMN rating INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
-        // Manual reading-status override (paused/dropped/reference; empty = derive
-        // from progress); user-set, preserved across rescans.
-        let _ = conn.execute(
-            "ALTER TABLE books ADD COLUMN status TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-        // User tags (free-form, comma-separated, normalised; preserved across
-        // rescans). Library-only — never written back to the file.
-        let _ = conn.execute(
-            "ALTER TABLE books ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-        // Bookmark organisation: a custom name and a folder (migrate older DBs).
-        for col in ["name", "folder"] {
-            let _ = conn.execute(
-                &format!("ALTER TABLE annotations ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"),
-                [],
-            );
-        }
-        // Kind discriminator (0 = bookmark, 1 = note). Notes are a Phase 4 concern;
-        // bookmarks stay a pure list. Tag any pre-existing note-bearing rows as
-        // notes so they don't surface in the bookmarks overlay.
-        let _ = conn.execute(
-            "ALTER TABLE annotations ADD COLUMN kind INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
-        let _ = conn.execute("UPDATE annotations SET kind = 1 WHERE note <> ''", []);
-        // First-class collections: seed the names table from existing memberships
-        // so collections created before this migration keep showing.
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO collections (name) SELECT DISTINCT name FROM shelves",
-            [],
-        );
-        // Full-text index (graceful: skipped if FTS5 isn't compiled in).
-        let _ = conn.execute_batch(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(path UNINDEXED, body);",
-        );
+        migrate(&conn)?;
         Ok(Store { conn })
     }
 
@@ -347,6 +372,50 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrate_stamps_version_adds_columns_and_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, USER_VERSION);
+        // Columns from both SCHEMA (tags) and the backfill (read_seconds) exist.
+        assert!(
+            conn.prepare("SELECT read_seconds, tags, status FROM books")
+                .is_ok()
+        );
+        // Re-running is a no-op and must not error (the steady-state open path).
+        migrate(&conn).unwrap();
+        let v2: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v2, USER_VERSION);
+    }
+
+    #[test]
+    fn migrate_backfills_a_pre_versioning_database() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // A pre-versioning DB: original tables missing later columns, version 0.
+        conn.execute_batch(
+            "CREATE TABLE books (path TEXT PRIMARY KEY, title TEXT);
+             CREATE TABLE annotations (id INTEGER PRIMARY KEY, path TEXT, note TEXT NOT NULL DEFAULT '');
+             CREATE TABLE shelves (path TEXT, name TEXT);",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        // The backfill added the columns the old schema lacked.
+        assert!(
+            conn.prepare("SELECT read_seconds, rating, status, tags FROM books")
+                .is_ok()
+        );
+        assert!(conn.prepare("SELECT kind, folder FROM annotations").is_ok());
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, USER_VERSION);
+    }
 
     #[test]
     fn progress_roundtrip() {
