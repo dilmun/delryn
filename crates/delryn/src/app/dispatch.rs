@@ -512,8 +512,10 @@ impl App {
                 save = true;
             }
             Action::CycleTheme => {
+                // Theme is global: cycling it (here or in the library) recolours
+                // every book and persists immediately to config — never per-book.
                 self.config.theme = self.config.theme.next();
-                save = true;
+                self.config.save();
             }
             Action::CycleReadingMode => {
                 let mode = self.config.reading_mode().next();
