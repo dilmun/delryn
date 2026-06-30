@@ -18,8 +18,6 @@ use crate::media::ImageBuilder;
 use crate::search::Matcher;
 use crate::theme::Theme;
 
-const GAUGE_WIDTH: usize = 16;
-
 /// Cells reserved in the left margin for the bookmark gutter: the icon plus a
 /// one-cell gap so it never butts against the text.
 const GUTTER_COLS: u16 = 2;
@@ -87,7 +85,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let prompt = format!("[{}] /{}", reader.search.mode.label(), reader.search.input);
         f.render_widget(Paragraph::new(Line::raw(prompt)).style(style), status);
     } else if show_status {
-        render_status(f, status, reader, config, theme);
+        crate::view::status::render_reader(f, status, reader, config, theme);
     }
 }
 
@@ -652,76 +650,4 @@ fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
         fg = theme.link;
     }
     style.fg(fg)
-}
-
-fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config, theme: Theme) {
-    let meta = reader.doc.metadata();
-    // A transient flash (e.g. "copied") takes over the left side when present.
-    let left = if let Some(flash) = &reader.flash {
-        flash.clone()
-    } else if meta.authors.is_empty() {
-        meta.title.clone()
-    } else {
-        format!("{} — {}", meta.title, meta.author_line())
-    };
-
-    let pct = (reader.progress() * 100.0).round() as u32;
-    let sf = config.status;
-    let mut parts: Vec<String> = Vec::new();
-    if reader.search.matcher.is_some() {
-        let n = reader.search_count();
-        let cur = if n == 0 { 0 } else { reader.search.idx + 1 };
-        parts.push(format!("⌕ {cur}/{n}"));
-    }
-    if sf.theme {
-        parts.push(theme.name.to_string());
-    }
-    if sf.view {
-        parts.push(config.view_mode.label().to_string());
-    }
-    if reader.paged || reader.is_paged_image() {
-        // A paged-image (PDF) page is the section itself; reflowable page mode
-        // counts virtual pages within the section.
-        let (cur, total) = if reader.is_paged_image() {
-            (reader.section + 1, reader.section_count())
-        } else {
-            (reader.current_page(), reader.page_count())
-        };
-        parts.push(format!("p {cur}/{total}"));
-    }
-    // For a paged-image doc the page indicator already *is* section+1/total, so
-    // skip the otherwise-identical position field.
-    if sf.position && !reader.is_paged_image() {
-        parts.push(format!(
-            "{}/{}",
-            reader.section + 1,
-            reader.doc.section_count()
-        ));
-    }
-    if sf.percent {
-        parts.push(format!("{pct}%"));
-    }
-    let mut right = parts.join(" · ");
-    if sf.gauge {
-        if !right.is_empty() {
-            right.push_str("  ");
-        }
-        right.push_str(&gauge(reader.progress(), GAUGE_WIDTH));
-    }
-
-    let width = area.width as usize;
-    let used = left.chars().count() + right.chars().count() + 2;
-    let pad = width.saturating_sub(used);
-    let line = format!(" {left}{}{right} ", " ".repeat(pad));
-
-    let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
-    f.render_widget(Paragraph::new(Line::raw(line)).style(style), area);
-}
-
-fn gauge(frac: f32, width: usize) -> String {
-    let filled = (frac.clamp(0.0, 1.0) * width as f32).round() as usize;
-    let mut s = String::with_capacity(width * 3);
-    s.extend(std::iter::repeat_n('█', filled));
-    s.extend(std::iter::repeat_n('░', width - filled));
-    s
 }
