@@ -4,37 +4,17 @@
 //! navigation history, and in-book search. Pure view-model — no terminal I/O.
 
 use std::collections::{HashMap, HashSet};
-use std::num::NonZeroUsize;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
-use std::thread;
+use std::sync::atomic::Ordering;
 
 use anyhow::Result;
-use lru::LruCache;
 
 use crate::document::{Block, Document, OutlineItem};
 use crate::layout::{DisplayLine, LineKind, WrapOpts, wrap_blocks};
-use crate::media::{self, ImageBuilder, ImagePlan, ImgKey, PageKey, PageThemer};
-use crate::search::{Matcher, SearchMode};
+use crate::media;
 use crate::theme;
 use delryn_model::{Anchor, find_footnote};
-use ratatui_image::picker::Picker;
 
-use super::{CACHE_CAP, Focus, IMAGE_CACHE_CAP};
-
-/// How far from the reader's current section the background loader still honours
-/// a request before treating it as stale. Must cover the neighbour-prefetch
-/// window (±4) so the look-ahead pages aren't dropped, with a little margin.
-const LOADER_RADIUS: usize = 6;
-
-/// How many themed PDF pages to keep. Covers the look-ahead window
-/// (±[`pages::PAGE_THEME_AHEAD`] ⇒ 9 pages) for the current policy with a little
-/// margin for recently-visited pages. A theme/mode toggle re-themes from the
-/// cached raster; the on-screen page is held by the deck independently of this
-/// cache, so old-policy entries can be evicted freely. Each entry is a full-page
-/// PNG, so this is the main bound on page-theme memory.
-const PAGE_THEME_CACHE_CAP: usize = 16;
+use super::{CACHE_CAP, Focus};
 
 // Separable reader concerns; each contributes an `impl Reader` block and reaches
 // the core's helpers (find_line, fetch_blocks, …) via the parent module.
@@ -42,13 +22,9 @@ mod images;
 mod pages;
 mod search;
 mod sidebar;
+mod state;
 
-/// A reading position, for the navigation (back/forward) history.
-#[derive(Clone, Copy)]
-struct Pos {
-    section: usize,
-    scroll: usize,
-}
+use state::{ImageState, NavState, PageThemeState, Pos, SearchState, SectionCache, WrapKey};
 
 /// A followable inline anchor located in the wrapped lines (reading order). The
 /// link cursor steps through these; the view highlights the selected one.
@@ -65,31 +41,21 @@ pub struct Reader {
     pub outline: Vec<OutlineItem>,
     pub section: usize,
     pub blocks: Vec<Block>,
-    /// Wrapped display lines of the current section, valid for `wrap_width`.
+    /// Wrapped display lines of the current section, valid for `wrapped`.
     pub lines: Vec<DisplayLine>,
-    pub wrap_width: usize,
     /// syntect theme desired for code (set each render from the active theme).
     pub code_theme: String,
-    /// syntect theme the current `lines` were wrapped with.
-    wrap_theme: String,
     /// Desired spacing (set each render from config).
     pub line_spacing: u8,
     pub paragraph_spacing: u8,
-    wrap_line_spacing: u8,
-    wrap_para_spacing: u8,
     /// Code rendering (set each render from config / panning).
     pub code_wrap: bool,
     pub code_hscroll: usize,
-    wrap_code_wrap: bool,
-    wrap_code_hscroll: usize,
     /// Word-wrap table cells (set each render from config).
     pub table_wrap: bool,
-    wrap_table_wrap: bool,
     /// Full justification + converter-spacing tidy (set each render from config).
     pub justify: bool,
-    wrap_justify: bool,
     pub tidy_spacing: bool,
-    wrap_tidy: bool,
     /// Keep scrolling within the current chapter (set each render from config).
     pub chapter_lock: bool,
     /// Paginated reading (set each render from config): vertical nav flips whole
@@ -105,56 +71,18 @@ pub struct Reader {
     /// captured by the view and consumed by the direct-Kitty [`PageDeck`]. One
     /// entry single-page, two for a spread.
     pub pdf_targets: Vec<(usize, ratatui::layout::Rect)>,
-    /// The last navigation was backward (to a lower section). Prefetch loads the
-    /// direction of travel first, so reverse paging isn't starved.
-    nav_back: bool,
-    /// Cached (outline index, line) for the current section's entries, recomputed
-    /// on re-wrap; drives the TOC scroll-spy cheaply.
-    heading_lines: Vec<(usize, usize)>,
-    /// Followable inline anchors in reading order (rebuilt on re-wrap).
-    anchors: Vec<AnchorHit>,
-    /// Footnote id → its definition's first display line (rebuilt on re-wrap).
-    footnote_def_line: HashMap<String, usize>,
-    /// All bookmarks for the open book, as `(section, quote)`. Pushed by the app
-    /// whenever bookmarks change; the source for the gutter markers.
-    bookmarks: Vec<(usize, String)>,
-    /// Current-section bookmark lines (quotes resolved to display lines on
-    /// re-wrap), so the view can mark them in the left gutter cheaply.
-    bookmark_lines: HashSet<usize>,
-    /// Cross-reference/citation targets for one section: `(section, id→locator)`,
-    /// cached so repeated lookups in the current section don't re-parse it.
-    targets_cache: Option<(usize, Vec<(String, String)>)>,
-    /// Link-cursor position: index into `anchors`, set in link-follow mode.
-    anchor_sel: Option<usize>,
-    /// Built image protocols, reused across sections (revisiting a section
-    /// reuses the already-uploaded image instead of re-transmitting). LRU.
-    image_cache: LruCache<ImgKey, ImagePlan>,
-    /// Current section's image index → cache key.
-    section_images: HashMap<usize, ImgKey>,
-    /// Reserved rows per image index, estimated up front so reflow doesn't wait
-    /// on the background build.
-    image_rows_estimate: Vec<u16>,
-    /// (section, avail-cols, max-rows, max-px, width-pct) the estimates are for.
-    images_key: (usize, u16, u16, u16, u16),
-    /// Theme tint + mode the current image builds used; a change re-requests them
-    /// so images re-render when the theme cycles or the image mode changes.
-    images_policy: media::RenderPolicy,
-    /// Image builds currently in flight (avoid dispatching duplicates).
-    img_requested: HashSet<ImgKey>,
-    /// Image builds that failed (so we stop waiting / re-requesting).
-    img_failed: HashSet<ImgKey>,
-    /// Themes full PDF pages off the main thread (the direct-Kitty page path),
-    /// so a page turn never blocks on the per-pixel transform + PNG re-encode.
-    page_themer: PageThemer,
-    /// Themed page PNGs, keyed by (section, policy) so a theme/mode change re-
-    /// themes from the cached raster rather than re-rasterizing. LRU-bounded.
-    themed_pages: LruCache<PageKey, Arc<Vec<u8>>>,
-    /// Page themings currently in flight (avoid dispatching duplicates).
-    themed_requested: HashSet<PageKey>,
-    /// The render policy the visible page(s) are themed/shown under, set each
-    /// frame by [`Reader::sync_pages`]; the source of truth for `page_png` and the
-    /// page-readiness checks the [`PageDeck`] gates on.
-    page_policy: media::RenderPolicy,
+    /// The inputs the current `lines` were wrapped against; a change re-wraps.
+    wrapped: WrapKey,
+    /// Inline-image lifecycle (built protocols, row estimates, in-flight builds).
+    images: ImageState,
+    /// Paged-image (PDF) page theming (themer + themed-PNG cache + active policy).
+    pages: PageThemeState,
+    /// In-book navigation (heading/anchor/bookmark indexes, link cursor, history).
+    nav: NavState,
+    /// In-book search (prompt, history, matcher, matches, cursor).
+    pub search: SearchState,
+    /// Decoded section blocks + the background loader (cache, channels, worker).
+    sections: SectionCache,
     /// Terminal image ids evicted from the cache, to be deleted from the
     /// terminal by the main loop.
     pending_deletes: Vec<u32>,
@@ -165,8 +93,6 @@ pub struct Reader {
     pending_open: Option<String>,
     /// A transient status-bar message (e.g. "copied"), cleared on next key.
     pub flash: Option<String>,
-    /// images_key the current `lines` were wrapped against.
-    wrap_images_key: (usize, u16, u16, u16, u16),
     /// Index of the top visible line within `lines`.
     pub scroll: usize,
     /// Requested but not-yet-applied line movement; eased a few lines per frame
@@ -178,8 +104,6 @@ pub struct Reader {
     pub sidebar_offset: usize,
     /// TOC viewport height in rows, refreshed each draw.
     pub sidebar_h: usize,
-    /// Last active (scroll-spy) row the TOC auto-followed to.
-    last_active: Option<usize>,
     /// Height of one column in lines, refreshed each draw.
     pub viewport_lines: usize,
     /// Total lines visible at once (2 columns in two-page mode), for scroll math.
@@ -199,34 +123,6 @@ pub struct Reader {
     pending_image: Option<usize>,
     /// Collapsed parent rows (outline indices) in the sidebar tree.
     collapsed: HashSet<usize>,
-    /// Navigation history (jump list).
-    back_stack: Vec<Pos>,
-    fwd_stack: Vec<Pos>,
-    /// In-book search state.
-    pub searching: bool,
-    pub search_input: String,
-    pub search_mode: SearchMode,
-    /// The active matcher (set when a search runs); drives highlighting.
-    pub search_matcher: Option<Matcher>,
-    search_matches: Vec<(usize, usize)>,
-    pub search_idx: usize,
-    /// Recent queries, most-recent last; recalled with Up/Down in the prompt.
-    search_history: Vec<String>,
-    /// Position while browsing history in the prompt (None = editing fresh).
-    pub(crate) history_pos: Option<usize>,
-    /// Decoded section blocks, keyed by section index (bounded LRU).
-    cache: HashMap<usize, Vec<Block>>,
-    /// Sections requested from the loader but not yet returned.
-    requested: HashSet<usize>,
-    /// Channel to ask the background loader for a section.
-    req_tx: Sender<usize>,
-    /// Channel of decoded sections from the background loader. `None` blocks mean
-    /// the loader dropped a request as stale (the reader scrolled far past it),
-    /// so it's left uncached and re-requestable.
-    res_rx: Receiver<(usize, Option<Vec<Block>>)>,
-    /// The section the reader is currently on, shared with the loader thread so it
-    /// can skip rasterizing pages flown past during a fast `j`/`k` scroll.
-    loader_current: Arc<AtomicUsize>,
 }
 
 impl Reader {
@@ -239,32 +135,12 @@ impl Reader {
             .start_section()
             .min(doc.section_count().saturating_sub(1));
 
-        // Background loader: a worker thread that decodes sections on request. It
-        // tracks where the reader is (`loader_current`) and drops requests for
-        // pages scrolled far past, so a fast `j`/`k` burst reaches the page you
-        // actually stopped on instead of grinding through every page in between.
-        let mut loader = doc.loader();
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<usize>();
-        let (res_tx, res_rx) = std::sync::mpsc::channel::<(usize, Option<Vec<Block>>)>();
-        let loader_current = Arc::new(AtomicUsize::new(start));
-        let worker_current = Arc::clone(&loader_current);
-        thread::spawn(move || {
-            while let Ok(index) = req_rx.recv() {
-                let cur = worker_current.load(Ordering::Relaxed);
-                let msg = if index.abs_diff(cur) > LOADER_RADIUS {
-                    (index, None) // stale: reader moved on; leave it re-requestable
-                } else {
-                    (index, Some(loader.load(index)))
-                };
-                if res_tx.send(msg).is_err() {
-                    break; // reader dropped
-                }
-            }
-        });
-
+        // Background loader: a worker thread that decodes sections on request,
+        // owned by the section cache (see `SectionCache::new`). Seed the cache with
+        // the start section's blocks, decoded inline so the first frame can wrap.
+        let mut sections = SectionCache::new(doc.loader(), start);
         let first = doc.load_section(start).unwrap_or_default().blocks;
-        let mut cache = HashMap::new();
-        cache.insert(start, first.clone());
+        sections.sections.insert(start, first.clone());
 
         let mut reader = Self {
             doc,
@@ -272,71 +148,35 @@ impl Reader {
             section: start,
             blocks: first,
             lines: Vec::new(),
-            wrap_width: 0,
             code_theme: theme::default_theme().syntect.to_string(),
-            wrap_theme: String::new(),
             line_spacing: 0,
             paragraph_spacing: 1,
-            wrap_line_spacing: 0,
-            wrap_para_spacing: 1,
             code_wrap: true,
             code_hscroll: 0,
-            wrap_code_wrap: true,
-            wrap_code_hscroll: 0,
             table_wrap: true,
-            wrap_table_wrap: true,
             justify: false,
-            wrap_justify: false,
             tidy_spacing: true,
-            wrap_tidy: true,
             chapter_lock: false,
             paged: false,
             spread: false,
             cover_offset: false,
             pdf_targets: Vec::new(),
-            nav_back: false,
-            heading_lines: Vec::new(),
-            anchors: Vec::new(),
-            footnote_def_line: HashMap::new(),
-            bookmarks: Vec::new(),
-            bookmark_lines: HashSet::new(),
-            targets_cache: None,
-            anchor_sel: None,
-            image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
-            section_images: HashMap::new(),
-            image_rows_estimate: Vec::new(),
-            images_key: (usize::MAX, 0, 0, 0, 0),
-            images_policy: media::RenderPolicy {
-                tint: media::Ink {
-                    ink: [0, 0, 0],
-                    paper: [255, 255, 255],
-                },
-                mode: media::ImageMode::default(),
-            },
-            img_requested: HashSet::new(),
-            img_failed: HashSet::new(),
-            page_themer: PageThemer::new(),
-            themed_pages: LruCache::new(NonZeroUsize::new(PAGE_THEME_CACHE_CAP).unwrap()),
-            themed_requested: HashSet::new(),
-            page_policy: media::RenderPolicy {
-                tint: media::Ink {
-                    ink: [0, 0, 0],
-                    paper: [255, 255, 255],
-                },
-                mode: media::ImageMode::default(),
-            },
+            wrapped: WrapKey::invalid(),
+            images: ImageState::default(),
+            pages: PageThemeState::default(),
+            nav: NavState::default(),
+            search: SearchState::default(),
+            sections,
             pending_deletes: Vec::new(),
             pending_clipboard: None,
             pending_open: None,
             flash: None,
-            wrap_images_key: (usize::MAX, 0, 0, 0, 0),
             scroll: 0,
             scroll_pending: 0,
             focus: Focus::Content,
             sidebar_sel: 0,
             sidebar_offset: 0,
             sidebar_h: 1,
-            last_active: None,
             viewport_lines: 1,
             page_lines: 1,
             last_measure: 72,
@@ -344,21 +184,6 @@ impl Reader {
             pending_image: None,
             overlay_occlude: None,
             collapsed: HashSet::new(),
-            back_stack: Vec::new(),
-            fwd_stack: Vec::new(),
-            searching: false,
-            search_input: String::new(),
-            search_mode: SearchMode::Plain,
-            search_matcher: None,
-            search_matches: Vec::new(),
-            search_idx: 0,
-            search_history: Vec::new(),
-            history_pos: None,
-            cache,
-            requested: HashSet::new(),
-            req_tx,
-            res_rx,
-            loader_current,
         };
         reader.prefetch_neighbors();
         Ok(reader)
@@ -368,10 +193,10 @@ impl Reader {
     /// payload is a stale request the loader dropped; clear it from `requested`
     /// (don't cache) so it can be re-requested if the reader returns to it.
     fn drain_loader(&mut self) {
-        while let Ok((index, blocks)) = self.res_rx.try_recv() {
-            self.requested.remove(&index);
+        while let Ok((index, blocks)) = self.sections.res_rx.try_recv() {
+            self.sections.requested.remove(&index);
             if let Some(blocks) = blocks {
-                self.cache.insert(index, blocks);
+                self.sections.sections.insert(index, blocks);
             }
         }
     }
@@ -385,12 +210,12 @@ impl Reader {
     /// the text is ready to wrap this frame.
     fn fetch_blocks(&mut self, section: usize) -> Vec<Block> {
         self.drain_loader();
-        if let Some(blocks) = self.cache.get(&section) {
+        if let Some(blocks) = self.sections.sections.get(&section) {
             return blocks.clone();
         }
         if self.is_paged_image() {
-            if self.requested.insert(section) {
-                let _ = self.req_tx.send(section);
+            if self.sections.requested.insert(section) {
+                let _ = self.sections.req_tx.send(section);
             }
             return Vec::new();
         }
@@ -399,7 +224,7 @@ impl Reader {
             .load_section(section)
             .map(|s| s.blocks)
             .unwrap_or_default();
-        self.cache.insert(section, blocks.clone());
+        self.sections.sections.insert(section, blocks.clone());
         blocks
     }
 
@@ -451,7 +276,7 @@ impl Reader {
         // Prefetch the direction of travel first, so reverse paging (k) isn't
         // starved waiting behind the forward pages.
         let mut targets = Vec::new();
-        if self.nav_back {
+        if self.nav.nav_back {
             targets.extend(back);
             targets.extend(fwd);
         } else {
@@ -459,8 +284,8 @@ impl Reader {
             targets.extend(back);
         }
         for t in targets {
-            if !self.cache.contains_key(&t) && self.requested.insert(t) {
-                let _ = self.req_tx.send(t);
+            if !self.sections.sections.contains_key(&t) && self.sections.requested.insert(t) {
+                let _ = self.sections.req_tx.send(t);
             }
         }
         self.evict();
@@ -468,36 +293,39 @@ impl Reader {
 
     /// Drop cached sections farthest from the current one when over capacity.
     fn evict(&mut self) {
-        while self.cache.len() > CACHE_CAP {
+        while self.sections.sections.len() > CACHE_CAP {
             let current = self.section;
             match self
-                .cache
+                .sections
+                .sections
                 .keys()
                 .copied()
                 .filter(|&k| k != current)
                 .max_by_key(|&k| k.abs_diff(current))
             {
                 Some(far) => {
-                    self.cache.remove(&far);
+                    self.sections.sections.remove(&far);
                 }
                 None => break,
             }
         }
     }
 
-    /// Re-wrap the current section if the measure changed.
+    /// Re-wrap the current section if any wrapping input changed.
     pub fn ensure_wrapped(&mut self, width: usize) {
-        if width != self.wrap_width
-            || self.code_theme != self.wrap_theme
-            || self.line_spacing != self.wrap_line_spacing
-            || self.paragraph_spacing != self.wrap_para_spacing
-            || self.code_wrap != self.wrap_code_wrap
-            || self.code_hscroll != self.wrap_code_hscroll
-            || self.table_wrap != self.wrap_table_wrap
-            || self.justify != self.wrap_justify
-            || self.tidy_spacing != self.wrap_tidy
-            || self.images_key != self.wrap_images_key
-        {
+        let key = WrapKey {
+            width,
+            theme: self.code_theme.clone(),
+            line_spacing: self.line_spacing,
+            para_spacing: self.paragraph_spacing,
+            code_wrap: self.code_wrap,
+            code_hscroll: self.code_hscroll,
+            table_wrap: self.table_wrap,
+            justify: self.justify,
+            tidy: self.tidy_spacing,
+            images_key: self.images.images_key,
+        };
+        if key != self.wrapped {
             self.lines = wrap_blocks(
                 &self.blocks,
                 &WrapOpts {
@@ -511,18 +339,9 @@ impl Reader {
                     justify: self.justify,
                     tidy_spacing: self.tidy_spacing,
                 },
-                &self.image_rows_estimate,
+                &self.images.rows_estimate,
             );
-            self.wrap_width = width;
-            self.wrap_theme = self.code_theme.clone();
-            self.wrap_line_spacing = self.line_spacing;
-            self.wrap_para_spacing = self.paragraph_spacing;
-            self.wrap_code_wrap = self.code_wrap;
-            self.wrap_code_hscroll = self.code_hscroll;
-            self.wrap_table_wrap = self.table_wrap;
-            self.wrap_justify = self.justify;
-            self.wrap_tidy = self.tidy_spacing;
-            self.wrap_images_key = self.images_key;
+            self.wrapped = key;
             self.recompute_heading_lines();
             self.recompute_anchors();
             self.recompute_bookmark_lines();
@@ -532,13 +351,14 @@ impl Reader {
     /// Set the open book's bookmarks (`(section, quote)`), then resolve the
     /// current section's into gutter lines. Called by the app on any change.
     pub fn set_bookmarks(&mut self, bookmarks: Vec<(usize, String)>) {
-        self.bookmarks = bookmarks;
+        self.nav.bookmarks = bookmarks;
         self.recompute_bookmark_lines();
     }
 
     /// Resolve this section's bookmark quotes to display lines (once per re-wrap).
     fn recompute_bookmark_lines(&mut self) {
-        self.bookmark_lines = self
+        self.nav.bookmark_lines = self
+            .nav
             .bookmarks
             .iter()
             .filter(|(section, _)| *section == self.section)
@@ -548,7 +368,7 @@ impl Reader {
 
     /// Whether a display line carries a bookmark (for the left-gutter marker).
     pub fn is_bookmark_line(&self, line: usize) -> bool {
-        self.bookmark_lines.contains(&line)
+        self.nav.bookmark_lines.contains(&line)
     }
 
     /// Recompute each current-section outline entry's line position (for the
@@ -565,7 +385,7 @@ impl Reader {
             };
             hl.push((oi, line));
         }
-        self.heading_lines = hl;
+        self.nav.heading_lines = hl;
     }
 
     /// Rebuild the inline-anchor index and footnote definition map from the
@@ -603,8 +423,8 @@ impl Reader {
                 col += len;
             }
         }
-        self.anchors = hits;
-        self.anchor_sel = self.anchor_sel.filter(|&i| i < self.anchors.len());
+        self.nav.anchors = hits;
+        self.nav.anchor_sel = self.nav.anchor_sel.filter(|&i| i < self.nav.anchors.len());
 
         // Footnote definitions: first display line per section-local index, then
         // id → line via the blocks (same top-level order the layout numbered them).
@@ -626,7 +446,7 @@ impl Reader {
                 k += 1;
             }
         }
-        self.footnote_def_line = map;
+        self.nav.footnote_def_line = map;
     }
 
     /// Step the link cursor to the next/previous inline anchor and scroll it into
@@ -641,28 +461,30 @@ impl Reader {
 
     fn step_anchor(&mut self, forward: bool) {
         self.ensure_wrapped(self.last_measure.max(1));
-        if self.anchors.is_empty() {
+        if self.nav.anchors.is_empty() {
             self.flash = Some("no links or footnotes in this chapter".to_string());
             return;
         }
-        let n = self.anchors.len();
-        let next = match self.anchor_sel {
+        let n = self.nav.anchors.len();
+        let next = match self.nav.anchor_sel {
             Some(i) if forward => (i + 1) % n,
             Some(i) => (i + n - 1) % n,
             None if forward => self
+                .nav
                 .anchors
                 .iter()
                 .position(|a| a.line >= self.scroll)
                 .unwrap_or(0),
             None => self
+                .nav
                 .anchors
                 .iter()
                 .rposition(|a| a.line < self.scroll + self.page_lines.max(1))
                 .unwrap_or(n - 1),
         };
-        self.anchor_sel = Some(next);
-        self.scroll_into_view(self.anchors[next].line);
-        let kind = anchor_kind_label(&self.anchors[next].anchor);
+        self.nav.anchor_sel = Some(next);
+        self.scroll_into_view(self.nav.anchors[next].line);
+        let kind = anchor_kind_label(&self.nav.anchors[next].anchor);
         self.flash = Some(format!("{kind} {}/{n} · Enter to follow", next + 1));
     }
 
@@ -681,23 +503,23 @@ impl Reader {
 
     /// The anchor the link cursor is on, for the view to highlight.
     pub fn selected_anchor(&self) -> Option<&AnchorHit> {
-        self.anchor_sel.and_then(|i| self.anchors.get(i))
+        self.nav.anchor_sel.and_then(|i| self.nav.anchors.get(i))
     }
 
     /// Clear the link cursor; returns whether anything was selected (so the key
     /// is "consumed" only when it actually dismissed the cursor).
     pub fn clear_anchor(&mut self) -> bool {
-        self.anchor_sel.take().is_some()
+        self.nav.anchor_sel.take().is_some()
     }
 
     /// Follow the selected anchor: footnote ref → its definition (with history for
     /// return); link → copy the URL; cross-ref/citation → a status note (jump
     /// targets aren't indexed yet). Returns whether an anchor was selected.
     pub fn activate_anchor(&mut self) -> bool {
-        let Some(i) = self.anchor_sel else {
+        let Some(i) = self.nav.anchor_sel else {
             return false;
         };
-        let Some(hit) = self.anchors.get(i) else {
+        let Some(hit) = self.nav.anchors.get(i) else {
             return false;
         };
         match hit.anchor.clone() {
@@ -706,7 +528,7 @@ impl Reader {
                 // Surfaced to the app, which confirms before opening it in the
                 // browser (an outward action).
                 self.pending_open = Some(url);
-                self.anchor_sel = None;
+                self.nav.anchor_sel = None;
             }
             Anchor::CrossRef(id) => {
                 if self.goto_target(&id) {
@@ -735,7 +557,7 @@ impl Reader {
             self.scroll = line;
             self.scroll_pending = 0;
             self.clamp_scroll();
-            self.anchor_sel = None;
+            self.nav.anchor_sel = None;
             self.flash = Some("→ footnote (Ctrl+o to return)".to_string());
         } else if let Some(sec) = self.find_footnote_section(target) {
             self.push_history();
@@ -745,7 +567,7 @@ impl Reader {
             self.scroll = line;
             self.scroll_pending = 0;
             self.clamp_scroll();
-            self.anchor_sel = None;
+            self.nav.anchor_sel = None;
             self.flash = Some("→ endnote (Ctrl+o to return)".to_string());
         } else {
             self.flash = Some("footnote definition not found".to_string());
@@ -755,7 +577,7 @@ impl Reader {
     /// The definition line in the *current* section for a footnote `target`.
     fn footnote_line_here(&self, target: &str) -> Option<usize> {
         match find_footnote(&self.blocks, target)? {
-            Block::Footnote { id, .. } => self.footnote_def_line.get(id).copied(),
+            Block::Footnote { id, .. } => self.nav.footnote_def_line.get(id).copied(),
             _ => None,
         }
     }
@@ -771,10 +593,10 @@ impl Reader {
     /// The text locator for element `id` (`#`-fragment) in section `sec`, caching
     /// the last section's targets so repeated current-section lookups are cheap.
     fn target_locator(&mut self, sec: usize, frag: &str) -> Option<String> {
-        if self.targets_cache.as_ref().map(|(s, _)| *s) != Some(sec) {
-            self.targets_cache = Some((sec, self.doc.section_targets(sec)));
+        if self.nav.targets_cache.as_ref().map(|(s, _)| *s) != Some(sec) {
+            self.nav.targets_cache = Some((sec, self.doc.section_targets(sec)));
         }
-        let (_, list) = self.targets_cache.as_ref()?;
+        let (_, list) = self.nav.targets_cache.as_ref()?;
         list.iter()
             .find(|(id, _)| id == frag)
             .map(|(_, l)| l.clone())
@@ -818,7 +640,7 @@ impl Reader {
                 self.scroll_pending = 0;
                 self.clamp_scroll();
             }
-            self.anchor_sel = None;
+            self.nav.anchor_sel = None;
             return true;
         }
 
@@ -843,7 +665,7 @@ impl Reader {
         self.scroll = line;
         self.scroll_pending = 0;
         self.clamp_scroll();
-        self.anchor_sel = None;
+        self.nav.anchor_sel = None;
         true
     }
 
@@ -983,13 +805,15 @@ impl Reader {
         if section >= self.doc.section_count() {
             return;
         }
-        self.nav_back = section < self.section;
+        self.nav.nav_back = section < self.section;
         self.section = section;
-        self.loader_current.store(section, Ordering::Relaxed);
+        self.sections
+            .loader_current
+            .store(section, Ordering::Relaxed);
         self.blocks = self.fetch_blocks(section);
         self.scroll = 0;
-        self.anchor_sel = None; // a new section has a different anchor set
-        self.wrap_width = 0; // force a re-wrap on next draw
+        self.nav.anchor_sel = None; // a new section has a different anchor set
+        self.wrapped.width = usize::MAX; // force a re-wrap on next draw
         self.prefetch_neighbors();
     }
 
@@ -1066,11 +890,12 @@ impl Reader {
     /// themed PNG once it's built (`None` until then, so the deck holds the previous
     /// page rather than flashing an unthemed one). See [`Reader::sync_pages`].
     pub fn page_png(&self, section: usize) -> Option<Vec<u8>> {
-        if self.page_policy.mode == media::ImageMode::Faithful {
+        if self.pages.policy.mode == media::ImageMode::Faithful {
             return self.raster_png(section);
         }
-        self.themed_pages
-            .peek(&(section, self.page_policy))
+        self.pages
+            .themed
+            .peek(&(section, self.pages.policy))
             .map(|b| b.as_ref().clone())
     }
 
@@ -1078,16 +903,20 @@ impl Reader {
     /// each frame by [`Reader::sync_pages`]). The [`PageDeck`] keys its transmit on
     /// this so a theme/mode change re-sends the re-themed pages.
     pub fn page_policy(&self) -> media::RenderPolicy {
-        self.page_policy
+        self.pages.policy
     }
 
     /// The raw rasterized PNG bytes of `section`'s page from the section cache —
     /// the un-themed source the page themer adapts (and what Faithful mode shows).
     pub(super) fn raster_png(&self, section: usize) -> Option<Vec<u8>> {
-        self.cache.get(&section)?.iter().find_map(|b| match b {
-            Block::Image { data, .. } if !data.is_empty() => Some(data.clone()),
-            _ => None,
-        })
+        self.sections
+            .sections
+            .get(&section)?
+            .iter()
+            .find_map(|b| match b {
+                Block::Image { data, .. } if !data.is_empty() => Some(data.clone()),
+                _ => None,
+            })
     }
 
     /// The sections that should be on screen now — matching exactly what the view
@@ -1105,7 +934,7 @@ impl Reader {
     /// Whether `section`'s page is rasterized (the raw PNG is cached) — the
     /// expensive PDFium step, on top of which theming runs. Doesn't clone.
     fn raster_ready(&self, section: usize) -> bool {
-        self.cache.get(&section).is_some_and(|bs| {
+        self.sections.sections.get(&section).is_some_and(|bs| {
             bs.iter()
                 .any(|b| matches!(b, Block::Image { data, .. } if !data.is_empty()))
         })
@@ -1115,10 +944,10 @@ impl Reader {
     /// raster in Faithful mode, otherwise the themed PNG. Gates the [`PageDeck`]
     /// spread swap so a turn never shows a half-themed page.
     pub fn page_ready(&self, section: usize) -> bool {
-        if self.page_policy.mode == media::ImageMode::Faithful {
+        if self.pages.policy.mode == media::ImageMode::Faithful {
             self.raster_ready(section)
         } else {
-            self.themed_pages.contains(&(section, self.page_policy))
+            self.pages.themed.contains(&(section, self.pages.policy))
         }
     }
 
@@ -1127,7 +956,7 @@ impl Reader {
     /// raster failure is policy-independent. The flip throttle treats it as "done"
     /// so a broken page can't soft-lock navigation.
     pub fn page_unrenderable(&self, section: usize) -> bool {
-        self.cache.contains_key(&section) && !self.raster_ready(section)
+        self.sections.sections.contains_key(&section) && !self.raster_ready(section)
     }
 
     /// Whether any visible page is still being prepared — rasterized, or themed on
@@ -1325,19 +1154,19 @@ impl Reader {
     }
 
     fn push_history(&mut self) {
-        self.back_stack.push(Pos {
+        self.nav.back_stack.push(Pos {
             section: self.section,
             scroll: self.scroll,
         });
-        if self.back_stack.len() > 200 {
-            self.back_stack.remove(0);
+        if self.nav.back_stack.len() > 200 {
+            self.nav.back_stack.remove(0);
         }
-        self.fwd_stack.clear();
+        self.nav.fwd_stack.clear();
     }
 
     pub fn history_back(&mut self) {
-        if let Some(pos) = self.back_stack.pop() {
-            self.fwd_stack.push(Pos {
+        if let Some(pos) = self.nav.back_stack.pop() {
+            self.nav.fwd_stack.push(Pos {
                 section: self.section,
                 scroll: self.scroll,
             });
@@ -1346,8 +1175,8 @@ impl Reader {
     }
 
     pub fn history_forward(&mut self) {
-        if let Some(pos) = self.fwd_stack.pop() {
-            self.back_stack.push(Pos {
+        if let Some(pos) = self.nav.fwd_stack.pop() {
+            self.nav.back_stack.push(Pos {
                 section: self.section,
                 scroll: self.scroll,
             });
