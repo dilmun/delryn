@@ -243,7 +243,12 @@ fn render_column(
     // leave the area empty so the placement shows through — no per-cell drawing,
     // no transmit-on-turn, no black gap.
     if reader.is_paged_image() {
-        capture_pdf_targets(reader, images, &[(reader.section, text_area)]);
+        capture_pdf_targets(
+            reader,
+            images,
+            &[(reader.section, text_area)],
+            image_policy(config),
+        );
         return;
     }
 
@@ -320,9 +325,17 @@ fn draw_gutter(f: &mut Frame, text_area: Rect, reader: &Reader, top: usize, them
 /// each (section, column-area), and set the look-ahead window. The [`PageDeck`]
 /// reads these after the frame and drives the kitty transmit/placement escapes;
 /// the columns themselves are left empty so the placed images show through.
-fn capture_pdf_targets(reader: &mut Reader, images: Images, areas: &[(usize, Rect)]) {
+fn capture_pdf_targets(
+    reader: &mut Reader,
+    images: Images,
+    areas: &[(usize, Rect)],
+    policy: crate::media::RenderPolicy,
+) {
     let mut targets = Vec::new();
     if let Some((picker, _)) = images {
+        // Adapt the visible + look-ahead pages to the theme off-thread; `page_png`
+        // (below, and the deck's transmit) then serves the themed PNGs.
+        reader.sync_pages(policy);
         for &(section, area) in areas {
             match pdf_page_rect(reader, section, area, picker) {
                 Some(rect) => targets.push((section, rect)),
@@ -467,7 +480,7 @@ fn render_two_page(
             [l, r, ..] => vec![(*l, left_area), (*r, right_area)],
             [] => Vec::new(),
         };
-        capture_pdf_targets(reader, images, &spread);
+        capture_pdf_targets(reader, images, &spread, image_policy(config));
         return;
     }
 

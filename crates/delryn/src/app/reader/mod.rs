@@ -15,7 +15,7 @@ use lru::LruCache;
 
 use crate::document::{Block, Document, OutlineItem};
 use crate::layout::{DisplayLine, LineKind, WrapOpts, wrap_blocks};
-use crate::media::{self, ImageBuilder, ImagePlan, ImgKey};
+use crate::media::{self, ImageBuilder, ImagePlan, ImgKey, PageKey, PageThemer};
 use crate::search::{Matcher, SearchMode};
 use crate::theme;
 use delryn_model::{Anchor, find_footnote};
@@ -28,9 +28,18 @@ use super::{CACHE_CAP, Focus, IMAGE_CACHE_CAP};
 /// window (±4) so the look-ahead pages aren't dropped, with a little margin.
 const LOADER_RADIUS: usize = 6;
 
+/// How many themed PDF pages to keep. Covers the look-ahead window
+/// (±[`pages::PAGE_THEME_AHEAD`] ⇒ 9 pages) for the current policy with a little
+/// margin for recently-visited pages. A theme/mode toggle re-themes from the
+/// cached raster; the on-screen page is held by the deck independently of this
+/// cache, so old-policy entries can be evicted freely. Each entry is a full-page
+/// PNG, so this is the main bound on page-theme memory.
+const PAGE_THEME_CACHE_CAP: usize = 16;
+
 // Separable reader concerns; each contributes an `impl Reader` block and reaches
 // the core's helpers (find_line, fetch_blocks, …) via the parent module.
 mod images;
+mod pages;
 mod search;
 mod sidebar;
 
@@ -134,6 +143,18 @@ pub struct Reader {
     img_requested: HashSet<ImgKey>,
     /// Image builds that failed (so we stop waiting / re-requesting).
     img_failed: HashSet<ImgKey>,
+    /// Themes full PDF pages off the main thread (the direct-Kitty page path),
+    /// so a page turn never blocks on the per-pixel transform + PNG re-encode.
+    page_themer: PageThemer,
+    /// Themed page PNGs, keyed by (section, policy) so a theme/mode change re-
+    /// themes from the cached raster rather than re-rasterizing. LRU-bounded.
+    themed_pages: LruCache<PageKey, Arc<Vec<u8>>>,
+    /// Page themings currently in flight (avoid dispatching duplicates).
+    themed_requested: HashSet<PageKey>,
+    /// The render policy the visible page(s) are themed/shown under, set each
+    /// frame by [`Reader::sync_pages`]; the source of truth for `page_png` and the
+    /// page-readiness checks the [`PageDeck`] gates on.
+    page_policy: media::RenderPolicy,
     /// Terminal image ids evicted from the cache, to be deleted from the
     /// terminal by the main loop.
     pending_deletes: Vec<u32>,
@@ -294,6 +315,16 @@ impl Reader {
             },
             img_requested: HashSet::new(),
             img_failed: HashSet::new(),
+            page_themer: PageThemer::new(),
+            themed_pages: LruCache::new(NonZeroUsize::new(PAGE_THEME_CACHE_CAP).unwrap()),
+            themed_requested: HashSet::new(),
+            page_policy: media::RenderPolicy {
+                tint: media::Ink {
+                    ink: [0, 0, 0],
+                    paper: [255, 255, 255],
+                },
+                mode: media::ImageMode::default(),
+            },
             pending_deletes: Vec::new(),
             pending_clipboard: None,
             pending_open: None,
@@ -1030,9 +1061,22 @@ impl Reader {
         self.doc.section_count()
     }
 
-    /// The rasterized PNG bytes of `section`'s page, if it's been loaded into the
-    /// section cache — the source the direct-Kitty [`PageDeck`] transmits.
+    /// The page bytes the direct-Kitty [`PageDeck`] should transmit for `section`
+    /// under the active policy: the original raster in Faithful mode, otherwise the
+    /// themed PNG once it's built (`None` until then, so the deck holds the previous
+    /// page rather than flashing an unthemed one). See [`Reader::sync_pages`].
     pub fn page_png(&self, section: usize) -> Option<Vec<u8>> {
+        if self.page_policy.mode == media::ImageMode::Faithful {
+            return self.raster_png(section);
+        }
+        self.themed_pages
+            .peek(&(section, self.page_policy))
+            .map(|b| b.as_ref().clone())
+    }
+
+    /// The raw rasterized PNG bytes of `section`'s page from the section cache —
+    /// the un-themed source the page themer adapts (and what Faithful mode shows).
+    pub(super) fn raster_png(&self, section: usize) -> Option<Vec<u8>> {
         self.cache.get(&section)?.iter().find_map(|b| match b {
             Block::Image { data, .. } if !data.is_empty() => Some(data.clone()),
             _ => None,
@@ -1051,28 +1095,42 @@ impl Reader {
         }
     }
 
-    /// Whether `section`'s page is rasterized and placeable (a non-empty image is
-    /// cached). Cheaper than [`Reader::page_png`] — it doesn't clone the bytes.
-    pub fn page_ready(&self, section: usize) -> bool {
+    /// Whether `section`'s page is rasterized (the raw PNG is cached) — the
+    /// expensive PDFium step, on top of which theming runs. Doesn't clone.
+    fn raster_ready(&self, section: usize) -> bool {
         self.cache.get(&section).is_some_and(|bs| {
             bs.iter()
                 .any(|b| matches!(b, Block::Image { data, .. } if !data.is_empty()))
         })
     }
 
-    /// Whether `section` resolved but can't be shown (the loader returned it with
-    /// no image — a rasterize failure). The flip throttle treats it as "done" so
-    /// a broken page can't soft-lock navigation.
-    pub fn page_unrenderable(&self, section: usize) -> bool {
-        self.cache.contains_key(&section) && !self.page_ready(section)
+    /// Whether `section`'s page is ready to *place* under the active policy: the
+    /// raster in Faithful mode, otherwise the themed PNG. Gates the [`PageDeck`]
+    /// spread swap so a turn never shows a half-themed page.
+    pub fn page_ready(&self, section: usize) -> bool {
+        if self.page_policy.mode == media::ImageMode::Faithful {
+            self.raster_ready(section)
+        } else {
+            self.themed_pages.contains(&(section, self.page_policy))
+        }
     }
 
-    /// Whether any visible page is still being rasterized (not yet in the cache),
-    /// so the render loop should keep spinning until it lands.
+    /// Whether `section` resolved but can't be shown (the loader returned it with
+    /// no image — a rasterize failure). Keyed on the *raster*, not theming, since a
+    /// raster failure is policy-independent. The flip throttle treats it as "done"
+    /// so a broken page can't soft-lock navigation.
+    pub fn page_unrenderable(&self, section: usize) -> bool {
+        self.cache.contains_key(&section) && !self.raster_ready(section)
+    }
+
+    /// Whether any visible page is still being prepared — rasterized, or themed on
+    /// top of a ready raster — so the render loop keeps spinning until it lands. A
+    /// page whose raster *failed* (unrenderable) is excluded so it can't spin
+    /// forever.
     pub fn pages_loading(&self, spread: bool) -> bool {
         self.visible_sections(spread)
             .iter()
-            .any(|s| !self.cache.contains_key(s))
+            .any(|&s| !self.page_ready(s) && !self.page_unrenderable(s))
     }
 
     /// The visible pages the deck should place — all of them once every one is
@@ -1086,11 +1144,12 @@ impl Reader {
         }
     }
 
-    /// Collect any pages the background loader has finished into the cache.
-    /// Driven each frame in PDF mode (the direct path skips `sync_images`, which
-    /// is what otherwise drains the loader).
+    /// Collect any pages the background loader and the page themer have finished
+    /// into their caches. Driven each frame in PDF mode (the direct path skips
+    /// `sync_images`, which is what otherwise drains the loader).
     pub fn poll_loader(&mut self) {
         self.drain_loader();
+        self.drain_page_themer();
     }
 
     /// Snap the position to the start of its page (so paged mode shows a clean
@@ -1564,6 +1623,18 @@ mod tests {
     /// fast `j`/`k` turns. So navigating returns immediately with empty blocks and
     /// merely *requests* the page; it lands later via the background loader, at
     /// which point it's ready to place.
+    /// A render policy for the paged tests; the default Auto mode themes pages, so
+    /// a page is placeable only once *themed* (raster → theme → place).
+    fn paged_policy() -> media::RenderPolicy {
+        media::RenderPolicy {
+            tint: media::Ink {
+                ink: [0, 0, 0],
+                paper: [255, 255, 255],
+            },
+            mode: media::ImageMode::Auto,
+        }
+    }
+
     #[test]
     fn paged_load_is_async_and_lands_via_loader() {
         let doc = MockDoc::new((0..12).map(|_| image_page()).collect()).paged();
@@ -1582,10 +1653,13 @@ mod tests {
             "load must not block rasterizing the page"
         );
 
-        // The loader fills it in the background; once drained it's placeable.
+        // The loader rasterizes the page and the themer adapts it, both in the
+        // background; once drained (driven by `sync_pages` each frame) it's
+        // placeable.
         let mut ready = false;
         for _ in 0..200 {
             r.poll_loader();
+            r.sync_pages(paged_policy());
             if r.page_ready(8) {
                 ready = true;
                 break;
@@ -1606,9 +1680,10 @@ mod tests {
         let mut r = Reader::new(Box::new(doc)).unwrap();
         r.load(8);
 
-        // Drain until at least the current page (8) has landed.
+        // Drain until at least the current page (8) has landed and themed.
         for _ in 0..200 {
             r.poll_loader();
+            r.sync_pages(paged_policy());
             if r.page_ready(8) {
                 break;
             }
@@ -1623,6 +1698,7 @@ mod tests {
         }
         for _ in 0..200 {
             r.poll_loader();
+            r.sync_pages(paged_policy());
             if r.page_ready(9) {
                 break;
             }
