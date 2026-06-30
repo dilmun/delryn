@@ -3,22 +3,19 @@
 //! Right. This is where the former `reader::render_status`, `library::status`,
 //! and the overlay `legend` cascade now live, as segment producers.
 
-use ratatui::style::{Modifier, Style};
-
 use super::render::{GAUGE_WIDTH, gauge};
 use super::segment::{StatusBar, Zone};
 use crate::app::{App, EditMode, EditTab, LibView, MetaEdit, Overlay, Reader, SortKey};
 use crate::config::Config;
 use crate::store::LibrarySection;
-use crate::theme::Theme;
+use crate::theme::{Role, Theme};
 
 /// The reader's bar: title/flash on the left; search, position, page, percent,
 /// and the progress gauge on the right (each toggled by `config.status`).
 pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
-    let fg = theme.status_fg;
-    let bold = Style::default().fg(fg).add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(fg).add_modifier(Modifier::DIM);
-    let plain = Style::default().fg(fg);
+    let bold = theme.style(Role::StatusStrong);
+    let dim = theme.style(Role::StatusDim);
+    let plain = theme.style(Role::StatusText);
     let mut bar = StatusBar::new();
 
     let meta = reader.doc.metadata();
@@ -74,13 +71,9 @@ pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
 /// The library's bar: context/selection on the left (a pill for visual/marked
 /// state); the context-sensitive key hints on the right.
 pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
-    let fg = theme.status_fg;
-    let bold = Style::default().fg(fg).add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(fg).add_modifier(Modifier::DIM);
-    let pill = Style::default()
-        .fg(theme.on_accent())
-        .bg(theme.accent)
-        .add_modifier(Modifier::BOLD);
+    let bold = theme.style(Role::StatusStrong);
+    let dim = theme.style(Role::StatusDim);
+    let pill = theme.style(Role::Selection);
     let mut bar = StatusBar::new();
 
     // The tag prompt owns the row while active.
@@ -170,20 +163,9 @@ pub fn overlay_bar(app: &App, theme: Theme) -> Option<StatusBar> {
         return None;
     }
     let (context, keys) = legend(app)?;
-    let fg = theme.status_fg;
     let mut bar = StatusBar::new();
-    bar.text(
-        Zone::Left,
-        9,
-        context,
-        Style::default().fg(fg).add_modifier(Modifier::BOLD),
-    );
-    bar.text(
-        Zone::Right,
-        2,
-        keys,
-        Style::default().fg(fg).add_modifier(Modifier::DIM),
-    );
+    bar.text(Zone::Left, 9, context, theme.style(Role::StatusStrong));
+    bar.text(Zone::Right, 2, keys, theme.style(Role::StatusDim));
     Some(bar)
 }
 
