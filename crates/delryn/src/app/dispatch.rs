@@ -482,18 +482,6 @@ impl App {
         // blanks/flickers it. So page-snap whenever paged mode is on *or* the
         // document is page-image-based, regardless of the continuous-scroll knob.
         let paged = self.config.paged || reader.is_paged_image();
-        // A PDF flip that the throttle isn't ready for is dropped (the page
-        // hasn't been shown yet); reflowable page-snap is never throttled.
-        let page_forward = |r: &mut Reader| {
-            if flip_ready {
-                r.page_forward();
-            }
-        };
-        let page_backward = |r: &mut Reader| {
-            if flip_ready {
-                r.page_backward();
-            }
-        };
         match action {
             Action::Quit => self.should_quit = true,
             Action::Back => {
@@ -508,48 +496,16 @@ impl App {
                 self.mode = Mode::Library;
                 save = true;
             }
-            // In paged mode, vertical content navigation flips whole pages. A
-            // count prefix (`10j`) jumps that many pages at once; a bare/held key
-            // flips one, paced by the throttle.
-            Action::Down(n) => match reader.focus {
-                Focus::Content if paged && n > 1 => reader.page_jump(n as isize),
-                Focus::Content if paged => page_forward(reader),
-                Focus::Content => reader.queue_scroll(n as isize),
-                Focus::Sidebar => reader.sidebar_move(n as isize),
-            },
-            Action::Up(n) => match reader.focus {
-                Focus::Content if paged && n > 1 => reader.page_jump(-(n as isize)),
-                Focus::Content if paged => page_backward(reader),
-                Focus::Content => reader.queue_scroll(-(n as isize)),
-                Focus::Sidebar => reader.sidebar_move(-(n as isize)),
-            },
-            Action::HalfDown if paged => page_forward(reader),
-            Action::HalfUp if paged => page_backward(reader),
-            Action::HalfDown => reader.scroll_down(reader.page_lines.max(2) / 2),
-            Action::HalfUp => reader.scroll_up(reader.page_lines.max(2) / 2),
-            Action::PageDown if paged => page_forward(reader),
-            Action::PageUp if paged => page_backward(reader),
-            Action::PageDown => reader.scroll_down(reader.page_lines.max(1)),
-            Action::PageUp => reader.scroll_up(reader.page_lines.max(1)),
-            Action::Top => {
-                if reader.focus == Focus::Sidebar {
-                    reader.sidebar_sel = 0;
-                } else {
-                    reader.scroll = 0;
-                }
-            }
-            Action::Bottom => {
-                if reader.focus == Focus::Sidebar {
-                    reader.sidebar_sel = reader.outline.len().saturating_sub(1);
-                } else {
-                    reader.scroll = reader.max_scroll();
-                }
-            }
-            // `NG`: jump to page/section N (1-based), clamped. Records history.
-            Action::Goto(n) => {
-                let last = reader.section_count().saturating_sub(1);
-                reader.jump_to(n.saturating_sub(1).min(last), None);
-            }
+            // Reader navigation (scroll / half- and full-page / top-bottom / goto).
+            Action::Down(_)
+            | Action::Up(_)
+            | Action::HalfDown
+            | Action::HalfUp
+            | Action::PageDown
+            | Action::PageUp
+            | Action::Top
+            | Action::Bottom
+            | Action::Goto(_) => apply_nav(reader, action, paged, flip_ready),
             Action::ToggleStatus => self.config.show_status = !self.config.show_status,
             Action::CycleView => {
                 self.config.view_mode = self.config.view_mode.next();
@@ -734,5 +690,65 @@ impl App {
                 self.config.theme.name,
             );
         }
+    }
+}
+
+/// Reader navigation — scroll, half/full-page motion, top/bottom, and `Ng` jump.
+/// In paged mode (or for page-image documents) vertical motion flips whole pages;
+/// a held PDF flip is throttled to the drawn frame via `flip_ready`. Split out of
+/// [`App::apply`] so its action dispatch stays a flat router.
+fn apply_nav(reader: &mut Reader, action: Action, paged: bool, flip_ready: bool) {
+    let page_forward = |r: &mut Reader| {
+        if flip_ready {
+            r.page_forward();
+        }
+    };
+    let page_backward = |r: &mut Reader| {
+        if flip_ready {
+            r.page_backward();
+        }
+    };
+    match action {
+        // A count prefix (`10j`) jumps that many pages; a bare/held key flips one.
+        Action::Down(n) => match reader.focus {
+            Focus::Content if paged && n > 1 => reader.page_jump(n as isize),
+            Focus::Content if paged => page_forward(reader),
+            Focus::Content => reader.queue_scroll(n as isize),
+            Focus::Sidebar => reader.sidebar_move(n as isize),
+        },
+        Action::Up(n) => match reader.focus {
+            Focus::Content if paged && n > 1 => reader.page_jump(-(n as isize)),
+            Focus::Content if paged => page_backward(reader),
+            Focus::Content => reader.queue_scroll(-(n as isize)),
+            Focus::Sidebar => reader.sidebar_move(-(n as isize)),
+        },
+        Action::HalfDown if paged => page_forward(reader),
+        Action::HalfUp if paged => page_backward(reader),
+        Action::HalfDown => reader.scroll_down(reader.page_lines.max(2) / 2),
+        Action::HalfUp => reader.scroll_up(reader.page_lines.max(2) / 2),
+        Action::PageDown if paged => page_forward(reader),
+        Action::PageUp if paged => page_backward(reader),
+        Action::PageDown => reader.scroll_down(reader.page_lines.max(1)),
+        Action::PageUp => reader.scroll_up(reader.page_lines.max(1)),
+        Action::Top => {
+            if reader.focus == Focus::Sidebar {
+                reader.sidebar_sel = 0;
+            } else {
+                reader.scroll = 0;
+            }
+        }
+        Action::Bottom => {
+            if reader.focus == Focus::Sidebar {
+                reader.sidebar_sel = reader.outline.len().saturating_sub(1);
+            } else {
+                reader.scroll = reader.max_scroll();
+            }
+        }
+        // `Ng`: jump to page/section N (1-based), clamped. Records history.
+        Action::Goto(n) => {
+            let last = reader.section_count().saturating_sub(1);
+            reader.jump_to(n.saturating_sub(1).min(last), None);
+        }
+        _ => {}
     }
 }
