@@ -114,8 +114,8 @@ impl App {
     fn library_click(&mut self, col: u16, row: u16) {
         let pt = (col, row).into();
         if let Some(&(idx, _)) = self.mouse.books.iter().find(|(_, r)| r.contains(pt)) {
-            self.lib_sel = idx.min(self.lib_books.len().saturating_sub(1));
-            self.lib_pane = LibPane::List;
+            self.library.sel = idx.min(self.library.books.len().saturating_sub(1));
+            self.library.pane = LibPane::List;
         }
     }
 

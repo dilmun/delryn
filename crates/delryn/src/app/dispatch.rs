@@ -128,7 +128,7 @@ impl App {
             }
             Mode::Library => {
                 // Clear any transient flash (e.g. cover-embed result) on input.
-                self.lib_flash = None;
+                self.library.flash = None;
                 self.library_key(key);
             }
         }

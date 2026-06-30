@@ -15,8 +15,8 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
     let inner = block.inner(area);
     f.render_widget(block, area);
     // No columns in the grid, so the `s` sort cycle follows all enabled keys.
-    app.lib_sort_cycle = super::sort_cycle(&app.config, false, u16::MAX);
-    if app.lib_books.is_empty() {
+    app.library.sort_cycle = super::sort_cycle(&app.config, false, u16::MAX);
+    if app.library.books.is_empty() {
         let msg = if app.config.library_paths.is_empty() {
             "No library configured.\n\nAdd a folder:  delryn --add <dir>"
         } else {
@@ -52,8 +52,8 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
 
     let cols = (wall.width / cell_w).max(1) as usize;
     let rows_screen = (wall.height / cell_h).max(1) as usize;
-    let len = app.lib_books.len();
-    let sel = app.lib_sel.min(len - 1);
+    let len = app.library.books.len();
+    let sel = app.library.sel.min(len - 1);
 
     // Center the cover block so leftover space becomes balanced margins.
     let block_w = (cols as u16 * cell_w).saturating_sub(1).min(wall.width);
@@ -74,12 +74,12 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
     // Snapshot the visible cells (ends the immutable borrow before building).
     let visible: Vec<(usize, String, String, bool)> = (start..end)
         .map(|i| {
-            let b = &app.lib_books[i];
+            let b = &app.library.books[i];
             (
                 i,
                 b.path.clone(),
                 b.title.clone(),
-                app.lib_marked.contains(&b.path),
+                app.library.marked.contains(&b.path),
             )
         })
         .collect();
@@ -88,18 +88,18 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
     // to scroll into, instead of building them only once they're on screen.
     let mut paths: Vec<String> = visible.iter().map(|(_, p, _, _)| p.clone()).collect();
     let ahead = rows_screen * cols;
-    if app.lib_nav_down {
-        paths.extend((end..(end + ahead).min(len)).map(|i| app.lib_books[i].path.clone()));
+    if app.library.nav_down {
+        paths.extend((end..(end + ahead).min(len)).map(|i| app.library.books[i].path.clone()));
     } else {
         paths.extend(
             (start.saturating_sub(ahead)..start)
                 .rev()
-                .map(|i| app.lib_books[i].path.clone()),
+                .map(|i| app.library.books[i].path.clone()),
         );
     }
 
-    app.lib_grid_cols = cols;
-    app.lib_visible_rows = rows_screen;
+    app.library.grid_cols = cols;
+    app.library.visible_rows = rows_screen;
     app.ensure_grid_covers(&paths, GRID_BUILD_PER_FRAME);
     let mut book_hits: Vec<(usize, Rect)> = Vec::with_capacity(visible.len());
 
@@ -115,7 +115,7 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
         book_hits.push((*i, card));
         let selected = *i == sel;
 
-        match app.lib_grid_covers.get_mut(path) {
+        match app.library.grid_covers.get_mut(path) {
             Some(Some(cover)) => {
                 // Stretch the cover to exactly fill the cell (object-fit: fill),
                 // so every thumbnail is the same size with no gaps. The corners
@@ -177,7 +177,7 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
     }
     app.mouse.books = book_hits;
 
-    render_caption(f, caption_area, &app.lib_books[sel], theme);
+    render_caption(f, caption_area, &app.library.books[sel], theme);
 }
 
 /// The bottom bar: the selected book's title and a metadata line (so the grid
