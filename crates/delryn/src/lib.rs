@@ -8,6 +8,7 @@ pub mod app;
 pub mod clipboard;
 pub mod input;
 pub mod search;
+pub mod ui;
 pub mod view;
 
 // Extracted layers, re-exported so existing `crate::{store, online, config, …}`
