@@ -73,7 +73,7 @@ impl App {
 
     /// Begin renaming the focused sidebar collection in place.
     pub(crate) fn lib_coll_begin_rename(&mut self) {
-        if let LibView::Shelf(name) = &self.lib_view {
+        if let LibView::Shelf(name) = &self.library.view {
             let name = name.clone();
             self.lib_coll_edit = Some(CollInput {
                 cursor: name.chars().count(),
@@ -99,9 +99,9 @@ impl App {
         }
         // Follow the result: view the created/renamed collection.
         if !name.is_empty() {
-            self.lib_side_new = false;
-            self.lib_view = LibView::Shelf(name);
-            self.lib_sel = 0;
+            self.library.side_new = false;
+            self.library.view = LibView::Shelf(name);
+            self.library.sel = 0;
         }
         self.refresh_library();
     }
@@ -165,11 +165,12 @@ impl App {
     /// target(s) already belong to. Files the multi-selection when present.
     pub(crate) fn open_shelf_picker(&mut self) {
         // Operate on the multi-selection when present, else the current book.
-        let (targets, title) = if !self.lib_marked.is_empty() {
+        let (targets, title) = if !self.library.marked.is_empty() {
             let targets: Vec<String> = self
-                .lib_books
+                .library
+                .books
                 .iter()
-                .filter(|b| self.lib_marked.contains(&b.path))
+                .filter(|b| self.library.marked.contains(&b.path))
                 .map(|b| b.path.clone())
                 .collect();
             let n = targets.len();
@@ -178,7 +179,7 @@ impl App {
                 format!("{n} book{}", if n == 1 { "" } else { "s" }),
             )
         } else {
-            match self.lib_books.get(self.lib_sel) {
+            match self.library.books.get(self.library.sel) {
                 Some(b) => (vec![b.path.clone()], b.title.clone()),
                 None => return,
             }
@@ -198,11 +199,11 @@ impl App {
 
     /// In a collection view, drop the selected book from that collection.
     pub(crate) fn remove_from_current_shelf(&mut self) {
-        let LibView::Shelf(name) = &self.lib_view else {
+        let LibView::Shelf(name) = &self.library.view else {
             return;
         };
         let name = name.clone();
-        if let (Some(store), Some(book)) = (&self.store, self.lib_books.get(self.lib_sel)) {
+        if let (Some(store), Some(book)) = (&self.store, self.library.books.get(self.library.sel)) {
             store.remove_from_shelf(&book.path, &name);
         }
         self.refresh_library();

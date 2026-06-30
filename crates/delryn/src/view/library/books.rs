@@ -7,7 +7,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     let inner = block.inner(area);
     f.render_widget(block, area);
     let area = inner;
-    if app.lib_books.is_empty() {
+    if app.library.books.is_empty() {
         let msg = if app.config.library_paths.is_empty() {
             "No library configured.\n\nAdd a folder:  delryn --add <dir>\nthen run:      delryn"
         } else {
@@ -18,12 +18,12 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     }
 
     let compact = app.config.library_layout == LibLayout::Compact;
-    let sel = app.lib_sel.min(app.lib_books.len() - 1);
+    let sel = app.library.sel.min(app.library.books.len() - 1);
     // The Series view groups books under series headers.
-    let grouped = matches!(app.lib_view, LibView::Section(LibrarySection::Series));
+    let grouped = matches!(app.library.view, LibView::Section(LibrarySection::Series));
     let mut counts: HashMap<&str, usize> = HashMap::new();
     if grouped {
-        for b in &app.lib_books {
+        for b in &app.library.books {
             *counts.entry(b.series.as_str()).or_insert(0) += 1;
         }
     }
@@ -33,7 +33,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     let cols = columns(compact, area.width, &app.config);
     // The `s` sort cycle follows exactly the columns drawn here, so it skips any
     // the user hid or that collapsed on this width.
-    app.lib_sort_cycle = cols.iter().filter_map(|c| c.sort_key()).collect();
+    app.library.sort_cycle = cols.iter().filter_map(|c| c.sort_key()).collect();
 
     // Build rows, interleaving series headers; track the selected book's row
     // index (it shifts down past the headers above it).
@@ -41,8 +41,8 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     let mut sel_row = 0;
     let mut last_series: Option<&str> = None;
     // (book index, row position) for each book row, for mouse hit-testing.
-    let mut row_meta: Vec<(usize, usize)> = Vec::with_capacity(app.lib_books.len());
-    for (i, b) in app.lib_books.iter().enumerate() {
+    let mut row_meta: Vec<(usize, usize)> = Vec::with_capacity(app.library.books.len());
+    for (i, b) in app.library.books.iter().enumerate() {
         if grouped && last_series != Some(b.series.as_str()) {
             let n = counts.get(b.series.as_str()).copied().unwrap_or(0);
             rows.push(series_header_row(&b.series, n, theme));
@@ -52,7 +52,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
             sel_row = rows.len();
         }
         row_meta.push((i, rows.len()));
-        let marked = app.lib_marked.contains(&b.path);
+        let marked = app.library.marked.contains(&b.path);
         rows.push(book_row(b, &cols, grouped, marked, theme));
     }
 
@@ -74,7 +74,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     let view_rows = (area.height as usize)
         .saturating_sub(header_h as usize)
         .max(1);
-    app.lib_visible_rows = view_rows;
+    app.library.visible_rows = view_rows;
     let max_off = rows.len().saturating_sub(view_rows);
     let centered_off = sel_row.saturating_sub(view_rows / 2).min(max_off);
 
@@ -241,12 +241,12 @@ pub(crate) fn sort_cycle(config: &Config, compact: bool, width: u16) -> Vec<Sort
 /// The sortable column header for the active `cols`, marking the sort column.
 fn header_row(cols: &[Col], app: &App, theme: Theme) -> Row<'static> {
     let sort = |key: SortKey, text: &str, right: bool| -> Cell<'static> {
-        let active = app.lib_sort == key;
+        let active = app.library.sort == key;
         // The direction indicator is a fixed 2-cell slot (space + arrow). On
         // right-aligned columns it must be reserved even when inactive, else
         // adding the arrow would shift the right-pinned title left on toggle.
         let label = if active {
-            format!("{text} {}", if app.lib_sort_desc { "↓" } else { "↑" })
+            format!("{text} {}", if app.library.sort_desc { "↓" } else { "↑" })
         } else if right {
             format!("{text}  ")
         } else {

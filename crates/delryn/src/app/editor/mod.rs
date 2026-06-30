@@ -344,7 +344,12 @@ fn meta_fields_from(m: &Metadata) -> Vec<String> {
 impl App {
     /// Open the tabbed metadata editor on the selected book.
     pub(crate) fn open_meta_edit(&mut self) {
-        let Some(path) = self.lib_books.get(self.lib_sel).map(|b| b.path.clone()) else {
+        let Some(path) = self
+            .library
+            .books
+            .get(self.library.sel)
+            .map(|b| b.path.clone())
+        else {
             return;
         };
         self.open_meta_edit_path(&path);
@@ -353,10 +358,10 @@ impl App {
     /// Open the metadata editor on the book at `path` — shared by the current
     /// selection and stepping through a multi-book edit queue.
     fn open_meta_edit_path(&mut self, path: &str) {
-        let Some(b) = self.lib_books.iter().find(|b| b.path == path) else {
+        let Some(b) = self.library.books.iter().find(|b| b.path == path) else {
             return;
         };
-        // Snapshot the fields we need, then drop the borrow on `self.lib_books`.
+        // Snapshot the fields we need, then drop the borrow on `self.library.books`.
         let path = b.path.clone();
         let book_title = b.title.clone();
         let author_raw = b.author.clone();
@@ -454,9 +459,10 @@ impl App {
     /// skips to the next; the editor closes after the last.
     pub(crate) fn start_bulk_edit(&mut self) {
         let mut paths: Vec<String> = self
-            .lib_books
+            .library
+            .books
             .iter()
-            .filter(|b| self.lib_marked.contains(&b.path))
+            .filter(|b| self.library.marked.contains(&b.path))
             .map(|b| b.path.clone())
             .collect();
         if paths.is_empty() {
@@ -781,7 +787,7 @@ impl App {
         }
         if let Some(bytes) = &ed.cover {
             let _ = online::save_cover(&ed.path, bytes);
-            self.lib_flash = Some(embed_cover_into_file(&ed.path, bytes));
+            self.library.flash = Some(embed_cover_into_file(&ed.path, bytes));
         }
         self.refresh_library();
         // In a multi-book edit, move on to the next; else `take()` left it closed.

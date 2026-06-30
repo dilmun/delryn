@@ -4,6 +4,79 @@ Living backlog. See `ARCHITECTURE.md` for the target structure and `DESIGN.md`
 for the original spec. Phases are sequential; within a phase, items ship in
 small green commits (build + `cargo test` + `cargo clippy` clean each step).
 
+## Phase R — Redesign & violation cleanup (ACTIVE) — autonomous
+
+Outcome of the 2026-06-29 full-project audit (build is green: clippy 0-warning,
+219 tests, fmt clean, layer purity + error handling verified — debt is
+concentrated, not spread). Worked in **strict audit-severity order**: P0
+god-objects/files → P1 duplication → theming + status bar → P2 polish. Each item
+is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
+
+### R-A — P0 god-objects & god-files
+
+- [ ] **`App` god-object (~67 fields) → composed state.** Extract `LibraryState`
+      (the ~30 `lib_*` fields), `Session` (store/book_path/session_start), and
+      replace the **27 mutually-exclusive overlay `Option`s** with one
+      `enum Overlay` (one active; each variant owns its state + input + status
+      contribution). Kills the invalid-state machine. App → ~10 fields.
+- [ ] **`Reader` god-object (~79 fields) → sub-state structs.** `WrapKey`
+      (collapses the 19 `wrap_*` shadow fields into one `==`-compared key),
+      `ImageState`, `PageThemeState`, `NavState` (anchors/history/bookmarks),
+      `SectionCache` (loader channels + cache), `SearchState`. Reader coordinates.
+- [ ] **`delryn-media/src/lib.rs` (1358) → module tree:** `decode`, `recolor`,
+      `sizing`, `cover`, `kitty`, `builder`, `page` (+ shared `luma()`).
+- [ ] **`delryn-render/src/layout.rs` (1527) → `wrap/` tree:** `blocks`, `spans`,
+      `table`, `code`; `wrap_blocks` (287) becomes thin dispatch; `wrap_spans`
+      (171) splits flatten/fill/justify.
+
+### R-B — P1 duplication & maintainability hazards
+
+- [ ] **`Config` single source of truth** — drop the 5-site `ConfigFile` mirror
+      (silent persist-drift hazard) for one serde-derived struct; split
+      `config.rs` (768) into `config/{mod,reader,library,status,enums}`.
+- [ ] **Shared `TextInput` widget** (`ui/text_input.rs`) — fold the 13 duplicated
+      backspace/insert sites + 6 bespoke input structs into one.
+- [ ] **Parsing detection tokens → `ToolchainProfile` data** — consolidate the
+      tokens scattered across `code.rs`/`math.rs`/`dom.rs` + the triplicated icon
+      lists, delivering `docs/parsing.md`'s "one data entry" promise.
+- [ ] **Lift EPUB container plumbing → format-neutral `container.rs`**
+      (path-normalize, resource-resolve, mime, find-body, href→index,
+      descendant-text x5). Pays dup debt + pre-stages the future MOBI backend.
+- [ ] **`dispatch::apply` (264) → sub-dispatchers + one `persist_after` chokepoint**
+      (centralize the 10 inline `store.*`/`config.save()` calls).
+- [ ] **Versioned store migrations** (`store/migrate.rs`, `user_version`) +
+      shared `query_rows` helper (removes ~9 duplicated query loops).
+
+### R-C — Theming system + status bar (full)
+
+- [ ] **Theming: Palette + Roles, file-configurable.** `theme.rs` (415) →
+      `theme/{mod,palette,role,builtin,load,image}`. ~16-swatch `Palette` +
+      semantic `Role` tokens (every surface on a role; adding a role = one map
+      entry), `~/.config/delryn/themes/*.toml` user themes (built-ins same format),
+      contrast validation, shared `luma()`. Docs: `docs/theming.md`.
+- [ ] **Status bar: segment model, modern + useful + configurable + unified.**
+      `view/status/{mod,segment,producers,layout}` — segments in Left/Center/Right
+      zones (mode pill, position, slim progress bar, chapter, format, search
+      count, message, overlay legend), per-segment `status.*` roles, priority
+      overflow, `[status]` config. **Deletes** `view/reader.rs::render_status` +
+      the old `legend(app)` cascade. Docs: `docs/status.md`.
+
+### R-D — P2 polish
+
+- [ ] View-layer state-writeback (`lib_sort_cycle` ×3, `lib_grid_cols`,
+      `lib_visible_rows`) → returned `LayoutMetrics`, idempotent render.
+- [ ] Image-math perf: reuse classification RGBA in `render_for_theme`; fold
+      `chroma`+`rgb_to_hsl` one-pass in `theme_invert`; `SYMBOLS` → `LazyLock`.
+- [ ] Document the 3 `#[allow(too_many_arguments)]` in `reader/images.rs` (or
+      bundle the geometry args into a struct to remove them).
+- [ ] Misc: `online` cover-url builders ×3; config enum `next/prev/label` macro;
+      `export.rs` JSON via `serde_json`.
+
+🔮 **Future placeholders** (post-redesign; tree seams reserved now): MOBI/AZW3
+(`delryn-format/src/mobi/`, Phase 5 — NOT first release), graphical math
+(`delryn-render/src/math/`, Phase 6), layout composition engine
+(`delryn/src/view/layout/`, Phase 7).
+
 ## Phase 0 — Foundation (`refactor/workspace`) — ✅ complete
 
 Migrate to a Cargo workspace and clear every dev docs violation. Done: workspace

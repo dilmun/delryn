@@ -77,15 +77,20 @@ impl App {
     /// Open the rename popup over the marked books, or — when nothing is marked —
     /// the current book. Snapshots the data the template needs from each.
     pub(crate) fn open_bulk_rename(&mut self) {
-        let current = self.lib_books.get(self.lib_sel).map(|b| b.path.clone());
+        let current = self
+            .library
+            .books
+            .get(self.library.sel)
+            .map(|b| b.path.clone());
         let targets: Vec<BulkTarget> = self
-            .lib_books
+            .library
+            .books
             .iter()
             .filter(|b| {
-                if self.lib_marked.is_empty() {
+                if self.library.marked.is_empty() {
                     Some(&b.path) == current.as_ref()
                 } else {
-                    self.lib_marked.contains(&b.path)
+                    self.library.marked.contains(&b.path)
                 }
             })
             .map(|b| {
@@ -145,7 +150,7 @@ impl App {
         }
         self.lib_exit_visual();
         self.refresh_library();
-        self.lib_flash = Some(if skipped == 0 {
+        self.library.flash = Some(if skipped == 0 {
             format!(
                 "renamed {renamed} book{}",
                 if renamed == 1 { "" } else { "s" }

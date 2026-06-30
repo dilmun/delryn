@@ -22,13 +22,13 @@ impl App {
     /// Begin editing tags for the marked books (added to each) or, when nothing
     /// is marked, the selected book (replacing its tags — buffer pre-filled).
     pub(crate) fn open_tag_edit(&mut self) {
-        let (targets, multi, buf) = if !self.lib_marked.is_empty() {
+        let (targets, multi, buf) = if !self.library.marked.is_empty() {
             (
-                self.lib_marked.iter().cloned().collect(),
+                self.library.marked.iter().cloned().collect(),
                 true,
                 String::new(),
             )
-        } else if let Some(b) = self.lib_books.get(self.lib_sel) {
+        } else if let Some(b) = self.library.books.get(self.library.sel) {
             (vec![b.path.clone()], false, b.tags.clone())
         } else {
             return;
@@ -53,7 +53,8 @@ impl App {
                 let next = if input.multi {
                     // Union the typed tags with whatever the book already has.
                     let existing = self
-                        .lib_books
+                        .library
+                        .books
                         .iter()
                         .find(|b| &b.path == path)
                         .map(|b| b.tags.clone())
@@ -66,7 +67,7 @@ impl App {
             }
         }
         let n = input.targets.len();
-        self.lib_flash = Some(if n > 1 {
+        self.library.flash = Some(if n > 1 {
             format!("tagged {n} books")
         } else {
             "tags updated".into()

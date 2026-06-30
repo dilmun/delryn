@@ -165,7 +165,7 @@ impl App {
                 })
                 .collect();
         if groups.is_empty() {
-            self.lib_flash = Some("no duplicates found".into());
+            self.library.flash = Some("no duplicates found".into());
             return;
         }
         let mut dr = DupResolve {
@@ -239,7 +239,8 @@ impl App {
                     if let Some(store) = &self.store {
                         store.dismiss_duplicate_group(&sig);
                     }
-                    self.lib_flash = Some("ignored — won't be flagged again (I to undo)".into());
+                    self.library.flash =
+                        Some("ignored — won't be flagged again (I to undo)".into());
                     self.refresh_dup_resolve();
                 }
             }
@@ -257,7 +258,7 @@ impl App {
                     })
                     .unwrap_or_default();
                 if paths.is_empty() {
-                    self.lib_flash = Some("nothing checked to delete".into());
+                    self.library.flash = Some("nothing checked to delete".into());
                     return;
                 }
                 let q = format!(
@@ -282,7 +283,7 @@ impl App {
     /// (and doesn't open) when nothing has been ignored.
     pub(crate) fn open_ignored_view(&mut self) {
         let Some(view) = self.build_ignored_view() else {
-            self.lib_flash = Some("no ignored duplicate groups".into());
+            self.library.flash = Some("no ignored duplicate groups".into());
             return;
         };
         self.dup_resolve = None;
@@ -344,7 +345,7 @@ impl App {
                         }
                         None => {
                             self.ignored_view = None;
-                            self.lib_flash = Some("restored — no ignored groups left".into());
+                            self.library.flash = Some("restored — no ignored groups left".into());
                         }
                     }
                 }
@@ -355,7 +356,7 @@ impl App {
                     store.clear_dismissed_duplicates();
                 }
                 self.ignored_view = None;
-                self.lib_flash = Some("restored all ignored groups".into());
+                self.library.flash = Some("restored all ignored groups".into());
                 self.refresh_library();
             }
             _ => {}
@@ -387,7 +388,7 @@ impl App {
                 }
                 self.dup_preview = self.dup_resolve.take();
             }
-            Err(e) => self.lib_flash = Some(e.to_string()),
+            Err(e) => self.library.flash = Some(e.to_string()),
         }
     }
 

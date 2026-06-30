@@ -81,7 +81,7 @@ impl App {
             item("Export to CSV", Command::Export),
         ];
         // Jump-to-collection commands for each existing shelf.
-        for (name, _) in &self.lib_shelves {
+        for (name, _) in &self.library.shelves {
             items.push(item(
                 format!("Go: collection · {name}"),
                 Command::JumpShelf(name.clone()),
@@ -138,31 +138,31 @@ impl App {
     fn run_command(&mut self, cmd: Command) {
         match cmd {
             Command::JumpSection(s) => {
-                self.lib_view = LibView::Section(s);
-                self.lib_sel = 0;
+                self.library.view = LibView::Section(s);
+                self.library.sel = 0;
                 self.refresh_library();
             }
             Command::JumpShelf(name) => {
-                self.lib_view = LibView::Shelf(name);
-                self.lib_sel = 0;
+                self.library.view = LibView::Shelf(name);
+                self.library.sel = 0;
                 self.refresh_library();
             }
             Command::Sort(key) => {
                 // Explicit pick starts ascending; cycling with `s` toggles direction.
-                self.lib_sort = key;
-                self.lib_sort_desc = false;
+                self.library.sort = key;
+                self.library.sort_desc = false;
                 self.refresh_library();
             }
             Command::ToggleSortDir => {
-                self.lib_sort_desc = !self.lib_sort_desc;
+                self.library.sort_desc = !self.library.sort_desc;
                 self.refresh_library();
             }
             Command::CycleLayout => {
                 self.config.library_layout = self.config.library_layout.next();
                 self.config.save();
             }
-            Command::ToggleSidebar => self.lib_show_sidebar = !self.lib_show_sidebar,
-            Command::ToggleDetail => self.lib_detail = !self.lib_detail,
+            Command::ToggleSidebar => self.library.show_sidebar = !self.library.show_sidebar,
+            Command::ToggleDetail => self.library.detail = !self.library.detail,
             Command::Stats => self.open_stats(),
             Command::Export => self.export_library(),
         }
