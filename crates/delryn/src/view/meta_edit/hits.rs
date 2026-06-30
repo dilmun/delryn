@@ -5,9 +5,9 @@ use super::*;
 /// Capture the editor's clickable regions for mouse hit-testing, mirroring the
 /// tab strip / body layouts (kept beside the render geometry it shadows).
 pub(crate) fn record_hits(app: &mut App, tab_strip: Rect, body: Rect) {
-    let (tab, results_len) = match app.meta_edit.as_ref() {
-        Some(e) => (e.tab, e.search().results.len()),
-        None => return,
+    let (tab, results_len) = match &app.overlay {
+        Overlay::MetaEdit(e) => (e.tab, e.search().results.len()),
+        _ => return,
     };
 
     // Tab strip: " N label " cells separated by a single space (see render_tabs).

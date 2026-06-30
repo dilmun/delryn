@@ -10,8 +10,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::App;
 use super::confirm::ConfirmAction;
+use super::{App, Overlay};
 use crate::config::Config;
 
 /// One copy within a duplicate group.
@@ -174,18 +174,18 @@ impl App {
             fullscreen: false,
         };
         auto_select(&mut dr, &self.config);
-        self.dup_resolve = Some(dr);
+        self.overlay = Overlay::DupResolve(dr);
     }
 
     /// Keys while the overlay is open.
     pub(crate) fn dup_resolve_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.dup_resolve = None,
+            KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
             // Re-run the (config-driven) auto-select.
             KeyCode::Char('a') => self.auto_select_dups(),
             // Toggle full-window vs. the centered box.
             KeyCode::Char('f') => {
-                if let Some(dr) = self.dup_resolve.as_mut() {
+                if let Overlay::DupResolve(dr) = &mut self.overlay {
                     dr.fullscreen = !dr.fullscreen;
                 }
             }
@@ -195,23 +195,25 @@ impl App {
             KeyCode::Char('p') => self.preview_dup_book(),
             // Reveal the selected copy in the OS file manager.
             KeyCode::Char('r') => {
-                if let Some(path) = self.dup_resolve.as_ref().and_then(|dr| dr.selected_path()) {
+                if let Overlay::DupResolve(dr) = &self.overlay
+                    && let Some(path) = dr.selected_path()
+                {
                     reveal_in_file_manager(path);
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(dr) = self.dup_resolve.as_mut() {
+                if let Overlay::DupResolve(dr) = &mut self.overlay {
                     let last = dr.rows().len().saturating_sub(1);
                     dr.cursor = (dr.cursor + 1).min(last);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(dr) = self.dup_resolve.as_mut() {
+                if let Overlay::DupResolve(dr) = &mut self.overlay {
                     dr.cursor = dr.cursor.saturating_sub(1);
                 }
             }
             KeyCode::Char(' ') => {
-                if let Some(dr) = self.dup_resolve.as_mut()
+                if let Overlay::DupResolve(dr) = &mut self.overlay
                     && let Some(&(gi, mi)) = dr.rows().get(dr.cursor)
                 {
                     let m = &mut dr.groups[gi].members[mi];
@@ -219,7 +221,7 @@ impl App {
                 }
             }
             KeyCode::Char('u') => {
-                if let Some(dr) = self.dup_resolve.as_mut() {
+                if let Overlay::DupResolve(dr) = &mut self.overlay {
                     for m in dr.groups.iter_mut().flat_map(|g| &mut g.members) {
                         m.checked = false;
                     }
@@ -231,10 +233,14 @@ impl App {
                 // "Ignore": stop flagging the group under the cursor as a duplicate,
                 // then rebuild to drop it from the overlay. Reversible via the
                 // ignored-groups manager (`I`).
-                let sig = self.dup_resolve.as_ref().and_then(|dr| {
-                    let (gi, _) = dr.rows().get(dr.cursor).copied()?;
-                    Some(dr.groups[gi].signature.clone())
-                });
+                let sig = if let Overlay::DupResolve(dr) = &self.overlay {
+                    dr.rows()
+                        .get(dr.cursor)
+                        .copied()
+                        .map(|(gi, _)| dr.groups[gi].signature.clone())
+                } else {
+                    None
+                };
                 if let Some(sig) = sig {
                     if let Some(store) = &self.session.store {
                         store.dismiss_duplicate_group(&sig);
@@ -245,18 +251,16 @@ impl App {
                 }
             }
             KeyCode::Char('d') => {
-                let paths: Vec<String> = self
-                    .dup_resolve
-                    .as_ref()
-                    .map(|dr| {
-                        dr.groups
-                            .iter()
-                            .flat_map(|g| &g.members)
-                            .filter(|m| m.checked)
-                            .map(|m| m.path.clone())
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let paths: Vec<String> = if let Overlay::DupResolve(dr) = &self.overlay {
+                    dr.groups
+                        .iter()
+                        .flat_map(|g| &g.members)
+                        .filter(|m| m.checked)
+                        .map(|m| m.path.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 if paths.is_empty() {
                     self.library.flash = Some("nothing checked to delete".into());
                     return;
@@ -274,7 +278,7 @@ impl App {
     /// Re-apply the smart auto-select to the open overlay using the current prefs.
     fn auto_select_dups(&mut self) {
         let config = &self.config;
-        if let Some(dr) = self.dup_resolve.as_mut() {
+        if let Overlay::DupResolve(dr) = &mut self.overlay {
             auto_select(dr, config);
         }
     }
@@ -286,8 +290,8 @@ impl App {
             self.library.flash = Some("no ignored duplicate groups".into());
             return;
         };
-        self.dup_resolve = None;
-        self.ignored_view = Some(view);
+        self.overlay = Overlay::None;
+        self.overlay = Overlay::IgnoredView(view);
     }
 
     /// Build the ignored-groups list from the store, or `None` if empty.
@@ -312,24 +316,25 @@ impl App {
     /// Keys while the ignored-groups manager is open.
     pub(crate) fn ignored_view_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.ignored_view = None,
+            KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(v) = self.ignored_view.as_mut() {
+                if let Overlay::IgnoredView(v) = &mut self.overlay {
                     let last = v.signatures.len().saturating_sub(1);
                     v.cursor = (v.cursor + 1).min(last);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(v) = self.ignored_view.as_mut() {
+                if let Overlay::IgnoredView(v) = &mut self.overlay {
                     v.cursor = v.cursor.saturating_sub(1);
                 }
             }
             // Restore (un-ignore) the selected group.
             KeyCode::Char('u') | KeyCode::Enter => {
-                let sig = self
-                    .ignored_view
-                    .as_ref()
-                    .and_then(|v| v.signatures.get(v.cursor).cloned());
+                let sig = if let Overlay::IgnoredView(v) = &self.overlay {
+                    v.signatures.get(v.cursor).cloned()
+                } else {
+                    None
+                };
                 if let Some(sig) = sig {
                     if let Some(store) = &self.session.store {
                         store.restore_duplicate_group(&sig);
@@ -337,14 +342,18 @@ impl App {
                     self.refresh_library();
                     // Rebuild the list (keeping the cursor near where it was); close
                     // and flash when nothing's left.
-                    let cursor = self.ignored_view.as_ref().map_or(0, |v| v.cursor);
+                    let cursor = if let Overlay::IgnoredView(v) = &self.overlay {
+                        v.cursor
+                    } else {
+                        0
+                    };
                     match self.build_ignored_view() {
                         Some(mut v) => {
                             v.cursor = cursor.min(v.signatures.len() - 1);
-                            self.ignored_view = Some(v);
+                            self.overlay = Overlay::IgnoredView(v);
                         }
                         None => {
-                            self.ignored_view = None;
+                            self.overlay = Overlay::None;
                             self.library.flash = Some("restored — no ignored groups left".into());
                         }
                     }
@@ -355,7 +364,7 @@ impl App {
                 if let Some(store) = &self.session.store {
                     store.clear_dismissed_duplicates();
                 }
-                self.ignored_view = None;
+                self.overlay = Overlay::None;
                 self.library.flash = Some("restored all ignored groups".into());
                 self.refresh_library();
             }
@@ -368,11 +377,10 @@ impl App {
     /// reader-return handling in `dispatch`). Mirrors `open_selected`. A flash
     /// surfaces the reason when a book can't be opened (e.g. an unreadable format).
     fn preview_dup_book(&mut self) {
-        let Some(path) = self
-            .dup_resolve
-            .as_ref()
-            .and_then(|dr| dr.selected_path().map(str::to_string))
-        else {
+        let Overlay::DupResolve(dr) = &self.overlay else {
+            return;
+        };
+        let Some(path) = dr.selected_path().map(str::to_string) else {
             return;
         };
         self.flush_reading_time();
@@ -386,7 +394,13 @@ impl App {
                 if let Some(s) = &self.session.store {
                     s.mark_opened(&self.session.book_path);
                 }
-                self.dup_preview = self.dup_resolve.take();
+                self.dup_preview = if let Overlay::DupResolve(dr) =
+                    std::mem::replace(&mut self.overlay, Overlay::None)
+                {
+                    Some(dr)
+                } else {
+                    None
+                };
             }
             Err(e) => self.library.flash = Some(e.to_string()),
         }
@@ -395,10 +409,10 @@ impl App {
     /// After the confirmed deletion, rebuild the overlay so it reflects what's
     /// left (closing it when no duplicates remain).
     pub(crate) fn refresh_dup_resolve(&mut self) {
-        if self.dup_resolve.is_none() {
+        if !matches!(self.overlay, Overlay::DupResolve(_)) {
             return;
         }
-        self.dup_resolve = None;
+        self.overlay = Overlay::None;
         self.open_dup_resolve();
     }
 }

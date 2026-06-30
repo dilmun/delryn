@@ -11,13 +11,13 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::app::{App, Mode, SettingRow, settings_tabs, tab_rows};
+use crate::app::{App, Mode, Overlay, SettingRow, settings_tabs, tab_rows};
 
 /// Column where each option's value is shown (label left, value right).
 const VALUE_COL: usize = 30;
 
 pub fn render(f: &mut Frame, app: &App) {
-    let Some(state) = &app.settings else {
+    let Overlay::Settings(state) = &app.overlay else {
         return;
     };
     let theme = app.config.theme;

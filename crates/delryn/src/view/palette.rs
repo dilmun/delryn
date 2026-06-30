@@ -6,10 +6,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::app::App;
+use crate::app::{App, Overlay};
 
 pub fn render(f: &mut Frame, app: &App) {
-    let Some(p) = app.palette.as_ref() else {
+    let Overlay::Palette(p) = &app.overlay else {
         return;
     };
     let theme = app.config.theme;

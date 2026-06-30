@@ -12,7 +12,7 @@ use ratatui::widgets::{
 };
 use ratatui_image::{Resize, StatefulImage};
 
-use crate::app::{App, LibPane, LibView, SortKey};
+use crate::app::{App, LibPane, LibView, Overlay, SortKey};
 use crate::config::{Config, LibLayout};
 use crate::store::{BookRow, LibrarySection};
 use crate::theme::Theme;
