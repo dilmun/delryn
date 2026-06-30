@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
@@ -11,6 +11,7 @@ use ratatui::widgets::{
 use ratatui_image::{FontSize, Resize, StatefulImage};
 
 use crate::app::{App, Overlay};
+use crate::theme::Role;
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
@@ -63,24 +64,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.accent))
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .title_bottom(Line::from(Span::styled(
-            footer,
-            Style::default().fg(theme.muted),
-        )))
-        .style(Style::default().fg(theme.fg).bg(bg));
+        .border_style(theme.style(Role::BorderFocus))
+        .title(Span::styled(title, theme.style(Role::Title)))
+        .title_bottom(Line::from(Span::styled(footer, theme.style(Role::Muted))))
+        .style(theme.style(Role::Body).bg(bg));
     // Pixel dimensions as a right-aligned metadata badge in the top border.
     if let Some((w, h)) = dims {
         block = block.title(
             Line::from(Span::styled(
                 format!(" {w}×{h}px "),
-                Style::default().fg(theme.muted),
+                theme.style(Role::Muted),
             ))
             .alignment(Alignment::Right),
         );
@@ -118,10 +111,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if let Some(sidebar) = sidebar {
         if viewer.is_empty() {
             f.render_widget(
-                Paragraph::new(Line::styled(
-                    "  No figures.",
-                    Style::default().fg(theme.muted),
-                )),
+                Paragraph::new(Line::styled("  No figures.", theme.style(Role::Muted))),
                 sidebar,
             );
         } else {
@@ -129,21 +119,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 .visible()
                 .map(|(_, fig)| {
                     Line::from(vec![
-                        Span::styled(
-                            format!("§{} ", fig.section + 1),
-                            Style::default().fg(theme.muted),
-                        ),
-                        Span::styled(fig.name.clone(), Style::default().fg(theme.fg)),
+                        Span::styled(format!("§{} ", fig.section + 1), theme.style(Role::Muted)),
+                        Span::styled(fig.name.clone(), theme.style(Role::Body)),
                     ])
                     .into()
                 })
                 .collect();
-            let list = List::new(items).highlight_style(
-                Style::default()
-                    .fg(theme.on_accent())
-                    .bg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            );
+            let list = List::new(items).highlight_style(theme.style(Role::Selection));
             let mut st = ListState::default();
             st.select(Some(viewer.sel));
             f.render_stateful_widget(list, sidebar, &mut st);
@@ -181,19 +163,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // title badge.
     let mut dlines = vec![Line::from(Span::styled(
         chapter_label(section),
-        Style::default().fg(theme.heading),
+        Style::default().fg(theme.color(Role::Heading)),
     ))];
     if !caption.is_empty() {
-        dlines.push(Line::from(Span::styled(
-            caption,
-            Style::default().fg(theme.fg),
-        )));
+        dlines.push(Line::from(Span::styled(caption, theme.style(Role::Body))));
     }
     f.render_widget(
         Paragraph::new(dlines)
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true })
-            .style(Style::default().fg(theme.fg).bg(bg)),
+            .style(theme.style(Role::Body).bg(bg)),
         detail_rect,
     );
 

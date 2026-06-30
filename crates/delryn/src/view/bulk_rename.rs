@@ -3,11 +3,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{App, Overlay, fill_template};
+use crate::theme::Role;
 
 pub fn render(f: &mut Frame, app: &App) {
     let Overlay::BulkRename(br) = &app.overlay else {
@@ -34,14 +34,9 @@ pub fn render(f: &mut Frame, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.accent))
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().fg(theme.fg).bg(bg));
+        .border_style(theme.style(Role::BorderFocus))
+        .title(Span::styled(title, theme.style(Role::Title)))
+        .style(theme.style(Role::Body).bg(bg));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -57,9 +52,7 @@ pub fn render(f: &mut Frame, app: &App) {
     // horizontally so the caret stays visible for long templates.
     let mut spans = vec![Span::styled(
         " template   ",
-        Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD),
+        theme.style(Role::AccentStrong),
     )];
     let w = rows[0].width.saturating_sub(12) as usize; // " template   " = 12 cells
     spans.extend(super::field_spans(
@@ -73,14 +66,14 @@ pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(
         Paragraph::new(Line::styled(
             "   %T title   %A author   %Y year   %S series   %I #   %P publisher   %E ext",
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+            theme.style(Role::Hint),
         )),
         rows[1],
     );
     f.render_widget(
         Paragraph::new(Line::styled(
             "─".repeat(inner.width as usize),
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+            theme.style(Role::Hint),
         )),
         rows[2],
     );
@@ -103,17 +96,17 @@ fn render_preview(
         lines.push(Line::from(vec![
             Span::styled(
                 format!(" {}", super::truncate(&t.old_name, col)),
-                Style::default().fg(theme.muted),
+                theme.style(Role::Muted),
             ),
-            Span::styled("  →  ", Style::default().fg(theme.accent)),
-            Span::styled(super::truncate(&new, col), Style::default().fg(theme.fg)),
+            Span::styled("  →  ", theme.style(Role::Accent)),
+            Span::styled(super::truncate(&new, col), theme.style(Role::Body)),
         ]));
     }
     let shown = lines.len();
     if br.targets.len() > shown {
         lines.push(Line::styled(
             format!("   … and {} more", br.targets.len() - shown),
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+            theme.style(Role::Hint),
         ));
     }
     f.render_widget(Paragraph::new(lines), area);

@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{App, Overlay};
+use crate::theme::Role;
 
 pub fn render(f: &mut Frame, app: &App) {
     let Overlay::ShelfPicker(p) = &app.overlay else {
@@ -24,14 +25,12 @@ pub fn render(f: &mut Frame, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.accent))
+        .border_style(theme.style(Role::BorderFocus))
         .title(Span::styled(
             " Add to collection ",
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
+            theme.style(Role::Title),
         ))
-        .style(Style::default().fg(theme.fg).bg(bg));
+        .style(theme.style(Role::Body).bg(bg));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -44,9 +43,7 @@ pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(
         Paragraph::new(Line::styled(
             super::truncate(&p.title, inner.width as usize),
-            Style::default()
-                .fg(theme.muted)
-                .add_modifier(Modifier::ITALIC),
+            theme.style(Role::Muted).add_modifier(Modifier::ITALIC),
         )),
         rows[0],
     );
@@ -57,13 +54,11 @@ pub fn render(f: &mut Frame, app: &App) {
         let marker = if selected { "▸ " } else { "  " };
         let check = if *member { "[✓] " } else { "[ ] " };
         let style = if selected {
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD)
+            theme.style(Role::AccentStrong)
         } else if *member {
-            Style::default().fg(theme.fg)
+            theme.style(Role::Body)
         } else {
-            Style::default().fg(theme.muted)
+            theme.style(Role::Muted)
         };
         lines.push(Line::from(Span::styled(
             format!("{marker}{check}{name}"),
@@ -75,18 +70,16 @@ pub fn render(f: &mut Frame, app: &App) {
     let new_selected = p.sel == p.new_row();
     if let Some(buf) = &p.new_name {
         lines.push(Line::from(vec![
-            Span::styled("▸ ＋ ", Style::default().fg(theme.accent)),
-            Span::styled(buf.clone(), Style::default().fg(theme.heading)),
-            Span::styled("▏", Style::default().fg(theme.accent)),
+            Span::styled("▸ ＋ ", theme.style(Role::Accent)),
+            Span::styled(buf.clone(), Style::default().fg(theme.color(Role::Heading))),
+            Span::styled("▏", theme.style(Role::Accent)),
         ]));
     } else {
         let marker = if new_selected { "▸ " } else { "  " };
         let style = if new_selected {
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD)
+            theme.style(Role::AccentStrong)
         } else {
-            Style::default().fg(theme.muted)
+            theme.style(Role::Muted)
         };
         lines.push(Line::from(Span::styled(
             format!("{marker}＋ New collection…"),

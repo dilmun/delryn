@@ -61,11 +61,9 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     // Solid highlight bar when the list is focused; a quieter accent-text
     // selection when the keyboard is elsewhere.
     let highlight = if focused {
-        Style::default().fg(theme.on_accent()).bg(theme.accent)
+        theme.style(Role::Selection).remove_modifier(Modifier::BOLD)
     } else {
-        Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD)
+        theme.style(Role::AccentStrong)
     };
 
     // Center the selected row in the viewport (clamped at the ends), like the
@@ -124,12 +122,7 @@ fn series_header_row(series: &str, count: usize, theme: Theme) -> Row<'static> {
     };
     Row::new(vec![
         Cell::from(""),
-        Cell::from(Line::from(Span::styled(
-            label,
-            Style::default()
-                .fg(theme.heading)
-                .add_modifier(Modifier::BOLD),
-        ))),
+        Cell::from(Line::from(Span::styled(label, theme.style(Role::Heading)))),
     ])
 }
 
@@ -252,7 +245,11 @@ fn header_row(cols: &[Col], app: &App, theme: Theme) -> Row<'static> {
         } else {
             text.to_string()
         };
-        let color = if active { theme.accent } else { theme.muted };
+        let color = if active {
+            theme.color(Role::Accent)
+        } else {
+            theme.color(Role::Muted)
+        };
         let line = Line::from(Span::styled(
             label,
             Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -283,17 +280,13 @@ fn header_row(cols: &[Col], app: &App, theme: Theme) -> Row<'static> {
 fn book_row(b: &BookRow, cols: &[Col], grouped: bool, marked: bool, theme: Theme) -> Row<'static> {
     let num = |s: String| {
         Cell::from(
-            Line::from(Span::styled(s, Style::default().fg(theme.muted)))
-                .alignment(Alignment::Right),
+            Line::from(Span::styled(s, theme.style(Role::Muted))).alignment(Alignment::Right),
         )
     };
     let cells = cols.iter().map(|c| match c {
         Col::Star => star_cell(b, marked, theme),
         Col::Title => title_cell(b, grouped, theme),
-        Col::Author => Cell::from(Span::styled(
-            b.author.clone(),
-            Style::default().fg(theme.muted),
-        )),
+        Col::Author => Cell::from(Span::styled(b.author.clone(), theme.style(Role::Muted))),
         Col::Year => num(b.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into())),
         Col::Type => type_cell(&b.path, theme),
         Col::Source => source_cell(b.converted, theme),
@@ -308,10 +301,7 @@ fn book_row(b: &BookRow, cols: &[Col], grouped: bool, marked: bool, theme: Theme
 /// The Tags cell: the book's tags, comma-separated and muted (the table clips to
 /// the column width). Empty when untagged.
 fn tags_cell(tags: &str, theme: Theme) -> Cell<'static> {
-    Cell::from(Span::styled(
-        tags.to_string(),
-        Style::default().fg(theme.muted),
-    ))
+    Cell::from(Span::styled(tags.to_string(), theme.style(Role::Muted)))
 }
 
 /// The reading-status cell: the effective status label, with manual overrides
@@ -319,9 +309,9 @@ fn tags_cell(tags: &str, theme: Theme) -> Cell<'static> {
 fn status_cell(b: &BookRow, theme: Theme) -> Cell<'static> {
     let st = delryn_model::ReadingStatus::effective(b.pct, &b.status);
     let color = if st.is_manual() {
-        theme.marker
+        theme.color(Role::Marker)
     } else {
-        theme.muted
+        theme.color(Role::Muted)
     };
     Cell::from(Span::styled(
         st.label().to_string(),
@@ -333,14 +323,12 @@ fn status_cell(b: &BookRow, theme: Theme) -> Cell<'static> {
 /// blank.
 fn star_cell(b: &BookRow, marked: bool, theme: Theme) -> Cell<'static> {
     if marked {
-        Cell::from(Span::styled(
-            "✓",
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
+        Cell::from(Span::styled("✓", theme.style(Role::AccentStrong)))
     } else if b.favorite {
-        Cell::from(Span::styled("★", Style::default().fg(theme.marker)))
+        Cell::from(Span::styled(
+            "★",
+            Style::default().fg(theme.color(Role::Marker)),
+        ))
     } else {
         Cell::from(" ")
     }
@@ -350,9 +338,9 @@ fn star_cell(b: &BookRow, marked: bool, theme: Theme) -> Cell<'static> {
 /// by calibre). Converted is flagged in the marker colour so it stands out.
 fn source_cell(converted: bool, theme: Theme) -> Cell<'static> {
     let (label, color) = if converted {
-        ("Converted", theme.marker)
+        ("Converted", theme.color(Role::Marker))
     } else {
-        ("Original", theme.muted)
+        ("Original", theme.color(Role::Muted))
     };
     Cell::from(Span::styled(label, Style::default().fg(color)))
 }
@@ -366,14 +354,14 @@ fn title_cell(b: &BookRow, grouped: bool, theme: Theme) -> Cell<'static> {
             .map(|i| format!("#{} ", fmt_idx(i)))
             .unwrap_or_default();
         return Cell::from(Line::from(vec![
-            Span::styled(format!("   {idx}"), Style::default().fg(theme.muted)),
-            Span::styled(b.title.clone(), Style::default().fg(theme.fg)),
+            Span::styled(format!("   {idx}"), theme.style(Role::Muted)),
+            Span::styled(b.title.clone(), theme.style(Role::Body)),
         ]));
     }
-    let mut spans = vec![Span::styled(b.title.clone(), Style::default().fg(theme.fg))];
+    let mut spans = vec![Span::styled(b.title.clone(), theme.style(Role::Body))];
     let suffix = series_suffix(b);
     if !suffix.is_empty() {
-        spans.push(Span::styled(suffix, Style::default().fg(theme.muted)));
+        spans.push(Span::styled(suffix, theme.style(Role::Muted)));
     }
     Cell::from(Line::from(spans))
 }
@@ -384,9 +372,9 @@ fn title_cell(b: &BookRow, grouped: bool, theme: Theme) -> Cell<'static> {
 fn type_cell(path: &str, theme: Theme) -> Cell<'static> {
     let fmt = crate::document::BookFormat::from_path(path);
     let (label, color) = match fmt {
-        crate::document::BookFormat::Epub => ("EPUB", theme.muted),
-        crate::document::BookFormat::Unknown => ("—", theme.muted),
-        other => (other.label(), theme.marker),
+        crate::document::BookFormat::Epub => ("EPUB", theme.color(Role::Muted)),
+        crate::document::BookFormat::Unknown => ("—", theme.color(Role::Muted)),
+        other => (other.label(), theme.color(Role::Marker)),
     };
     Cell::from(Span::styled(label.to_string(), Style::default().fg(color)))
 }
