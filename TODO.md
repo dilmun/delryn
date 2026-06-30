@@ -41,11 +41,12 @@ is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
       mirror for one serde-derived `Config` (custom theme/enum (de)serializers;
       on-disk TOML diff-verified byte-identical); split `config.rs` (768) into
       `config/{mod,enums}`. Commit 3029d63.
-- [~] **Shared `TextInput` widget** (`ui/text_input.rs`) ✅ widget + 5 inputs
-      (Tag/Coll/BulkRename/Palette/Prompt) migrated (commits f027696, cb074af).
-      **Carryover:** the metadata-editor multi-field forms (`editor/{lookup,mod}.rs`,
-      an N-fields-one-cursor shape) still use the `str_*` helpers — migrate to
-      finish removing them.
+- [x] **Shared `TextInput` widget** (`ui/text_input.rs`) ✅ — widget + every
+      single-line input migrated: Tag/Coll/BulkRename/Palette/Prompt (f027696,
+      cb074af) and the metadata-editor forms — Details values, the Lookup seed
+      fields, and the Online/Cover queries — collapsing 3 duplicated typing
+      handlers to `handle_key`. `str_insert`/`str_delete_before`/`str_delete_at`
+      and the cursor-clamp helpers are **deleted**. Commit 6e3b77b.
 - [x] **Parsing detection tokens → `ToolchainProfile` data** ✅ — every category
       consolidated into the `html/toolchain` registry; icon lists de-triplicated.
       Plus format-neutral `container.rs` (descendant-text x5 + find-body + resource
@@ -53,8 +54,12 @@ is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
 - [x] **Versioned store migrations** ✅ — `migrate()` gated by `user_version`
       (steady-state open runs zero ALTERs); idempotent `legacy_column_backfill`;
       2 tests. Commit a419191. *(shared `query_rows` helper → R-D.)*
-- [ ] **`dispatch::apply` (264) → sub-dispatchers + one `persist_after` chokepoint**
-      (centralize the 10 inline `store.*`/`config.save()` calls). *Carryover.*
+- [x] **`dispatch::apply` (264) → flat router** ✅ — the persist chokepoint
+      already existed (the tail `save || section-changed` block); extracted the
+      self-contained reader-navigation cluster into a free `apply_nav` (264→223),
+      so `apply` reads as a flat action router. Commit 3961fa8. *(Further
+      group-splitting of config toggles is optional chip-away — a flat router is
+      inherently one arm per action.)*
 
 ### R-C — Theming system + status bar (full)
 
