@@ -17,7 +17,6 @@ use crate::input::{self, Action, Pending};
 use crate::media::{self, ImageBuilder};
 use crate::online;
 use crate::store::{Annotation, Store};
-use crate::theme;
 use ratatui_image::picker::Picker;
 
 mod confirm;
@@ -276,9 +275,8 @@ fn build_reader(
         && let Some(p) = store.load_progress(&book_path)
     {
         config.view_mode = p.view_mode;
-        if let Some(t) = theme::by_name(&p.theme) {
-            config.theme = t;
-        }
+        // The theme is a single global setting: a book must never change it — the
+        // active theme colours every book. Resume only position + view mode.
         reader.load(p.section);
         reader.pending_frac = Some(p.frac);
     }
