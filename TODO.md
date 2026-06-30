@@ -14,11 +14,13 @@ is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
 
 ### R-A — P0 god-objects & god-files
 
-- [ ] **`App` god-object (~67 fields) → composed state.** Extract `LibraryState`
-      (the ~30 `lib_*` fields), `Session` (store/book_path/session_start), and
-      replace the **27 mutually-exclusive overlay `Option`s** with one
-      `enum Overlay` (one active; each variant owns its state + input + status
-      contribution). Kills the invalid-state machine. App → ~10 fields.
+- [x] **`App` god-object (67 fields) → composed state.** ✅ Extracted
+      `LibraryState` (30 `lib_*` fields → `app/state/library.rs`), `Session`
+      (store/book_path/session_start → `app/state/session.rs`), and collapsed the
+      13 mutually-exclusive overlay `Option`s into one `enum Overlay`
+      (`app/state/overlay.rs`) — "two overlays open at once" is now
+      unrepresentable. `pending_confirm`/`dup_preview` stay separate by design.
+      App: **67 → 24 fields**. Commits f86446d / 7d39aee / c71482d.
 - [ ] **`Reader` god-object (~79 fields) → sub-state structs.** `WrapKey`
       (collapses the 19 `wrap_*` shadow fields into one `==`-compared key),
       `ImageState`, `PageThemeState`, `NavState` (anchors/history/bookmarks),
