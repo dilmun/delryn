@@ -5,7 +5,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{App, str_delete_before, str_insert};
+use super::{App, Overlay, str_delete_before, str_insert};
 
 /// Open tag-edit prompt: a text buffer plus which book paths it applies to.
 pub struct TagInput {
@@ -34,7 +34,7 @@ impl App {
             return;
         };
         let cursor = buf.chars().count();
-        self.tag_edit = Some(TagInput {
+        self.overlay = Overlay::TagEdit(TagInput {
             buf,
             cursor,
             targets,
@@ -45,7 +45,7 @@ impl App {
     /// Commit the typed tags: replace (single) or add to each (multi), then
     /// refresh so the change shows immediately.
     pub(crate) fn tag_edit_commit(&mut self) {
-        let Some(input) = self.tag_edit.take() else {
+        let Overlay::TagEdit(input) = std::mem::replace(&mut self.overlay, Overlay::None) else {
             return;
         };
         if let Some(store) = &self.session.store {
@@ -79,26 +79,26 @@ impl App {
     pub(crate) fn tag_edit_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Esc => self.tag_edit = None,
+            KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Enter => self.tag_edit_commit(),
             KeyCode::Left => {
-                if let Some(i) = self.tag_edit.as_mut() {
+                if let Overlay::TagEdit(i) = &mut self.overlay {
                     i.cursor = i.cursor.saturating_sub(1);
                 }
             }
             KeyCode::Right => {
-                if let Some(i) = self.tag_edit.as_mut() {
+                if let Overlay::TagEdit(i) = &mut self.overlay {
                     i.cursor = (i.cursor + 1).min(i.buf.chars().count());
                 }
             }
             KeyCode::Char('u') if ctrl => {
-                if let Some(i) = self.tag_edit.as_mut() {
+                if let Overlay::TagEdit(i) = &mut self.overlay {
                     i.buf.clear();
                     i.cursor = 0;
                 }
             }
             KeyCode::Backspace => {
-                if let Some(i) = self.tag_edit.as_mut() {
+                if let Overlay::TagEdit(i) = &mut self.overlay {
                     let c = i.cursor;
                     if str_delete_before(&mut i.buf, c) {
                         i.cursor -= 1;
@@ -106,7 +106,7 @@ impl App {
                 }
             }
             KeyCode::Char(c) if !ctrl => {
-                if let Some(i) = self.tag_edit.as_mut() {
+                if let Overlay::TagEdit(i) = &mut self.overlay {
                     let cur = i.cursor;
                     str_insert(&mut i.buf, cur, c);
                     i.cursor += 1;

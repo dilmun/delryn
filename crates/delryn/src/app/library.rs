@@ -12,7 +12,7 @@ use crate::config::LibLayout;
 use crate::media;
 use crate::store::LibrarySection;
 
-use super::{App, COVER_DEBOUNCE, Mode, load_cover_bytes};
+use super::{App, COVER_DEBOUNCE, Mode, Overlay, load_cover_bytes};
 
 /// The active library view: one of the fixed smart sections, or a user
 /// collection (shelf). Tab cycles through the sections then the collections.
@@ -297,7 +297,7 @@ impl App {
         if let Some(store) = &self.session.store {
             let books = store.all_books();
             let secs = store.total_read_seconds();
-            self.stats = Some(crate::library::stats::compute(&books, secs));
+            self.overlay = Overlay::Stats(crate::library::stats::compute(&books, secs));
         }
     }
 

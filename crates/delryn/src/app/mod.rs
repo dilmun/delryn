@@ -62,6 +62,7 @@ mod library;
 pub use library::{LibPane, LibView, SortKey};
 
 mod state;
+pub use state::Overlay;
 use state::{LibraryState, Session};
 
 mod dispatch;
@@ -128,32 +129,16 @@ pub struct App {
     pub mouse: MouseHits,
     pub pending: Pending,
     pub should_quit: bool,
-    /// Open settings popup, if any.
-    pub settings: Option<Settings>,
-    /// Open annotations overlay, if any.
-    pub annot: Option<AnnotState>,
-    /// Open library-statistics overlay, if any.
-    pub stats: Option<crate::library::stats::LibraryStats>,
-    /// Open command palette, if any.
-    pub palette: Option<Palette>,
-    /// Active bottom-row text prompt (note / rename bookmark / file in folder).
-    pub prompt: Option<Prompt>,
-    /// Open metadata-edit form (library), if any.
-    pub meta_edit: Option<MetaEdit>,
-    /// Open bulk-rename popup (template applied to the marked books), if any.
-    pub bulk_rename: Option<BulkRename>,
-    /// Inline sidebar collection editor (create / rename), if active.
-    pub lib_coll_edit: Option<CollInput>,
-    /// Inline tag-edit prompt (set a book's tags), if active.
-    pub tag_edit: Option<TagInput>,
-    /// Duplicate-resolution overlay, if open.
-    pub dup_resolve: Option<DupResolve>,
+    /// The single open overlay/popup (settings, prompt, metadata editor,
+    /// bookmarks, palette, …), or [`Overlay::None`]. Exactly one is open at a
+    /// time, so the borrow checker — and the code — can't represent two at once.
+    /// `pending_confirm` (modal above any overlay) and `dup_preview` (the parked
+    /// resolver) stay separate fields below.
+    pub overlay: Overlay,
     /// The duplicate-resolution overlay stashed while previewing a book from it —
-    /// kept out of `dup_resolve` so the dispatcher and renderer ignore it during the
+    /// kept out of `overlay` so the dispatcher and renderer ignore it during the
     /// preview; restored when the reader returns (`q`/Esc).
     pub dup_preview: Option<DupResolve>,
-    /// Manager listing the "ignored" duplicate groups, to restore or clear them.
-    pub ignored_view: Option<IgnoredView>,
     /// A destructive action awaiting a yes/no confirmation, if any. Intercepts
     /// input ahead of every popup and is answered with y/⏎ or n/Esc.
     pub pending_confirm: Option<PendingConfirm>,
@@ -162,8 +147,6 @@ pub struct App {
     pub edit_queue: Vec<String>,
     /// Total books in the current edit queue (for the `N/total` header).
     pub edit_total: usize,
-    /// Open image viewer overlay, if any.
-    pub image_view: Option<ImageViewer>,
     /// An image queued for the system clipboard (`(w, h, RGBA)`), set by the
     /// viewer's copy action and drained by the main loop.
     pub pending_clipboard_image: Option<(u32, u32, Vec<u8>)>,
@@ -177,8 +160,6 @@ pub struct App {
     session: Session,
     /// Library list, selection, sort, filter, and covers — see [`LibraryState`].
     pub library: LibraryState,
-    /// Open add-to-collection picker, if any.
-    pub shelf_picker: Option<ShelfPicker>,
     /// Receiver for async Open Library results (search / cover), if a request
     /// from the editor's Online tab is in flight.
     pub online_rx: Option<Receiver<OnlineMsg>>,
@@ -353,22 +334,11 @@ impl App {
             mouse: MouseHits::default(),
             pending: Pending::default(),
             should_quit: false,
-            settings: None,
-            annot: None,
-            stats: None,
-            palette: None,
-            prompt: None,
-            meta_edit: None,
-            bulk_rename: None,
-            lib_coll_edit: None,
-            tag_edit: None,
-            dup_resolve: None,
+            overlay: Overlay::None,
             dup_preview: None,
-            ignored_view: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
-            image_view: None,
             pending_clipboard_image: None,
             picker: None,
             image_builder: None,
@@ -379,7 +349,6 @@ impl App {
                 started: Some(Instant::now()),
             },
             library: LibraryState::default(),
-            shelf_picker: None,
             online_rx: None,
             dup_scan: None,
             edit_cover: None,
@@ -403,22 +372,11 @@ impl App {
             mouse: MouseHits::default(),
             pending: Pending::default(),
             should_quit: false,
-            settings: None,
-            annot: None,
-            stats: None,
-            palette: None,
-            prompt: None,
-            meta_edit: None,
-            bulk_rename: None,
-            lib_coll_edit: None,
-            tag_edit: None,
-            dup_resolve: None,
+            overlay: Overlay::None,
             dup_preview: None,
-            ignored_view: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
-            image_view: None,
             pending_clipboard_image: None,
             picker: None,
             image_builder: None,
@@ -429,7 +387,6 @@ impl App {
                 started: None,
             },
             library: LibraryState::default(),
-            shelf_picker: None,
             online_rx: None,
             dup_scan: None,
             edit_cover: None,
@@ -626,14 +583,17 @@ impl App {
     /// a full repaint when this toggles, so a closed popup's cells (which may sit
     /// over an inline image) don't leave a ghost the cell-diff misses.
     pub fn any_overlay_open(&self) -> bool {
-        self.settings.is_some()
-            || self.annot.is_some()
-            || self.stats.is_some()
-            || self.palette.is_some()
-            || self.meta_edit.is_some()
-            || self.bulk_rename.is_some()
-            || self.shelf_picker.is_some()
-            || self.image_view.is_some()
+        matches!(
+            self.overlay,
+            Overlay::Settings(_)
+                | Overlay::Annot(_)
+                | Overlay::Stats(_)
+                | Overlay::Palette(_)
+                | Overlay::MetaEdit(_)
+                | Overlay::BulkRename(_)
+                | Overlay::ShelfPicker(_)
+                | Overlay::ImageView(_)
+        )
     }
 
     /// Is a smooth scroll in progress, or are inline images still building (so
@@ -676,6 +636,46 @@ mod tests {
         KeyEvent::new(c, KeyModifiers::NONE)
     }
 
+    // Pull the open overlay out as its concrete type, panicking if a different
+    // overlay is open — the same contract `app.X.as_ref().unwrap()` gave before
+    // the overlays were folded into the single `app.overlay` enum.
+    fn meta(app: &App) -> &MetaEdit {
+        match &app.overlay {
+            Overlay::MetaEdit(e) => e,
+            _ => panic!("metadata editor not open"),
+        }
+    }
+    fn meta_mut(app: &mut App) -> &mut MetaEdit {
+        match &mut app.overlay {
+            Overlay::MetaEdit(e) => e,
+            _ => panic!("metadata editor not open"),
+        }
+    }
+    fn settings_state(app: &App) -> &Settings {
+        match &app.overlay {
+            Overlay::Settings(s) => s,
+            _ => panic!("settings not open"),
+        }
+    }
+    fn tag_edit_mut(app: &mut App) -> &mut TagInput {
+        match &mut app.overlay {
+            Overlay::TagEdit(t) => t,
+            _ => panic!("tag editor not open"),
+        }
+    }
+    fn shelf_picker(app: &App) -> &ShelfPicker {
+        match &app.overlay {
+            Overlay::ShelfPicker(p) => p,
+            _ => panic!("collection picker not open"),
+        }
+    }
+    fn dup_resolve(app: &App) -> &DupResolve {
+        match &app.overlay {
+            Overlay::DupResolve(d) => d,
+            _ => panic!("duplicate resolver not open"),
+        }
+    }
+
     // Proves the library key bindings reach their handlers (regression guard for
     // the new e/c/v actions).
     #[test]
@@ -715,13 +715,22 @@ mod tests {
 
         // e opens the metadata editor; Esc closes it.
         app.on_key(key('e'));
-        assert!(app.meta_edit.is_some(), "e opens the metadata editor");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "e opens the metadata editor"
+        );
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.meta_edit.is_none(), "Esc closes the editor");
+        assert!(
+            !matches!(app.overlay, Overlay::MetaEdit(_)),
+            "Esc closes the editor"
+        );
 
         // c opens the add-to-collection picker.
         app.on_key(key('c'));
-        assert!(app.shelf_picker.is_some(), "c opens the collection picker");
+        assert!(
+            matches!(app.overlay, Overlay::ShelfPicker(_)),
+            "c opens the collection picker"
+        );
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -858,25 +867,21 @@ mod tests {
 
         let mut app = App::library();
         app.on_key(key('e'));
-        assert_eq!(
-            app.meta_edit.as_ref().unwrap().mode,
-            EditMode::Nav,
-            "opens in nav mode"
-        );
+        assert_eq!(meta(&app).mode, EditMode::Nav, "opens in nav mode");
 
         // In nav mode, 'j' moves fields (does NOT type); Enter enters edit mode.
         app.on_key(key('j')); // → Author
-        assert_eq!(app.meta_edit.as_ref().unwrap().row, 1);
+        assert_eq!(meta(&app).row, 1);
         app.on_key(key('k')); // back to Title
         app.on_key(code(KeyCode::Enter)); // edit Title
-        assert_eq!(app.meta_edit.as_ref().unwrap().mode, EditMode::Edit);
+        assert_eq!(meta(&app).mode, EditMode::Edit);
         // Mid-string insert: cursor at end of "K"; Left then 'X' → "XK".
         app.on_key(code(KeyCode::Left));
         app.on_key(key('X'));
-        assert_eq!(app.meta_edit.as_ref().unwrap().values[0], "XK");
+        assert_eq!(meta(&app).values[0], "XK");
         app.on_key(code(KeyCode::Esc)); // back to nav (not closed)
-        assert!(app.meta_edit.is_some());
-        assert_eq!(app.meta_edit.as_ref().unwrap().mode, EditMode::Nav);
+        assert!(matches!(app.overlay, Overlay::MetaEdit(_)));
+        assert_eq!(meta(&app).mode, EditMode::Nav);
 
         // Navigate to Year, edit it to garbage → invalid.
         app.on_key(key('j')); // Author
@@ -885,10 +890,7 @@ mod tests {
         app.on_key(ctrl('u'));
         app.on_key(key('a'));
         app.on_key(code(KeyCode::Esc));
-        assert!(
-            app.meta_edit.as_ref().unwrap().has_invalid(),
-            "non-numeric year invalid"
-        );
+        assert!(meta(&app).has_invalid(), "non-numeric year invalid");
 
         // ^S must NOT even prompt to save while invalid.
         app.on_key(ctrl('s'));
@@ -896,7 +898,10 @@ mod tests {
             app.pending_confirm.is_none(),
             "no save prompt while invalid"
         );
-        assert!(app.meta_edit.is_some(), "save blocked while invalid");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "save blocked while invalid"
+        );
 
         // Fix the year, then ^S → confirm → save and persist.
         app.on_key(code(KeyCode::Enter));
@@ -908,10 +913,16 @@ mod tests {
         // ^S asks for confirmation; the editor stays open until answered.
         app.on_key(ctrl('s'));
         assert!(app.pending_confirm.is_some(), "^S asks to confirm");
-        assert!(app.meta_edit.is_some(), "editor open while confirming");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "editor open while confirming"
+        );
         app.on_key(key('y')); // confirm
         assert!(app.pending_confirm.is_none(), "prompt dismissed");
-        assert!(app.meta_edit.is_none(), "valid edit saves & closes");
+        assert!(
+            !matches!(app.overlay, Overlay::MetaEdit(_)),
+            "valid edit saves & closes"
+        );
         let b = &app.library.books[0];
         assert_eq!(b.title, "XK");
         assert_eq!(b.year, Some(2001));
@@ -967,7 +978,10 @@ mod tests {
         // n cancels, the editor remains open, nothing persisted.
         app.on_key(key('n'));
         assert!(app.pending_confirm.is_none(), "n dismisses the prompt");
-        assert!(app.meta_edit.is_some(), "editor stays open after cancel");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "editor stays open after cancel"
+        );
         assert_eq!(
             app.library.books[0].title, "K",
             "nothing persisted on cancel"
@@ -977,7 +991,7 @@ mod tests {
         app.on_key(ctrl('s'));
         app.on_key(code(KeyCode::Esc));
         assert!(
-            app.pending_confirm.is_none() && app.meta_edit.is_some(),
+            app.pending_confirm.is_none() && matches!(app.overlay, Overlay::MetaEdit(_)),
             "Esc cancels"
         );
 
@@ -1124,9 +1138,12 @@ mod tests {
         app.library.sel = 0;
         let first = app.library.books[0].path.clone();
         app.on_key(key('T'));
-        app.tag_edit.as_mut().unwrap().buf = "Fiction, FICTION, sci-fi".into();
+        tag_edit_mut(&mut app).buf = "Fiction, FICTION, sci-fi".into();
         app.on_key(code(KeyCode::Enter));
-        assert!(app.tag_edit.is_none(), "prompt closed on commit");
+        assert!(
+            !matches!(app.overlay, Overlay::TagEdit(_)),
+            "prompt closed on commit"
+        );
         assert_eq!(
             tags_of(&app, &first),
             "fiction, sci-fi",
@@ -1142,7 +1159,7 @@ mod tests {
         app.library.marked.insert("/a.epub".into());
         app.library.marked.insert("/b.epub".into());
         app.on_key(key('T'));
-        app.tag_edit.as_mut().unwrap().buf = "classic".into();
+        tag_edit_mut(&mut app).buf = "classic".into();
         app.on_key(code(KeyCode::Enter));
         assert_eq!(
             tags_of(&app, &first),
@@ -1243,7 +1260,7 @@ mod tests {
         assert_eq!(app.library.books.len(), 1);
         // `r` renames the current book (no need to mark it) via the popup.
         app.on_key(key('r')); // rename popup (default "%T.%E")
-        assert!(app.bulk_rename.is_some());
+        assert!(matches!(app.overlay, Overlay::BulkRename(_)));
         app.on_key(ctrl('s')); // ^S asks to confirm
         assert!(app.pending_confirm.is_some(), "rename asks to confirm");
         app.on_key(key('y')); // confirm + apply
@@ -1302,7 +1319,7 @@ mod tests {
         let mut app = App::library();
         app.library.pane = LibPane::List;
         app.on_key(key('D')); // open the overlay (works from any section)
-        let dr = app.dup_resolve.as_ref().expect("overlay opens");
+        let dr = dup_resolve(&app);
         assert_eq!(dr.groups.len(), 1, "one duplicate group");
         assert_eq!(dr.checked_count(), 1, "auto-selects one to delete");
         // The smaller copy is the one checked for deletion.
@@ -1328,7 +1345,7 @@ mod tests {
         assert!(!all.iter().any(|b| b.path == ssmall));
         // No duplicates remain → the overlay closes itself.
         assert!(
-            app.dup_resolve.is_none(),
+            !matches!(app.overlay, Overlay::DupResolve(_)),
             "overlay closes when nothing's left"
         );
 
@@ -1373,15 +1390,18 @@ mod tests {
         app.on_key(key('j')); // extend to book 1
         assert_eq!(app.library.marked.len(), 2);
         app.on_key(key('r')); // rename the selection (not the editor)
-        assert!(app.bulk_rename.is_some());
-        assert!(app.meta_edit.is_none());
+        assert!(matches!(app.overlay, Overlay::BulkRename(_)));
+        assert!(!matches!(app.overlay, Overlay::MetaEdit(_)));
         app.on_key(ctrl('s')); // ^S asks to confirm
         app.on_key(key('y')); // confirm + apply default "%T.%E"
 
         assert!(books.join("Alpha.epub").exists(), "Alpha renamed");
         assert!(books.join("Beta.epub").exists(), "Beta renamed");
         assert!(!books.join("a old.epub").exists(), "old file gone");
-        assert!(app.bulk_rename.is_none(), "popup closed after apply");
+        assert!(
+            !matches!(app.overlay, Overlay::BulkRename(_)),
+            "popup closed after apply"
+        );
         assert!(
             app.library.marked.is_empty(),
             "selection cleared after apply"
@@ -1531,7 +1551,7 @@ mod tests {
         app.on_key(key('j')); // extend to book 1
         assert_eq!(app.library.marked.len(), 2);
         app.on_key(key('c')); // bulk shelf picker
-        assert_eq!(app.shelf_picker.as_ref().unwrap().targets.len(), 2);
+        assert_eq!(shelf_picker(&app).targets.len(), 2);
         // Select the "＋ New collection" row, create "Unread", filing both books.
         app.on_key(code(KeyCode::Enter)); // onto +New row → start typing
         for c in "Unread".chars() {
@@ -1561,17 +1581,13 @@ mod tests {
 
         let mut app = App::library();
         app.on_key(key(';')); // opens settings scoped to the library
-        assert_eq!(app.settings.as_ref().unwrap().scope, Mode::Library);
-        assert_eq!(
-            app.settings.as_ref().unwrap().tab,
-            0,
-            "opens on the first tab"
-        );
+        assert_eq!(settings_state(&app).scope, Mode::Library);
+        assert_eq!(settings_state(&app).tab, 0, "opens on the first tab");
 
         // Walk every tab: the cursor only ever rests on items, and Tab advances
         // to the next group (parking on its first option).
         for t in 0..settings_tabs(Mode::Library).len() {
-            assert_eq!(app.settings.as_ref().unwrap().tab, t);
+            assert_eq!(settings_state(&app).tab, t);
             let rows = tab_rows(Mode::Library, t);
             assert!(
                 matches!(rows[0], SettingRow::Section(_)),
@@ -1579,7 +1595,7 @@ mod tests {
             );
             // Move down past the end; the cursor must never land on a header.
             for _ in 0..rows.len() + 2 {
-                let row = app.settings.as_ref().unwrap().row;
+                let row = settings_state(&app).row;
                 assert!(
                     matches!(rows[row], SettingRow::Item(_)),
                     "cursor never rests on a section header (tab {t}, row {row})"
@@ -1589,7 +1605,7 @@ mod tests {
             app.on_key(code(KeyCode::Tab)); // next tab
         }
         // Tab wraps back to the first group.
-        assert_eq!(app.settings.as_ref().unwrap().tab, 0, "Tab wraps around");
+        assert_eq!(settings_state(&app).tab, 0, "Tab wraps around");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1629,7 +1645,7 @@ mod tests {
         for _ in 0..2 {
             app.on_key(code(KeyCode::Tab));
         }
-        let ed = app.meta_edit.as_ref().unwrap();
+        let ed = meta(&app);
         assert_eq!(ed.tab, EditTab::Online);
         // Seeded from metadata: name=title, author=first author, year from book;
         // ISBN stays inactive (empty) until its field is focused.
@@ -1641,18 +1657,18 @@ mod tests {
 
         // Typing edits the focused field (Title), entering edit mode.
         app.on_key(key('!'));
-        let ed = app.meta_edit.as_ref().unwrap();
+        let ed = meta(&app);
         assert!(ed.lookup.editing);
         assert_eq!(ed.lookup.name, "K!");
         app.on_key(code(KeyCode::Esc));
-        assert!(!app.meta_edit.as_ref().unwrap().lookup.editing);
+        assert!(!meta(&app).lookup.editing);
 
         // j moves focus to Author; editing it changes only that field.
         app.on_key(key('j'));
-        assert_eq!(app.meta_edit.as_ref().unwrap().lookup.focus, 1);
+        assert_eq!(meta(&app).lookup.focus, 1);
         app.on_key(code(KeyCode::Enter)); // edit Author
         app.on_key(key('x'));
-        let ed = app.meta_edit.as_ref().unwrap();
+        let ed = meta(&app);
         assert_eq!(ed.lookup.author, "Authx");
         assert_eq!(ed.lookup.query(), "K! Authx 2010");
 
@@ -1695,22 +1711,22 @@ mod tests {
         app.on_key(key('e'));
         // Details → Cover.
         app.on_key(code(KeyCode::Tab));
-        assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Cover);
+        assert_eq!(meta(&app).tab, EditTab::Cover);
         app.on_key(key('a'));
         app.on_key(key('b'));
         app.on_key(code(KeyCode::Esc)); // leave the cover query
-        assert_eq!(app.meta_edit.as_ref().unwrap().cover_search.q, "ab");
+        assert_eq!(meta(&app).cover_search.q, "ab");
 
         // Cover → Lookup: the seeded Title field is untouched, not in edit mode.
         app.on_key(code(KeyCode::Tab));
-        let ed = app.meta_edit.as_ref().unwrap();
+        let ed = meta(&app);
         assert_eq!(ed.tab, EditTab::Online);
         assert_eq!(ed.lookup.name, "K");
         assert!(!ed.lookup.editing);
 
         // Typing here edits the Title field; the cover query keeps "ab".
         app.on_key(key('c'));
-        let ed = app.meta_edit.as_ref().unwrap();
+        let ed = meta(&app);
         assert_eq!(ed.lookup.name, "Kc");
         assert_eq!(ed.cover_search.q, "ab");
 
@@ -1770,7 +1786,7 @@ mod tests {
 
         let mut app = App::library();
         app.on_key(key('e'));
-        let ed = app.meta_edit.as_ref().unwrap();
+        let ed = meta(&app);
         // Title from the filename; author placeholder "Unknown" → empty; the
         // Cover query is the same clean title, not the ID-like metadata title.
         assert_eq!(ed.lookup.name, "Building Chatbots with Python");
@@ -1813,12 +1829,12 @@ mod tests {
         app.on_key(key('e'));
         // Simulate `x` filling the Details with real values.
         {
-            let ed = app.meta_edit.as_mut().unwrap();
+            let ed = meta_mut(&mut app);
             ed.values[0] = "Building Chatbots with Python".into();
             ed.values[1] = "Sumit Raj".into();
         }
         app.on_key(key('2')); // → Cover: re-seeds from the new Details
-        let ed = app.meta_edit.as_ref().unwrap();
+        let ed = meta(&app);
         assert_eq!(ed.cover_search.q, "Building Chatbots with Python Sumit Raj");
         assert_eq!(ed.lookup.name, "Building Chatbots with Python");
         assert_eq!(ed.lookup.author, "Sumit Raj");
@@ -1850,23 +1866,29 @@ mod tests {
         assert_eq!(app.library.marked.len(), 2);
 
         app.on_key(key('e')); // start the bulk edit
-        assert!(app.meta_edit.is_some());
+        assert!(matches!(app.overlay, Overlay::MetaEdit(_)));
         assert_eq!(app.edit_total, 2);
         assert_eq!(app.edit_queue.len(), 1, "one book still queued");
-        let first = app.meta_edit.as_ref().unwrap().path.clone();
+        let first = meta(&app).path.clone();
 
         // ^S → confirm → save and advance to the next book.
         app.on_key(ctrl('s'));
         app.on_key(key('y'));
-        assert!(app.meta_edit.is_some(), "advanced to the next book");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "advanced to the next book"
+        );
         assert_eq!(app.edit_queue.len(), 0);
-        let second = app.meta_edit.as_ref().unwrap().path.clone();
+        let second = meta(&app).path.clone();
         assert_ne!(first, second);
 
         // ^S on the last → confirm → editor closes, queue reset.
         app.on_key(ctrl('s'));
         app.on_key(key('y'));
-        assert!(app.meta_edit.is_none(), "editor closes after the last book");
+        assert!(
+            !matches!(app.overlay, Overlay::MetaEdit(_)),
+            "editor closes after the last book"
+        );
         assert_eq!(app.edit_total, 0);
     }
 
@@ -1890,12 +1912,15 @@ mod tests {
         app.on_key(key('A')); // select all
         assert_eq!(app.library.marked.len(), 2);
         app.on_key(key('e'));
-        assert!(app.meta_edit.is_some());
+        assert!(matches!(app.overlay, Overlay::MetaEdit(_)));
         app.on_key(code(KeyCode::Esc)); // skip first → next opens
-        assert!(app.meta_edit.is_some(), "Esc advanced, not closed");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "Esc advanced, not closed"
+        );
         assert_eq!(app.edit_queue.len(), 0);
         app.on_key(code(KeyCode::Esc)); // skip last → closes
-        assert!(app.meta_edit.is_none());
+        assert!(!matches!(app.overlay, Overlay::MetaEdit(_)));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

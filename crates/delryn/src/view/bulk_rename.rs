@@ -7,10 +7,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::app::{App, fill_template};
+use crate::app::{App, Overlay, fill_template};
 
 pub fn render(f: &mut Frame, app: &App) {
-    let Some(br) = &app.bulk_rename else {
+    let Overlay::BulkRename(br) = &app.overlay else {
         return;
     };
     let theme = app.config.theme;

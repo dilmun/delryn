@@ -5,7 +5,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::confirm::ConfirmAction;
-use super::{App, LibView, str_delete_before, str_insert};
+use super::{App, LibView, Overlay, str_delete_before, str_insert};
 
 /// Add-to-collection picker: toggle the focused book's membership in existing
 /// collections, or type a new collection name. The last row is "new".
@@ -59,12 +59,15 @@ impl App {
     }
 
     fn lib_coll_input_mut(&mut self) -> Option<&mut CollInput> {
-        self.lib_coll_edit.as_mut()
+        match &mut self.overlay {
+            Overlay::CollEdit(i) => Some(i),
+            _ => None,
+        }
     }
 
     /// Begin creating a new collection (inline at the "＋ New" sidebar row).
     pub(crate) fn lib_coll_begin_new(&mut self) {
-        self.lib_coll_edit = Some(CollInput {
+        self.overlay = Overlay::CollEdit(CollInput {
             buf: String::new(),
             cursor: 0,
             rename_from: None,
@@ -75,7 +78,7 @@ impl App {
     pub(crate) fn lib_coll_begin_rename(&mut self) {
         if let LibView::Shelf(name) = &self.library.view {
             let name = name.clone();
-            self.lib_coll_edit = Some(CollInput {
+            self.overlay = Overlay::CollEdit(CollInput {
                 cursor: name.chars().count(),
                 buf: name.clone(),
                 rename_from: Some(name),
@@ -85,7 +88,7 @@ impl App {
 
     /// Commit the inline edit: rename, create, or (on an emptied name) delete.
     pub(crate) fn lib_coll_commit(&mut self) {
-        let Some(input) = self.lib_coll_edit.take() else {
+        let Overlay::CollEdit(input) = std::mem::replace(&mut self.overlay, Overlay::None) else {
             return;
         };
         let name = input.buf.trim().to_string();
@@ -110,20 +113,20 @@ impl App {
     pub(crate) fn lib_coll_edit_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Esc => self.lib_coll_edit = None,
+            KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Enter => {
                 // Creating a new collection commits at once (nothing to undo);
                 // renaming or deleting an existing one asks for confirmation.
-                match self.lib_coll_edit.as_ref() {
-                    Some(i) if i.rename_from.is_none() => self.lib_coll_commit(),
-                    Some(i) => {
+                match &self.overlay {
+                    Overlay::CollEdit(i) if i.rename_from.is_none() => self.lib_coll_commit(),
+                    Overlay::CollEdit(i) => {
                         let q = match &i.rename_from {
                             Some(old) if i.buf.trim().is_empty() => format!("Delete “{old}”?"),
                             _ => format!("Rename to “{}”?", i.buf.trim()),
                         };
                         self.ask_confirm(&q, ConfirmAction::Collection);
                     }
-                    None => {}
+                    _ => {}
                 }
             }
             KeyCode::Left => {
@@ -188,7 +191,7 @@ impl App {
             return;
         }
         let shelves = self.shelf_membership(&targets);
-        self.shelf_picker = Some(ShelfPicker {
+        self.overlay = Overlay::ShelfPicker(ShelfPicker {
             targets,
             title,
             shelves,
@@ -213,7 +216,7 @@ impl App {
     }
 
     pub(crate) fn shelf_picker_key(&mut self, key: KeyEvent) {
-        let Some(p) = self.shelf_picker.as_mut() else {
+        let Overlay::ShelfPicker(p) = &mut self.overlay else {
             return;
         };
         // Creating a new collection: the row is a text input.
@@ -245,7 +248,7 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') => {
                 // After a bulk filing, the selection has been consumed.
                 let bulk = p.targets.len() > 1;
-                self.shelf_picker = None;
+                self.overlay = Overlay::None;
                 if bulk {
                     self.lib_exit_visual();
                 }
@@ -267,7 +270,7 @@ impl App {
     /// Toggle every target book's membership in the selected collection. A
     /// ticked row (all members) removes all; otherwise it adds all.
     fn toggle_picked_shelf(&mut self) {
-        let Some(p) = self.shelf_picker.as_mut() else {
+        let Overlay::ShelfPicker(p) = &mut self.overlay else {
             return;
         };
         let Some((name, member)) = p.shelves.get_mut(p.sel) else {
@@ -289,12 +292,12 @@ impl App {
     /// Rebuild the picker's shelf list after a new collection is created, then
     /// leave creating mode with the cursor on the new entry.
     fn refresh_shelf_picker(&mut self) {
-        let targets = match &self.shelf_picker {
-            Some(p) => p.targets.clone(),
-            None => return,
+        let targets = match &self.overlay {
+            Overlay::ShelfPicker(p) => p.targets.clone(),
+            _ => return,
         };
         let shelves = self.shelf_membership(&targets);
-        if let Some(p) = self.shelf_picker.as_mut() {
+        if let Overlay::ShelfPicker(p) = &mut self.overlay {
             p.shelves = shelves;
             p.new_name = None;
             p.sel = p.sel.min(p.new_row());

@@ -189,8 +189,7 @@ pub(crate) fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
     // Wider preview column (the list keeps the rest) so the cover renders large.
     let cols = Layout::horizontal([Constraint::Min(20), Constraint::Length(38)]).split(rows[1]);
-    {
-        let ed = app.meta_edit.as_ref().unwrap();
+    if let Overlay::MetaEdit(ed) = &app.overlay {
         search_bar(f, rows[0], ed, theme);
         cover_list(f, cols[0], ed, theme);
     }

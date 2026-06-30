@@ -5,7 +5,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, LibView, SortKey};
+use super::{App, LibView, Overlay, SortKey};
 use crate::store::LibrarySection;
 
 /// An executable palette action.
@@ -87,7 +87,7 @@ impl App {
                 Command::JumpShelf(name.clone()),
             ));
         }
-        self.palette = Some(Palette {
+        self.overlay = Overlay::Palette(Palette {
             query: String::new(),
             cursor: 0,
             sel: 0,
@@ -97,11 +97,11 @@ impl App {
 
     /// Keys while the palette is open.
     pub(crate) fn palette_key(&mut self, key: KeyEvent) {
-        let Some(p) = self.palette.as_mut() else {
+        let Overlay::Palette(p) = &mut self.overlay else {
             return;
         };
         match key.code {
-            KeyCode::Esc => self.palette = None,
+            KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Up => {
                 p.sel = p.sel.saturating_sub(1);
             }
@@ -126,7 +126,7 @@ impl App {
             }
             KeyCode::Enter => {
                 let cmd = p.filtered().get(p.sel).map(|it| it.cmd.clone());
-                self.palette = None;
+                self.overlay = Overlay::None;
                 if let Some(cmd) = cmd {
                     self.run_command(cmd);
                 }

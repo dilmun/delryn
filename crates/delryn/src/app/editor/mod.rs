@@ -15,8 +15,8 @@ use crate::online::{self, Candidate};
 
 use super::confirm::ConfirmAction;
 use super::{
-    App, COVER_DEBOUNCE, embed_cover_into_file, fmt_series_index, str_delete_at, str_delete_before,
-    str_insert,
+    App, COVER_DEBOUNCE, Overlay, embed_cover_into_file, fmt_series_index, str_delete_at,
+    str_delete_before, str_insert,
 };
 
 // The online metadata/cover lookup (search + background execution) lives in a
@@ -427,7 +427,7 @@ impl App {
             values.get(1).cloned().unwrap_or_default(),
         );
         let cursor = values[0].chars().count();
-        self.meta_edit = Some(MetaEdit {
+        self.overlay = Overlay::MetaEdit(MetaEdit {
             path,
             book_title,
             tab: EditTab::Details,
@@ -492,23 +492,28 @@ impl App {
     fn diff_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
-                if let Some(e) = self.meta_edit.as_mut() {
+                if let Overlay::MetaEdit(e) = &mut self.overlay {
                     e.diff = None;
                 }
             }
             KeyCode::Enter => self.apply_diff(),
             KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut()) {
+                if let Overlay::MetaEdit(e) = &mut self.overlay
+                    && let Some(d) = e.diff.as_mut()
+                {
                     d.row = d.row.saturating_sub(1);
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut()) {
+                if let Overlay::MetaEdit(e) = &mut self.overlay
+                    && let Some(d) = e.diff.as_mut()
+                {
                     d.row = (d.row + 1).min(d.rows.len().saturating_sub(1));
                 }
             }
             KeyCode::Char(' ') => {
-                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut())
+                if let Overlay::MetaEdit(e) = &mut self.overlay
+                    && let Some(d) = e.diff.as_mut()
                     && let Some(r) = d.rows.get_mut(d.row)
                     && !r.remote.is_empty()
                 {
@@ -517,7 +522,9 @@ impl App {
             }
             // Toggle all appliable rows (off if every one is already on).
             KeyCode::Char('a') => {
-                if let Some(d) = self.meta_edit.as_mut().and_then(|e| e.diff.as_mut()) {
+                if let Overlay::MetaEdit(e) = &mut self.overlay
+                    && let Some(d) = e.diff.as_mut()
+                {
                     let all_on = d
                         .rows
                         .iter()
@@ -533,26 +540,25 @@ impl App {
     }
 
     pub(crate) fn meta_edit_key(&mut self, key: KeyEvent) {
-        let (mode, tab) = match &self.meta_edit {
-            Some(e) => (e.mode, e.tab),
-            None => return,
+        let (mode, tab) = match &self.overlay {
+            Overlay::MetaEdit(e) => (e.mode, e.tab),
+            _ => return,
         };
         // The metadata-diff overlay captures input until applied or cancelled.
-        if self.meta_edit.as_ref().is_some_and(|e| e.diff.is_some()) {
+        if matches!(&self.overlay, Overlay::MetaEdit(e) if e.diff.is_some()) {
             self.diff_key(key);
             return;
         }
         // Lookup tab: editing one of its seed fields takes all keystrokes.
-        if tab == EditTab::Online && self.meta_edit.as_ref().is_some_and(|e| e.lookup.editing) {
+        if tab == EditTab::Online
+            && matches!(&self.overlay, Overlay::MetaEdit(e) if e.lookup.editing)
+        {
             self.lookup_edit_key(key);
             return;
         }
         // Cover tab: editing the free-text search bar.
         if tab == EditTab::Cover
-            && self
-                .meta_edit
-                .as_ref()
-                .is_some_and(|e| e.cover_search.editing)
+            && matches!(&self.overlay, Overlay::MetaEdit(e) if e.cover_search.editing)
         {
             self.online_query_key(key);
             return;
@@ -568,12 +574,12 @@ impl App {
             // In a multi-book queue, Esc skips to the next; otherwise it closes.
             KeyCode::Esc => {
                 if !self.advance_edit_queue() {
-                    self.meta_edit = None;
+                    self.overlay = Overlay::None;
                 }
             }
             // ^S asks for confirmation first (unless a field is invalid).
             KeyCode::Char('s') if ctrl => {
-                if !self.meta_edit.as_ref().is_some_and(MetaEdit::has_invalid) {
+                if !matches!(&self.overlay, Overlay::MetaEdit(e) if e.has_invalid()) {
                     self.ask_confirm("Save changes?", ConfirmAction::SaveMeta);
                 }
             }
@@ -595,7 +601,7 @@ impl App {
     }
 
     fn meta_edit_switch_tab(&mut self, delta: isize) {
-        let Some(ed) = self.meta_edit.as_ref() else {
+        let Overlay::MetaEdit(ed) = &self.overlay else {
             return;
         };
         let i = EditTab::ALL.iter().position(|t| *t == ed.tab).unwrap_or(0) as isize;
@@ -606,7 +612,7 @@ impl App {
     /// Switch to `tab` (shared by Tab/Shift-Tab and the 1–4 number keys),
     /// running the per-tab on-enter work.
     pub(crate) fn meta_edit_goto_tab(&mut self, tab: EditTab) {
-        if let Some(ed) = self.meta_edit.as_mut() {
+        if let Overlay::MetaEdit(ed) = &mut self.overlay {
             ed.tab = tab;
             ed.mode = EditMode::Nav;
         }
@@ -617,19 +623,19 @@ impl App {
         // Entering the Cover tab runs the cover search once, so candidates appear
         // without a manual search (uses the book's ISBN + the seeded query).
         if tab == EditTab::Cover
-            && self
-                .meta_edit
-                .as_ref()
-                .is_some_and(|e| e.cover_hits.is_empty() && !e.cover_search.fetching)
+            && matches!(
+                &self.overlay,
+                Overlay::MetaEdit(e) if e.cover_hits.is_empty() && !e.cover_search.fetching
+            )
         {
             self.online_search();
         }
         // Likewise the Lookup tab auto-searches once from its seeded fields.
         if tab == EditTab::Online
-            && self
-                .meta_edit
-                .as_ref()
-                .is_some_and(|e| e.online.results.is_empty() && !e.online.fetching)
+            && matches!(
+                &self.overlay,
+                Overlay::MetaEdit(e) if e.online.results.is_empty() && !e.online.fetching
+            )
         {
             self.online_search();
         }
@@ -642,7 +648,7 @@ impl App {
             self.details_extract_from_content();
             return;
         }
-        let Some(ed) = self.meta_edit.as_mut() else {
+        let Overlay::MetaEdit(ed) = &mut self.overlay else {
             return;
         };
         let last = META_FIELDS.len() - 1;
@@ -670,11 +676,12 @@ impl App {
     /// author, year, publisher, ISBN) — for converted files with junk metadata
     /// that aren't findable online. Best-effort; the user reviews, then ^S.
     fn details_extract_from_content(&mut self) {
-        let Some(path) = self.meta_edit.as_ref().map(|e| e.path.clone()) else {
+        let Overlay::MetaEdit(ed) = &self.overlay else {
             return;
         };
+        let path = ed.path.clone();
         let m = epub::extract_book_metadata(&path);
-        let Some(ed) = self.meta_edit.as_mut() else {
+        let Overlay::MetaEdit(ed) = &mut self.overlay else {
             return;
         };
         let mut filled = Vec::new();
@@ -714,7 +721,7 @@ impl App {
     /// Edit mode: type into the focused field (Details or Online query).
     fn meta_edit_typing(&mut self, key: KeyEvent) {
         {
-            let Some(ed) = self.meta_edit.as_mut() else {
+            let Overlay::MetaEdit(ed) = &mut self.overlay else {
                 return;
             };
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -762,10 +769,10 @@ impl App {
     /// Persist the edited fields + any fetched cover (year/index parsed
     /// leniently; blank → unset). Collections are applied live, not here.
     pub(crate) fn save_meta_edit(&mut self) {
-        if self.meta_edit.as_ref().is_some_and(MetaEdit::has_invalid) {
+        if matches!(&self.overlay, Overlay::MetaEdit(e) if e.has_invalid()) {
             return;
         }
-        let Some(ed) = self.meta_edit.take() else {
+        let Overlay::MetaEdit(ed) = std::mem::replace(&mut self.overlay, Overlay::None) else {
             return;
         };
         let v = |i: usize| ed.values.get(i).map(|s| s.trim()).unwrap_or("");

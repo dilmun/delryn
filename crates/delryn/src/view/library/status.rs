@@ -4,7 +4,7 @@ use super::*;
 
 pub(crate) fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     // The tag prompt owns the row while active, showing the typed buffer.
-    if let Some(t) = &app.tag_edit {
+    if let Overlay::TagEdit(t) = &app.overlay {
         let label = if t.multi {
             format!("Tag {} books", t.targets.len())
         } else {

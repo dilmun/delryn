@@ -4,7 +4,7 @@
 use crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use super::{App, EditMode, EditTab, Focus, LOOKUP_FIELDS, LibPane, Mode};
+use super::{App, EditMode, EditTab, Focus, LOOKUP_FIELDS, LibPane, Mode, Overlay};
 
 /// Rects from the last render, used for mouse hit-testing.
 #[derive(Default)]
@@ -90,17 +90,17 @@ impl App {
         if self.pending_confirm.is_some() {
             return;
         }
-        if self.meta_edit.is_some() {
+        if matches!(self.overlay, Overlay::MetaEdit(_)) {
             self.editor_click(col, row);
             return;
         }
         // Other overlays are keyboard-driven (no hit rects); swallow the click.
-        if self.settings.is_some()
-            || self.shelf_picker.is_some()
-            || self.bulk_rename.is_some()
-            || self.annot.is_some()
-            || self.image_view.is_some()
-            || self.prompt.is_some()
+        if matches!(self.overlay, Overlay::Settings(_))
+            || matches!(self.overlay, Overlay::ShelfPicker(_))
+            || matches!(self.overlay, Overlay::BulkRename(_))
+            || matches!(self.overlay, Overlay::Annot(_))
+            || matches!(self.overlay, Overlay::ImageView(_))
+            || matches!(self.overlay, Overlay::Prompt(_))
         {
             return;
         }
@@ -137,7 +137,7 @@ impl App {
             .iter()
             .find(|(_, _, r)| r.contains(pt))
         {
-            if let Some(e) = self.meta_edit.as_mut() {
+            if let Overlay::MetaEdit(e) = &mut self.overlay {
                 match e.tab {
                     EditTab::Online => {
                         // A Lookup seed field: focus + edit it, caret at the click.
@@ -162,7 +162,9 @@ impl App {
             .iter()
             .find(|(_, r)| r.contains(pt))
             .map(|&(idx, _)| idx);
-        if let (Some(idx), Some(e)) = (hit, self.meta_edit.as_mut()) {
+        if let Some(idx) = hit
+            && let Overlay::MetaEdit(e) = &mut self.overlay
+        {
             if e.tab == EditTab::Online {
                 // Move the combined focus onto the clicked result row.
                 e.lookup.editing = false;

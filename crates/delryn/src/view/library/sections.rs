@@ -96,23 +96,21 @@ pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme
         Span::styled(format!(" {}", "─".repeat(fill)), rule),
     ])));
     // Which collection (if any) is being renamed in place.
-    let renaming = app
-        .lib_coll_edit
-        .as_ref()
-        .and_then(|e| e.rename_from.as_deref());
-    let creating = app
-        .lib_coll_edit
-        .as_ref()
-        .filter(|e| e.rename_from.is_none());
+    let renaming = match &app.overlay {
+        Overlay::CollEdit(e) => e.rename_from.as_deref(),
+        _ => None,
+    };
+    let creating = match &app.overlay {
+        Overlay::CollEdit(e) if e.rename_from.is_none() => Some(e),
+        _ => None,
+    };
     // Value width inside the pane: drop the L/R border (2) and the "▸ " marker (2).
     let field_w = area.width.saturating_sub(4).max(2) as usize;
     for (name, count) in &app.library.shelves {
         if Some(name.as_str()) == renaming {
-            items.push(coll_edit_item(
-                app.lib_coll_edit.as_ref().unwrap(),
-                field_w,
-                theme,
-            ));
+            if let Overlay::CollEdit(ci) = &app.overlay {
+                items.push(coll_edit_item(ci, field_w, theme));
+            }
         } else {
             let here = !on_new && matches!(&app.library.view, LibView::Shelf(cur) if cur == name);
             items.push(section_item(

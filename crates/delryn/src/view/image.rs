@@ -10,7 +10,7 @@ use ratatui::widgets::{
 };
 use ratatui_image::{FontSize, Resize, StatefulImage};
 
-use crate::app::App;
+use crate::app::{App, Overlay};
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
@@ -23,11 +23,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // reader (chapter titles).
     let App {
         picker,
-        image_view,
+        overlay,
         reader,
         ..
     } = app;
-    let (Some(picker), Some(viewer)) = (picker.as_ref(), image_view.as_mut()) else {
+    let (Some(picker), Overlay::ImageView(viewer)) = (picker.as_ref(), overlay) else {
         return;
     };
     let reader = reader.as_ref();
