@@ -37,21 +37,24 @@ is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
 
 ### R-B — P1 duplication & maintainability hazards
 
-- [ ] **`Config` single source of truth** — drop the 5-site `ConfigFile` mirror
-      (silent persist-drift hazard) for one serde-derived struct; split
-      `config.rs` (768) into `config/{mod,reader,library,status,enums}`.
-- [ ] **Shared `TextInput` widget** (`ui/text_input.rs`) — fold the 13 duplicated
-      backspace/insert sites + 6 bespoke input structs into one.
-- [ ] **Parsing detection tokens → `ToolchainProfile` data** — consolidate the
-      tokens scattered across `code.rs`/`math.rs`/`dom.rs` + the triplicated icon
-      lists, delivering `docs/parsing.md`'s "one data entry" promise.
-- [ ] **Lift EPUB container plumbing → format-neutral `container.rs`**
-      (path-normalize, resource-resolve, mime, find-body, href→index,
-      descendant-text x5). Pays dup debt + pre-stages the future MOBI backend.
+- [x] **`Config` single source of truth** ✅ — dropped the 5-site `ConfigFile`
+      mirror for one serde-derived `Config` (custom theme/enum (de)serializers;
+      on-disk TOML diff-verified byte-identical); split `config.rs` (768) into
+      `config/{mod,enums}`. Commit 3029d63.
+- [~] **Shared `TextInput` widget** (`ui/text_input.rs`) ✅ widget + 5 inputs
+      (Tag/Coll/BulkRename/Palette/Prompt) migrated (commits f027696, cb074af).
+      **Carryover:** the metadata-editor multi-field forms (`editor/{lookup,mod}.rs`,
+      an N-fields-one-cursor shape) still use the `str_*` helpers — migrate to
+      finish removing them.
+- [x] **Parsing detection tokens → `ToolchainProfile` data** ✅ — every category
+      consolidated into the `html/toolchain` registry; icon lists de-triplicated.
+      Plus format-neutral `container.rs` (descendant-text x5 + find-body + resource
+      resolver + token matcher unified — also the future-MOBI seam). Commit 82109f4.
+- [x] **Versioned store migrations** ✅ — `migrate()` gated by `user_version`
+      (steady-state open runs zero ALTERs); idempotent `legacy_column_backfill`;
+      2 tests. Commit a419191. *(shared `query_rows` helper → R-D.)*
 - [ ] **`dispatch::apply` (264) → sub-dispatchers + one `persist_after` chokepoint**
-      (centralize the 10 inline `store.*`/`config.save()` calls).
-- [ ] **Versioned store migrations** (`store/migrate.rs`, `user_version`) +
-      shared `query_rows` helper (removes ~9 duplicated query loops).
+      (centralize the 10 inline `store.*`/`config.save()` calls). *Carryover.*
 
 ### R-C — Theming system + status bar (full)
 
