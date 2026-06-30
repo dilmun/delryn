@@ -16,7 +16,7 @@ use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
 use crate::media::ImageBuilder;
 use crate::search::Matcher;
-use crate::theme::Theme;
+use crate::theme::{Role, Theme};
 
 /// Cells reserved in the left margin for the bookmark gutter: the icon plus a
 /// one-cell gap so it never butts against the text.
@@ -81,7 +81,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     render_content(f, content_area, reader, config, theme, images);
     if reader.search.searching {
-        let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
+        let style = theme.style(Role::StatusBar);
         let prompt = format!("[{}] /{}", reader.search.mode.label(), reader.search.input);
         f.render_widget(Paragraph::new(Line::raw(prompt)).style(style), status);
     } else if show_status {
@@ -93,13 +93,8 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.muted))
-        .title(Span::styled(
-            " Contents ",
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
+        .border_style(theme.style(Role::Border))
+        .title(Span::styled(" Contents ", theme.style(Role::Title)))
         .style(theme.text_style());
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -117,10 +112,7 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
     let vis = reader.outline_visible();
     let off = reader.sidebar_offset.min(vis.len().saturating_sub(1));
     let height = inner.height as usize;
-    let hilite = Style::default()
-        .fg(theme.on_accent())
-        .bg(theme.accent)
-        .add_modifier(Modifier::BOLD);
+    let hilite = theme.style(Role::Selection);
 
     let lines: Vec<Line> = vis
         .iter()
@@ -143,7 +135,7 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
             let style = if Some(row) == marked {
                 hilite
             } else {
-                let mut s = Style::default().fg(theme.fg);
+                let mut s = theme.style(Role::Body);
                 if let Some(bg) = theme.bg {
                     s = s.bg(bg);
                 }
@@ -173,9 +165,7 @@ fn render_content(
 
     let header = Paragraph::new(Line::from(Span::styled(
         reader.chapter_title(),
-        Style::default()
-            .fg(theme.heading)
-            .add_modifier(Modifier::BOLD),
+        theme.style(Role::Heading),
     )))
     .alignment(Alignment::Center)
     .style(theme.text_style());
@@ -301,9 +291,7 @@ fn draw_gutter(f: &mut Frame, text_area: Rect, reader: &Reader, top: usize, them
         width: 1,
         height: text_area.height,
     };
-    let ribbon = Style::default()
-        .fg(theme.accent)
-        .add_modifier(Modifier::BOLD);
+    let ribbon = theme.style(Role::AccentStrong);
     let lines: Vec<Line> = (0..text_area.height as usize)
         .map(|row| {
             if reader.is_bookmark_line(top + row) {
@@ -575,12 +563,9 @@ fn to_ratatui(
         }
     }
 
-    let hilite = Style::default()
-        .bg(theme.accent)
-        .fg(theme.on_accent())
-        .add_modifier(Modifier::BOLD);
+    let hilite = theme.style(Role::Match);
     // The link cursor stands out from search via reverse video (theme-agnostic).
-    let cursor_style = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let cursor_style = theme.style(Role::Cursor);
     let (cs, ce) = cursor.unwrap_or((usize::MAX, usize::MAX));
 
     let mut spans: Vec<Span> = Vec::new();
@@ -610,10 +595,21 @@ fn to_ratatui(
     Line::from(spans)
 }
 
-/// Map a run + line-kind to a themed ratatui style. Syntax-highlighted runs
-/// keep their explicit colour; semantic roles use the theme palette.
+/// Map a run + line-kind to a themed ratatui style. The line kind picks a
+/// semantic [`Role`] (which carries its emphasis); run-level flags add bold/
+/// italic and override the foreground (syntax highlight, inline code, links).
 fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
-    let mut style = Style::default();
+    // The line kind's base role — Heading/Quote/Math carry their own emphasis.
+    let role = match kind {
+        LineKind::Heading(_) => Role::Heading,
+        LineKind::Quote => Role::Quote,
+        LineKind::Math => Role::Math, // display equations, accented
+        // Rules, the code gutter / unhighlighted code, and footnotes read muted.
+        LineKind::Rule | LineKind::Code(_) | LineKind::Footnote(_) => Role::Muted,
+        LineKind::Table { .. } | LineKind::Body | LineKind::Image(_) => Role::Body,
+    };
+    let mut style = theme.style(role);
+
     // Code blocks and alternating (shaded) table rows sit on a faint "surface"
     // panel; everything else on the page.
     let bg = match kind {
@@ -623,31 +619,22 @@ fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
     if let Some(bg) = bg {
         style = style.bg(bg);
     }
-    if run.style.bold || matches!(kind, LineKind::Heading(_)) {
+    if run.style.bold {
         style = style.add_modifier(Modifier::BOLD);
     }
-    if run.style.italic || matches!(kind, LineKind::Quote) {
+    if run.style.italic {
         style = style.add_modifier(Modifier::ITALIC);
     }
 
-    let mut fg = match kind {
-        LineKind::Heading(_) => theme.heading,
-        LineKind::Quote => theme.quote,
-        LineKind::Rule => theme.muted,
-        LineKind::Code(_) => theme.muted, // gutter / unhighlighted
-        LineKind::Footnote(_) => theme.muted, // notes set apart from the body
-        LineKind::Math => theme.heading,  // display equations, accented
-        LineKind::Table { .. } => theme.fg,
-        LineKind::Body | LineKind::Image(_) => theme.fg,
-    };
+    // Foreground overrides, lowest to highest precedence.
     if let Some((r, g, b)) = run.fg {
-        fg = Color::Rgb(r, g, b); // syntax highlight
+        style = style.fg(Color::Rgb(r, g, b)); // syntax highlight (the one literal)
     } else if run.style.code && matches!(kind, LineKind::Body) {
-        fg = theme.code_fg; // inline code
+        style = style.fg(theme.color(Role::Code)); // inline code
     }
     if run.style.link {
         // Links read as their theme colour — no underline (it's noisy in a TUI).
-        fg = theme.link;
+        style = style.fg(theme.color(Role::Link));
     }
-    style.fg(fg)
+    style
 }

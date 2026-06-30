@@ -29,7 +29,10 @@ pub const TERMINAL: Theme = Theme {
     // italic already set quotes apart, so it only needs to be legible.
     quote: Color::Rgb(0x9d, 0xa5, 0xb4),
     link: Color::Rgb(88, 160, 255),
-    muted: Color::DarkGray,
+    // Concrete slate, not DarkGray/ANSI: secondary text on this role (sidebar
+    // counts, inactive tabs, section sub-headers, rules) was barely legible on a
+    // dark terminal — the same reason `quote` left DarkGray above.
+    muted: Color::Rgb(0x86, 0x8e, 0x9a),
     marker: Color::Rgb(229, 192, 123),
     code_fg: Color::Rgb(152, 195, 121),
     status_fg: Color::Black,

@@ -10,7 +10,11 @@ use super::*;
 fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     let s = ed.search();
     let focused = s.editing;
-    let lab = if focused { theme.accent } else { theme.muted };
+    let lab = if focused {
+        theme.color(Role::Accent)
+    } else {
+        theme.color(Role::Muted)
+    };
     let w = area.width.saturating_sub(10) as usize;
     let mut spans = vec![Span::styled(
         " search   ",
@@ -19,14 +23,11 @@ fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     if focused {
         spans.extend(crate::view::field_spans(s.q.text(), s.q.cursor(), w, theme));
     } else if s.q.is_empty() {
-        spans.push(Span::styled(
-            "type to search…",
-            Style::default().fg(theme.muted),
-        ));
+        spans.push(Span::styled("type to search…", theme.style(Role::Muted)));
     } else {
         spans.push(Span::styled(
             crate::view::truncate(s.q.text(), w),
-            Style::default().fg(theme.fg),
+            theme.style(Role::Body),
         ));
     }
     let line = Rect { height: 1, ..area };
@@ -66,10 +67,10 @@ fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
         let style = if selected {
             Style::default()
                 .fg(bg)
-                .bg(theme.accent)
+                .bg(theme.color(Role::Accent))
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(theme.fg)
+            theme.style(Role::Body)
         };
         lines.push(Line::from(Span::styled(
             format!(
@@ -94,10 +95,10 @@ fn cover_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
         let style = if selected {
             Style::default()
                 .fg(bg)
-                .bg(theme.accent)
+                .bg(theme.color(Role::Accent))
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(theme.fg)
+            theme.style(Role::Body)
         };
         lines.push(Line::from(Span::styled(
             format!(
@@ -127,22 +128,12 @@ pub(crate) fn render_online(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: The
     let query_line = Line::from(vec![
         Span::styled(
             format!("   {:<LABEL_W$}", "query"),
-            Style::default()
-                .fg(theme.muted)
-                .add_modifier(Modifier::BOLD),
+            theme.style(Role::Muted).add_modifier(Modifier::BOLD),
         ),
         if q.is_empty() {
-            Span::styled(
-                "— fill the fields below",
-                Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
-            )
+            Span::styled("— fill the fields below", theme.style(Role::Hint))
         } else {
-            Span::styled(
-                q,
-                Style::default()
-                    .fg(theme.heading)
-                    .add_modifier(Modifier::BOLD),
-            )
+            Span::styled(q, theme.style(Role::Heading))
         },
     ]);
     f.render_widget(Paragraph::new(query_line), rows[0]);
@@ -174,7 +165,7 @@ pub(crate) fn render_online(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: The
     f.render_widget(
         Paragraph::new(Line::styled(
             "─".repeat(rows[3].width as usize),
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+            theme.style(Role::Hint),
         )),
         rows[3],
     );
@@ -195,7 +186,7 @@ pub(crate) fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     }
     let pane = cols[1];
     let font = crate::view::image_font(app);
-    let border = Style::default().fg(theme.muted);
+    let border = theme.style(Role::Muted);
     if let Some(cover) = app.edit_cover.as_mut() {
         // Fit the cover into the pane (less a 1-cell border), then draw a rounded
         // box that hugs exactly that image — no letterbox, no empty slack.
@@ -231,7 +222,7 @@ pub(crate) fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Them
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(border)
-            .title(Span::styled(" Preview ", Style::default().fg(theme.muted)))
+            .title(Span::styled(" Preview ", theme.style(Role::Muted)))
             .style(theme.text_style());
         let pinner = block.inner(pane);
         f.render_widget(block, pane);
@@ -240,9 +231,6 @@ pub(crate) fn render_cover(f: &mut Frame, area: Rect, app: &mut App, theme: Them
         } else {
             "\n  no cover"
         };
-        f.render_widget(
-            Paragraph::new(msg).style(Style::default().fg(theme.muted)),
-            pinner,
-        );
+        f.render_widget(Paragraph::new(msg).style(theme.style(Role::Muted)), pinner);
     }
 }

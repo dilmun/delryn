@@ -4,12 +4,12 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::segment::{Segment, StatusBar, Zone};
-use crate::theme::Theme;
+use crate::theme::{Role, Theme};
 
 /// Width of the gauge segment, in cells.
 pub(super) const GAUGE_WIDTH: usize = 14;
@@ -28,9 +28,7 @@ pub fn render(f: &mut Frame, area: Rect, bar: &StatusBar, theme: Theme) {
     if total == 0 {
         return;
     }
-    let sep_style = Style::default()
-        .fg(theme.status_fg)
-        .add_modifier(Modifier::DIM);
+    let sep_style = theme.style(Role::StatusDim);
 
     // Drop the lowest-priority segments until the kept set fits the row.
     let mut kept: Vec<&Segment> = bar.segments.iter().collect();
@@ -78,7 +76,7 @@ pub fn render(f: &mut Frame, area: Rect, bar: &StatusBar, theme: Theme) {
     spans.push(Span::raw(" ".to_string()));
 
     f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.status_bg)),
+        Paragraph::new(Line::from(spans)).style(theme.style(Role::StatusBar)),
         area,
     );
 }

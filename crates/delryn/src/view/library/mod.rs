@@ -15,7 +15,7 @@ use ratatui_image::{Resize, StatefulImage};
 use crate::app::{App, LibPane, LibView, Overlay, SortKey};
 use crate::config::{Config, LibLayout};
 use crate::store::{BookRow, LibrarySection};
-use crate::theme::Theme;
+use crate::theme::{Role, Theme};
 
 /// Smallest book-list width to keep when sizing the side panes (they collapse to
 /// preserve it on a narrow window) — generous so panes drop before the list
@@ -78,8 +78,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
 /// A bordered pane block whose border + title turn accent when the pane is
 /// focused, else muted.
 fn pane_block(title: &str, focused: bool, theme: Theme) -> Block<'static> {
-    let border = if focused { theme.accent } else { theme.muted };
-    let mut title_style = Style::default().fg(if focused { theme.accent } else { theme.muted });
+    let border = if focused {
+        theme.color(Role::BorderFocus)
+    } else {
+        theme.color(Role::Border)
+    };
+    let mut title_style = Style::default().fg(if focused {
+        theme.color(Role::Accent)
+    } else {
+        theme.color(Role::Muted)
+    });
     if focused {
         title_style = title_style.add_modifier(Modifier::BOLD);
     }

@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListSt
 use ratatui_image::{Resize, StatefulImage};
 
 use crate::app::{App, EditMode, EditTab, LOOKUP_FIELDS, META_FIELDS, MetaEdit, Overlay};
-use crate::theme::Theme;
+use crate::theme::{Role, Theme};
 
 /// Left column width for field labels.
 const LABEL_W: usize = 14;
@@ -54,14 +54,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.accent))
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().fg(theme.fg).bg(bg));
+        .border_style(theme.style(Role::BorderFocus))
+        .title(Span::styled(title, theme.style(Role::Title)))
+        .style(theme.style(Role::Body).bg(bg));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -79,7 +74,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     f.render_widget(
         Paragraph::new(Line::styled(
             "─".repeat(inner.width as usize),
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+            theme.style(Role::Hint),
         )),
         rows[1],
     );
@@ -134,18 +129,16 @@ fn render_diff(f: &mut Frame, app: &App, theme: Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.accent))
+        .border_style(theme.style(Role::BorderFocus))
         .title(Span::styled(
             " Apply remote metadata ",
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
+            theme.style(Role::Title),
         ))
         .title_bottom(Line::from(Span::styled(
             " space toggle · a all · ⏎ apply ticked · Esc cancel ",
-            Style::default().fg(theme.muted),
+            theme.style(Role::Muted),
         )))
-        .style(Style::default().fg(theme.fg).bg(bg));
+        .style(theme.style(Role::Body).bg(bg));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -168,34 +161,30 @@ fn render_diff(f: &mut Frame, app: &App, theme: Theme) {
             Line::from(vec![
                 Span::styled(
                     format!("{tick} "),
-                    Style::default().fg(if r.apply { theme.accent } else { theme.muted }),
+                    Style::default().fg(if r.apply {
+                        theme.color(Role::Accent)
+                    } else {
+                        theme.color(Role::Muted)
+                    }),
                 ),
                 Span::styled(
                     format!("{:field_w$}", META_FIELDS[r.field]),
-                    Style::default().fg(theme.heading),
+                    Style::default().fg(theme.color(Role::Heading)),
                 ),
-                Span::styled(
-                    format!("{current:col$}  "),
-                    Style::default().fg(theme.muted),
-                ),
+                Span::styled(format!("{current:col$}  "), theme.style(Role::Muted)),
                 Span::styled(
                     remote,
                     Style::default().fg(if r.remote.is_empty() {
-                        theme.muted
+                        theme.color(Role::Muted)
                     } else {
-                        theme.fg
+                        theme.color(Role::Body)
                     }),
                 ),
             ])
             .into()
         })
         .collect();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(theme.accent)
-            .fg(theme.on_accent())
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(theme.style(Role::Selection));
     let mut st = ListState::default();
     st.select(Some(diff.row.min(diff.rows.len().saturating_sub(1))));
     f.render_stateful_widget(list, inner, &mut st);
@@ -211,7 +200,7 @@ fn footer_line(ed: &MetaEdit, theme: Theme) -> Line<'static> {
         return Line::styled(
             format!("  {status}"),
             Style::default()
-                .fg(theme.heading)
+                .fg(theme.color(Role::Heading))
                 .add_modifier(Modifier::ITALIC),
         );
     }
@@ -220,10 +209,7 @@ fn footer_line(ed: &MetaEdit, theme: Theme) -> Line<'static> {
         EditTab::Cover => "  type or / to search for a cover",
         EditTab::Details => "",
     };
-    Line::styled(
-        hint,
-        Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
-    )
+    Line::styled(hint, theme.style(Role::Hint))
 }
 
 fn render_tabs(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Color) {
@@ -240,17 +226,14 @@ fn render_tabs(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Color
                 format!(" {num} {} ", t.label()),
                 Style::default()
                     .fg(bg)
-                    .bg(theme.accent)
+                    .bg(theme.color(Role::Accent))
                     .add_modifier(Modifier::BOLD),
             ));
         } else {
-            spans.push(Span::styled(
-                format!(" {num} "),
-                Style::default().fg(theme.accent),
-            ));
+            spans.push(Span::styled(format!(" {num} "), theme.style(Role::Accent)));
             spans.push(Span::styled(
                 format!("{} ", t.label()),
-                Style::default().fg(theme.muted),
+                theme.style(Role::Muted),
             ));
         }
     }
@@ -274,9 +257,7 @@ fn render_details(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
         }
         lines.push(Line::styled(
             format!(" {section}"),
-            Style::default()
-                .fg(theme.muted)
-                .add_modifier(Modifier::BOLD | Modifier::DIM),
+            theme.style(Role::Hint).add_modifier(Modifier::BOLD),
         ));
         for &i in *fields {
             let focused = i == ed.row;
@@ -322,22 +303,20 @@ fn form_field(
     theme: Theme,
 ) -> Line<'static> {
     let (marker, marker_col) = if st.focused {
-        ("▸", theme.accent)
+        ("▸", theme.color(Role::Accent))
     } else if st.changed {
-        ("•", theme.marker)
+        ("•", theme.color(Role::Marker))
     } else {
-        (" ", theme.muted)
+        (" ", theme.color(Role::Muted))
     };
     let label_style = if st.invalid {
-        Style::default()
-            .fg(theme.danger)
-            .add_modifier(Modifier::BOLD)
+        theme.style(Role::Danger).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
             .fg(if st.focused {
-                theme.accent
+                theme.color(Role::Accent)
             } else {
-                theme.muted
+                theme.color(Role::Muted)
             })
             .add_modifier(Modifier::BOLD)
     };
@@ -348,10 +327,14 @@ fn form_field(
     if st.editing {
         spans.extend(super::field_spans(value, st.cursor, value_w, theme));
     } else {
-        let c = if st.invalid { theme.danger } else { theme.fg };
+        let c = if st.invalid {
+            theme.color(Role::Danger)
+        } else {
+            theme.color(Role::Body)
+        };
         let shown = super::truncate(value, value_w);
         if shown.is_empty() {
-            spans.push(Span::styled("—", Style::default().fg(theme.muted)));
+            spans.push(Span::styled("—", theme.style(Role::Muted)));
         } else {
             let vs = if st.focused {
                 Style::default().fg(c).add_modifier(Modifier::BOLD)
@@ -361,7 +344,7 @@ fn form_field(
             spans.push(Span::styled(shown, vs));
         }
         if st.focused {
-            spans.push(Span::styled("  ↵", Style::default().fg(theme.accent)));
+            spans.push(Span::styled("  ↵", theme.style(Role::Accent)));
         }
     }
     Line::from(spans)

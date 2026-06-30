@@ -5,8 +5,9 @@
 use ratatui::style::Color;
 use serde::Deserialize;
 
-use super::Theme;
 use super::palette::{Palette, parse_hex};
+use super::{Theme, rgb_of};
+use crate::color::luma;
 
 /// A parsed theme file: a display `name`, an optional `syntect` code theme, and
 /// the colour `[palette]`.
@@ -41,7 +42,24 @@ pub fn load_user_themes() -> Vec<Theme> {
         .filter_map(|p| std::fs::read_to_string(p).ok())
         .filter_map(|text| toml::from_str::<ThemeFile>(&text).ok())
         .filter_map(theme_from)
+        .filter(is_legible)
         .collect()
+}
+
+/// Minimum luma separation (0..=255) between body text and the page for a theme
+/// to count as legible. Below this, prose is effectively invisible, so the theme
+/// is dropped rather than loaded (best-effort, like a malformed file). Generous
+/// on purpose — the built-ins clear it by >100; it only catches a broken palette
+/// where text ≈ background.
+const MIN_BODY_CONTRAST: f32 = 40.0;
+
+/// The load-time contrast gate: whether a theme's body text reads against its
+/// page. Terminal-relative colours can't be measured, so they're trusted.
+fn is_legible(t: &Theme) -> bool {
+    let (Some(fg), Some(bg)) = (rgb_of(t.fg), t.bg.and_then(rgb_of)) else {
+        return true;
+    };
+    (luma(fg) - luma(bg)).abs() >= MIN_BODY_CONTRAST
 }
 
 /// Map a parsed theme file onto the flat [`Theme`], deriving any omitted roles
@@ -125,5 +143,32 @@ mod tests {
             text = "#fff""##;
         let tf: ThemeFile = toml::from_str(bad_bg).unwrap();
         assert!(theme_from(tf).is_none());
+    }
+
+    fn theme_of(toml: &str) -> Theme {
+        theme_from(toml::from_str(toml).unwrap()).expect("valid theme")
+    }
+
+    #[test]
+    fn drops_a_theme_whose_text_vanishes_into_the_page() {
+        // text ≈ background — unreadable, so the loader rejects it.
+        let t = theme_of(
+            r##"name = "ghost"
+            [palette]
+            bg = "#202020"
+            text = "#222222""##,
+        );
+        assert!(!is_legible(&t));
+    }
+
+    #[test]
+    fn keeps_a_normal_contrast_theme() {
+        let t = theme_of(
+            r##"name = "ok"
+            [palette]
+            bg = "#101010"
+            text = "#e0e0e0""##,
+        );
+        assert!(is_legible(&t));
     }
 }
