@@ -365,6 +365,50 @@ pub fn render_for_theme(img: &DynamicImage, tint: Ink, mode: ImageMode) -> Dynam
     }
 }
 
+/// Theme a full PDF *page* raster to the active reader theme — the whole-page
+/// counterpart to [`render_for_theme`], for the direct-Kitty page path.
+///
+/// A PDF page is an opaque scan/render carrying its own (usually white)
+/// background, so left alone it ignores the reader theme: a glaring white sheet
+/// on a dark page. This adapts it the way the inline pipeline adapts figures, and
+/// returns the re-encoded PNG — or `None` when the page should be shown exactly as
+/// rendered, so the caller transmits the original bytes with no needless re-encode:
+///
+/// - **Faithful**: never themed — the original page (the print look).
+/// - **Auto** (default): map a predominantly-light *neutral* page (text or a line
+///   diagram) into the theme — white→paper, ink→text colour — so the reading
+///   surface tracks the theme (a dark theme yields a dark page). A *colourful*
+///   light page (a photo or a magazine spread) is left as rendered so it isn't
+///   lightness-inverted into a negative.
+/// - **InvertBackgrounds**: as Auto but also themes colourful light pages — the
+///   "force everything dark" choice, accepting the photo-inversion trade.
+///
+/// A predominantly-dark page (e.g. a slide deck on black) is already theme-
+/// friendly, so it is always left as rendered.
+pub fn theme_page_png(raw: &[u8], policy: RenderPolicy) -> Option<Vec<u8>> {
+    if policy.mode == ImageMode::Faithful {
+        return None; // original page bytes — no decode/re-encode
+    }
+    let img = decode(raw)?;
+    let rgba = img.to_rgba8();
+    if !is_predominantly_light(&rgba) {
+        return None; // a dark page needs no theming
+    }
+    // Auto protects colourful (photo) pages from inversion; Invert forces them.
+    if policy.mode == ImageMode::Auto && opaque_chroma(&rgba) >= INK_CHROMA_MAX {
+        return None;
+    }
+    encode_png(&theme_invert(&img, policy.tint))
+}
+
+/// PNG-encode a decoded image. `None` on the (practically impossible) encode error.
+fn encode_png(img: &DynamicImage) -> Option<Vec<u8>> {
+    let mut png = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(png)
+}
+
 /// A decoded cover plus its source pixel dimensions, so the renderer can size a
 /// render rect to the cover's aspect ratio (filling it with no letterbox).
 pub struct CoverImage {
@@ -807,6 +851,82 @@ impl ImageBuilder {
     }
 }
 
+// ── Off-thread full-page theming (PDF) ───────────────────────────────────────
+//
+// The direct-Kitty page path (see `app::page_deck`) transmits a page's PNG as-is.
+// To theme a page we'd have to decode + per-pixel transform + re-encode it — tens
+// of ms — which on the main thread would reintroduce the per-turn stall the deck
+// was built to avoid. So pages are themed on a background thread, keyed by
+// (section, policy): a theme/mode change is a cache miss that re-themes from the
+// already-rasterized page rather than re-rendering it through PDFium.
+
+/// Identifies one themed page: the page (section) and the theme policy it was
+/// themed for, so re-theming on a theme/mode change is a plain cache miss.
+pub type PageKey = (usize, RenderPolicy);
+
+/// A request to theme one page's raster off the main thread.
+struct PageThemeReq {
+    key: PageKey,
+    raw: Arc<Vec<u8>>,
+}
+
+/// A finished page theming: the PNG bytes the deck should transmit — the themed
+/// page, or the original raster when no theming applied (Faithful / dark / photo).
+pub struct ThemedPage {
+    pub key: PageKey,
+    pub bytes: Arc<Vec<u8>>,
+}
+
+/// Themes full PDF pages on a background thread, so a page turn never blocks the
+/// render loop on the per-pixel theme transform + PNG re-encode. The direct-Kitty
+/// counterpart to [`ImageBuilder`] (which serves inline figures).
+pub struct PageThemer {
+    req_tx: Sender<PageThemeReq>,
+    res_rx: Receiver<ThemedPage>,
+}
+
+impl PageThemer {
+    pub fn new() -> PageThemer {
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<PageThemeReq>();
+        let (res_tx, res_rx) = std::sync::mpsc::channel::<ThemedPage>();
+        thread::spawn(move || {
+            while let Ok(req) = req_rx.recv() {
+                // Fall back to the raw raster when no theming applies, so the page
+                // is still shown (Faithful / dark / photo page) rather than lost.
+                let bytes = theme_page_png(&req.raw, req.key.1)
+                    .map(Arc::new)
+                    .unwrap_or(req.raw);
+                if res_tx
+                    .send(ThemedPage {
+                        key: req.key,
+                        bytes,
+                    })
+                    .is_err()
+                {
+                    break; // reader dropped
+                }
+            }
+        });
+        PageThemer { req_tx, res_rx }
+    }
+
+    /// Queue page `key.0`'s raster for theming under `key.1`'s policy.
+    pub fn request(&self, key: PageKey, raw: Arc<Vec<u8>>) {
+        let _ = self.req_tx.send(PageThemeReq { key, raw });
+    }
+
+    /// Collect finished themings (non-blocking).
+    pub fn poll(&self) -> impl Iterator<Item = ThemedPage> + '_ {
+        self.res_rx.try_iter()
+    }
+}
+
+impl Default for PageThemer {
+    fn default() -> PageThemer {
+        PageThemer::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1142,6 +1262,83 @@ mod tests {
         )
         .to_rgba8();
         assert_eq!(out.get_pixel(10, 10).0, photo.get_pixel(10, 10).0);
+    }
+
+    // ── Full-page (PDF) theming ──────────────────────────────────────────────
+
+    /// A page PNG with the given background and a centred ink/colour rect, for the
+    /// page-theming tests.
+    fn page_png(bg: Rgba<u8>, rect: (u32, u32, u32, u32), mark: Rgba<u8>) -> Vec<u8> {
+        let img = fill(40, 40, bg, rect, mark);
+        encode_png(&img).expect("encode test page")
+    }
+
+    fn dark_policy(mode: ImageMode) -> RenderPolicy {
+        RenderPolicy { tint: DARK, mode }
+    }
+
+    #[test]
+    fn faithful_page_is_never_themed() {
+        // Faithful keeps the original page bytes — signalled by `None`.
+        let png = page_png(
+            Rgba([255, 255, 255, 255]),
+            (10, 10, 30, 30),
+            Rgba([0, 0, 0, 255]),
+        );
+        assert!(theme_page_png(&png, dark_policy(ImageMode::Faithful)).is_none());
+    }
+
+    #[test]
+    fn auto_themes_a_light_neutral_page() {
+        // A white text page → mapped into the theme: white→paper, ink→text colour.
+        let png = page_png(
+            Rgba([255, 255, 255, 255]),
+            (16, 16, 24, 24),
+            Rgba([0, 0, 0, 255]),
+        );
+        let themed = theme_page_png(&png, dark_policy(ImageMode::Auto)).expect("themed");
+        let out = decode(&themed).unwrap().to_rgba8();
+        assert_eq!(
+            out.get_pixel(0, 0).0[..3],
+            DARK.paper,
+            "white page → theme paper"
+        );
+        assert_eq!(
+            out.get_pixel(20, 20).0[..3],
+            DARK.ink,
+            "black ink → theme ink"
+        );
+    }
+
+    #[test]
+    fn auto_keeps_a_colourful_light_page_but_invert_themes_it() {
+        // A predominantly-light but colourful page (a photo / magazine spread):
+        // Auto leaves it as rendered (no negative); Invert forces it into the theme.
+        let png = page_png(
+            Rgba([255, 255, 255, 255]),
+            (5, 5, 35, 35),
+            Rgba([220, 30, 30, 255]),
+        );
+        assert!(
+            theme_page_png(&png, dark_policy(ImageMode::Auto)).is_none(),
+            "Auto protects a colourful page"
+        );
+        assert!(
+            theme_page_png(&png, dark_policy(ImageMode::InvertBackgrounds)).is_some(),
+            "Invert forces a colourful page"
+        );
+    }
+
+    #[test]
+    fn a_dark_page_is_left_as_rendered() {
+        // A dark-background page is already theme-friendly → shown as rendered.
+        let png = page_png(
+            Rgba([20, 20, 20, 255]),
+            (16, 16, 24, 24),
+            Rgba([200, 200, 200, 255]),
+        );
+        assert!(theme_page_png(&png, dark_policy(ImageMode::Auto)).is_none());
+        assert!(theme_page_png(&png, dark_policy(ImageMode::InvertBackgrounds)).is_none());
     }
 
     /// The file transmit carries only the (base64) path — a tiny escape, not the
