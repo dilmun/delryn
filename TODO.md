@@ -63,17 +63,22 @@ is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
 
 ### R-C — Theming system + status bar (full)
 
-- [ ] **Theming: Palette + Roles, file-configurable.** `theme.rs` (415) →
-      `theme/{mod,palette,role,builtin,load,image}`. ~16-swatch `Palette` +
-      semantic `Role` tokens (every surface on a role; adding a role = one map
-      entry), `~/.config/delryn/themes/*.toml` user themes (built-ins same format),
-      contrast validation, shared `luma()`. Docs: `docs/theming.md`.
-- [ ] **Status bar: segment model, modern + useful + configurable + unified.**
-      `view/status/{mod,segment,producers,layout}` — segments in Left/Center/Right
-      zones (mode pill, position, slim progress bar, chapter, format, search
-      count, message, overlay legend), per-segment `status.*` roles, priority
-      overflow, `[status]` config. **Deletes** `view/reader.rs::render_status` +
-      the old `legend(app)` cascade. Docs: `docs/status.md`.
+- [~] **Theming: Palette + Roles, file-configurable.** `theme.rs` (415) →
+      `theme/{mod,builtin,palette,load}`. ✅ **User themes shipped** (330294e):
+      runtime registry = built-ins + `~/.config/delryn/themes/*.toml`; a `[palette]`
+      of hex swatches maps onto the flat `Theme` with derivations; `Theme` stays
+      `Copy` so views are untouched. **Remaining:** the semantic `Role` enum +
+      `theme.style(Role)` so every surface is on a role (migrate views off the flat
+      fields), `theme/role.rs` default map, optional `[roles]` overrides, contrast
+      validation, shared `luma()` (R-D dedup). Docs: `docs/theming.md`.
+- [~] **Status bar: segment model, modern + unified.** ✅ (9eb5276)
+      `view/status/{mod,segment,render,producers}` — Left/Center/Right zoned
+      segments with drop-priority overflow; one renderer; reader/library/overlay
+      producers. **Deleted** `view/reader.rs::render_status`, `view/library/status.rs`,
+      and the old `legend` cascade. Selection pill + consistent state-Left/
+      hints-Right. **Remaining:** the `[status]` config block (reorder/toggle
+      segments per zone) + per-segment `status.*` roles once the Role system lands.
+      Docs: `docs/status.md`.
 
 ### R-D — P2 polish
 
