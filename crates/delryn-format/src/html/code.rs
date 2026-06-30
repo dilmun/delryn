@@ -33,12 +33,19 @@ pub(super) fn has_multiline_code(node: NodeRef<Node>) -> bool {
 }
 
 /// Code lines from a styled code container. When the source wraps each line in a
-/// `<div class="FixedLine">` (Springer/Apress), one line per such div; otherwise
-/// fall back to splitting the concatenated text on newlines.
+/// per-line element (`code_line_classes`, e.g. Springer/Apress `FixedLine`), one
+/// line per such element; otherwise fall back to splitting the concatenated text
+/// on newlines.
 pub(super) fn code_lines(node: NodeRef<Node>) -> Vec<String> {
+    let is_line = |e: &scraper::node::Element| {
+        profile()
+            .code_line_classes
+            .iter()
+            .any(|t| class_has_token(e, t))
+    };
     let fixed: Vec<String> = node
         .descendants()
-        .filter(|n| matches!(n.value(), Node::Element(e) if class_has_token(e, "FixedLine")))
+        .filter(|n| matches!(n.value(), Node::Element(e) if is_line(e)))
         .map(code_text)
         .collect();
     let raw = if fixed.is_empty() {
@@ -68,15 +75,7 @@ pub(super) fn code_lines(node: NodeRef<Node>) -> Vec<String> {
 /// Concatenate descendant text, turning `<br/>` into a newline — so code laid out
 /// with `<br/>` line breaks (instead of `<pre>`) keeps its line structure.
 pub(super) fn code_text(node: NodeRef<Node>) -> String {
-    let mut s = String::new();
-    for d in node.descendants() {
-        match d.value() {
-            Node::Text(t) => s.push_str(&t.text),
-            Node::Element(e) if e.name() == "br" => s.push('\n'),
-            _ => {}
-        }
-    }
-    s
+    crate::container::descendant_text(node, true, None)
 }
 
 /// Some books bake line numbers into the code text ("1 import std;"). When most

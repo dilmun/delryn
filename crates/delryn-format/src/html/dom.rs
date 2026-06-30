@@ -1,14 +1,20 @@
 //! Shared low-level DOM helpers: token matching over `class` / `epub:type` /
-//! `role`, used by the toolchain detector and the semantic classifier.
+//! `role`, used by the toolchain detector and the semantic classifier. The token
+//! vocabularies these read (marker chrome, ToC levels) are data in the toolchain
+//! registry; the string-level token matcher is `container::has_token`.
 
 use scraper::node::Element;
+
+use super::toolchain::{
+    MARKER_CHROME_TOKENS, PAGE_NUMBER_KEYWORD, TOC_LEVEL0_TOKENS, TOC_SECTION_PREFIX,
+};
+use crate::container::has_token;
 
 /// Whether `attr` carries `want` as one of its space-separated tokens
 /// (case-insensitive). `epub:type`, `role`, and `class` are all token lists, so
 /// always match tokens — never whole-string compare.
 pub(super) fn attr_has_token(e: &Element, attr: &str, want: &str) -> bool {
-    e.attr(attr)
-        .is_some_and(|v| v.split_whitespace().any(|t| t.eq_ignore_ascii_case(want)))
+    e.attr(attr).is_some_and(|v| has_token(v, want))
 }
 
 /// Whether the element's `class` carries `want` as a token (case-insensitive).
@@ -23,13 +29,9 @@ pub(super) fn class_has_token(e: &Element, want: &str) -> bool {
 pub(super) fn is_marker_chrome(e: &Element) -> bool {
     e.attr("class").is_some_and(|c| {
         let lc = c.to_ascii_lowercase();
-        lc.contains("pagenumber")
-            || c.split([' ', '-', '_']).any(|t| {
-                matches!(
-                    t.to_ascii_lowercase().as_str(),
-                    "itemnumber" | "footnotenumber" | "footnotemark"
-                )
-            })
+        lc.contains(PAGE_NUMBER_KEYWORD)
+            || c.split([' ', '-', '_'])
+                .any(|t| MARKER_CHROME_TOKENS.contains(&t.to_ascii_lowercase().as_str()))
     })
 }
 
@@ -40,10 +42,10 @@ pub(super) fn is_marker_chrome(e: &Element) -> bool {
 pub(super) fn toc_level(e: &Element) -> Option<u8> {
     e.attr("class")?.split_whitespace().find_map(|c| {
         let c = c.to_ascii_lowercase();
-        if matches!(c.as_str(), "tocchapter" | "tocpart" | "tocfrontmatter") {
+        if TOC_LEVEL0_TOKENS.contains(&c.as_str()) {
             Some(0)
         } else {
-            c.strip_prefix("tocsection")
+            c.strip_prefix(TOC_SECTION_PREFIX)
                 .and_then(|n| n.parse::<u8>().ok())
         }
     })

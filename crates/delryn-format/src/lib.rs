@@ -3,6 +3,7 @@
 //! Both EPUB (now) and PDF (later) implement [`Document`]; no layer above this
 //! one knows which format is open. See `DESIGN.md` §3.
 
+mod container;
 pub mod epub;
 pub mod epub_write;
 pub mod format;
