@@ -12,7 +12,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::app::{App, EditMode, EditTab, MetaEdit};
+use crate::app::{App, EditMode, EditTab, MetaEdit, Overlay};
 use crate::theme::Theme;
 
 /// Render `keys` (left, dimmed legend) and `state` (right, emphasised) into a
@@ -46,7 +46,7 @@ pub fn bar(f: &mut Frame, area: Rect, theme: Theme, state: &str, keys: &str) {
 /// If an overlay/popup is open, draw its (context, shortcuts) over the bottom
 /// row. The note-entry prompt owns the row itself, so it's deliberately skipped.
 pub fn overlay(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    if app.prompt.is_some() {
+    if matches!(app.overlay, Overlay::Prompt(_)) {
         return;
     }
     if let Some((state, keys)) = legend(app) {
@@ -61,13 +61,13 @@ fn legend(app: &App) -> Option<(String, String)> {
     if let Some(c) = &app.pending_confirm {
         return Some((c.question.clone(), "y/⏎ confirm · n/Esc cancel".into()));
     }
-    if app.settings.is_some() {
+    if matches!(app.overlay, Overlay::Settings(_)) {
         return Some((
             "Settings".into(),
             "Tab section · ↑↓ move · ←→ change · Esc close".into(),
         ));
     }
-    if let Some(p) = &app.shelf_picker {
+    if let Overlay::ShelfPicker(p) = &app.overlay {
         let keys = if p.new_name.is_some() {
             "type a name · ⏎ create · Esc back"
         } else {
@@ -75,7 +75,7 @@ fn legend(app: &App) -> Option<(String, String)> {
         };
         return Some(("Collections".into(), keys.into()));
     }
-    if app.annot.is_some() {
+    if matches!(app.overlay, Overlay::Annot(_)) {
         return Some((
             "Bookmarks".into(),
             "↑↓ move · ⏎ jump · r name · f folder · d delete · Esc close".into(),
@@ -83,10 +83,10 @@ fn legend(app: &App) -> Option<(String, String)> {
     }
     // The image viewer is fullscreen and shows its own shortcut footer, so it
     // doesn't use the shared status-row legend.
-    if let Some(ed) = &app.meta_edit {
+    if let Overlay::MetaEdit(ed) = &app.overlay {
         return Some(editor_legend(ed));
     }
-    if let Some(br) = &app.bulk_rename {
+    if let Overlay::BulkRename(br) = &app.overlay {
         let n = br.targets.len();
         let books = format!("book{}", if n == 1 { "" } else { "s" });
         return Some((
@@ -94,7 +94,7 @@ fn legend(app: &App) -> Option<(String, String)> {
             "type template · ^F full screen · ^U clear · ^S rename · Esc cancel".into(),
         ));
     }
-    if let Some(e) = &app.lib_coll_edit {
+    if let Overlay::CollEdit(e) = &app.overlay {
         return Some(if e.rename_from.is_some() {
             (
                 "Rename collection".into(),

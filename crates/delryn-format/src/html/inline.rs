@@ -25,35 +25,6 @@ pub(super) fn img_src(e: &scraper::node::Element) -> Option<String> {
         .map(|(_, v)| v.to_string())
 }
 
-fn is_icon_src(src: &str) -> bool {
-    let s = src.to_lowercase();
-    profile().icon_src_keywords.iter().any(|k| s.contains(k))
-}
-
-/// Map a small inline UI icon (by its `alt`/`src`) to a themed, single-width
-/// Unicode glyph — so list checks and admonition markers (Tip / Warning /
-/// Remember / Technical Stuff …) render as a symbol rather than `[tip]` text.
-/// Text-presentation code points only (no colour emoji). `None` for non-icons.
-pub(super) fn icon_glyph(alt: &str, src: &str) -> Option<char> {
-    let key = format!("{} {}", alt, src.rsplit('/').next().unwrap_or(src)).to_ascii_lowercase();
-    let has = |w: &str| key.contains(w);
-    Some(if has("check") || has("tick") {
-        '✓'
-    } else if has("warning") || has("caution") || has("danger") {
-        '△'
-    } else if has("tip") || has("hint") {
-        '✲'
-    } else if has("remember") {
-        '⚑'
-    } else if has("technical") || has("geek") || has("nerd") {
-        '※'
-    } else if has("note") || has("info") {
-        'ⓘ'
-    } else {
-        return None;
-    })
-}
-
 pub(super) fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
     match node.value() {
         Node::Text(t) => out.push(Span {

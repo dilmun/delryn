@@ -10,13 +10,13 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph,
 };
 
-use crate::app::{App, Prompt, PromptKind};
+use crate::app::{App, Overlay, Prompt, PromptKind};
 
 pub fn render(f: &mut Frame, app: &App) {
-    if let Some(prompt) = &app.prompt {
+    if let Overlay::Prompt(prompt) = &app.overlay {
         render_prompt(f, app, prompt);
     }
-    if app.annot.is_some() {
+    if matches!(app.overlay, Overlay::Annot(_)) {
         render_overlay(f, app);
     }
 }
@@ -37,13 +37,13 @@ fn render_prompt(f: &mut Frame, app: &App, prompt: &Prompt) {
         PromptKind::Folder(_) => "folder",
     };
     f.render_widget(
-        Paragraph::new(Line::raw(format!("{label}: {}▏", prompt.buffer))).style(style),
+        Paragraph::new(Line::raw(format!("{label}: {}▏", prompt.input.text()))).style(style),
         row,
     );
 }
 
 fn render_overlay(f: &mut Frame, app: &App) {
-    let Some(state) = &app.annot else {
+    let Overlay::Annot(state) = &app.overlay else {
         return;
     };
     let theme = app.config.theme;

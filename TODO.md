@@ -4,6 +4,93 @@ Living backlog. See `ARCHITECTURE.md` for the target structure and `DESIGN.md`
 for the original spec. Phases are sequential; within a phase, items ship in
 small green commits (build + `cargo test` + `cargo clippy` clean each step).
 
+## Phase R — Redesign & violation cleanup (ACTIVE) — autonomous
+
+Outcome of the 2026-06-29 full-project audit (build is green: clippy 0-warning,
+219 tests, fmt clean, layer purity + error handling verified — debt is
+concentrated, not spread). Worked in **strict audit-severity order**: P0
+god-objects/files → P1 duplication → theming + status bar → P2 polish. Each item
+is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
+
+### R-A — P0 god-objects & god-files
+
+- [x] **`App` god-object (67 fields) → composed state.** ✅ Extracted
+      `LibraryState` (30 `lib_*` fields → `app/state/library.rs`), `Session`
+      (store/book_path/session_start → `app/state/session.rs`), and collapsed the
+      13 mutually-exclusive overlay `Option`s into one `enum Overlay`
+      (`app/state/overlay.rs`) — "two overlays open at once" is now
+      unrepresentable. `pending_confirm`/`dup_preview` stay separate by design.
+      App: **67 → 24 fields**. Commits f86446d / 7d39aee / c71482d.
+- [x] **`Reader` god-object (80 fields) → sub-state structs.** ✅ Carved into
+      `app/reader/state/`: `WrapKey` (10 `wrap_*` shadows → one `==`-compared
+      key), `ImageState`, `PageThemeState`, `NavState`, `SearchState`,
+      `SectionCache` (loader channels + thread). Reader: **80 → 41** coordinator
+      fields. Commit b132430.
+- [x] **`delryn-media/src/lib.rs` (1358) → module tree:** ✅ `decode`, `recolor`,
+      `sizing`, `cover`, `kitty`, `builder`, `page`; lib.rs 27 lines, flat API
+      preserved. Commit fa91936. *(shared `luma()` → R-D.)*
+- [x] **`delryn-render/src/layout.rs` (1527) → `layout/` tree:** ✅ `blocks`,
+      `spans`, `table`, `code`; `wrap_blocks` 287→98 (thin dispatch), `wrap_spans`
+      split flatten/fill/emit; `delryn_render::layout::*` path preserved. Commit
+      5c6e6ce. *(Kept the dir named `layout` not `wrap` — preserves the public
+      path with zero shim; the engine IS the layout engine.)*
+
+### R-B — P1 duplication & maintainability hazards
+
+- [x] **`Config` single source of truth** ✅ — dropped the 5-site `ConfigFile`
+      mirror for one serde-derived `Config` (custom theme/enum (de)serializers;
+      on-disk TOML diff-verified byte-identical); split `config.rs` (768) into
+      `config/{mod,enums}`. Commit 3029d63.
+- [x] **Shared `TextInput` widget** (`ui/text_input.rs`) ✅ — widget + every
+      single-line input migrated: Tag/Coll/BulkRename/Palette/Prompt (f027696,
+      cb074af) and the metadata-editor forms — Details values, the Lookup seed
+      fields, and the Online/Cover queries — collapsing 3 duplicated typing
+      handlers to `handle_key`. `str_insert`/`str_delete_before`/`str_delete_at`
+      and the cursor-clamp helpers are **deleted**. Commit 6e3b77b.
+- [x] **Parsing detection tokens → `ToolchainProfile` data** ✅ — every category
+      consolidated into the `html/toolchain` registry; icon lists de-triplicated.
+      Plus format-neutral `container.rs` (descendant-text x5 + find-body + resource
+      resolver + token matcher unified — also the future-MOBI seam). Commit 82109f4.
+- [x] **Versioned store migrations** ✅ — `migrate()` gated by `user_version`
+      (steady-state open runs zero ALTERs); idempotent `legacy_column_backfill`;
+      2 tests. Commit a419191. *(shared `query_rows` helper → R-D.)*
+- [x] **`dispatch::apply` (264) → flat router** ✅ — the persist chokepoint
+      already existed (the tail `save || section-changed` block); extracted the
+      self-contained reader-navigation cluster into a free `apply_nav` (264→223),
+      so `apply` reads as a flat action router. Commit 3961fa8. *(Further
+      group-splitting of config toggles is optional chip-away — a flat router is
+      inherently one arm per action.)*
+
+### R-C — Theming system + status bar (full)
+
+- [ ] **Theming: Palette + Roles, file-configurable.** `theme.rs` (415) →
+      `theme/{mod,palette,role,builtin,load,image}`. ~16-swatch `Palette` +
+      semantic `Role` tokens (every surface on a role; adding a role = one map
+      entry), `~/.config/delryn/themes/*.toml` user themes (built-ins same format),
+      contrast validation, shared `luma()`. Docs: `docs/theming.md`.
+- [ ] **Status bar: segment model, modern + useful + configurable + unified.**
+      `view/status/{mod,segment,producers,layout}` — segments in Left/Center/Right
+      zones (mode pill, position, slim progress bar, chapter, format, search
+      count, message, overlay legend), per-segment `status.*` roles, priority
+      overflow, `[status]` config. **Deletes** `view/reader.rs::render_status` +
+      the old `legend(app)` cascade. Docs: `docs/status.md`.
+
+### R-D — P2 polish
+
+- [ ] View-layer state-writeback (`lib_sort_cycle` ×3, `lib_grid_cols`,
+      `lib_visible_rows`) → returned `LayoutMetrics`, idempotent render.
+- [ ] Image-math perf: reuse classification RGBA in `render_for_theme`; fold
+      `chroma`+`rgb_to_hsl` one-pass in `theme_invert`; `SYMBOLS` → `LazyLock`.
+- [ ] Document the 3 `#[allow(too_many_arguments)]` in `reader/images.rs` (or
+      bundle the geometry args into a struct to remove them).
+- [ ] Misc: `online` cover-url builders ×3; config enum `next/prev/label` macro;
+      `export.rs` JSON via `serde_json`.
+
+🔮 **Future placeholders** (post-redesign; tree seams reserved now): MOBI/AZW3
+(`delryn-format/src/mobi/`, Phase 5 — NOT first release), graphical math
+(`delryn-render/src/math/`, Phase 6), layout composition engine
+(`delryn/src/view/layout/`, Phase 7).
+
 ## Phase 0 — Foundation (`refactor/workspace`) — ✅ complete
 
 Migrate to a Cargo workspace and clear every dev docs violation. Done: workspace

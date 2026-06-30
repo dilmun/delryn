@@ -95,16 +95,10 @@ fn leaf_block_lines(xhtml: &str) -> Vec<String> {
 
 /// An element's text, with each `<br>` starting a new line.
 fn block_text_lines(el: scraper::ElementRef) -> Vec<String> {
-    use scraper::Node;
-    let mut lines = vec![String::new()];
-    for node in el.descendants() {
-        match node.value() {
-            Node::Text(t) => lines.last_mut().unwrap().push_str(t),
-            Node::Element(e) if e.name() == "br" => lines.push(String::new()),
-            _ => {}
-        }
-    }
-    lines
+    crate::container::descendant_text(*el, true, None)
+        .split('\n')
+        .map(str::to_string)
+        .collect()
 }
 
 /// Parse a title-page-like section into (title, subtitle, author). A title page

@@ -50,21 +50,6 @@ pub(super) fn aside_icon_src(node: NodeRef<Node>) -> Option<String> {
     })
 }
 
-/// Map an aside icon's `src` filename to a callout kind (info/pencil/question and
-/// anything unrecognised fall back to Note).
-pub(super) fn aside_kind_from_icon(src: &str) -> CalloutKind {
-    let s = src.to_lowercase();
-    if s.contains("warning") || s.contains("caution") || s.contains("danger") {
-        CalloutKind::Warning
-    } else if s.contains("key") || s.contains("important") {
-        CalloutKind::Important
-    } else if s.contains("tip") || s.contains("hint") {
-        CalloutKind::Tip
-    } else {
-        CalloutKind::Note
-    }
-}
-
 /// Table cells that carry text (i.e. the content cell, not the icon-only cell).
 pub(super) fn content_cells(node: NodeRef<Node>) -> Vec<NodeRef<Node>> {
     node.descendants()

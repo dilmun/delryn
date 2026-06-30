@@ -40,13 +40,9 @@ fn part(node: NodeRef<Node>) -> String {
 }
 
 fn token_text(node: NodeRef<Node>) -> String {
-    let mut s = String::new();
-    for d in node.descendants() {
-        if let Node::Text(t) = d.value() {
-            s.push_str(&t.text);
-        }
-    }
-    s.trim().to_string()
+    crate::container::descendant_text(node, false, None)
+        .trim()
+        .to_string()
 }
 
 /// Render `arg` as a subscript — Unicode where every char maps, else a clean

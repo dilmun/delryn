@@ -12,7 +12,7 @@ use crate::config::LibLayout;
 use crate::media;
 use crate::store::LibrarySection;
 
-use super::{App, COVER_DEBOUNCE, Mode, load_cover_bytes};
+use super::{App, COVER_DEBOUNCE, Mode, Overlay, load_cover_bytes};
 
 /// The active library view: one of the fixed smart sections, or a user
 /// collection (shelf). Tab cycles through the sections then the collections.
@@ -83,16 +83,16 @@ impl SortKey {
 
 impl App {
     pub(crate) fn refresh_library(&mut self) {
-        let Some(store) = &self.store else {
-            self.lib_books.clear();
-            self.lib_shelves.clear();
+        let Some(store) = &self.session.store else {
+            self.library.books.clear();
+            self.library.shelves.clear();
             return;
         };
         // Computed while the immutable `store` borrow is live, assigned after.
         let shelves = store.all_shelves();
         // If the active collection just lost its last book it no longer exists;
         // fall back to All so the view and sidebar stay consistent.
-        let view = match &self.lib_view {
+        let view = match &self.library.view {
             LibView::Shelf(name) if !shelves.iter().any(|(n, _)| n == name) => {
                 LibView::Section(LibrarySection::All)
             }
@@ -110,7 +110,7 @@ impl App {
         let links = store.dup_links();
         let dup_paths =
             crate::library::dedup::duplicate_paths_excluding(&all_books, &links, &dismissed);
-        let books = if self.lib_filter.trim().is_empty() {
+        let books = if self.library.filter.trim().is_empty() {
             match &view {
                 LibView::Section(LibrarySection::Duplicates) => all_books
                     .into_iter()
@@ -124,12 +124,13 @@ impl App {
             // structured query (`author:knuth year>=1990`, flags, AND/OR/NOT)
             // is evaluated field-by-field; a plain query keeps the title/author/
             // series/publisher substring + full-text body match.
-            let q = crate::library::query::parse(&self.lib_filter);
+            let q = crate::library::query::parse(&self.library.filter);
             if q.is_structured() {
                 all_books.into_iter().filter(|b| q.matches(b)).collect()
             } else {
-                let f = self.lib_filter.to_lowercase();
-                let fts: HashSet<String> = store.fts_paths(&self.lib_filter).into_iter().collect();
+                let f = self.library.filter.to_lowercase();
+                let fts: HashSet<String> =
+                    store.fts_paths(&self.library.filter).into_iter().collect();
                 all_books
                     .into_iter()
                     .filter(|b| {
@@ -152,29 +153,29 @@ impl App {
                 s => store.count_books(*s),
             })
             .collect();
-        self.lib_shelves = shelves;
-        self.lib_section_counts = section_counts;
-        self.lib_view = view;
-        self.lib_books = books;
+        self.library.shelves = shelves;
+        self.library.section_counts = section_counts;
+        self.library.view = view;
+        self.library.books = books;
         // A width-agnostic sort cycle (all enabled columns) so `s` works before
         // the first render and in the grid; the book table refines it per width.
         let compact = self.config.library_layout == LibLayout::Compact;
-        self.lib_sort_cycle = crate::view::library::sort_cycle(&self.config, compact, u16::MAX);
+        self.library.sort_cycle = crate::view::library::sort_cycle(&self.config, compact, u16::MAX);
         self.sort_books();
-        if self.lib_sel >= self.lib_books.len() {
-            self.lib_sel = self.lib_books.len().saturating_sub(1);
+        if self.library.sel >= self.library.books.len() {
+            self.library.sel = self.library.books.len().saturating_sub(1);
         }
     }
 
     /// Apply the active sort key/direction to the loaded book list. `Default`
     /// keeps the section's own order.
     fn sort_books(&mut self) {
-        if self.lib_sort == SortKey::Default {
+        if self.library.sort == SortKey::Default {
             return;
         }
-        let key = self.lib_sort;
-        let desc = self.lib_sort_desc;
-        self.lib_books.sort_by(|a, b| {
+        let key = self.library.sort;
+        let desc = self.library.sort_desc;
+        self.library.books.sort_by(|a, b| {
             let ord = match key {
                 SortKey::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
                 SortKey::Author => a.author.to_lowercase().cmp(&b.author.to_lowercase()),
@@ -211,22 +212,22 @@ impl App {
     /// arrow always lands on a visible header (`lib_sort_cycle` is set at render).
     fn cycle_sort(&mut self) {
         self.lib_exit_visual();
-        let cycle = &self.lib_sort_cycle;
+        let cycle = &self.library.sort_cycle;
         if cycle.is_empty() {
             return;
         }
-        match cycle.iter().position(|&k| k == self.lib_sort) {
+        match cycle.iter().position(|&k| k == self.library.sort) {
             // On a visible column: descending advances to the next (wrapping);
             // ascending flips the same column to descending.
-            Some(i) if self.lib_sort_desc => {
-                self.lib_sort = cycle[(i + 1) % cycle.len()];
-                self.lib_sort_desc = false;
+            Some(i) if self.library.sort_desc => {
+                self.library.sort = cycle[(i + 1) % cycle.len()];
+                self.library.sort_desc = false;
             }
-            Some(_) => self.lib_sort_desc = true,
+            Some(_) => self.library.sort_desc = true,
             // Coming from Default or a non-visible key: start at the first column.
             None => {
-                self.lib_sort = cycle[0];
-                self.lib_sort_desc = false;
+                self.library.sort = cycle[0];
+                self.library.sort_desc = false;
             }
         }
         self.refresh_library();
@@ -235,27 +236,27 @@ impl App {
     /// Flip the sort direction (`S`) without changing the key.
     fn toggle_sort_dir(&mut self) {
         self.lib_exit_visual();
-        self.lib_sort_desc = !self.lib_sort_desc;
+        self.library.sort_desc = !self.library.sort_desc;
         self.refresh_library();
     }
 
     pub(crate) fn lib_move(&mut self, delta: isize) {
-        if self.lib_books.is_empty() {
+        if self.library.books.is_empty() {
             return;
         }
         if delta > 0 {
-            self.lib_nav_down = true;
+            self.library.nav_down = true;
         } else if delta < 0 {
-            self.lib_nav_down = false;
+            self.library.nav_down = false;
         }
-        let last = self.lib_books.len() as isize - 1;
-        self.lib_sel = (self.lib_sel as isize + delta).clamp(0, last) as usize;
+        let last = self.library.books.len() as isize - 1;
+        self.library.sel = (self.library.sel as isize + delta).clamp(0, last) as usize;
     }
 
     /// Move the focused list/sidebar cursor by `rows` rows (signed) — for
     /// half/full-page vim navigation. In the grid a row is `cols` cells wide.
     fn lib_page_move(&mut self, rows: isize) {
-        match self.lib_pane {
+        match self.library.pane {
             LibPane::Sidebar => self.lib_side_move(rows),
             LibPane::List => self.lib_move(rows * self.grid_step()),
             LibPane::Detail => {}
@@ -263,7 +264,10 @@ impl App {
     }
 
     fn lib_favorite(&mut self) {
-        if let (Some(store), Some(book)) = (&self.store, self.lib_books.get(self.lib_sel)) {
+        if let (Some(store), Some(book)) = (
+            &self.session.store,
+            self.library.books.get(self.library.sel),
+        ) {
             store.set_favorite(&book.path, !book.favorite);
         }
         self.refresh_library();
@@ -271,13 +275,17 @@ impl App {
 
     /// Export the current (filtered) book list to a CSV in the config dir.
     pub(crate) fn export_library(&mut self) {
-        let csv = crate::library::export::to_csv(&self.lib_books);
+        let csv = crate::library::export::to_csv(&self.library.books);
         let path = crate::paths::config_dir().join("delryn-export.csv");
-        self.lib_flash = Some(match std::fs::write(&path, csv) {
+        self.library.flash = Some(match std::fs::write(&path, csv) {
             Ok(()) => format!(
                 "exported {} book{} → {}",
-                self.lib_books.len(),
-                if self.lib_books.len() == 1 { "" } else { "s" },
+                self.library.books.len(),
+                if self.library.books.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                },
                 path.display()
             ),
             Err(e) => format!("export failed: {e}"),
@@ -286,10 +294,10 @@ impl App {
 
     /// Open the library-statistics overlay (computed over all books).
     pub(crate) fn open_stats(&mut self) {
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             let books = store.all_books();
             let secs = store.total_read_seconds();
-            self.stats = Some(crate::library::stats::compute(&books, secs));
+            self.overlay = Overlay::Stats(crate::library::stats::compute(&books, secs));
         }
     }
 
@@ -300,23 +308,26 @@ impl App {
         let mut removed = 0;
         for p in paths {
             let gone = std::fs::remove_file(p).is_ok();
-            if let Some(store) = &self.store {
+            if let Some(store) = &self.session.store {
                 store.remove_book(p);
             }
             removed += usize::from(gone);
         }
-        self.lib_flash = Some(format!("removed {removed} duplicate(s)"));
-        self.lib_sel = 0;
+        self.library.flash = Some(format!("removed {removed} duplicate(s)"));
+        self.library.sel = 0;
         self.refresh_library();
         self.refresh_dup_resolve();
     }
 
     /// Set the selected book's rating (0 clears), flashing the result.
     fn lib_set_rating(&mut self, rating: u8) {
-        if let (Some(store), Some(book)) = (&self.store, self.lib_books.get(self.lib_sel)) {
+        if let (Some(store), Some(book)) = (
+            &self.session.store,
+            self.library.books.get(self.library.sel),
+        ) {
             store.set_rating(&book.path, rating);
         }
-        self.lib_flash = Some(if rating == 0 {
+        self.library.flash = Some(if rating == 0 {
             "rating cleared".to_string()
         } else {
             format!("rated {}", "★".repeat(rating as usize))
@@ -327,34 +338,35 @@ impl App {
     /// Cycle the selected book's manual reading status (none → paused → dropped →
     /// reference → none), flashing the new effective status.
     fn lib_cycle_status(&mut self) {
-        let Some(book) = self.lib_books.get(self.lib_sel) else {
+        let Some(book) = self.library.books.get(self.library.sel) else {
             return;
         };
         let next = delryn_model::ReadingStatus::cycle_manual(&book.status);
         let pct = book.pct;
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             store.set_status(&book.path, next);
         }
         let eff = delryn_model::ReadingStatus::effective(pct, next);
-        self.lib_flash = Some(format!("status: {}", eff.label()));
+        self.library.flash = Some(format!("status: {}", eff.label()));
         self.refresh_library();
     }
 
     /// The book path the detail cover should show (empty when no cover pane is
     /// relevant, so we treat it as "nothing to do").
     fn cover_target_path(&self) -> String {
-        if self.mode != Mode::Library || !self.lib_detail || self.is_grid() {
-            return self.lib_cover_path.clone();
+        if self.mode != Mode::Library || !self.library.detail || self.is_grid() {
+            return self.library.cover_path.clone();
         }
-        self.lib_books
-            .get(self.lib_sel)
+        self.library
+            .books
+            .get(self.library.sel)
             .map(|b| b.path.clone())
             .unwrap_or_default()
     }
 
     /// Is the detail cover stale (wants rebuilding)? Keeps the loop ticking.
     pub fn cover_pending(&self) -> bool {
-        self.cover_target_path() != self.lib_cover_path
+        self.cover_target_path() != self.library.cover_path
     }
 
     /// Debounced detail-cover build: only (re)decode once the selection has held
@@ -362,20 +374,20 @@ impl App {
     /// Returns whether the cover changed (the loop should redraw).
     pub fn tick_cover(&mut self) -> bool {
         let target = self.cover_target_path();
-        if target == self.lib_cover_path {
+        if target == self.library.cover_path {
             return false;
         }
-        if target != self.lib_cover_target {
+        if target != self.library.cover_target {
             // Selection moved — restart the settle timer, build nothing yet.
-            self.lib_cover_target = target;
-            self.lib_cover_at = Instant::now();
+            self.library.cover_target = target;
+            self.library.cover_at = Instant::now();
             return false;
         }
-        if self.lib_cover_at.elapsed() < COVER_DEBOUNCE {
+        if self.library.cover_at.elapsed() < COVER_DEBOUNCE {
             return false;
         }
-        self.lib_cover_path = target.clone();
-        self.lib_cover = match (&self.picker, load_cover_bytes(&target)) {
+        self.library.cover_path = target.clone();
+        self.library.cover = match (&self.picker, load_cover_bytes(&target)) {
             (Some(picker), Some(bytes)) => media::build_cover(picker, &bytes),
             _ => None,
         };
@@ -389,7 +401,7 @@ impl App {
         let mut built = 0;
         let mut pending = false;
         for path in paths {
-            if self.lib_grid_covers.contains(path) {
+            if self.library.grid_covers.contains(path) {
                 continue;
             }
             if built >= limit {
@@ -402,19 +414,19 @@ impl App {
             };
             // Bounded LRU: an eviction must free its terminal image too, else
             // image memory grows until the terminal blanks everything.
-            if let Some((_, Some(evicted))) = self.lib_grid_covers.push(path.clone(), cover)
+            if let Some((_, Some(evicted))) = self.library.grid_covers.push(path.clone(), cover)
                 && let Some(id) = evicted.image_id()
             {
-                self.lib_grid_deletes.push(id);
+                self.library.grid_deletes.push(id);
             }
             built += 1;
         }
-        self.lib_grid_pending = pending;
+        self.library.grid_pending = pending;
     }
 
     /// Whether the grid is still building visible covers (keeps the loop drawing).
     pub fn lib_grid_pending(&self) -> bool {
-        self.mode == Mode::Library && self.is_grid() && self.lib_grid_pending
+        self.mode == Mode::Library && self.is_grid() && self.library.grid_pending
     }
 
     /// The cover-grid view: navigates by grid columns, lazily builds cover
@@ -426,7 +438,7 @@ impl App {
     /// Vertical step for j/k: one grid row in grid view, else one list row.
     fn grid_step(&self) -> isize {
         if self.is_grid() {
-            self.lib_grid_cols.max(1) as isize
+            self.library.grid_cols.max(1) as isize
         } else {
             1
         }
@@ -435,13 +447,13 @@ impl App {
     /// Visible panes, left → right, given show flags and the active layout.
     fn lib_visible_panes(&self) -> Vec<LibPane> {
         let mut panes = Vec::new();
-        if self.lib_show_sidebar {
+        if self.library.show_sidebar {
             panes.push(LibPane::Sidebar);
         }
         panes.push(LibPane::List);
         // The detail pane only exists alongside the list views (cover views have
         // no detail pane).
-        if self.lib_detail && !self.is_grid() {
+        if self.library.detail && !self.is_grid() {
             panes.push(LibPane::Detail);
         }
         panes
@@ -453,29 +465,32 @@ impl App {
         if panes.is_empty() {
             return;
         }
-        let cur = panes.iter().position(|p| *p == self.lib_pane).unwrap_or(0) as isize;
+        let cur = panes
+            .iter()
+            .position(|p| *p == self.library.pane)
+            .unwrap_or(0) as isize;
         let next = (cur + delta).rem_euclid(panes.len() as isize) as usize;
-        self.lib_pane = panes[next];
+        self.library.pane = panes[next];
     }
 
     /// Keep the focused pane valid when one is hidden.
     fn lib_ensure_pane_visible(&mut self) {
-        if !self.lib_visible_panes().contains(&self.lib_pane) {
-            self.lib_pane = LibPane::List;
+        if !self.lib_visible_panes().contains(&self.library.pane) {
+            self.library.pane = LibPane::List;
         }
     }
 
     /// Grow/shrink the focused side pane's percentage (`<`/`>`); the responsive
     /// split turns it into cells and the list takes the slack.
     fn lib_resize(&mut self, delta: i16) {
-        match self.lib_pane {
+        match self.library.pane {
             LibPane::Sidebar => {
-                self.lib_sidebar_pct = (self.lib_sidebar_pct as i16 + delta)
+                self.library.sidebar_pct = (self.library.sidebar_pct as i16 + delta)
                     .clamp(SIDEBAR_PCT_MIN as i16, SIDEBAR_PCT_MAX as i16)
                     as u16;
             }
             LibPane::Detail => {
-                self.lib_detail_pct = (self.lib_detail_pct as i16 + delta)
+                self.library.detail_pct = (self.library.detail_pct as i16 + delta)
                     .clamp(DETAIL_PCT_MIN as i16, DETAIL_PCT_MAX as i16)
                     as u16;
             }
@@ -485,7 +500,7 @@ impl App {
 
     /// Total entries in the sidebar (fixed sections + collections).
     fn lib_view_count(&self) -> usize {
-        LibrarySection::ALL.len() + self.lib_shelves.len()
+        LibrarySection::ALL.len() + self.library.shelves.len()
     }
 
     /// Select the sidebar entry at ring index `i` (clamped) and load its books.
@@ -498,12 +513,12 @@ impl App {
         }
         self.lib_exit_visual();
         if i >= total {
-            self.lib_side_new = true; // parked on "＋ New collection"
+            self.library.side_new = true; // parked on "＋ New collection"
             return;
         }
-        self.lib_side_new = false;
-        self.lib_view = self.lib_view_at(i);
-        self.lib_sel = 0;
+        self.library.side_new = false;
+        self.library.view = self.lib_view_at(i);
+        self.library.sel = 0;
         self.refresh_library();
     }
 
@@ -511,7 +526,7 @@ impl App {
     /// The cursor ranges over the views plus the trailing "＋ New" row.
     fn lib_side_move(&mut self, delta: isize) {
         let max = self.lib_view_count(); // index of "＋ New collection"
-        let cur = if self.lib_side_new {
+        let cur = if self.library.side_new {
             max
         } else {
             self.lib_view_index()
@@ -523,10 +538,11 @@ impl App {
     /// Position of the active view within the section+collection ring.
     fn lib_view_index(&self) -> usize {
         let n = LibrarySection::ALL.len();
-        match &self.lib_view {
+        match &self.library.view {
             LibView::Section(s) => LibrarySection::ALL.iter().position(|x| x == s).unwrap_or(0),
             LibView::Shelf(name) => self
-                .lib_shelves
+                .library
+                .shelves
                 .iter()
                 .position(|(nm, _)| nm == name)
                 .map(|p| n + p)
@@ -540,36 +556,36 @@ impl App {
         if i < n {
             LibView::Section(LibrarySection::ALL[i])
         } else {
-            LibView::Shelf(self.lib_shelves[i - n].0.clone())
+            LibView::Shelf(self.library.shelves[i - n].0.clone())
         }
     }
 
     pub(crate) fn library_key(&mut self, key: KeyEvent) {
-        if self.lib_filtering {
+        if self.library.filtering {
             match key.code {
                 KeyCode::Esc => {
-                    self.lib_filter.clear();
-                    self.lib_filtering = false;
+                    self.library.filter.clear();
+                    self.library.filtering = false;
                     self.refresh_library();
                 }
-                KeyCode::Enter => self.lib_filtering = false,
+                KeyCode::Enter => self.library.filtering = false,
                 KeyCode::Backspace => {
-                    self.lib_filter.pop();
+                    self.library.filter.pop();
                     self.refresh_library();
                 }
                 KeyCode::Char(c) => {
-                    self.lib_filter.push(c);
+                    self.library.filter.push(c);
                     self.refresh_library();
                 }
                 _ => {}
             }
             return;
         }
-        let pane = self.lib_pane;
+        let pane = self.library.pane;
         let grid = self.is_grid();
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         // Page sizes (rows) for vim-style half/full-page navigation.
-        let rows = self.lib_visible_rows.max(1) as isize;
+        let rows = self.library.visible_rows.max(1) as isize;
         let half = (rows / 2).max(1);
         match key.code {
             // Vim half/full-page nav (Ctrl-d/u/f/b) + Page keys. Guarded on Ctrl
@@ -582,12 +598,12 @@ impl App {
             KeyCode::PageUp => self.lib_page_move(-rows),
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Esc => {
-                if self.lib_visual.is_some() || !self.lib_marked.is_empty() {
+                if self.library.visual.is_some() || !self.library.marked.is_empty() {
                     self.lib_exit_visual();
-                } else if self.lib_filter.is_empty() {
+                } else if self.library.filter.is_empty() {
                     self.should_quit = true;
                 } else {
-                    self.lib_filter.clear();
+                    self.library.filter.clear();
                     self.refresh_library();
                 }
             }
@@ -630,10 +646,10 @@ impl App {
             // when parked on the "＋ New" row); else open the book.
             KeyCode::Enter => {
                 if pane == LibPane::Sidebar {
-                    if self.lib_side_new {
+                    if self.library.side_new {
                         self.lib_coll_begin_new();
                     } else {
-                        self.lib_pane = LibPane::List;
+                        self.library.pane = LibPane::List;
                     }
                 } else {
                     self.open_selected();
@@ -642,23 +658,23 @@ impl App {
             KeyCode::Char('o') => self.open_selected(),
             KeyCode::Char('g') => match pane {
                 LibPane::Sidebar => self.lib_set_view_index(0),
-                _ => self.lib_sel = 0,
+                _ => self.library.sel = 0,
             },
             KeyCode::Char('G') => match pane {
                 LibPane::Sidebar => {
                     self.lib_set_view_index(self.lib_view_count().saturating_sub(1))
                 }
-                _ => self.lib_sel = self.lib_books.len().saturating_sub(1),
+                _ => self.library.sel = self.library.books.len().saturating_sub(1),
             },
             // Resize the focused side pane (Shift+</>); show/hide sidebar/detail.
             KeyCode::Char('<') => self.lib_resize(-2),
             KeyCode::Char('>') => self.lib_resize(2),
             KeyCode::Char('b') => {
-                self.lib_show_sidebar = !self.lib_show_sidebar;
+                self.library.show_sidebar = !self.library.show_sidebar;
                 self.lib_ensure_pane_visible();
             }
             KeyCode::Char('d') => {
-                self.lib_detail = !self.lib_detail;
+                self.library.detail = !self.library.detail;
                 self.lib_ensure_pane_visible();
             }
             // Cycle the manual reading status (none → paused → dropped → reference).
@@ -672,19 +688,25 @@ impl App {
             // any pane: with zero current duplicates the focus sits on the sidebar,
             // which is exactly where the reader presses it.
             KeyCode::Char('R')
-                if matches!(self.lib_view, LibView::Section(LibrarySection::Duplicates)) =>
+                if matches!(
+                    self.library.view,
+                    LibView::Section(LibrarySection::Duplicates)
+                ) =>
             {
                 self.start_dup_scan()
             }
             // `I` (Duplicates view) manages the groups you've ignored (restore/clear).
             KeyCode::Char('I')
-                if matches!(self.lib_view, LibView::Section(LibrarySection::Duplicates)) =>
+                if matches!(
+                    self.library.view,
+                    LibView::Section(LibrarySection::Duplicates)
+                ) =>
             {
                 self.open_ignored_view()
             }
             // Book actions operate on the selected book regardless of focus.
             KeyCode::Char('f') => {
-                if self.lib_marked.is_empty() {
+                if self.library.marked.is_empty() {
                     self.lib_favorite()
                 } else {
                     self.bulk_favorite()
@@ -700,7 +722,7 @@ impl App {
             KeyCode::Char('X') => self.export_library(),
             // `e` edits the current book; with a selection, edits each in turn.
             KeyCode::Char('e') => {
-                if self.lib_marked.is_empty() {
+                if self.library.marked.is_empty() {
                     self.open_meta_edit();
                 } else {
                     self.start_bulk_edit();
@@ -711,8 +733,8 @@ impl App {
             // selected book(s) — the current one when nothing is marked.
             KeyCode::Char('r')
                 if pane == LibPane::Sidebar
-                    && !self.lib_side_new
-                    && matches!(self.lib_view, LibView::Shelf(_)) =>
+                    && !self.library.side_new
+                    && matches!(self.library.view, LibView::Shelf(_)) =>
             {
                 self.lib_coll_begin_rename()
             }
@@ -742,7 +764,7 @@ impl App {
             KeyCode::Char('T') if pane != LibPane::Sidebar => self.open_tag_edit(),
             KeyCode::Char('/') => {
                 self.lib_exit_visual();
-                self.lib_filtering = true;
+                self.library.filtering = true;
             }
             _ => {}
         }

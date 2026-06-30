@@ -61,7 +61,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         f.render_widget(Block::default().style(theme.text_style()), area);
     }
 
-    let status_h = u16::from(show_status || reader.searching);
+    let status_h = u16::from(show_status || reader.search.searching);
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(area);
     let body = rows[0];
     let status = rows[1];
@@ -82,9 +82,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_sidebar(f, sb, reader, theme);
     }
     render_content(f, content_area, reader, config, theme, images);
-    if reader.searching {
+    if reader.search.searching {
         let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
-        let prompt = format!("[{}] /{}", reader.search_mode.label(), reader.search_input);
+        let prompt = format!("[{}] /{}", reader.search.mode.label(), reader.search.input);
         f.render_widget(Paragraph::new(Line::raw(prompt)).style(style), status);
     } else if show_status {
         render_status(f, status, reader, config, theme);
@@ -529,7 +529,7 @@ fn render_two_page(
 fn visible_lines(reader: &Reader, start: usize, count: usize, theme: Theme) -> Vec<Line<'static>> {
     let start = start.min(reader.lines.len());
     let end = (start + count).min(reader.lines.len());
-    let matcher = reader.search_matcher.as_ref().filter(|m| !m.is_empty());
+    let matcher = reader.search.matcher.as_ref().filter(|m| !m.is_empty());
     let sel = reader.selected_anchor();
     reader.lines[start..end]
         .iter()
@@ -668,9 +668,9 @@ fn render_status(f: &mut Frame, area: Rect, reader: &Reader, config: &Config, th
     let pct = (reader.progress() * 100.0).round() as u32;
     let sf = config.status;
     let mut parts: Vec<String> = Vec::new();
-    if reader.search_matcher.is_some() {
+    if reader.search.matcher.is_some() {
         let n = reader.search_count();
-        let cur = if n == 0 { 0 } else { reader.search_idx + 1 };
+        let cur = if n == 0 { 0 } else { reader.search.idx + 1 };
         parts.push(format!("⌕ {cur}/{n}"));
     }
     if sf.theme {

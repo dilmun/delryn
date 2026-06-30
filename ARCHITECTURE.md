@@ -79,9 +79,11 @@ code blocks / equations.
 
 ## Persistence (SQLite, `delryn-store`)
 
-One module per entity. Current: books, progress, shelves, collections,
-annotations, fts. Planned: status, rating, tags, notes, highlights, backlinks,
-bookmarks, history, stats, smart-collection rules. Migrations are additive.
+One module per entity. Current: books (incl. status/rating/tags), progress,
+shelves, collections, annotations (bookmarks + notes), fts. Planned: highlights,
+backlinks, history, smart-collection rules. Schema changes are **versioned**
+behind SQLite's `PRAGMA user_version` (append-only steps in `migrate()` that run
+once, not on every open).
 
 ## Dependency decisions (deferred to their phase)
 

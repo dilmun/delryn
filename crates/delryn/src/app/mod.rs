@@ -4,10 +4,6 @@
 //! Library is a stub; the Reader is the working EPUB vertical slice. See
 //! `DESIGN.md` §4, §6.
 
-use std::collections::HashSet;
-use std::num::NonZeroUsize;
-
-use lru::LruCache;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
@@ -20,7 +16,7 @@ use crate::document::epub_write;
 use crate::input::{self, Action, Pending};
 use crate::media::{self, ImageBuilder};
 use crate::online;
-use crate::store::{Annotation, BookRow, LibrarySection, Store};
+use crate::store::{Annotation, Store};
 use crate::theme;
 use ratatui_image::picker::Picker;
 
@@ -65,6 +61,10 @@ pub use image_view::{Figure, ImageViewer};
 mod library;
 pub use library::{LibPane, LibView, SortKey};
 
+mod state;
+pub use state::Overlay;
+use state::{LibraryState, Session};
+
 mod dispatch;
 
 mod palette;
@@ -85,11 +85,6 @@ const CACHE_CAP: usize = 11;
 /// terminal. Reused across section revisits; LRU-evicted (and deleted from the
 /// terminal) beyond this.
 const IMAGE_CACHE_CAP: usize = 32;
-/// Library cover thumbnails kept built / terminal-resident at once. Bounded so a
-/// big library doesn't transmit hundreds of Kitty images until the terminal runs
-/// out of image memory and blanks them; evicted covers are deleted from the
-/// terminal and rebuilt on scroll-back. Several screens' worth.
-const LIB_COVER_CAP: usize = 96;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -122,7 +117,7 @@ pub enum PromptKind {
 /// file it into a folder).
 pub struct Prompt {
     pub kind: PromptKind,
-    pub buffer: String,
+    pub input: crate::ui::TextInput,
 }
 
 pub struct App {
@@ -134,32 +129,16 @@ pub struct App {
     pub mouse: MouseHits,
     pub pending: Pending,
     pub should_quit: bool,
-    /// Open settings popup, if any.
-    pub settings: Option<Settings>,
-    /// Open annotations overlay, if any.
-    pub annot: Option<AnnotState>,
-    /// Open library-statistics overlay, if any.
-    pub stats: Option<crate::library::stats::LibraryStats>,
-    /// Open command palette, if any.
-    pub palette: Option<Palette>,
-    /// Active bottom-row text prompt (note / rename bookmark / file in folder).
-    pub prompt: Option<Prompt>,
-    /// Open metadata-edit form (library), if any.
-    pub meta_edit: Option<MetaEdit>,
-    /// Open bulk-rename popup (template applied to the marked books), if any.
-    pub bulk_rename: Option<BulkRename>,
-    /// Inline sidebar collection editor (create / rename), if active.
-    pub lib_coll_edit: Option<CollInput>,
-    /// Inline tag-edit prompt (set a book's tags), if active.
-    pub tag_edit: Option<TagInput>,
-    /// Duplicate-resolution overlay, if open.
-    pub dup_resolve: Option<DupResolve>,
+    /// The single open overlay/popup (settings, prompt, metadata editor,
+    /// bookmarks, palette, …), or [`Overlay::None`]. Exactly one is open at a
+    /// time, so the borrow checker — and the code — can't represent two at once.
+    /// `pending_confirm` (modal above any overlay) and `dup_preview` (the parked
+    /// resolver) stay separate fields below.
+    pub overlay: Overlay,
     /// The duplicate-resolution overlay stashed while previewing a book from it —
-    /// kept out of `dup_resolve` so the dispatcher and renderer ignore it during the
+    /// kept out of `overlay` so the dispatcher and renderer ignore it during the
     /// preview; restored when the reader returns (`q`/Esc).
     pub dup_preview: Option<DupResolve>,
-    /// Manager listing the "ignored" duplicate groups, to restore or clear them.
-    pub ignored_view: Option<IgnoredView>,
     /// A destructive action awaiting a yes/no confirmation, if any. Intercepts
     /// input ahead of every popup and is answered with y/⏎ or n/Esc.
     pub pending_confirm: Option<PendingConfirm>,
@@ -168,8 +147,6 @@ pub struct App {
     pub edit_queue: Vec<String>,
     /// Total books in the current edit queue (for the `N/total` header).
     pub edit_total: usize,
-    /// Open image viewer overlay, if any.
-    pub image_view: Option<ImageViewer>,
     /// An image queued for the system clipboard (`(w, h, RGBA)`), set by the
     /// viewer's copy action and drained by the main loop.
     pub pending_clipboard_image: Option<(u32, u32, Vec<u8>)>,
@@ -179,85 +156,16 @@ pub struct App {
     pub image_builder: Option<ImageBuilder>,
     /// Direct-Kitty manager for full PDF page images (transmit-once + place).
     page_deck: PageDeck,
-    /// Start of the current reading session, for time tracking.
-    session_start: Option<Instant>,
-    store: Option<Store>,
-    /// Canonical path of the open book; key for persistence.
-    book_path: String,
-    // Library view state.
-    pub lib_view: LibView,
-    /// Which pane has the keyboard (Sidebar / List / Detail). Tab cycles it.
-    pub lib_pane: LibPane,
-    /// Show the sections/collections sidebar.
-    pub lib_show_sidebar: bool,
-    /// Sidebar / detail pane widths as a percentage of the window (resizable
-    /// with `<`/`>`); the responsive split clamps and collapses them per window.
-    pub lib_sidebar_pct: u16,
-    pub lib_detail_pct: u16,
-    /// Cached (collection name, book count), refreshed with the book list.
-    pub lib_shelves: Vec<(String, usize)>,
-    /// Per-section book counts, parallel to `LibrarySection::ALL`; refreshed with
-    /// the book list so the sidebar can show a right-aligned count per group.
-    pub lib_section_counts: Vec<usize>,
-    pub lib_books: Vec<BookRow>,
-    pub lib_sel: usize,
-    /// Effective multi-selection for bulk actions, keyed by book path. The union
-    /// of the individually-toggled `lib_marked_base` and the live visual range.
-    pub lib_marked: HashSet<String>,
-    /// Books toggled individually with Space (non-contiguous), kept separate so a
-    /// live visual range can be layered on top without clobbering them.
-    pub lib_marked_base: HashSet<String>,
-    /// Visual-select anchor (book index) while in visual mode; `None` otherwise.
-    /// The selection is the contiguous range between the anchor and `lib_sel`.
-    pub lib_visual: Option<usize>,
-    /// Sidebar cursor parked on the trailing "＋ New collection" row.
-    pub lib_side_new: bool,
-    /// Active sort key and direction for the book list.
-    pub lib_sort: SortKey,
-    pub lib_sort_desc: bool,
-    /// Sort keys for the currently visible columns, in display order — the `s`
-    /// cycle. Set each frame from the rendered columns so hidden / collapsed
-    /// columns are skipped.
-    pub lib_sort_cycle: Vec<SortKey>,
-    pub lib_filter: String,
-    pub lib_filtering: bool,
-    /// Transient message shown in the library status bar (e.g. cover embedded);
-    /// cleared on the next keypress.
-    pub lib_flash: Option<String>,
-    /// Open add-to-collection picker, if any.
-    pub shelf_picker: Option<ShelfPicker>,
+    /// The open book, its persistence handle, and session start — see [`Session`].
+    session: Session,
+    /// Library list, selection, sort, filter, and covers — see [`LibraryState`].
+    pub library: LibraryState,
     /// Receiver for async Open Library results (search / cover), if a request
     /// from the editor's Online tab is in flight.
     pub online_rx: Option<Receiver<OnlineMsg>>,
     /// In-flight thorough duplicate scan (cover hashing on a worker thread), if
     /// the reader triggered one from the Duplicates view.
     pub dup_scan: Option<dup_scan::DupScan>,
-    /// Show the right-hand detail pane (cover + metadata).
-    pub lib_detail: bool,
-    /// Cover image protocol for the detail pane, rebuilt when the selection
-    /// settles (debounced so holding j/k stays smooth).
-    pub lib_cover: Option<media::CoverImage>,
-    /// Book path the current `lib_cover` was built for (avoids rebuilds).
-    pub lib_cover_path: String,
-    /// Path the cover wants to settle on, and when it last changed (debounce).
-    lib_cover_target: String,
-    lib_cover_at: Instant,
-    /// Grid view: number of columns from the last render (for 2D navigation).
-    pub lib_grid_cols: usize,
-    /// Visible rows from the last list/grid render (for half/full-page nav).
-    pub lib_visible_rows: usize,
-    /// Last list navigation went down (toward higher indices) — so cover
-    /// prefetch loads ahead in the direction of travel.
-    pub lib_nav_down: bool,
-    /// Grid view: lazily-built cover protocols, keyed by book path
-    /// (`None` = no cover / failed, so we don't retry every frame). A bounded LRU
-    /// (rendering bumps each visible cover to most-recently-used) so terminal
-    /// image memory stays capped; evicted covers feed `lib_grid_deletes`.
-    pub lib_grid_covers: LruCache<String, Option<media::CoverImage>>,
-    /// Terminal image ids of covers evicted from `lib_grid_covers`, to delete.
-    pub lib_grid_deletes: Vec<u32>,
-    /// Grid view: visible covers still waiting to be built (keeps redrawing).
-    pub lib_grid_pending: bool,
     /// Cover-tab preview image protocol + the URL it was built for, plus the
     /// debounce target/timer for fetching the highlighted result's cover.
     pub edit_cover: Option<media::CoverImage>,
@@ -331,31 +239,6 @@ fn embed_cover_into_file(path: &str, bytes: &[u8]) -> String {
     }
 }
 
-/// Insert `ch` at char index `cursor` in `s` (clamped to the end).
-fn str_insert(s: &mut String, cursor: usize, ch: char) {
-    let byte = s.char_indices().nth(cursor).map_or(s.len(), |(b, _)| b);
-    s.insert(byte, ch);
-}
-
-/// Remove the char before `cursor`; returns whether one was removed.
-fn str_delete_before(s: &mut String, cursor: usize) -> bool {
-    if cursor == 0 {
-        return false;
-    }
-    if let Some((byte, _)) = s.char_indices().nth(cursor - 1) {
-        s.remove(byte);
-        return true;
-    }
-    false
-}
-
-/// Remove the char at `cursor` (no-op past the end).
-fn str_delete_at(s: &mut String, cursor: usize) {
-    if let Some((byte, _)) = s.char_indices().nth(cursor) {
-        s.remove(byte);
-    }
-}
-
 /// Build a reader for `path`, applying global config and any saved per-book
 /// overrides (theme, view mode, resume position).
 fn build_reader(
@@ -426,62 +309,23 @@ impl App {
             mouse: MouseHits::default(),
             pending: Pending::default(),
             should_quit: false,
-            settings: None,
-            annot: None,
-            stats: None,
-            palette: None,
-            prompt: None,
-            meta_edit: None,
-            bulk_rename: None,
-            lib_coll_edit: None,
-            tag_edit: None,
-            dup_resolve: None,
+            overlay: Overlay::None,
             dup_preview: None,
-            ignored_view: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
-            image_view: None,
             pending_clipboard_image: None,
             picker: None,
             image_builder: None,
             page_deck: PageDeck::default(),
-            session_start: Some(Instant::now()),
-            store,
-            book_path,
-            lib_view: LibView::Section(LibrarySection::All),
-            lib_pane: LibPane::List,
-            lib_show_sidebar: true,
-            lib_sidebar_pct: 20,
-            lib_detail_pct: 30,
-            lib_shelves: Vec::new(),
-            lib_section_counts: Vec::new(),
-            lib_books: Vec::new(),
-            lib_sel: 0,
-            lib_marked: HashSet::new(),
-            lib_marked_base: HashSet::new(),
-            lib_visual: None,
-            lib_side_new: false,
-            lib_sort: SortKey::Default,
-            lib_sort_desc: false,
-            lib_sort_cycle: Vec::new(),
-            lib_filter: String::new(),
-            lib_filtering: false,
-            lib_flash: None,
-            shelf_picker: None,
+            session: Session {
+                store,
+                book_path,
+                started: Some(Instant::now()),
+            },
+            library: LibraryState::default(),
             online_rx: None,
             dup_scan: None,
-            lib_detail: true,
-            lib_cover: None,
-            lib_cover_path: String::new(),
-            lib_cover_target: String::new(),
-            lib_cover_at: Instant::now(),
-            lib_grid_cols: 1,
-            lib_visible_rows: 1,
-            lib_nav_down: true,
-            lib_grid_covers: LruCache::new(NonZeroUsize::new(LIB_COVER_CAP).unwrap()),
-            lib_grid_deletes: Vec::new(),
-            lib_grid_pending: false,
             edit_cover: None,
             edit_cover_url: String::new(),
             edit_cover_target: String::new(),
@@ -503,62 +347,23 @@ impl App {
             mouse: MouseHits::default(),
             pending: Pending::default(),
             should_quit: false,
-            settings: None,
-            annot: None,
-            stats: None,
-            palette: None,
-            prompt: None,
-            meta_edit: None,
-            bulk_rename: None,
-            lib_coll_edit: None,
-            tag_edit: None,
-            dup_resolve: None,
+            overlay: Overlay::None,
             dup_preview: None,
-            ignored_view: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
             edit_total: 0,
-            image_view: None,
             pending_clipboard_image: None,
             picker: None,
             image_builder: None,
             page_deck: PageDeck::default(),
-            session_start: None,
-            store,
-            book_path: String::new(),
-            lib_view: LibView::Section(LibrarySection::All),
-            lib_pane: LibPane::List,
-            lib_show_sidebar: true,
-            lib_sidebar_pct: 20,
-            lib_detail_pct: 30,
-            lib_shelves: Vec::new(),
-            lib_section_counts: Vec::new(),
-            lib_books: Vec::new(),
-            lib_sel: 0,
-            lib_marked: HashSet::new(),
-            lib_marked_base: HashSet::new(),
-            lib_visual: None,
-            lib_side_new: false,
-            lib_sort: SortKey::Default,
-            lib_sort_desc: false,
-            lib_sort_cycle: Vec::new(),
-            lib_filter: String::new(),
-            lib_filtering: false,
-            lib_flash: None,
-            shelf_picker: None,
+            session: Session {
+                store,
+                book_path: String::new(),
+                started: None,
+            },
+            library: LibraryState::default(),
             online_rx: None,
             dup_scan: None,
-            lib_detail: true,
-            lib_cover: None,
-            lib_cover_path: String::new(),
-            lib_cover_target: String::new(),
-            lib_cover_at: Instant::now(),
-            lib_grid_cols: 1,
-            lib_visible_rows: 1,
-            lib_nav_down: true,
-            lib_grid_covers: LruCache::new(NonZeroUsize::new(LIB_COVER_CAP).unwrap()),
-            lib_grid_deletes: Vec::new(),
-            lib_grid_pending: false,
             edit_cover: None,
             edit_cover_url: String::new(),
             edit_cover_target: String::new(),
@@ -569,34 +374,39 @@ impl App {
     }
 
     fn open_selected(&mut self) {
-        let Some(path) = self.lib_books.get(self.lib_sel).map(|b| b.path.clone()) else {
+        let Some(path) = self
+            .library
+            .books
+            .get(self.library.sel)
+            .map(|b| b.path.clone())
+        else {
             return;
         };
         self.flush_reading_time();
-        match build_reader(&path, &self.store, self.picker.is_some()) {
+        match build_reader(&path, &self.session.store, self.picker.is_some()) {
             Ok((reader, config, book_path)) => {
                 self.reader = Some(reader);
                 self.config = config;
-                self.book_path = book_path;
+                self.session.book_path = book_path;
                 self.mode = Mode::Reader;
-                self.session_start = Some(Instant::now());
-                if let Some(s) = &self.store {
-                    s.mark_opened(&self.book_path);
+                self.session.started = Some(Instant::now());
+                if let Some(s) = &self.session.store {
+                    s.mark_opened(&self.session.book_path);
                 }
             }
             // Surface the reason (e.g. an unsupported format) on the status row
             // rather than silently doing nothing on Enter.
-            Err(e) => self.lib_flash = Some(e.to_string()),
+            Err(e) => self.library.flash = Some(e.to_string()),
         }
     }
 
     /// Persist the current reading position (best-effort).
     pub fn save_progress(&self) {
-        if let (Some(store), Some(reader)) = (&self.store, &self.reader)
-            && !self.book_path.is_empty()
+        if let (Some(store), Some(reader)) = (&self.session.store, &self.reader)
+            && !self.session.book_path.is_empty()
         {
             let _ = store.save_progress(
-                &self.book_path,
+                &self.session.book_path,
                 reader.section,
                 reader.within_frac(),
                 self.config.view_mode,
@@ -607,14 +417,14 @@ impl App {
 
     /// Accumulate elapsed reading time into the open book and reset the clock.
     fn flush_reading_time(&mut self) {
-        if let (Some(start), Some(store)) = (self.session_start, &self.store) {
+        if let (Some(start), Some(store)) = (self.session.started, &self.session.store) {
             let secs = start.elapsed().as_secs() as i64;
-            if secs > 0 && !self.book_path.is_empty() {
-                store.add_read_time(&self.book_path, secs);
+            if secs > 0 && !self.session.book_path.is_empty() {
+                store.add_read_time(&self.session.book_path, secs);
             }
         }
-        if self.session_start.is_some() {
-            self.session_start = Some(Instant::now());
+        if self.session.started.is_some() {
+            self.session.started = Some(Instant::now());
         }
     }
 
@@ -625,7 +435,8 @@ impl App {
     }
 
     pub fn total_read_seconds(&self) -> i64 {
-        self.store
+        self.session
+            .store
             .as_ref()
             .map(|s| s.total_read_seconds())
             .unwrap_or(0)
@@ -634,7 +445,7 @@ impl App {
     /// Terminal image ids to delete: covers evicted from the library grid cache,
     /// plus images evicted from the reader's cache.
     pub fn take_image_deletes(&mut self) -> Vec<u32> {
-        let mut ids = std::mem::take(&mut self.lib_grid_deletes);
+        let mut ids = std::mem::take(&mut self.library.grid_deletes);
         if let Some(r) = self.reader.as_mut() {
             ids.extend(r.take_image_deletes());
         }
@@ -747,14 +558,17 @@ impl App {
     /// a full repaint when this toggles, so a closed popup's cells (which may sit
     /// over an inline image) don't leave a ghost the cell-diff misses.
     pub fn any_overlay_open(&self) -> bool {
-        self.settings.is_some()
-            || self.annot.is_some()
-            || self.stats.is_some()
-            || self.palette.is_some()
-            || self.meta_edit.is_some()
-            || self.bulk_rename.is_some()
-            || self.shelf_picker.is_some()
-            || self.image_view.is_some()
+        matches!(
+            self.overlay,
+            Overlay::Settings(_)
+                | Overlay::Annot(_)
+                | Overlay::Stats(_)
+                | Overlay::Palette(_)
+                | Overlay::MetaEdit(_)
+                | Overlay::BulkRename(_)
+                | Overlay::ShelfPicker(_)
+                | Overlay::ImageView(_)
+        )
     }
 
     /// Is a smooth scroll in progress, or are inline images still building (so
@@ -785,6 +599,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::config::LibLayout;
+    use crate::store::LibrarySection;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
     use ratatui::layout::Rect;
 
@@ -794,6 +609,46 @@ mod tests {
 
     fn code(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    // Pull the open overlay out as its concrete type, panicking if a different
+    // overlay is open — the same contract `app.X.as_ref().unwrap()` gave before
+    // the overlays were folded into the single `app.overlay` enum.
+    fn meta(app: &App) -> &MetaEdit {
+        match &app.overlay {
+            Overlay::MetaEdit(e) => e,
+            _ => panic!("metadata editor not open"),
+        }
+    }
+    fn meta_mut(app: &mut App) -> &mut MetaEdit {
+        match &mut app.overlay {
+            Overlay::MetaEdit(e) => e,
+            _ => panic!("metadata editor not open"),
+        }
+    }
+    fn settings_state(app: &App) -> &Settings {
+        match &app.overlay {
+            Overlay::Settings(s) => s,
+            _ => panic!("settings not open"),
+        }
+    }
+    fn tag_edit_mut(app: &mut App) -> &mut TagInput {
+        match &mut app.overlay {
+            Overlay::TagEdit(t) => t,
+            _ => panic!("tag editor not open"),
+        }
+    }
+    fn shelf_picker(app: &App) -> &ShelfPicker {
+        match &app.overlay {
+            Overlay::ShelfPicker(p) => p,
+            _ => panic!("collection picker not open"),
+        }
+    }
+    fn dup_resolve(app: &App) -> &DupResolve {
+        match &app.overlay {
+            Overlay::DupResolve(d) => d,
+            _ => panic!("duplicate resolver not open"),
+        }
     }
 
     // Proves the library key bindings reach their handlers (regression guard for
@@ -814,7 +669,11 @@ mod tests {
         }
 
         let mut app = App::library();
-        assert_eq!(app.lib_books.len(), 1, "seeded book loads into the list");
+        assert_eq!(
+            app.library.books.len(),
+            1,
+            "seeded book loads into the list"
+        );
 
         // v cycles the layout: List → Compact → Grid → List.
         assert_eq!(app.config.library_layout, LibLayout::List);
@@ -831,13 +690,22 @@ mod tests {
 
         // e opens the metadata editor; Esc closes it.
         app.on_key(key('e'));
-        assert!(app.meta_edit.is_some(), "e opens the metadata editor");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "e opens the metadata editor"
+        );
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.meta_edit.is_none(), "Esc closes the editor");
+        assert!(
+            !matches!(app.overlay, Overlay::MetaEdit(_)),
+            "Esc closes the editor"
+        );
 
         // c opens the add-to-collection picker.
         app.on_key(key('c'));
-        assert!(app.shelf_picker.is_some(), "c opens the collection picker");
+        assert!(
+            matches!(app.overlay, Overlay::ShelfPicker(_)),
+            "c opens the collection picker"
+        );
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -860,39 +728,43 @@ mod tests {
         }
 
         let mut app = App::library();
-        assert_eq!(app.lib_pane, LibPane::List, "starts in the list");
-        assert_eq!(app.lib_view, LibView::Section(LibrarySection::All));
+        assert_eq!(app.library.pane, LibPane::List, "starts in the list");
+        assert_eq!(app.library.view, LibView::Section(LibrarySection::All));
 
         // h moves the keyboard left into the sidebar.
         app.on_key(key('h'));
-        assert_eq!(app.lib_pane, LibPane::Sidebar);
+        assert_eq!(app.library.pane, LibPane::Sidebar);
 
         // j/k now walk the sections (All → PDFs → All), not the book list.
         app.on_key(key('j'));
-        assert_eq!(app.lib_view, LibView::Section(LibrarySection::Pdf));
+        assert_eq!(app.library.view, LibView::Section(LibrarySection::Pdf));
         app.on_key(key('k'));
-        assert_eq!(app.lib_view, LibView::Section(LibrarySection::All));
+        assert_eq!(app.library.view, LibView::Section(LibrarySection::All));
 
         // g jumps to the first section; k there is clamped (no wrap).
         app.on_key(key('g'));
-        assert_eq!(app.lib_view, LibView::Section(LibrarySection::Recent));
+        assert_eq!(app.library.view, LibView::Section(LibrarySection::Recent));
         app.on_key(key('k'));
         assert_eq!(
-            app.lib_view,
+            app.library.view,
             LibView::Section(LibrarySection::Recent),
             "clamped at top"
         );
 
         // Enter steps into the list.
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.lib_pane, LibPane::List);
+        assert_eq!(app.library.pane, LibPane::List);
 
         // b hides the sidebar; focus falls back to the list (it can't stay there).
         app.on_key(key('h')); // focus sidebar
-        assert_eq!(app.lib_pane, LibPane::Sidebar);
+        assert_eq!(app.library.pane, LibPane::Sidebar);
         app.on_key(key('b')); // hide sidebar
-        assert!(!app.lib_show_sidebar);
-        assert_eq!(app.lib_pane, LibPane::List, "focus leaves the hidden pane");
+        assert!(!app.library.show_sidebar);
+        assert_eq!(
+            app.library.pane,
+            LibPane::List,
+            "focus leaves the hidden pane"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -911,27 +783,27 @@ mod tests {
         let mut app = App::library();
 
         // List → Detail → Sidebar → List.
-        assert_eq!(app.lib_pane, LibPane::List);
+        assert_eq!(app.library.pane, LibPane::List);
         app.on_key(code(KeyCode::Tab));
-        assert_eq!(app.lib_pane, LibPane::Detail);
+        assert_eq!(app.library.pane, LibPane::Detail);
         app.on_key(code(KeyCode::Tab));
-        assert_eq!(app.lib_pane, LibPane::Sidebar);
+        assert_eq!(app.library.pane, LibPane::Sidebar);
         app.on_key(code(KeyCode::Tab));
-        assert_eq!(app.lib_pane, LibPane::List);
+        assert_eq!(app.library.pane, LibPane::List);
 
         // Resize the sidebar (focus it first).
         app.on_key(key('h'));
-        assert_eq!(app.lib_pane, LibPane::Sidebar);
-        let w0 = app.lib_sidebar_pct;
+        assert_eq!(app.library.pane, LibPane::Sidebar);
+        let w0 = app.library.sidebar_pct;
         app.on_key(key('>'));
-        assert_eq!(app.lib_sidebar_pct, w0 + 2);
+        assert_eq!(app.library.sidebar_pct, w0 + 2);
         app.on_key(key('<'));
-        assert_eq!(app.lib_sidebar_pct, w0);
+        assert_eq!(app.library.sidebar_pct, w0);
         for _ in 0..40 {
             app.on_key(key('<'));
         }
         assert_eq!(
-            app.lib_sidebar_pct,
+            app.library.sidebar_pct,
             library::SIDEBAR_PCT_MIN,
             "clamped at the minimum"
         );
@@ -970,25 +842,21 @@ mod tests {
 
         let mut app = App::library();
         app.on_key(key('e'));
-        assert_eq!(
-            app.meta_edit.as_ref().unwrap().mode,
-            EditMode::Nav,
-            "opens in nav mode"
-        );
+        assert_eq!(meta(&app).mode, EditMode::Nav, "opens in nav mode");
 
         // In nav mode, 'j' moves fields (does NOT type); Enter enters edit mode.
         app.on_key(key('j')); // → Author
-        assert_eq!(app.meta_edit.as_ref().unwrap().row, 1);
+        assert_eq!(meta(&app).row, 1);
         app.on_key(key('k')); // back to Title
         app.on_key(code(KeyCode::Enter)); // edit Title
-        assert_eq!(app.meta_edit.as_ref().unwrap().mode, EditMode::Edit);
+        assert_eq!(meta(&app).mode, EditMode::Edit);
         // Mid-string insert: cursor at end of "K"; Left then 'X' → "XK".
         app.on_key(code(KeyCode::Left));
         app.on_key(key('X'));
-        assert_eq!(app.meta_edit.as_ref().unwrap().values[0], "XK");
+        assert_eq!(meta(&app).values[0].text(), "XK");
         app.on_key(code(KeyCode::Esc)); // back to nav (not closed)
-        assert!(app.meta_edit.is_some());
-        assert_eq!(app.meta_edit.as_ref().unwrap().mode, EditMode::Nav);
+        assert!(matches!(app.overlay, Overlay::MetaEdit(_)));
+        assert_eq!(meta(&app).mode, EditMode::Nav);
 
         // Navigate to Year, edit it to garbage → invalid.
         app.on_key(key('j')); // Author
@@ -997,10 +865,7 @@ mod tests {
         app.on_key(ctrl('u'));
         app.on_key(key('a'));
         app.on_key(code(KeyCode::Esc));
-        assert!(
-            app.meta_edit.as_ref().unwrap().has_invalid(),
-            "non-numeric year invalid"
-        );
+        assert!(meta(&app).has_invalid(), "non-numeric year invalid");
 
         // ^S must NOT even prompt to save while invalid.
         app.on_key(ctrl('s'));
@@ -1008,7 +873,10 @@ mod tests {
             app.pending_confirm.is_none(),
             "no save prompt while invalid"
         );
-        assert!(app.meta_edit.is_some(), "save blocked while invalid");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "save blocked while invalid"
+        );
 
         // Fix the year, then ^S → confirm → save and persist.
         app.on_key(code(KeyCode::Enter));
@@ -1020,11 +888,17 @@ mod tests {
         // ^S asks for confirmation; the editor stays open until answered.
         app.on_key(ctrl('s'));
         assert!(app.pending_confirm.is_some(), "^S asks to confirm");
-        assert!(app.meta_edit.is_some(), "editor open while confirming");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "editor open while confirming"
+        );
         app.on_key(key('y')); // confirm
         assert!(app.pending_confirm.is_none(), "prompt dismissed");
-        assert!(app.meta_edit.is_none(), "valid edit saves & closes");
-        let b = &app.lib_books[0];
+        assert!(
+            !matches!(app.overlay, Overlay::MetaEdit(_)),
+            "valid edit saves & closes"
+        );
+        let b = &app.library.books[0];
         assert_eq!(b.title, "XK");
         assert_eq!(b.year, Some(2001));
 
@@ -1079,14 +953,20 @@ mod tests {
         // n cancels, the editor remains open, nothing persisted.
         app.on_key(key('n'));
         assert!(app.pending_confirm.is_none(), "n dismisses the prompt");
-        assert!(app.meta_edit.is_some(), "editor stays open after cancel");
-        assert_eq!(app.lib_books[0].title, "K", "nothing persisted on cancel");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "editor stays open after cancel"
+        );
+        assert_eq!(
+            app.library.books[0].title, "K",
+            "nothing persisted on cancel"
+        );
 
         // Esc also cancels the prompt (and keeps the editor).
         app.on_key(ctrl('s'));
         app.on_key(code(KeyCode::Esc));
         assert!(
-            app.pending_confirm.is_none() && app.meta_edit.is_some(),
+            app.pending_confirm.is_none() && matches!(app.overlay, Overlay::MetaEdit(_)),
             "Esc cancels"
         );
 
@@ -1157,7 +1037,8 @@ mod tests {
 
         let mut app = App::library();
         let titles = |a: &App| {
-            a.lib_books
+            a.library
+                .books
                 .iter()
                 .map(|b| b.title.clone())
                 .collect::<Vec<_>>()
@@ -1167,33 +1048,36 @@ mod tests {
         // `s` steps each key ascending → descending before advancing to the
         // next key: Default → Title↑ → Title↓ → Author↑ → …
         app.on_key(key('s'));
-        assert_eq!(app.lib_sort, SortKey::Title);
-        assert!(!app.lib_sort_desc);
+        assert_eq!(app.library.sort, SortKey::Title);
+        assert!(!app.library.sort_desc);
         assert_eq!(titles(&app), ["A", "B", "C"], "title ascending");
 
         app.on_key(key('s'));
-        assert_eq!(app.lib_sort, SortKey::Title);
+        assert_eq!(app.library.sort, SortKey::Title);
         assert!(
-            app.lib_sort_desc,
+            app.library.sort_desc,
             "second press flips the same key to descending"
         );
         assert_eq!(titles(&app), ["C", "B", "A"], "title descending");
 
         app.on_key(key('s'));
         assert_eq!(
-            app.lib_sort,
+            app.library.sort,
             SortKey::Author,
             "third press advances the key"
         );
-        assert!(!app.lib_sort_desc, "advancing a key resets to ascending");
+        assert!(
+            !app.library.sort_desc,
+            "advancing a key resets to ascending"
+        );
 
         // `S` flips direction in place without changing the key.
-        app.lib_sort = SortKey::Year;
-        app.lib_sort_desc = false;
+        app.library.sort = SortKey::Year;
+        app.library.sort_desc = false;
         app.refresh_library();
         assert_eq!(titles(&app), ["B", "C", "A"], "year ascending");
         app.on_key(key('S'));
-        assert!(app.lib_sort_desc);
+        assert!(app.library.sort_desc);
         assert_eq!(titles(&app), ["A", "C", "B"], "year descending");
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1217,7 +1101,8 @@ mod tests {
         }
         let mut app = App::library();
         let tags_of = |a: &App, path: &str| {
-            a.lib_books
+            a.library
+                .books
                 .iter()
                 .find(|b| b.path == path)
                 .map(|b| b.tags.clone())
@@ -1225,12 +1110,15 @@ mod tests {
         };
 
         // Single book: T opens the prompt; typing replaces; commit normalises.
-        app.lib_sel = 0;
-        let first = app.lib_books[0].path.clone();
+        app.library.sel = 0;
+        let first = app.library.books[0].path.clone();
         app.on_key(key('T'));
-        app.tag_edit.as_mut().unwrap().buf = "Fiction, FICTION, sci-fi".into();
+        tag_edit_mut(&mut app).input.set("Fiction, FICTION, sci-fi");
         app.on_key(code(KeyCode::Enter));
-        assert!(app.tag_edit.is_none(), "prompt closed on commit");
+        assert!(
+            !matches!(app.overlay, Overlay::TagEdit(_)),
+            "prompt closed on commit"
+        );
         assert_eq!(
             tags_of(&app, &first),
             "fiction, sci-fi",
@@ -1243,10 +1131,10 @@ mod tests {
         } else {
             "/a.epub"
         };
-        app.lib_marked.insert("/a.epub".into());
-        app.lib_marked.insert("/b.epub".into());
+        app.library.marked.insert("/a.epub".into());
+        app.library.marked.insert("/b.epub".into());
         app.on_key(key('T'));
-        app.tag_edit.as_mut().unwrap().buf = "classic".into();
+        tag_edit_mut(&mut app).input.set("classic");
         app.on_key(code(KeyCode::Enter));
         assert_eq!(
             tags_of(&app, &first),
@@ -1290,21 +1178,21 @@ mod tests {
 
         let mut app = App::library();
         app.config.library_layout = LibLayout::Grid;
-        app.lib_grid_cols = 3; // normally set by the renderer
-        assert_eq!(app.lib_sel, 0);
+        app.library.grid_cols = 3; // normally set by the renderer
+        assert_eq!(app.library.sel, 0);
 
         app.on_key(key('l')); // → 1
         app.on_key(key('l')); // → 2
-        assert_eq!(app.lib_sel, 2);
+        assert_eq!(app.library.sel, 2);
         app.on_key(key('j')); // down a row: 2 + 3 = 5
-        assert_eq!(app.lib_sel, 5);
+        assert_eq!(app.library.sel, 5);
         app.on_key(key('k')); // up a row: 5 - 3 = 2
-        assert_eq!(app.lib_sel, 2);
+        assert_eq!(app.library.sel, 2);
         app.on_key(key('h')); // ← 1
-        assert_eq!(app.lib_sel, 1);
+        assert_eq!(app.library.sel, 1);
         app.on_key(key('j')); // 1 + 3 = 4
         app.on_key(key('j')); // 4 + 3 = 7 → clamped to 5
-        assert_eq!(app.lib_sel, 5, "clamped to last");
+        assert_eq!(app.library.sel, 5, "clamped to last");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1344,10 +1232,10 @@ mod tests {
         }
 
         let mut app = App::library();
-        assert_eq!(app.lib_books.len(), 1);
+        assert_eq!(app.library.books.len(), 1);
         // `r` renames the current book (no need to mark it) via the popup.
         app.on_key(key('r')); // rename popup (default "%T.%E")
-        assert!(app.bulk_rename.is_some());
+        assert!(matches!(app.overlay, Overlay::BulkRename(_)));
         app.on_key(ctrl('s')); // ^S asks to confirm
         assert!(app.pending_confirm.is_some(), "rename asks to confirm");
         app.on_key(key('y')); // confirm + apply
@@ -1356,12 +1244,12 @@ mod tests {
         assert!(new.exists(), "renamed file exists");
         assert!(!old.exists(), "old file is gone");
         assert_eq!(
-            app.lib_books[0].path,
+            app.library.books[0].path,
             new.to_string_lossy(),
             "DB path repointed and reloaded"
         );
         assert!(
-            app.lib_books[0].favorite,
+            app.library.books[0].favorite,
             "favorite preserved across rename"
         );
 
@@ -1404,9 +1292,9 @@ mod tests {
         }
 
         let mut app = App::library();
-        app.lib_pane = LibPane::List;
+        app.library.pane = LibPane::List;
         app.on_key(key('D')); // open the overlay (works from any section)
-        let dr = app.dup_resolve.as_ref().expect("overlay opens");
+        let dr = dup_resolve(&app);
         assert_eq!(dr.groups.len(), 1, "one duplicate group");
         assert_eq!(dr.checked_count(), 1, "auto-selects one to delete");
         // The smaller copy is the one checked for deletion.
@@ -1427,12 +1315,12 @@ mod tests {
             !std::path::Path::new(&ssmall).exists(),
             "smaller copy deleted"
         );
-        let all = app.store.as_ref().unwrap().all_books();
+        let all = app.session.store.as_ref().unwrap().all_books();
         assert!(all.iter().any(|b| b.path == sbig));
         assert!(!all.iter().any(|b| b.path == ssmall));
         // No duplicates remain → the overlay closes itself.
         assert!(
-            app.dup_resolve.is_none(),
+            !matches!(app.overlay, Overlay::DupResolve(_)),
             "overlay closes when nothing's left"
         );
 
@@ -1472,21 +1360,27 @@ mod tests {
         }
 
         let mut app = App::library();
-        assert_eq!(app.lib_books.len(), 2);
+        assert_eq!(app.library.books.len(), 2);
         app.on_key(key('V')); // visual select from book 0
         app.on_key(key('j')); // extend to book 1
-        assert_eq!(app.lib_marked.len(), 2);
+        assert_eq!(app.library.marked.len(), 2);
         app.on_key(key('r')); // rename the selection (not the editor)
-        assert!(app.bulk_rename.is_some());
-        assert!(app.meta_edit.is_none());
+        assert!(matches!(app.overlay, Overlay::BulkRename(_)));
+        assert!(!matches!(app.overlay, Overlay::MetaEdit(_)));
         app.on_key(ctrl('s')); // ^S asks to confirm
         app.on_key(key('y')); // confirm + apply default "%T.%E"
 
         assert!(books.join("Alpha.epub").exists(), "Alpha renamed");
         assert!(books.join("Beta.epub").exists(), "Beta renamed");
         assert!(!books.join("a old.epub").exists(), "old file gone");
-        assert!(app.bulk_rename.is_none(), "popup closed after apply");
-        assert!(app.lib_marked.is_empty(), "selection cleared after apply");
+        assert!(
+            !matches!(app.overlay, Overlay::BulkRename(_)),
+            "popup closed after apply"
+        );
+        assert!(
+            app.library.marked.is_empty(),
+            "selection cleared after apply"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1515,7 +1409,7 @@ mod tests {
             row: 1,
             modifiers: KeyModifiers::NONE,
         });
-        assert_eq!(app.lib_sel, 1, "click on the second row selects it");
+        assert_eq!(app.library.sel, 1, "click on the second row selects it");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1536,7 +1430,8 @@ mod tests {
                 .unwrap();
         }
         let names = |a: &App| {
-            a.store
+            a.session
+                .store
                 .as_ref()
                 .unwrap()
                 .all_shelves()
@@ -1553,7 +1448,7 @@ mod tests {
         }
         app.on_key(code(KeyCode::Enter));
         assert_eq!(names(&app), vec!["Sci"]);
-        assert!(matches!(app.lib_view, LibView::Shelf(ref n) if n == "Sci"));
+        assert!(matches!(app.library.view, LibView::Shelf(ref n) if n == "Sci"));
 
         // Rename in place: Sci → SciFi. ⏎ asks to confirm; y commits.
         app.lib_coll_begin_rename();
@@ -1596,13 +1491,16 @@ mod tests {
         app.on_key(key(' ')); // pick A, advance to B
         app.on_key(code(KeyCode::Down)); // skip B → C
         app.on_key(key(' ')); // pick C
-        assert!(app.lib_marked.contains("/a.epub"));
-        assert!(app.lib_marked.contains("/c.epub"));
+        assert!(app.library.marked.contains("/a.epub"));
+        assert!(app.library.marked.contains("/c.epub"));
         assert!(
-            !app.lib_marked.contains("/b.epub"),
+            !app.library.marked.contains("/b.epub"),
             "B was skipped — non-contiguous"
         );
-        assert!(app.lib_visual.is_none(), "Space doesn't enter visual mode");
+        assert!(
+            app.library.visual.is_none(),
+            "Space doesn't enter visual mode"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1626,9 +1524,9 @@ mod tests {
         let mut app = App::library();
         app.on_key(key('V')); // visual select from book 0
         app.on_key(key('j')); // extend to book 1
-        assert_eq!(app.lib_marked.len(), 2);
+        assert_eq!(app.library.marked.len(), 2);
         app.on_key(key('c')); // bulk shelf picker
-        assert_eq!(app.shelf_picker.as_ref().unwrap().targets.len(), 2);
+        assert_eq!(shelf_picker(&app).targets.len(), 2);
         // Select the "＋ New collection" row, create "Unread", filing both books.
         app.on_key(code(KeyCode::Enter)); // onto +New row → start typing
         for c in "Unread".chars() {
@@ -1637,11 +1535,11 @@ mod tests {
         app.on_key(code(KeyCode::Enter)); // create + file all
         app.on_key(key('q')); // close (clears the selection)
 
-        let store = app.store.as_ref().unwrap();
+        let store = app.session.store.as_ref().unwrap();
         assert!(store.shelves_for("/a.epub").contains(&"Unread".to_string()));
         assert!(store.shelves_for("/b.epub").contains(&"Unread".to_string()));
         assert!(
-            app.lib_marked.is_empty(),
+            app.library.marked.is_empty(),
             "selection cleared after bulk file"
         );
 
@@ -1658,17 +1556,13 @@ mod tests {
 
         let mut app = App::library();
         app.on_key(key(';')); // opens settings scoped to the library
-        assert_eq!(app.settings.as_ref().unwrap().scope, Mode::Library);
-        assert_eq!(
-            app.settings.as_ref().unwrap().tab,
-            0,
-            "opens on the first tab"
-        );
+        assert_eq!(settings_state(&app).scope, Mode::Library);
+        assert_eq!(settings_state(&app).tab, 0, "opens on the first tab");
 
         // Walk every tab: the cursor only ever rests on items, and Tab advances
         // to the next group (parking on its first option).
         for t in 0..settings_tabs(Mode::Library).len() {
-            assert_eq!(app.settings.as_ref().unwrap().tab, t);
+            assert_eq!(settings_state(&app).tab, t);
             let rows = tab_rows(Mode::Library, t);
             assert!(
                 matches!(rows[0], SettingRow::Section(_)),
@@ -1676,7 +1570,7 @@ mod tests {
             );
             // Move down past the end; the cursor must never land on a header.
             for _ in 0..rows.len() + 2 {
-                let row = app.settings.as_ref().unwrap().row;
+                let row = settings_state(&app).row;
                 assert!(
                     matches!(rows[row], SettingRow::Item(_)),
                     "cursor never rests on a section header (tab {t}, row {row})"
@@ -1686,7 +1580,7 @@ mod tests {
             app.on_key(code(KeyCode::Tab)); // next tab
         }
         // Tab wraps back to the first group.
-        assert_eq!(app.settings.as_ref().unwrap().tab, 0, "Tab wraps around");
+        assert_eq!(settings_state(&app).tab, 0, "Tab wraps around");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1726,31 +1620,31 @@ mod tests {
         for _ in 0..2 {
             app.on_key(code(KeyCode::Tab));
         }
-        let ed = app.meta_edit.as_ref().unwrap();
+        let ed = meta(&app);
         assert_eq!(ed.tab, EditTab::Online);
         // Seeded from metadata: name=title, author=first author, year from book;
         // ISBN stays inactive (empty) until its field is focused.
-        assert_eq!(ed.lookup.name, "K");
-        assert_eq!(ed.lookup.author, "Auth");
-        assert_eq!(ed.lookup.year, "2010");
+        assert_eq!(ed.lookup.name.text(), "K");
+        assert_eq!(ed.lookup.author.text(), "Auth");
+        assert_eq!(ed.lookup.year.text(), "2010");
         assert_eq!(ed.lookup.query(), "K Auth 2010");
         assert_eq!(ed.lookup.focus, 0); // Title focused
 
         // Typing edits the focused field (Title), entering edit mode.
         app.on_key(key('!'));
-        let ed = app.meta_edit.as_ref().unwrap();
+        let ed = meta(&app);
         assert!(ed.lookup.editing);
-        assert_eq!(ed.lookup.name, "K!");
+        assert_eq!(ed.lookup.name.text(), "K!");
         app.on_key(code(KeyCode::Esc));
-        assert!(!app.meta_edit.as_ref().unwrap().lookup.editing);
+        assert!(!meta(&app).lookup.editing);
 
         // j moves focus to Author; editing it changes only that field.
         app.on_key(key('j'));
-        assert_eq!(app.meta_edit.as_ref().unwrap().lookup.focus, 1);
+        assert_eq!(meta(&app).lookup.focus, 1);
         app.on_key(code(KeyCode::Enter)); // edit Author
         app.on_key(key('x'));
-        let ed = app.meta_edit.as_ref().unwrap();
-        assert_eq!(ed.lookup.author, "Authx");
+        let ed = meta(&app);
+        assert_eq!(ed.lookup.author.text(), "Authx");
         assert_eq!(ed.lookup.query(), "K! Authx 2010");
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1792,24 +1686,24 @@ mod tests {
         app.on_key(key('e'));
         // Details → Cover.
         app.on_key(code(KeyCode::Tab));
-        assert_eq!(app.meta_edit.as_ref().unwrap().tab, EditTab::Cover);
+        assert_eq!(meta(&app).tab, EditTab::Cover);
         app.on_key(key('a'));
         app.on_key(key('b'));
         app.on_key(code(KeyCode::Esc)); // leave the cover query
-        assert_eq!(app.meta_edit.as_ref().unwrap().cover_search.q, "ab");
+        assert_eq!(meta(&app).cover_search.q.text(), "ab");
 
         // Cover → Lookup: the seeded Title field is untouched, not in edit mode.
         app.on_key(code(KeyCode::Tab));
-        let ed = app.meta_edit.as_ref().unwrap();
+        let ed = meta(&app);
         assert_eq!(ed.tab, EditTab::Online);
-        assert_eq!(ed.lookup.name, "K");
+        assert_eq!(ed.lookup.name.text(), "K");
         assert!(!ed.lookup.editing);
 
         // Typing here edits the Title field; the cover query keeps "ab".
         app.on_key(key('c'));
-        let ed = app.meta_edit.as_ref().unwrap();
-        assert_eq!(ed.lookup.name, "Kc");
-        assert_eq!(ed.cover_search.q, "ab");
+        let ed = meta(&app);
+        assert_eq!(ed.lookup.name.text(), "Kc");
+        assert_eq!(ed.cover_search.q.text(), "ab");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1867,12 +1761,12 @@ mod tests {
 
         let mut app = App::library();
         app.on_key(key('e'));
-        let ed = app.meta_edit.as_ref().unwrap();
+        let ed = meta(&app);
         // Title from the filename; author placeholder "Unknown" → empty; the
         // Cover query is the same clean title, not the ID-like metadata title.
-        assert_eq!(ed.lookup.name, "Building Chatbots with Python");
-        assert_eq!(ed.lookup.author, "");
-        assert_eq!(ed.cover_search.q, "Building Chatbots with Python");
+        assert_eq!(ed.lookup.name.text(), "Building Chatbots with Python");
+        assert_eq!(ed.lookup.author.text(), "");
+        assert_eq!(ed.cover_search.q.text(), "Building Chatbots with Python");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1910,15 +1804,18 @@ mod tests {
         app.on_key(key('e'));
         // Simulate `x` filling the Details with real values.
         {
-            let ed = app.meta_edit.as_mut().unwrap();
-            ed.values[0] = "Building Chatbots with Python".into();
-            ed.values[1] = "Sumit Raj".into();
+            let ed = meta_mut(&mut app);
+            ed.values[0].set("Building Chatbots with Python");
+            ed.values[1].set("Sumit Raj");
         }
         app.on_key(key('2')); // → Cover: re-seeds from the new Details
-        let ed = app.meta_edit.as_ref().unwrap();
-        assert_eq!(ed.cover_search.q, "Building Chatbots with Python Sumit Raj");
-        assert_eq!(ed.lookup.name, "Building Chatbots with Python");
-        assert_eq!(ed.lookup.author, "Sumit Raj");
+        let ed = meta(&app);
+        assert_eq!(
+            ed.cover_search.q.text(),
+            "Building Chatbots with Python Sumit Raj"
+        );
+        assert_eq!(ed.lookup.name.text(), "Building Chatbots with Python");
+        assert_eq!(ed.lookup.author.text(), "Sumit Raj");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1941,29 +1838,35 @@ mod tests {
         }
 
         let mut app = App::library();
-        assert_eq!(app.lib_books.len(), 3);
+        assert_eq!(app.library.books.len(), 3);
         app.on_key(key('V')); // visual from book 0
         app.on_key(key('j')); // extend to book 1
-        assert_eq!(app.lib_marked.len(), 2);
+        assert_eq!(app.library.marked.len(), 2);
 
         app.on_key(key('e')); // start the bulk edit
-        assert!(app.meta_edit.is_some());
+        assert!(matches!(app.overlay, Overlay::MetaEdit(_)));
         assert_eq!(app.edit_total, 2);
         assert_eq!(app.edit_queue.len(), 1, "one book still queued");
-        let first = app.meta_edit.as_ref().unwrap().path.clone();
+        let first = meta(&app).path.clone();
 
         // ^S → confirm → save and advance to the next book.
         app.on_key(ctrl('s'));
         app.on_key(key('y'));
-        assert!(app.meta_edit.is_some(), "advanced to the next book");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "advanced to the next book"
+        );
         assert_eq!(app.edit_queue.len(), 0);
-        let second = app.meta_edit.as_ref().unwrap().path.clone();
+        let second = meta(&app).path.clone();
         assert_ne!(first, second);
 
         // ^S on the last → confirm → editor closes, queue reset.
         app.on_key(ctrl('s'));
         app.on_key(key('y'));
-        assert!(app.meta_edit.is_none(), "editor closes after the last book");
+        assert!(
+            !matches!(app.overlay, Overlay::MetaEdit(_)),
+            "editor closes after the last book"
+        );
         assert_eq!(app.edit_total, 0);
     }
 
@@ -1985,14 +1888,17 @@ mod tests {
 
         let mut app = App::library();
         app.on_key(key('A')); // select all
-        assert_eq!(app.lib_marked.len(), 2);
+        assert_eq!(app.library.marked.len(), 2);
         app.on_key(key('e'));
-        assert!(app.meta_edit.is_some());
+        assert!(matches!(app.overlay, Overlay::MetaEdit(_)));
         app.on_key(code(KeyCode::Esc)); // skip first → next opens
-        assert!(app.meta_edit.is_some(), "Esc advanced, not closed");
+        assert!(
+            matches!(app.overlay, Overlay::MetaEdit(_)),
+            "Esc advanced, not closed"
+        );
         assert_eq!(app.edit_queue.len(), 0);
         app.on_key(code(KeyCode::Esc)); // skip last → closes
-        assert!(app.meta_edit.is_none());
+        assert!(!matches!(app.overlay, Overlay::MetaEdit(_)));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -3,7 +3,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, Mode};
+use super::{App, Mode, Overlay};
 use crate::config::Config;
 use crate::document::BookFormat;
 
@@ -261,12 +261,12 @@ pub fn first_setting_row(scope: Mode, tab: usize) -> usize {
 
 impl App {
     pub(crate) fn settings_key(&mut self, key: KeyEvent) {
-        if self.settings.is_none() {
+        if !matches!(self.overlay, Overlay::Settings(_)) {
             return;
         }
         match key.code {
             KeyCode::Esc | KeyCode::Char(';') | KeyCode::Char('q') => {
-                self.settings = None;
+                self.overlay = Overlay::None;
                 self.config.save();
             }
             KeyCode::Tab => self.settings_tab(1),
@@ -281,7 +281,7 @@ impl App {
 
     /// Switch tab by `delta` (wrapping), parking the cursor on its first option.
     fn settings_tab(&mut self, delta: isize) {
-        let Some(s) = self.settings.as_ref() else {
+        let Overlay::Settings(s) = &self.overlay else {
             return;
         };
         let n = settings_tabs(s.scope).len();
@@ -290,7 +290,7 @@ impl App {
         }
         let tab = (s.tab as isize + delta).rem_euclid(n as isize) as usize;
         let row = first_setting_row(s.scope, tab);
-        if let Some(s) = self.settings.as_mut() {
+        if let Overlay::Settings(s) = &mut self.overlay {
             s.tab = tab;
             s.row = row;
         }
@@ -299,7 +299,7 @@ impl App {
     /// Move the settings cursor by `delta` items within the active tab, skipping
     /// section headers.
     fn settings_move(&mut self, delta: isize) {
-        let Some(s) = self.settings.as_ref() else {
+        let Overlay::Settings(s) = &self.overlay else {
             return;
         };
         let rows = tab_rows(s.scope, s.tab);
@@ -314,14 +314,14 @@ impl App {
         }
         let cur = items.iter().position(|&i| i == s.row).unwrap_or(0) as isize;
         let next = (cur + delta).clamp(0, items.len() as isize - 1) as usize;
-        if let Some(s) = self.settings.as_mut() {
+        if let Overlay::Settings(s) = &mut self.overlay {
             s.row = items[next];
         }
     }
 
     fn settings_change(&mut self, delta: i32) {
         use crate::config::{MAX_LINE_SPACING, MAX_PAGE_GAP, MAX_SIDE_PADDING};
-        let Some(s) = self.settings.as_ref() else {
+        let Overlay::Settings(s) = &self.overlay else {
             return;
         };
         // Resolve the focused row (in the active tab) to a setting identity.
@@ -425,13 +425,13 @@ impl App {
     /// Open Library settings on the Duplicates tab — the resolve overlay's
     /// preferences. Closes the overlay (settings replaces it); reopen with `D`.
     pub(crate) fn open_dup_settings(&mut self) {
-        self.dup_resolve = None;
+        self.overlay = Overlay::None;
         let scope = Mode::Library;
         let tab = settings_tabs(scope)
             .iter()
             .position(|t| t.title == "Duplicates")
             .unwrap_or(0);
         let row = first_setting_row(scope, tab);
-        self.settings = Some(Settings { scope, tab, row });
+        self.overlay = Overlay::Settings(Settings { scope, tab, row });
     }
 }

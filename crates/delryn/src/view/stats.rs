@@ -6,11 +6,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::app::App;
+use crate::app::{App, Overlay};
 use crate::library::stats::fmt_duration;
 
 pub fn render(f: &mut Frame, app: &App) {
-    let Some(s) = app.stats.as_ref() else {
+    let Overlay::Stats(s) = &app.overlay else {
         return;
     };
     let theme = app.config.theme;
