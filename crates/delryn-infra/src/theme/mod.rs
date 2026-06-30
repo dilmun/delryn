@@ -9,6 +9,8 @@ use std::sync::OnceLock;
 
 use ratatui::style::{Color, Style};
 
+use crate::color::luma;
+
 /// The terminal's real background colour, queried once at startup (OSC 11). The
 /// `terminal` theme uses no colours of its own, so without this it would recolour
 /// images against a white-paper fallback; with it, equations and inverted figures
@@ -27,8 +29,10 @@ fn terminal_background() -> Option<[u8; 3]> {
 mod builtin;
 mod load;
 mod palette;
+mod role;
 
 pub use builtin::*;
+pub use role::Role;
 
 /// All available themes — the compiled-in built-ins plus any user themes found in
 /// [`crate::paths::themes_dir`], loaded once on first access (built-ins first,
@@ -83,6 +87,29 @@ impl Theme {
         all[(i + all.len() - 1) % all.len()]
     }
 
+    /// Resolve a semantic [`Role`] to a concrete `Style` (foreground, optional
+    /// background, and modifiers). The view layer paints in roles — `theme.style
+    /// (Role::Heading)` — never in raw fields, so emphasis and colour decisions
+    /// live in one place ([`role`]).
+    pub fn style(&self, role: Role) -> Style {
+        let r = role::resolve(self, role);
+        let mut s = Style::default().add_modifier(r.modifier);
+        if let Some(fg) = r.fg {
+            s = s.fg(fg);
+        }
+        if let Some(bg) = r.bg {
+            s = s.bg(bg);
+        }
+        s
+    }
+
+    /// The foreground colour of a [`Role`], for the few sites that compose their
+    /// own `Style` (border colours, gauges). Reverse-video roles (no own
+    /// foreground) fall back to the body colour.
+    pub fn color(&self, role: Role) -> Color {
+        role::resolve(self, role).fg.unwrap_or(self.fg)
+    }
+
     /// The base text style: foreground always, background only when the theme
     /// paints one (so the `terminal` theme keeps the terminal's own backdrop).
     pub fn text_style(&self) -> Style {
@@ -112,8 +139,7 @@ impl Theme {
     /// detection), so code keeps rendering on the terminal's own backdrop.
     pub fn code_surface(&self) -> Option<Color> {
         let paper = self.bg.and_then(rgb_of).or_else(terminal_background)?;
-        let lum = |c: [u8; 3]| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
-        let ink = rgb_of(self.fg).unwrap_or(if lum(paper) < 128.0 {
+        let ink = rgb_of(self.fg).unwrap_or(if luma(paper) < 128.0 {
             [235, 235, 235]
         } else {
             [20, 20, 20]
@@ -144,9 +170,8 @@ impl Theme {
             .and_then(rgb_of)
             .or(term_bg)
             .unwrap_or([255, 255, 255]);
-        let lum = |c: [u8; 3]| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
-        if (lum(ink) - lum(paper)).abs() < 64.0 {
-            let opposite = if lum(paper) < 128.0 {
+        if (luma(ink) - luma(paper)).abs() < 64.0 {
+            let opposite = if luma(paper) < 128.0 {
                 [235, 235, 235]
             } else {
                 [20, 20, 20]
@@ -207,11 +232,10 @@ mod tests {
     #[test]
     fn every_theme_resolves_a_readable_image_ink_pair() {
         // ink and paper must always differ enough to read an equation against.
-        let lum = |c: [u8; 3]| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
         for t in BUILTINS {
             let (ink, paper) = t.image_ink();
             assert!(
-                (lum(ink) - lum(paper)).abs() >= 64.0,
+                (luma(ink) - luma(paper)).abs() >= 64.0,
                 "{} ink/paper too close: {ink:?} vs {paper:?}",
                 t.name
             );
@@ -234,8 +258,7 @@ mod tests {
         // and the ink is snapped light for contrast.
         let (ink, paper) = TERMINAL.resolve_image_ink(Some([20, 22, 26]));
         assert_eq!(paper, [20, 22, 26], "page = real terminal bg");
-        let lum = |c: [u8; 3]| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
-        assert!(lum(ink) > 128.0, "ink snapped light on a dark bg: {ink:?}");
+        assert!(luma(ink) > 128.0, "ink snapped light on a dark bg: {ink:?}");
         // A concrete theme ignores the terminal fallback.
         assert_eq!(OLED.resolve_image_ink(Some([20, 22, 26])).1, [0, 0, 0]);
     }
@@ -243,10 +266,7 @@ mod tests {
     #[test]
     fn code_surface_is_a_faint_shift_from_the_page() {
         // A concrete dark theme: surface is slightly lighter than the page.
-        let lum = |c: Color| match c {
-            Color::Rgb(r, g, b) => 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32,
-            _ => 0.0,
-        };
+        let lum = |c: Color| rgb_of(c).map(luma).unwrap_or(0.0);
         let surface = OLED.code_surface().expect("concrete theme has a surface");
         assert!(
             lum(surface) > 0.0 && lum(surface) < 40.0,

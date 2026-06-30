@@ -63,22 +63,29 @@ is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
 
 ### R-C — Theming system + status bar (full)
 
-- [~] **Theming: Palette + Roles, file-configurable.** `theme.rs` (415) →
-      `theme/{mod,builtin,palette,load}`. ✅ **User themes shipped** (330294e):
+- [x] **Theming: Palette + Roles, file-configurable.** `theme.rs` (415) →
+      `theme/{mod,builtin,palette,load,role}`. ✅ **User themes** (330294e):
       runtime registry = built-ins + `~/.config/delryn/themes/*.toml`; a `[palette]`
-      of hex swatches maps onto the flat `Theme` with derivations; `Theme` stays
-      `Copy` so views are untouched. **Remaining:** the semantic `Role` enum +
-      `theme.style(Role)` so every surface is on a role (migrate views off the flat
-      fields), `theme/role.rs` default map, optional `[roles]` overrides, contrast
-      validation, shared `luma()` (R-D dedup). Docs: `docs/theming.md`.
+      of hex swatches maps onto the flat `Theme` with derivations. ✅ **Role
+      system** (this batch): `theme/role.rs` = a semantic `Role` enum (content /
+      chrome / selection / semantic / status) + the default map; `Theme::style
+      (Role)`/`color(Role)`. **Every** view surface migrated off the flat swatches
+      onto roles — the lone `Color::` literal left in `view/` is the documented
+      syntect-highlight exception in `reader.rs`. `Theme` stays `Copy` (the flat
+      swatches are the *resolved palette* the role map reads). ✅ **Contrast gate**
+      drops an illegible user theme at load; ✅ **shared `luma()`** →
+      `delryn-infra::color` (R-D dedup). *Deferred (optional, no demand): per-theme
+      `[roles]` overrides — the seam is `role::resolve` (give `Theme` an optional
+      leaked role-table), but it would pressure `Copy`, so not until asked.* Docs:
+      `docs/theming.md`.
 - [~] **Status bar: segment model, modern + unified.** ✅ (9eb5276)
       `view/status/{mod,segment,render,producers}` — Left/Center/Right zoned
       segments with drop-priority overflow; one renderer; reader/library/overlay
       producers. **Deleted** `view/reader.rs::render_status`, `view/library/status.rs`,
       and the old `legend` cascade. Selection pill + consistent state-Left/
-      hints-Right. **Remaining:** the `[status]` config block (reorder/toggle
-      segments per zone) + per-segment `status.*` roles once the Role system lands.
-      Docs: `docs/status.md`.
+      hints-Right. ✅ Now painted in `Role::Status*` + `Role::Selection` (the Role
+      system landed above). **Remaining:** the `[status]` config block (reorder/
+      toggle segments per zone). Docs: `docs/status.md`.
 
 ### R-D — P2 polish
 

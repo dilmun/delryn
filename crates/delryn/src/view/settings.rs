@@ -12,6 +12,7 @@ use ratatui::widgets::{
 };
 
 use crate::app::{App, Mode, Overlay, SettingRow, settings_tabs, tab_rows};
+use crate::theme::Role;
 
 /// Column where each option's value is shown (label left, value right).
 const VALUE_COL: usize = 30;
@@ -34,21 +35,19 @@ pub fn render(f: &mut Frame, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.accent))
+        .border_style(theme.style(Role::BorderFocus))
         .title(Span::styled(
             format!(" {scope} Settings "),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
+            theme.style(Role::Title),
         ))
         .title_bottom(
             Line::from(Span::styled(
                 " Tab section · ↑↓ move · ←→ change · q close ",
-                Style::default().fg(theme.muted),
+                theme.style(Role::Muted),
             ))
             .alignment(Alignment::Center),
         )
-        .style(Style::default().fg(theme.fg).bg(bg));
+        .style(theme.style(Role::Body).bg(bg));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -66,7 +65,7 @@ pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(
         Paragraph::new(Line::styled(
             "─".repeat(chunks[1].width as usize),
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+            theme.style(Role::Hint),
         )),
         chunks[1],
     );
@@ -88,12 +87,9 @@ fn render_tab_bar(
             spans.push(Span::raw(" "));
         }
         let style = if i == active {
-            Style::default()
-                .fg(theme.on_accent())
-                .bg(theme.accent)
-                .add_modifier(Modifier::BOLD)
+            theme.style(Role::Selection)
         } else {
-            Style::default().fg(theme.muted)
+            theme.style(Role::Muted)
         };
         spans.push(Span::styled(format!(" {} ", t.title), style));
     }
@@ -125,9 +121,7 @@ fn render_body(
                 }
                 lines.push(Line::styled(
                     format!("  {title}"),
-                    Style::default()
-                        .fg(theme.muted)
-                        .add_modifier(Modifier::BOLD | Modifier::DIM),
+                    theme.style(Role::Hint).add_modifier(Modifier::BOLD),
                 ));
             }
             SettingRow::Item(item) => {
@@ -138,17 +132,18 @@ fn render_body(
                 let marker = if selected { "  ▸ " } else { "    " };
                 let label = item.label();
                 let label_style = if selected {
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD)
+                    theme.style(Role::AccentStrong)
                 } else {
-                    Style::default().fg(theme.fg)
+                    theme.style(Role::Body)
                 };
                 let pad = VALUE_COL.saturating_sub(label.chars().count() + 4);
                 lines.push(Line::from(vec![
                     Span::styled(format!("{marker}{label}"), label_style),
                     Span::raw(" ".repeat(pad)),
-                    Span::styled(item.value(&app.config), Style::default().fg(theme.heading)),
+                    Span::styled(
+                        item.value(&app.config),
+                        Style::default().fg(theme.color(Role::Heading)),
+                    ),
                 ]));
             }
         }
@@ -169,8 +164,8 @@ fn render_body(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
-                .thumb_style(Style::default().fg(theme.accent))
-                .track_style(Style::default().fg(theme.muted).add_modifier(Modifier::DIM)),
+                .thumb_style(theme.style(Role::Accent))
+                .track_style(theme.style(Role::Hint)),
             area,
             &mut sb,
         );
