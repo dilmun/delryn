@@ -306,13 +306,13 @@ impl App {
         let text = p.buffer.trim().to_string();
         let id = match p.kind {
             PromptKind::Name(id) => {
-                if let Some(store) = &self.store {
+                if let Some(store) = &self.session.store {
                     store.set_annotation_name(id, &text);
                 }
                 id
             }
             PromptKind::Folder(id) => {
-                if let Some(store) = &self.store {
+                if let Some(store) = &self.session.store {
                     store.set_annotation_folder(id, &text);
                 }
                 id
@@ -324,8 +324,8 @@ impl App {
     /// Reload the open bookmarks overlay, keeping the cursor on bookmark `keep_id`
     /// (whose position may have shifted when its folder changed).
     fn refresh_bookmarks(&mut self, keep_id: i64) {
-        if let (Some(store), Some(a)) = (&self.store, self.annot.as_mut()) {
-            a.items = store.list_bookmarks(&self.book_path);
+        if let (Some(store), Some(a)) = (&self.session.store, self.annot.as_mut()) {
+            a.items = store.list_bookmarks(&self.session.book_path);
             if let Some(pos) = a.items.iter().position(|i| i.id == keep_id) {
                 a.sel = pos;
             } else if a.sel >= a.items.len() {
@@ -391,9 +391,9 @@ impl App {
                     .as_ref()
                     .and_then(|a| a.items.get(a.sel))
                     .map(|i| i.id);
-                if let (Some(id), Some(store)) = (id, &self.store) {
+                if let (Some(id), Some(store)) = (id, &self.session.store) {
                     store.delete_annotation(id);
-                    let items = store.list_bookmarks(&self.book_path);
+                    let items = store.list_bookmarks(&self.session.book_path);
                     if let Some(a) = self.annot.as_mut() {
                         a.items = items;
                         if a.sel >= a.items.len() {
@@ -410,9 +410,9 @@ impl App {
     /// Push the open book's bookmarks down to the reader so it can mark their
     /// lines in the gutter. Cheap; call after any add/delete/move and on open.
     pub(crate) fn sync_reader_bookmarks(&mut self) {
-        if let (Some(store), Some(r)) = (&self.store, self.reader.as_mut()) {
+        if let (Some(store), Some(r)) = (&self.session.store, self.reader.as_mut()) {
             let marks = store
-                .list_bookmarks(&self.book_path)
+                .list_bookmarks(&self.session.book_path)
                 .into_iter()
                 .map(|a| (a.section, a.quote))
                 .collect();
@@ -475,13 +475,13 @@ impl App {
             Action::Quit => self.should_quit = true,
             Action::Back => {
                 // Accumulate reading time for the session before leaving.
-                if let (Some(start), Some(store)) = (self.session_start, &self.store) {
+                if let (Some(start), Some(store)) = (self.session.started, &self.session.store) {
                     let secs = start.elapsed().as_secs() as i64;
-                    if secs > 0 && !self.book_path.is_empty() {
-                        store.add_read_time(&self.book_path, secs);
+                    if secs > 0 && !self.session.book_path.is_empty() {
+                        store.add_read_time(&self.session.book_path, secs);
                     }
                 }
-                self.session_start = Some(Instant::now());
+                self.session.started = Some(Instant::now());
                 self.mode = Mode::Library;
                 save = true;
             }
@@ -610,15 +610,19 @@ impl App {
             Action::SearchNext => reader.search_next(),
             Action::SearchPrev => reader.search_prev(),
             Action::AddBookmark => {
-                if let Some(store) = &self.store
-                    && !self.book_path.is_empty()
+                if let Some(store) = &self.session.store
+                    && !self.session.book_path.is_empty()
                 {
-                    store.add_bookmark(&self.book_path, reader.section, &reader.current_quote());
+                    store.add_bookmark(
+                        &self.session.book_path,
+                        reader.section,
+                        &reader.current_quote(),
+                    );
                     reader.flash = Some("bookmark added".into());
                     // `reader` is borrowed here, so push the refreshed set directly
                     // rather than via the `&mut self` helper.
                     let marks = store
-                        .list_bookmarks(&self.book_path)
+                        .list_bookmarks(&self.session.book_path)
                         .into_iter()
                         .map(|a| (a.section, a.quote))
                         .collect();
@@ -626,8 +630,8 @@ impl App {
                 }
             }
             Action::OpenAnnotations => {
-                if let Some(store) = &self.store {
-                    let items = store.list_bookmarks(&self.book_path);
+                if let Some(store) = &self.session.store {
+                    let items = store.list_bookmarks(&self.session.book_path);
                     self.annot = Some(AnnotState { items, sel: 0 });
                 }
             }
@@ -696,11 +700,11 @@ impl App {
 
         // Persist on chapter change or a settings change (cheap).
         if (save || reader.section != before)
-            && let Some(store) = &self.store
-            && !self.book_path.is_empty()
+            && let Some(store) = &self.session.store
+            && !self.session.book_path.is_empty()
         {
             let _ = store.save_progress(
-                &self.book_path,
+                &self.session.book_path,
                 reader.section,
                 reader.within_frac(),
                 self.config.view_mode,

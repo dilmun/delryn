@@ -87,7 +87,7 @@ impl App {
             .filter(|b| self.library.marked.contains(&b.path))
             .all(|b| b.favorite);
         let target = !all_fav;
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             for p in &marked {
                 store.set_favorite(p, target);
             }

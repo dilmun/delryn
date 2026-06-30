@@ -48,7 +48,7 @@ impl App {
         if self.dup_scan.is_some() {
             return;
         }
-        let Some(store) = &self.store else {
+        let Some(store) = &self.session.store else {
             return;
         };
         let paths: Vec<String> = store.all_books().into_iter().map(|b| b.path).collect();
@@ -126,7 +126,7 @@ impl App {
             .filter(|id| !id.toc_labels.is_empty())
             .count();
         let pairs = crate::library::dedup::content_link_candidates(&scan.ids);
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             store.replace_scan_dup_links(&pairs);
         }
         self.refresh_library();

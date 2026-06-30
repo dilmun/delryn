@@ -112,7 +112,7 @@ impl App {
     /// pre-applying the smart auto-select. No-op (with a flash) when nothing is
     /// duplicated.
     pub(crate) fn open_dup_resolve(&mut self) {
-        let Some(store) = &self.store else {
+        let Some(store) = &self.session.store else {
             return;
         };
         let all = store.all_books();
@@ -236,7 +236,7 @@ impl App {
                     Some(dr.groups[gi].signature.clone())
                 });
                 if let Some(sig) = sig {
-                    if let Some(store) = &self.store {
+                    if let Some(store) = &self.session.store {
                         store.dismiss_duplicate_group(&sig);
                     }
                     self.library.flash =
@@ -292,7 +292,7 @@ impl App {
 
     /// Build the ignored-groups list from the store, or `None` if empty.
     fn build_ignored_view(&self) -> Option<IgnoredView> {
-        let store = self.store.as_ref()?;
+        let store = self.session.store.as_ref()?;
         let mut signatures: Vec<String> = store.dismissed_duplicate_groups().into_iter().collect();
         signatures.sort();
         if signatures.is_empty() {
@@ -331,7 +331,7 @@ impl App {
                     .as_ref()
                     .and_then(|v| v.signatures.get(v.cursor).cloned());
                 if let Some(sig) = sig {
-                    if let Some(store) = &self.store {
+                    if let Some(store) = &self.session.store {
                         store.restore_duplicate_group(&sig);
                     }
                     self.refresh_library();
@@ -352,7 +352,7 @@ impl App {
             }
             // Restore all.
             KeyCode::Char('C') => {
-                if let Some(store) = &self.store {
+                if let Some(store) = &self.session.store {
                     store.clear_dismissed_duplicates();
                 }
                 self.ignored_view = None;
@@ -376,15 +376,15 @@ impl App {
             return;
         };
         self.flush_reading_time();
-        match super::build_reader(&path, &self.store, self.picker.is_some()) {
+        match super::build_reader(&path, &self.session.store, self.picker.is_some()) {
             Ok((reader, config, book_path)) => {
                 self.reader = Some(reader);
                 self.config = config;
-                self.book_path = book_path;
+                self.session.book_path = book_path;
                 self.mode = super::Mode::Reader;
-                self.session_start = Some(std::time::Instant::now());
-                if let Some(s) = &self.store {
-                    s.mark_opened(&self.book_path);
+                self.session.started = Some(std::time::Instant::now());
+                if let Some(s) = &self.session.store {
+                    s.mark_opened(&self.session.book_path);
                 }
                 self.dup_preview = self.dup_resolve.take();
             }

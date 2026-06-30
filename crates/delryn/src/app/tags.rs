@@ -48,7 +48,7 @@ impl App {
         let Some(input) = self.tag_edit.take() else {
             return;
         };
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             for path in &input.targets {
                 let next = if input.multi {
                     // Union the typed tags with whatever the book already has.

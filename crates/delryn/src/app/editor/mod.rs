@@ -771,7 +771,7 @@ impl App {
         let v = |i: usize| ed.values.get(i).map(|s| s.trim()).unwrap_or("");
         let year = v(2).parse::<i32>().ok();
         let series_index = v(4).parse::<f32>().ok();
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             store.update_book_meta(
                 &ed.path,
                 v(0),
