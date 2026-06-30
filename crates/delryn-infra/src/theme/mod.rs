@@ -29,8 +29,10 @@ fn terminal_background() -> Option<[u8; 3]> {
 mod builtin;
 mod load;
 mod palette;
+mod role;
 
 pub use builtin::*;
+pub use role::Role;
 
 /// All available themes — the compiled-in built-ins plus any user themes found in
 /// [`crate::paths::themes_dir`], loaded once on first access (built-ins first,
@@ -83,6 +85,29 @@ impl Theme {
         let all = registry();
         let i = all.iter().position(|t| t.name == self.name).unwrap_or(0);
         all[(i + all.len() - 1) % all.len()]
+    }
+
+    /// Resolve a semantic [`Role`] to a concrete `Style` (foreground, optional
+    /// background, and modifiers). The view layer paints in roles — `theme.style
+    /// (Role::Heading)` — never in raw fields, so emphasis and colour decisions
+    /// live in one place ([`role`]).
+    pub fn style(&self, role: Role) -> Style {
+        let r = role::resolve(self, role);
+        let mut s = Style::default().add_modifier(r.modifier);
+        if let Some(fg) = r.fg {
+            s = s.fg(fg);
+        }
+        if let Some(bg) = r.bg {
+            s = s.bg(bg);
+        }
+        s
+    }
+
+    /// The foreground colour of a [`Role`], for the few sites that compose their
+    /// own `Style` (border colours, gauges). Reverse-video roles (no own
+    /// foreground) fall back to the body colour.
+    pub fn color(&self, role: Role) -> Color {
+        role::resolve(self, role).fg.unwrap_or(self.fg)
     }
 
     /// The base text style: foreground always, background only when the theme
