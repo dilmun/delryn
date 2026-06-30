@@ -14,10 +14,8 @@ use crate::media;
 use crate::online::{self, Candidate};
 
 use super::confirm::ConfirmAction;
-use super::{
-    App, COVER_DEBOUNCE, Overlay, embed_cover_into_file, fmt_series_index, str_delete_at,
-    str_delete_before, str_insert,
-};
+use super::{App, COVER_DEBOUNCE, Overlay, embed_cover_into_file, fmt_series_index};
+use crate::ui::TextInput;
 
 // The online metadata/cover lookup (search + background execution) lives in a
 // child module; it reaches this shell's private MetaEdit helpers via `super::`.
@@ -107,7 +105,7 @@ pub enum OnlineMsg {
 #[derive(Default)]
 pub struct Search {
     /// Free-text query (the search bar).
-    pub q: String,
+    pub q: TextInput,
     /// Editing the query (vs. browsing results).
     pub editing: bool,
     /// Selected result index.
@@ -129,19 +127,17 @@ pub const LOOKUP_ISBN: usize = 3;
 /// metadata with a filename fallback (see [`App::open_meta_edit`]).
 #[derive(Default)]
 pub struct LookupForm {
-    pub name: String,
-    pub author: String,
-    pub year: String,
+    pub name: TextInput,
+    pub author: TextInput,
+    pub year: TextInput,
     /// ISBN — when set, the search runs on this alone (exact edition). Empty by
     /// default; auto-filled from the book's own ISBN when the field is focused.
-    pub isbn: String,
+    pub isbn: TextInput,
     /// Combined focus: 0..LOOKUP_FIELDS seed fields, then `LOOKUP_FIELDS + i` for
     /// result row `i`.
     pub focus: usize,
     /// Editing the focused field (vs. browsing fields/results).
     pub editing: bool,
-    /// Caret within the field being edited.
-    pub cursor: usize,
 }
 
 impl LookupForm {
@@ -150,16 +146,20 @@ impl LookupForm {
     /// has near-identical titles). Otherwise `name author year`, with punctuation
     /// noise flattened so messy metadata can't break the search.
     pub fn query(&self) -> String {
-        let isbn = self.isbn.trim();
+        let isbn = self.isbn.text().trim();
         if !isbn.is_empty() {
             let digits = online::normalize_isbn(isbn).unwrap_or_else(|| isbn.to_string());
             return format!("isbn:{digits}");
         }
-        let raw = [self.name.trim(), self.author.trim(), self.year.trim()]
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let raw = [
+            self.name.text().trim(),
+            self.author.text().trim(),
+            self.year.text().trim(),
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
         let flattened: String = raw
             .chars()
             .map(|c| match c {
@@ -173,14 +173,14 @@ impl LookupForm {
     /// Read a seed field by index (clamped to the last field).
     pub fn field(&self, i: usize) -> &str {
         match i {
-            0 => &self.name,
-            1 => &self.author,
-            2 => &self.year,
-            _ => &self.isbn,
+            0 => self.name.text(),
+            1 => self.author.text(),
+            2 => self.year.text(),
+            _ => self.isbn.text(),
         }
     }
 
-    fn field_mut(&mut self, i: usize) -> &mut String {
+    fn field_mut(&mut self, i: usize) -> &mut TextInput {
         match i {
             0 => &mut self.name,
             1 => &mut self.author,
@@ -189,11 +189,21 @@ impl LookupForm {
         }
     }
 
-    /// Char length of the currently focused seed field.
-    pub(crate) fn focused_len(&self) -> usize {
-        self.field(self.focus.min(LOOKUP_FIELDS - 1))
-            .chars()
-            .count()
+    /// Move the caret of the focused seed field to char index `pos` (clamped) —
+    /// used to place it where a mouse click landed.
+    pub(crate) fn focus_caret(&mut self, pos: usize) {
+        let i = self.focus.min(LOOKUP_FIELDS - 1);
+        self.field_mut(i).set_cursor(pos);
+    }
+
+    /// Caret position within seed field `i` (for rendering its editing caret).
+    pub(crate) fn field_cursor(&self, i: usize) -> usize {
+        match i {
+            0 => self.name.cursor(),
+            1 => self.author.cursor(),
+            2 => self.year.cursor(),
+            _ => self.isbn.cursor(),
+        }
     }
 }
 
@@ -208,13 +218,11 @@ pub struct MetaEdit {
 
     // Details tab ---------------------------------------------------------
     /// Current value of each field, indexed to match [`META_FIELDS`].
-    pub values: Vec<String>,
+    pub values: Vec<TextInput>,
     /// Values as declared by the EPUB file, for reset-to-source.
     pub original: Vec<String>,
     /// Focused field.
     pub row: usize,
-    /// Cursor position (char index) within the field being edited.
-    pub cursor: usize,
 
     // Online / Cover tabs — independent search state per tab --------------
     /// Lookup (Online) tab: structured Title/Author/Year seed form.
@@ -271,22 +279,8 @@ impl MetaEdit {
         }
     }
 
-    /// Char length of the focused Details field's value.
-    fn field_len(&self) -> usize {
-        self.values.get(self.row).map_or(0, |s| s.chars().count())
-    }
-
-    /// Char length of whichever field is currently being typed into.
-    pub(crate) fn cur_field_len(&self) -> usize {
-        match self.tab {
-            EditTab::Cover => self.cover_search.q.chars().count(),
-            EditTab::Online => self.lookup.focused_len(),
-            EditTab::Details => self.field_len(),
-        }
-    }
-
-    /// The string currently being typed into (a Details field or the cover query).
-    fn edit_target(&mut self) -> Option<&mut String> {
+    /// The field currently being typed into (a Details field or the cover query).
+    fn edit_target(&mut self) -> Option<&mut TextInput> {
         match self.tab {
             EditTab::Details => self.values.get_mut(self.row),
             EditTab::Cover => Some(&mut self.cover_search.q),
@@ -303,7 +297,7 @@ impl MetaEdit {
         let Some(s) = self.values.get(i) else {
             return false;
         };
-        let t = s.trim();
+        let t = s.text().trim();
         if t.is_empty() {
             return false;
         }
@@ -316,7 +310,7 @@ impl MetaEdit {
 
     /// Has field `i` been changed from its EPUB original?
     pub fn changed(&self, i: usize) -> bool {
-        self.original.get(i).map(String::as_str) != self.values.get(i).map(String::as_str)
+        self.original.get(i).map(String::as_str) != self.values.get(i).map(|t| t.text())
     }
 
     /// Any field currently invalid (blocks save).
@@ -414,10 +408,10 @@ impl App {
             .collect::<Vec<_>>()
             .join(" ");
         let lookup = LookupForm {
-            name,
-            author,
+            name: TextInput::from(name),
+            author: TextInput::from(author),
             // Year seeds from the book; ISBN stays inactive until focused.
-            year: values.get(F_YEAR).cloned().unwrap_or_default(),
+            year: TextInput::from(values.get(F_YEAR).cloned().unwrap_or_default()),
             ..LookupForm::default()
         };
         // Snapshot the Details the searches were seeded from (the raw values, so a
@@ -426,20 +420,18 @@ impl App {
             values[0].clone(),
             values.get(1).cloned().unwrap_or_default(),
         );
-        let cursor = values[0].chars().count();
         self.overlay = Overlay::MetaEdit(MetaEdit {
             path,
             book_title,
             tab: EditTab::Details,
             mode: EditMode::Nav,
-            values,
+            values: values.into_iter().map(TextInput::from).collect(),
             original,
             row: 0,
-            cursor,
             lookup,
             online: Search::default(),
             cover_search: Search {
-                q: cover_q,
+                q: TextInput::from(cover_q),
                 ..Search::default()
             },
             cover_hits: Vec::new(),
@@ -659,15 +651,19 @@ impl App {
             KeyCode::Char('G') => ed.row = last,
             KeyCode::Enter => {
                 ed.mode = EditMode::Edit;
-                ed.cursor = ed.field_len();
+                if let Some(field) = ed.values.get_mut(ed.row) {
+                    field.end(); // caret to the end of the field's value
+                }
             }
             // Reset the focused field (r) or all fields (R) to the EPUB value.
             KeyCode::Char('r') => {
                 if let Some(orig) = ed.original.get(ed.row).cloned() {
-                    ed.values[ed.row] = orig;
+                    ed.values[ed.row].set(orig);
                 }
             }
-            KeyCode::Char('R') => ed.values = ed.original.clone(),
+            KeyCode::Char('R') => {
+                ed.values = ed.original.iter().cloned().map(TextInput::from).collect();
+            }
             _ => {}
         }
     }
@@ -686,27 +682,27 @@ impl App {
         };
         let mut filled = Vec::new();
         if let Some(t) = m.title {
-            ed.values[0] = t;
+            ed.values[0].set(t);
             filled.push("title");
         }
         if let Some(a) = m.author {
-            ed.values[1] = a;
+            ed.values[1].set(a);
             filled.push("author");
         }
         if let Some(y) = m.year {
-            ed.values[F_YEAR] = y.to_string();
+            ed.values[F_YEAR].set(y.to_string());
             filled.push("year");
         }
         if let Some(p) = m.publisher {
-            ed.values[5] = p;
+            ed.values[5].set(p);
             filled.push("publisher");
         }
         if let Some(s) = m.subtitle {
-            ed.values[F_SUBTITLE] = s;
+            ed.values[F_SUBTITLE].set(s);
             filled.push("subtitle");
         }
         if let Some(i) = m.isbn {
-            ed.values[7] = i;
+            ed.values[7].set(i);
             filled.push("ISBN");
         }
         ed.row = 0;
@@ -720,48 +716,15 @@ impl App {
 
     /// Edit mode: type into the focused field (Details or Online query).
     fn meta_edit_typing(&mut self, key: KeyEvent) {
-        {
-            let Overlay::MetaEdit(ed) = &mut self.overlay else {
-                return;
-            };
-            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-            match key.code {
-                KeyCode::Esc | KeyCode::Enter => ed.mode = EditMode::Nav,
-                KeyCode::Left => ed.cursor = ed.cursor.saturating_sub(1),
-                KeyCode::Right => ed.cursor = (ed.cursor + 1).min(ed.cur_field_len()),
-                KeyCode::Home => ed.cursor = 0,
-                KeyCode::End => ed.cursor = ed.cur_field_len(),
-                KeyCode::Char('u') if ctrl => {
-                    if let Some(s) = ed.edit_target() {
-                        s.clear();
-                    }
-                    ed.cursor = 0;
+        let Overlay::MetaEdit(ed) = &mut self.overlay else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => ed.mode = EditMode::Nav,
+            _ => {
+                if let Some(field) = ed.edit_target() {
+                    field.handle_key(key);
                 }
-                KeyCode::Backspace => {
-                    let cur = ed.cursor;
-                    let removed = ed.edit_target().is_some_and(|s| str_delete_before(s, cur));
-                    if removed {
-                        ed.cursor -= 1;
-                    }
-                }
-                KeyCode::Delete => {
-                    let cur = ed.cursor;
-                    if let Some(s) = ed.edit_target() {
-                        str_delete_at(s, cur);
-                    }
-                }
-                KeyCode::Char(c) => {
-                    let cur = ed.cursor;
-                    let mut inserted = false;
-                    if let Some(s) = ed.edit_target() {
-                        str_insert(s, cur, c);
-                        inserted = true;
-                    }
-                    if inserted {
-                        ed.cursor += 1;
-                    }
-                }
-                _ => {}
             }
         }
     }
@@ -775,7 +738,7 @@ impl App {
         let Overlay::MetaEdit(ed) = std::mem::replace(&mut self.overlay, Overlay::None) else {
             return;
         };
-        let v = |i: usize| ed.values.get(i).map(|s| s.trim()).unwrap_or("");
+        let v = |i: usize| ed.values.get(i).map(|s| s.text().trim()).unwrap_or("");
         let year = v(2).parse::<i32>().ok();
         let series_index = v(4).parse::<f32>().ok();
         if let Some(store) = &self.session.store {
