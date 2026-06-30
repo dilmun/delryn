@@ -188,7 +188,7 @@ fn is_predominantly_light(img: &RgbaImage) -> bool {
     let mut n = 0f32;
     for p in img.pixels() {
         let a = p[3] as f32 / 255.0;
-        sum += a * (0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32);
+        sum += a * delryn_infra::color::luma([p[0], p[1], p[2]]);
         n += a.max(0.001);
     }
     n > 0.0 && sum / n > 128.0
