@@ -143,14 +143,15 @@ impl App {
                         // A Lookup seed field: focus + edit it, caret at the click.
                         e.lookup.focus = idx.min(LOOKUP_FIELDS - 1);
                         e.lookup.editing = true;
-                        let len = e.lookup.focused_len();
-                        e.lookup.cursor = (col.saturating_sub(vstart) as usize).min(len);
+                        e.lookup.focus_caret(col.saturating_sub(vstart) as usize);
                     }
                     _ => {
                         e.row = idx;
                         e.mode = EditMode::Edit;
-                        let len = e.cur_field_len();
-                        e.cursor = (col.saturating_sub(vstart) as usize).min(len);
+                        let pos = col.saturating_sub(vstart) as usize;
+                        if let Some(field) = e.values.get_mut(e.row) {
+                            field.set_cursor(pos);
+                        }
                     }
                 }
             }

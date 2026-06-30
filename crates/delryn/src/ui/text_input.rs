@@ -24,13 +24,6 @@ impl TextInput {
         Self::default()
     }
 
-    /// Seed with existing text, caret at the end (e.g. editing a current value).
-    pub fn from(text: impl Into<String>) -> Self {
-        let buf = text.into();
-        let cursor = buf.chars().count();
-        Self { buf, cursor }
-    }
-
     pub fn text(&self) -> &str {
         &self.buf
     }
@@ -105,6 +98,12 @@ impl TextInput {
         self.cursor = (self.cursor + 1).min(self.buf.chars().count());
     }
 
+    /// Move the caret to char index `n`, clamped to the text length (e.g. placing
+    /// it where a mouse click landed).
+    pub fn set_cursor(&mut self, n: usize) {
+        self.cursor = n.min(self.buf.chars().count());
+    }
+
     pub fn home(&mut self) {
         self.cursor = 0;
     }
@@ -135,6 +134,21 @@ impl TextInput {
             _ => return false,
         }
         true
+    }
+}
+
+/// Seed a `TextInput` with existing text, caret at the end (editing a current
+/// value). Enables both `TextInput::from(s)` and `s.into()`.
+impl From<String> for TextInput {
+    fn from(buf: String) -> Self {
+        let cursor = buf.chars().count();
+        Self { buf, cursor }
+    }
+}
+
+impl From<&str> for TextInput {
+    fn from(s: &str) -> Self {
+        Self::from(s.to_string())
     }
 }
 

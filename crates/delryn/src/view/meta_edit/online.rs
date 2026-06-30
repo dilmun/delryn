@@ -17,7 +17,7 @@ fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
         Style::default().fg(lab).add_modifier(Modifier::BOLD),
     )];
     if focused {
-        spans.extend(crate::view::field_spans(&s.q, ed.cursor, w, theme));
+        spans.extend(crate::view::field_spans(s.q.text(), s.q.cursor(), w, theme));
     } else if s.q.is_empty() {
         spans.push(Span::styled(
             "type to search…",
@@ -25,7 +25,7 @@ fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
         ));
     } else {
         spans.push(Span::styled(
-            crate::view::truncate(&s.q, w),
+            crate::view::truncate(s.q.text(), w),
             Style::default().fg(theme.fg),
         ));
     }
@@ -160,7 +160,7 @@ pub(crate) fn render_online(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: The
                 FieldState {
                     focused,
                     editing,
-                    cursor: ed.lookup.cursor,
+                    cursor: ed.lookup.field_cursor(i),
                     invalid: false,
                     changed: false,
                 },

@@ -163,7 +163,7 @@ fn render_diff(f: &mut Frame, app: &App, theme: Theme) {
             } else {
                 "[ ]"
             };
-            let current = super::truncate(&ed.values[r.field], col.max(1));
+            let current = super::truncate(ed.values[r.field].text(), col.max(1));
             let remote = super::truncate(&r.remote, col.max(1));
             Line::from(vec![
                 Span::styled(
@@ -281,14 +281,14 @@ fn render_details(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
         for &i in *fields {
             let focused = i == ed.row;
             let editing = focused && ed.mode == EditMode::Edit;
-            let value = ed.values.get(i).map(String::as_str).unwrap_or("");
+            let value = ed.values.get(i).map(|t| t.text()).unwrap_or("");
             lines.push(form_field(
                 META_FIELDS[i],
                 value,
                 FieldState {
                     focused,
                     editing,
-                    cursor: ed.cursor,
+                    cursor: ed.values.get(i).map_or(0, |t| t.cursor()),
                     invalid: ed.field_invalid(i),
                     changed: ed.changed(i),
                 },

@@ -239,31 +239,6 @@ fn embed_cover_into_file(path: &str, bytes: &[u8]) -> String {
     }
 }
 
-/// Insert `ch` at char index `cursor` in `s` (clamped to the end).
-fn str_insert(s: &mut String, cursor: usize, ch: char) {
-    let byte = s.char_indices().nth(cursor).map_or(s.len(), |(b, _)| b);
-    s.insert(byte, ch);
-}
-
-/// Remove the char before `cursor`; returns whether one was removed.
-fn str_delete_before(s: &mut String, cursor: usize) -> bool {
-    if cursor == 0 {
-        return false;
-    }
-    if let Some((byte, _)) = s.char_indices().nth(cursor - 1) {
-        s.remove(byte);
-        return true;
-    }
-    false
-}
-
-/// Remove the char at `cursor` (no-op past the end).
-fn str_delete_at(s: &mut String, cursor: usize) {
-    if let Some((byte, _)) = s.char_indices().nth(cursor) {
-        s.remove(byte);
-    }
-}
-
 /// Build a reader for `path`, applying global config and any saved per-book
 /// overrides (theme, view mode, resume position).
 fn build_reader(
@@ -878,7 +853,7 @@ mod tests {
         // Mid-string insert: cursor at end of "K"; Left then 'X' → "XK".
         app.on_key(code(KeyCode::Left));
         app.on_key(key('X'));
-        assert_eq!(meta(&app).values[0], "XK");
+        assert_eq!(meta(&app).values[0].text(), "XK");
         app.on_key(code(KeyCode::Esc)); // back to nav (not closed)
         assert!(matches!(app.overlay, Overlay::MetaEdit(_)));
         assert_eq!(meta(&app).mode, EditMode::Nav);
@@ -1649,9 +1624,9 @@ mod tests {
         assert_eq!(ed.tab, EditTab::Online);
         // Seeded from metadata: name=title, author=first author, year from book;
         // ISBN stays inactive (empty) until its field is focused.
-        assert_eq!(ed.lookup.name, "K");
-        assert_eq!(ed.lookup.author, "Auth");
-        assert_eq!(ed.lookup.year, "2010");
+        assert_eq!(ed.lookup.name.text(), "K");
+        assert_eq!(ed.lookup.author.text(), "Auth");
+        assert_eq!(ed.lookup.year.text(), "2010");
         assert_eq!(ed.lookup.query(), "K Auth 2010");
         assert_eq!(ed.lookup.focus, 0); // Title focused
 
@@ -1659,7 +1634,7 @@ mod tests {
         app.on_key(key('!'));
         let ed = meta(&app);
         assert!(ed.lookup.editing);
-        assert_eq!(ed.lookup.name, "K!");
+        assert_eq!(ed.lookup.name.text(), "K!");
         app.on_key(code(KeyCode::Esc));
         assert!(!meta(&app).lookup.editing);
 
@@ -1669,7 +1644,7 @@ mod tests {
         app.on_key(code(KeyCode::Enter)); // edit Author
         app.on_key(key('x'));
         let ed = meta(&app);
-        assert_eq!(ed.lookup.author, "Authx");
+        assert_eq!(ed.lookup.author.text(), "Authx");
         assert_eq!(ed.lookup.query(), "K! Authx 2010");
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1715,20 +1690,20 @@ mod tests {
         app.on_key(key('a'));
         app.on_key(key('b'));
         app.on_key(code(KeyCode::Esc)); // leave the cover query
-        assert_eq!(meta(&app).cover_search.q, "ab");
+        assert_eq!(meta(&app).cover_search.q.text(), "ab");
 
         // Cover → Lookup: the seeded Title field is untouched, not in edit mode.
         app.on_key(code(KeyCode::Tab));
         let ed = meta(&app);
         assert_eq!(ed.tab, EditTab::Online);
-        assert_eq!(ed.lookup.name, "K");
+        assert_eq!(ed.lookup.name.text(), "K");
         assert!(!ed.lookup.editing);
 
         // Typing here edits the Title field; the cover query keeps "ab".
         app.on_key(key('c'));
         let ed = meta(&app);
-        assert_eq!(ed.lookup.name, "Kc");
-        assert_eq!(ed.cover_search.q, "ab");
+        assert_eq!(ed.lookup.name.text(), "Kc");
+        assert_eq!(ed.cover_search.q.text(), "ab");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1789,9 +1764,9 @@ mod tests {
         let ed = meta(&app);
         // Title from the filename; author placeholder "Unknown" → empty; the
         // Cover query is the same clean title, not the ID-like metadata title.
-        assert_eq!(ed.lookup.name, "Building Chatbots with Python");
-        assert_eq!(ed.lookup.author, "");
-        assert_eq!(ed.cover_search.q, "Building Chatbots with Python");
+        assert_eq!(ed.lookup.name.text(), "Building Chatbots with Python");
+        assert_eq!(ed.lookup.author.text(), "");
+        assert_eq!(ed.cover_search.q.text(), "Building Chatbots with Python");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1830,14 +1805,17 @@ mod tests {
         // Simulate `x` filling the Details with real values.
         {
             let ed = meta_mut(&mut app);
-            ed.values[0] = "Building Chatbots with Python".into();
-            ed.values[1] = "Sumit Raj".into();
+            ed.values[0].set("Building Chatbots with Python");
+            ed.values[1].set("Sumit Raj");
         }
         app.on_key(key('2')); // → Cover: re-seeds from the new Details
         let ed = meta(&app);
-        assert_eq!(ed.cover_search.q, "Building Chatbots with Python Sumit Raj");
-        assert_eq!(ed.lookup.name, "Building Chatbots with Python");
-        assert_eq!(ed.lookup.author, "Sumit Raj");
+        assert_eq!(
+            ed.cover_search.q.text(),
+            "Building Chatbots with Python Sumit Raj"
+        );
+        assert_eq!(ed.lookup.name.text(), "Building Chatbots with Python");
+        assert_eq!(ed.lookup.author.text(), "Sumit Raj");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -18,6 +18,12 @@ use crate::app::{
 use crate::library::stats::LibraryStats;
 
 /// The one overlay currently open above the Library/Reader, if any.
+//
+// Exactly one `Overlay` exists at a time (`App::overlay`) — it's never collected
+// or stored in bulk — so the size of the largest variant is irrelevant; boxing
+// variants would only add indirection. (`MetaEdit`, the tabbed multi-field
+// editor, is the biggest.)
+#[allow(clippy::large_enum_variant)]
 #[derive(Default)]
 pub enum Overlay {
     /// No overlay open.
