@@ -6,6 +6,7 @@
 use crossterm::event::KeyModifiers;
 
 use super::*;
+use crate::ui::TextInput;
 
 impl App {
     pub fn on_key(&mut self, key: KeyEvent) {
@@ -17,63 +18,63 @@ impl App {
             self.confirm_key(key);
             return;
         }
-        if self.settings.is_some() {
+        if matches!(self.overlay, Overlay::Settings(_)) {
             self.settings_key(key);
             return;
         }
-        if self.prompt.is_some() {
+        if matches!(self.overlay, Overlay::Prompt(_)) {
             self.prompt_key(key);
             return;
         }
-        if self.meta_edit.is_some() {
+        if matches!(self.overlay, Overlay::MetaEdit(_)) {
             self.meta_edit_key(key);
             return;
         }
-        if self.bulk_rename.is_some() {
+        if matches!(self.overlay, Overlay::BulkRename(_)) {
             self.bulk_rename_key(key);
             return;
         }
-        if self.lib_coll_edit.is_some() {
+        if matches!(self.overlay, Overlay::CollEdit(_)) {
             self.lib_coll_edit_key(key);
             return;
         }
-        if self.tag_edit.is_some() {
+        if matches!(self.overlay, Overlay::TagEdit(_)) {
             self.tag_edit_key(key);
             return;
         }
-        if self.dup_resolve.is_some() {
+        if matches!(self.overlay, Overlay::DupResolve(_)) {
             self.dup_resolve_key(key);
             return;
         }
-        if self.ignored_view.is_some() {
+        if matches!(self.overlay, Overlay::IgnoredView(_)) {
             self.ignored_view_key(key);
             return;
         }
-        if self.shelf_picker.is_some() {
+        if matches!(self.overlay, Overlay::ShelfPicker(_)) {
             self.shelf_picker_key(key);
             return;
         }
-        if self.image_view.is_some() {
+        if matches!(self.overlay, Overlay::ImageView(_)) {
             self.image_key(key);
             return;
         }
-        if self.annot.is_some() {
+        if matches!(self.overlay, Overlay::Annot(_)) {
             self.annot_key(key);
             return;
         }
         // The stats overlay is read-only: any key dismisses it.
-        if self.stats.is_some() {
-            self.stats = None;
+        if matches!(self.overlay, Overlay::Stats(_)) {
+            self.overlay = Overlay::None;
             return;
         }
-        if self.palette.is_some() {
+        if matches!(self.overlay, Overlay::Palette(_)) {
             self.palette_key(key);
             return;
         }
         // The in-book search prompt is a focused text input: it must capture
         // every key (including shortcut letters like 'i' / ';' / ':') before any
         // global shortcut below gets a chance to fire.
-        if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.searching) {
+        if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.search.searching) {
             self.search_key(key);
             return;
         }
@@ -88,7 +89,7 @@ impl App {
         }
         if key.code == KeyCode::Char(';') {
             let scope = self.mode;
-            self.settings = Some(Settings {
+            self.overlay = Overlay::Settings(Settings {
                 scope,
                 tab: 0,
                 row: first_setting_row(scope, 0),
@@ -121,14 +122,14 @@ impl App {
                 // and restore the duplicate overlay if this was a preview.
                 if self.mode == Mode::Library {
                     if let Some(dr) = self.dup_preview.take() {
-                        self.dup_resolve = Some(dr);
+                        self.overlay = Overlay::DupResolve(dr);
                     }
                     self.refresh_library();
                 }
             }
             Mode::Library => {
                 // Clear any transient flash (e.g. cover-embed result) on input.
-                self.lib_flash = None;
+                self.library.flash = None;
                 self.library_key(key);
             }
         }
@@ -146,27 +147,31 @@ impl App {
         if let (Some(v), Some(idx)) = (viewer.as_mut(), current) {
             v.select_image(idx);
         }
-        self.image_view = viewer;
+        self.overlay = match viewer {
+            Some(v) => Overlay::ImageView(v),
+            None => Overlay::None,
+        };
     }
 
     /// Rebuild the viewer toggling between current-chapter and whole-book scope.
     fn toggle_image_scope(&mut self) {
-        let Some(whole) = self.image_view.as_ref().map(|v| !v.whole_book) else {
+        let Overlay::ImageView(v) = &self.overlay else {
             return;
         };
+        let whole = !v.whole_book;
         if let Some(reader) = self.reader.as_mut() {
             let figs = reader.figures(whole);
             // Keep the viewer open even if the new scope is empty (shouldn't be).
             if let Some(v) = ImageViewer::new(figs, whole) {
-                self.image_view = Some(v);
+                self.overlay = Overlay::ImageView(v);
             }
         }
     }
 
     fn image_key(&mut self, key: KeyEvent) {
         // Filter-typing mode captures every key.
-        if self.image_view.as_ref().is_some_and(|v| v.filtering) {
-            if let Some(v) = self.image_view.as_mut() {
+        if matches!(&self.overlay, Overlay::ImageView(v) if v.filtering) {
+            if let Overlay::ImageView(v) = &mut self.overlay {
                 match key.code {
                     KeyCode::Esc => {
                         v.filtering = false;
@@ -189,8 +194,8 @@ impl App {
             return;
         }
         // Save-path editing mode captures every key.
-        if self.image_view.as_ref().is_some_and(|v| v.saving) {
-            if let Some(v) = self.image_view.as_mut() {
+        if matches!(&self.overlay, Overlay::ImageView(v) if v.saving) {
+            if let Overlay::ImageView(v) = &mut self.overlay {
                 match key.code {
                     KeyCode::Esc => v.saving = false,
                     KeyCode::Enter => {
@@ -212,39 +217,43 @@ impl App {
             return;
         }
         // Clear any transient flash (e.g. "saved …") on the next key.
-        if let Some(v) = self.image_view.as_mut() {
+        if let Overlay::ImageView(v) = &mut self.overlay {
             v.flash = None;
         }
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => self.image_view = None,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => self.overlay = Overlay::None,
             KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('n') => {
-                if let Some(v) = self.image_view.as_mut() {
+                if let Overlay::ImageView(v) = &mut self.overlay {
                     v.move_sel(1);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up | KeyCode::Char('N') => {
-                if let Some(v) = self.image_view.as_mut() {
+                if let Overlay::ImageView(v) = &mut self.overlay {
                     v.move_sel(-1);
                 }
             }
             KeyCode::Char('/') => {
-                if let Some(v) = self.image_view.as_mut() {
+                if let Overlay::ImageView(v) = &mut self.overlay {
                     v.filtering = true;
                 }
             }
             // Save: open an editable path prompt prefilled with the default dir.
             KeyCode::Char('s') => {
-                if let Some(v) = self.image_view.as_mut() {
+                if let Overlay::ImageView(v) = &mut self.overlay {
                     v.save_path = v.default_save_path();
                     v.saving = true;
                 }
             }
             // Copy the figure to the system clipboard.
             KeyCode::Char('c') => {
-                let img = self.image_view.as_ref().and_then(|v| v.current_rgba());
+                let img = if let Overlay::ImageView(v) = &self.overlay {
+                    v.current_rgba()
+                } else {
+                    None
+                };
                 if let Some(rgba) = img {
                     self.pending_clipboard_image = Some(rgba);
-                    if let Some(v) = self.image_view.as_mut() {
+                    if let Overlay::ImageView(v) = &mut self.overlay {
                         v.flash = Some("copied to clipboard".into());
                     }
                 }
@@ -258,15 +267,16 @@ impl App {
             }
             // Jump to the figure's place in the book, then close the viewer.
             KeyCode::Enter | KeyCode::Char('l') => {
-                let target = self
-                    .image_view
-                    .as_ref()
-                    .and_then(|v| v.current().map(|fig| (fig.section, fig.image_index)));
+                let target = if let Overlay::ImageView(v) = &self.overlay {
+                    v.current().map(|fig| (fig.section, fig.image_index))
+                } else {
+                    None
+                };
                 if let Some((section, image_index)) = target {
                     if let Some(r) = self.reader.as_mut() {
                         r.jump_to_image(section, image_index);
                     }
-                    self.image_view = None;
+                    self.overlay = Overlay::None;
                 }
             }
             _ => {}
@@ -275,44 +285,43 @@ impl App {
 
     fn prompt_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => self.prompt = None,
+            // Cancelling reopens the bookmarks overlay the prompt was raised from
+            // (keeping the cursor on the entry being edited), leaving it unchanged.
+            KeyCode::Esc => {
+                if let Overlay::Prompt(p) = &self.overlay {
+                    let id = match p.kind {
+                        PromptKind::Name(id) | PromptKind::Folder(id) => id,
+                    };
+                    self.refresh_bookmarks(id);
+                } else {
+                    self.overlay = Overlay::None;
+                }
+            }
             KeyCode::Enter => self.prompt_commit(),
-            KeyCode::Backspace => {
-                if let Some(p) = self.prompt.as_mut() {
-                    p.buffer.pop();
+            _ => {
+                if let Overlay::Prompt(p) = &mut self.overlay {
+                    p.input.handle_key(key);
                 }
             }
-            // Ctrl-U clears the line (handy for a prefilled rename/folder field).
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(p) = self.prompt.as_mut() {
-                    p.buffer.clear();
-                }
-            }
-            KeyCode::Char(c) => {
-                if let Some(p) = self.prompt.as_mut() {
-                    p.buffer.push(c);
-                }
-            }
-            _ => {}
         }
     }
 
     /// Apply the committed prompt text to its bookmark (rename / file), then
-    /// dismiss the prompt and refresh the open overlay in place.
+    /// reopen the bookmarks overlay (the prompt is always raised from it).
     fn prompt_commit(&mut self) {
-        let Some(p) = self.prompt.take() else {
+        let Overlay::Prompt(p) = std::mem::replace(&mut self.overlay, Overlay::None) else {
             return;
         };
-        let text = p.buffer.trim().to_string();
+        let text = p.input.text().trim().to_string();
         let id = match p.kind {
             PromptKind::Name(id) => {
-                if let Some(store) = &self.store {
+                if let Some(store) = &self.session.store {
                     store.set_annotation_name(id, &text);
                 }
                 id
             }
             PromptKind::Folder(id) => {
-                if let Some(store) = &self.store {
+                if let Some(store) = &self.session.store {
                     store.set_annotation_folder(id, &text);
                 }
                 id
@@ -321,80 +330,94 @@ impl App {
         self.refresh_bookmarks(id);
     }
 
-    /// Reload the open bookmarks overlay, keeping the cursor on bookmark `keep_id`
-    /// (whose position may have shifted when its folder changed).
+    /// (Re)open the bookmarks overlay from the store, keeping the cursor on
+    /// bookmark `keep_id` (whose position may have shifted when its folder
+    /// changed). Used after a prompt commits/cancels to restore the list it was
+    /// raised from.
     fn refresh_bookmarks(&mut self, keep_id: i64) {
-        if let (Some(store), Some(a)) = (&self.store, self.annot.as_mut()) {
-            a.items = store.list_bookmarks(&self.book_path);
-            if let Some(pos) = a.items.iter().position(|i| i.id == keep_id) {
-                a.sel = pos;
-            } else if a.sel >= a.items.len() {
-                a.sel = a.items.len().saturating_sub(1);
-            }
-        }
+        let Some(store) = &self.session.store else {
+            self.overlay = Overlay::None;
+            return;
+        };
+        let items = store.list_bookmarks(&self.session.book_path);
+        let sel = items
+            .iter()
+            .position(|i| i.id == keep_id)
+            .unwrap_or_else(|| items.len().saturating_sub(1));
+        self.overlay = Overlay::Annot(AnnotState { items, sel });
         self.sync_reader_bookmarks();
     }
 
     fn annot_key(&mut self, key: KeyEvent) {
-        let Some(a) = self.annot.as_ref() else {
+        let Overlay::Annot(a) = &self.overlay else {
             return;
         };
         let (len, sel) = (a.items.len(), a.sel);
         match key.code {
-            KeyCode::Esc | KeyCode::Char('\'') | KeyCode::Char('q') => self.annot = None,
+            KeyCode::Esc | KeyCode::Char('\'') | KeyCode::Char('q') => self.overlay = Overlay::None,
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(a) = self.annot.as_mut()
+                if let Overlay::Annot(a) = &mut self.overlay
                     && len > 0
                 {
                     a.sel = (sel + 1).min(len - 1);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(a) = self.annot.as_mut() {
+                if let Overlay::Annot(a) = &mut self.overlay {
                     a.sel = sel.saturating_sub(1);
                 }
             }
             KeyCode::Enter | KeyCode::Char('l') => {
-                let target = self
-                    .annot
-                    .as_ref()
-                    .and_then(|a| a.items.get(a.sel))
-                    .map(|i| (i.section, i.quote.clone()));
+                let target = if let Overlay::Annot(a) = &self.overlay {
+                    a.items.get(a.sel).map(|i| (i.section, i.quote.clone()))
+                } else {
+                    None
+                };
                 if let Some((section, quote)) = target {
                     if let Some(r) = self.reader.as_mut() {
                         r.jump_to(section, Some(&quote));
                     }
-                    self.annot = None;
+                    self.overlay = Overlay::None;
                 }
             }
             // Name (or rename) the selected entry; prefilled with its current name.
             KeyCode::Char('r') => {
-                if let Some(i) = self.annot.as_ref().and_then(|a| a.items.get(a.sel)) {
-                    self.prompt = Some(Prompt {
-                        kind: PromptKind::Name(i.id),
-                        buffer: i.name.clone(),
+                let target = if let Overlay::Annot(a) = &self.overlay {
+                    a.items.get(a.sel).map(|i| (i.id, i.name.clone()))
+                } else {
+                    None
+                };
+                if let Some((id, name)) = target {
+                    self.overlay = Overlay::Prompt(Prompt {
+                        kind: PromptKind::Name(id),
+                        input: TextInput::from(name),
                     });
                 }
             }
             // File the selected entry into a folder; prefilled with its current one.
             KeyCode::Char('f') => {
-                if let Some(i) = self.annot.as_ref().and_then(|a| a.items.get(a.sel)) {
-                    self.prompt = Some(Prompt {
-                        kind: PromptKind::Folder(i.id),
-                        buffer: i.folder.clone(),
+                let target = if let Overlay::Annot(a) = &self.overlay {
+                    a.items.get(a.sel).map(|i| (i.id, i.folder.clone()))
+                } else {
+                    None
+                };
+                if let Some((id, folder)) = target {
+                    self.overlay = Overlay::Prompt(Prompt {
+                        kind: PromptKind::Folder(id),
+                        input: TextInput::from(folder),
                     });
                 }
             }
             KeyCode::Char('d') => {
-                let id = self
-                    .annot
-                    .as_ref()
-                    .and_then(|a| a.items.get(a.sel))
-                    .map(|i| i.id);
-                if let (Some(id), Some(store)) = (id, &self.store) {
+                let id = if let Overlay::Annot(a) = &self.overlay {
+                    a.items.get(a.sel).map(|i| i.id)
+                } else {
+                    None
+                };
+                if let (Some(id), Some(store)) = (id, &self.session.store) {
                     store.delete_annotation(id);
-                    let items = store.list_bookmarks(&self.book_path);
-                    if let Some(a) = self.annot.as_mut() {
+                    let items = store.list_bookmarks(&self.session.book_path);
+                    if let Overlay::Annot(a) = &mut self.overlay {
                         a.items = items;
                         if a.sel >= a.items.len() {
                             a.sel = a.items.len().saturating_sub(1);
@@ -410,9 +433,9 @@ impl App {
     /// Push the open book's bookmarks down to the reader so it can mark their
     /// lines in the gutter. Cheap; call after any add/delete/move and on open.
     pub(crate) fn sync_reader_bookmarks(&mut self) {
-        if let (Some(store), Some(r)) = (&self.store, self.reader.as_mut()) {
+        if let (Some(store), Some(r)) = (&self.session.store, self.reader.as_mut()) {
             let marks = store
-                .list_bookmarks(&self.book_path)
+                .list_bookmarks(&self.session.book_path)
                 .into_iter()
                 .map(|a| (a.section, a.quote))
                 .collect();
@@ -426,20 +449,20 @@ impl App {
         };
         match key.code {
             KeyCode::Esc => {
-                reader.searching = false;
-                reader.search_input.clear();
+                reader.search.searching = false;
+                reader.search.input.clear();
             }
             KeyCode::Enter => reader.run_search(),
             KeyCode::Tab => reader.cycle_search_mode(),
             KeyCode::Up => reader.search_history_recall(-1),
             KeyCode::Down => reader.search_history_recall(1),
             KeyCode::Backspace => {
-                reader.history_pos = None;
-                reader.search_input.pop();
+                reader.search.history_pos = None;
+                reader.search.input.pop();
             }
             KeyCode::Char(c) => {
-                reader.history_pos = None;
-                reader.search_input.push(c);
+                reader.search.history_pos = None;
+                reader.search.input.push(c);
             }
             _ => {}
         }
@@ -459,74 +482,30 @@ impl App {
         // blanks/flickers it. So page-snap whenever paged mode is on *or* the
         // document is page-image-based, regardless of the continuous-scroll knob.
         let paged = self.config.paged || reader.is_paged_image();
-        // A PDF flip that the throttle isn't ready for is dropped (the page
-        // hasn't been shown yet); reflowable page-snap is never throttled.
-        let page_forward = |r: &mut Reader| {
-            if flip_ready {
-                r.page_forward();
-            }
-        };
-        let page_backward = |r: &mut Reader| {
-            if flip_ready {
-                r.page_backward();
-            }
-        };
         match action {
             Action::Quit => self.should_quit = true,
             Action::Back => {
                 // Accumulate reading time for the session before leaving.
-                if let (Some(start), Some(store)) = (self.session_start, &self.store) {
+                if let (Some(start), Some(store)) = (self.session.started, &self.session.store) {
                     let secs = start.elapsed().as_secs() as i64;
-                    if secs > 0 && !self.book_path.is_empty() {
-                        store.add_read_time(&self.book_path, secs);
+                    if secs > 0 && !self.session.book_path.is_empty() {
+                        store.add_read_time(&self.session.book_path, secs);
                     }
                 }
-                self.session_start = Some(Instant::now());
+                self.session.started = Some(Instant::now());
                 self.mode = Mode::Library;
                 save = true;
             }
-            // In paged mode, vertical content navigation flips whole pages. A
-            // count prefix (`10j`) jumps that many pages at once; a bare/held key
-            // flips one, paced by the throttle.
-            Action::Down(n) => match reader.focus {
-                Focus::Content if paged && n > 1 => reader.page_jump(n as isize),
-                Focus::Content if paged => page_forward(reader),
-                Focus::Content => reader.queue_scroll(n as isize),
-                Focus::Sidebar => reader.sidebar_move(n as isize),
-            },
-            Action::Up(n) => match reader.focus {
-                Focus::Content if paged && n > 1 => reader.page_jump(-(n as isize)),
-                Focus::Content if paged => page_backward(reader),
-                Focus::Content => reader.queue_scroll(-(n as isize)),
-                Focus::Sidebar => reader.sidebar_move(-(n as isize)),
-            },
-            Action::HalfDown if paged => page_forward(reader),
-            Action::HalfUp if paged => page_backward(reader),
-            Action::HalfDown => reader.scroll_down(reader.page_lines.max(2) / 2),
-            Action::HalfUp => reader.scroll_up(reader.page_lines.max(2) / 2),
-            Action::PageDown if paged => page_forward(reader),
-            Action::PageUp if paged => page_backward(reader),
-            Action::PageDown => reader.scroll_down(reader.page_lines.max(1)),
-            Action::PageUp => reader.scroll_up(reader.page_lines.max(1)),
-            Action::Top => {
-                if reader.focus == Focus::Sidebar {
-                    reader.sidebar_sel = 0;
-                } else {
-                    reader.scroll = 0;
-                }
-            }
-            Action::Bottom => {
-                if reader.focus == Focus::Sidebar {
-                    reader.sidebar_sel = reader.outline.len().saturating_sub(1);
-                } else {
-                    reader.scroll = reader.max_scroll();
-                }
-            }
-            // `NG`: jump to page/section N (1-based), clamped. Records history.
-            Action::Goto(n) => {
-                let last = reader.section_count().saturating_sub(1);
-                reader.jump_to(n.saturating_sub(1).min(last), None);
-            }
+            // Reader navigation (scroll / half- and full-page / top-bottom / goto).
+            Action::Down(_)
+            | Action::Up(_)
+            | Action::HalfDown
+            | Action::HalfUp
+            | Action::PageDown
+            | Action::PageUp
+            | Action::Top
+            | Action::Bottom
+            | Action::Goto(_) => apply_nav(reader, action, paged, flip_ready),
             Action::ToggleStatus => self.config.show_status = !self.config.show_status,
             Action::CycleView => {
                 self.config.view_mode = self.config.view_mode.next();
@@ -610,15 +589,19 @@ impl App {
             Action::SearchNext => reader.search_next(),
             Action::SearchPrev => reader.search_prev(),
             Action::AddBookmark => {
-                if let Some(store) = &self.store
-                    && !self.book_path.is_empty()
+                if let Some(store) = &self.session.store
+                    && !self.session.book_path.is_empty()
                 {
-                    store.add_bookmark(&self.book_path, reader.section, &reader.current_quote());
+                    store.add_bookmark(
+                        &self.session.book_path,
+                        reader.section,
+                        &reader.current_quote(),
+                    );
                     reader.flash = Some("bookmark added".into());
                     // `reader` is borrowed here, so push the refreshed set directly
                     // rather than via the `&mut self` helper.
                     let marks = store
-                        .list_bookmarks(&self.book_path)
+                        .list_bookmarks(&self.session.book_path)
                         .into_iter()
                         .map(|a| (a.section, a.quote))
                         .collect();
@@ -626,9 +609,9 @@ impl App {
                 }
             }
             Action::OpenAnnotations => {
-                if let Some(store) = &self.store {
-                    let items = store.list_bookmarks(&self.book_path);
-                    self.annot = Some(AnnotState { items, sel: 0 });
+                if let Some(store) = &self.session.store {
+                    let items = store.list_bookmarks(&self.session.book_path);
+                    self.overlay = Overlay::Annot(AnnotState { items, sel: 0 });
                 }
             }
             Action::CopyCode => {
@@ -696,16 +679,76 @@ impl App {
 
         // Persist on chapter change or a settings change (cheap).
         if (save || reader.section != before)
-            && let Some(store) = &self.store
-            && !self.book_path.is_empty()
+            && let Some(store) = &self.session.store
+            && !self.session.book_path.is_empty()
         {
             let _ = store.save_progress(
-                &self.book_path,
+                &self.session.book_path,
                 reader.section,
                 reader.within_frac(),
                 self.config.view_mode,
                 self.config.theme.name,
             );
         }
+    }
+}
+
+/// Reader navigation — scroll, half/full-page motion, top/bottom, and `Ng` jump.
+/// In paged mode (or for page-image documents) vertical motion flips whole pages;
+/// a held PDF flip is throttled to the drawn frame via `flip_ready`. Split out of
+/// [`App::apply`] so its action dispatch stays a flat router.
+fn apply_nav(reader: &mut Reader, action: Action, paged: bool, flip_ready: bool) {
+    let page_forward = |r: &mut Reader| {
+        if flip_ready {
+            r.page_forward();
+        }
+    };
+    let page_backward = |r: &mut Reader| {
+        if flip_ready {
+            r.page_backward();
+        }
+    };
+    match action {
+        // A count prefix (`10j`) jumps that many pages; a bare/held key flips one.
+        Action::Down(n) => match reader.focus {
+            Focus::Content if paged && n > 1 => reader.page_jump(n as isize),
+            Focus::Content if paged => page_forward(reader),
+            Focus::Content => reader.queue_scroll(n as isize),
+            Focus::Sidebar => reader.sidebar_move(n as isize),
+        },
+        Action::Up(n) => match reader.focus {
+            Focus::Content if paged && n > 1 => reader.page_jump(-(n as isize)),
+            Focus::Content if paged => page_backward(reader),
+            Focus::Content => reader.queue_scroll(-(n as isize)),
+            Focus::Sidebar => reader.sidebar_move(-(n as isize)),
+        },
+        Action::HalfDown if paged => page_forward(reader),
+        Action::HalfUp if paged => page_backward(reader),
+        Action::HalfDown => reader.scroll_down(reader.page_lines.max(2) / 2),
+        Action::HalfUp => reader.scroll_up(reader.page_lines.max(2) / 2),
+        Action::PageDown if paged => page_forward(reader),
+        Action::PageUp if paged => page_backward(reader),
+        Action::PageDown => reader.scroll_down(reader.page_lines.max(1)),
+        Action::PageUp => reader.scroll_up(reader.page_lines.max(1)),
+        Action::Top => {
+            if reader.focus == Focus::Sidebar {
+                reader.sidebar_sel = 0;
+            } else {
+                reader.scroll = 0;
+            }
+        }
+        Action::Bottom => {
+            if reader.focus == Focus::Sidebar {
+                reader.sidebar_sel = reader.outline.len().saturating_sub(1);
+            } else {
+                reader.scroll = reader.max_scroll();
+            }
+        }
+        // `Ng`: jump to page/section N (1-based), clamped. Records history.
+        Action::Goto(n) => {
+            let last = reader.section_count().saturating_sub(1);
+            reader.jump_to(n.saturating_sub(1).min(last), None);
+        }
+        _ => {}
     }
 }

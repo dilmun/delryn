@@ -15,6 +15,7 @@ use epub::doc::{EpubDoc, NavPoint};
 use scraper::{Html, Node};
 
 use super::{OutlineItem, TocEntry};
+use crate::container::{body_or_root, descendant_text, filename_eq, has_token};
 
 /// Resolved navigation for a document.
 pub(super) struct Navigation {
@@ -74,12 +75,7 @@ fn parse_nav_document(doc: &mut EpubDoc<BufReader<File>>) -> Option<ParsedNav> {
     let (xhtml, _) = doc.get_resource_str(&nav_id)?;
 
     let html = Html::parse_document(&xhtml);
-    let body = html
-        .tree
-        .root()
-        .descendants()
-        .find(|n| matches!(n.value(), Node::Element(e) if e.name() == "body"))
-        .unwrap_or_else(|| html.tree.root());
+    let body = body_or_root(&html);
 
     let mut toc = Vec::new();
     let mut start_section = None;
@@ -116,7 +112,7 @@ fn parse_ol(ol: NodeRef<Node>, nav_dir: &Path, doc: &EpubDoc<BufReader<File>>) -
         let Some(label_node) = label_node else {
             continue;
         };
-        let label = text_of(label_node).trim().to_string();
+        let label = descendant_text(label_node, false, None).trim().to_string();
         if label.is_empty() {
             continue;
         }
@@ -210,27 +206,13 @@ fn resolve_path(content: &Path, doc: &EpubDoc<BufReader<File>>) -> Option<usize>
     doc.spine.iter().position(|item| {
         doc.resources
             .get(&item.idref)
-            .is_some_and(|res| res.path.file_name() == Some(target))
+            .is_some_and(|res| filename_eq(&res.path, target))
     })
 }
 
 // ── Small DOM helpers (local to nav parsing) ─────────────────────────────────
 
-fn has_token(attr: &str, want: &str) -> bool {
-    attr.split_whitespace()
-        .any(|t| t.eq_ignore_ascii_case(want))
-}
-
 fn child_element<'a>(node: NodeRef<'a, Node>, name: &str) -> Option<NodeRef<'a, Node>> {
     node.children()
         .find(|n| matches!(n.value(), Node::Element(e) if e.name() == name))
-}
-
-fn text_of(node: NodeRef<Node>) -> String {
-    node.descendants()
-        .filter_map(|n| match n.value() {
-            Node::Text(t) => Some(t.text.as_ref()),
-            _ => None,
-        })
-        .collect()
 }

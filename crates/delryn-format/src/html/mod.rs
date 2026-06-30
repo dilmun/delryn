@@ -6,6 +6,7 @@ use ego_tree::NodeRef;
 use scraper::{Html, Node};
 
 use super::{Anchor, Block, CalloutKind, ImageWidth, Inline, Span, TableCell};
+use crate::container::{body_or_root, descendant_text};
 
 mod callout;
 mod code;
@@ -31,15 +32,8 @@ use toolchain::*;
 pub fn parse_blocks(xhtml: &str) -> Vec<Block> {
     let xhtml = expand_self_closing(xhtml);
     let doc = Html::parse_document(&xhtml);
-    let body = doc
-        .tree
-        .root()
-        .descendants()
-        .find(|n| matches!(n.value(), Node::Element(e) if e.name() == "body"));
-
     let mut out = Vec::new();
-    let root = body.unwrap_or_else(|| doc.tree.root());
-    walk_children(root, &Ctx::default(), &mut out);
+    walk_children(body_or_root(&doc), &Ctx::default(), &mut out);
     out
 }
 
@@ -68,16 +62,10 @@ pub fn collect_targets(xhtml: &str) -> Vec<(String, String)> {
 /// chars — enough for `find_line` to locate the element without walking a whole
 /// subtree.
 fn leading_text(node: NodeRef<Node>, max: usize) -> String {
-    let mut buf = String::new();
-    for d in node.descendants() {
-        if let Node::Text(t) = d.value() {
-            buf.push_str(&t.text);
-            if buf.len() > max * 2 {
-                break; // enough raw text to fill `max` after collapsing
-            }
-        }
-    }
-    buf.split_whitespace()
+    // Cap the gather at ~`max` chars' worth of bytes — enough to fill `max` after
+    // whitespace-collapsing, without walking a whole subtree.
+    descendant_text(node, false, Some(max * 2))
+        .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .chars()

@@ -43,8 +43,8 @@ impl Reader {
         // they're shown. Only act when the position actually moves.
         if self.focus == Focus::Content {
             let active = self.active_outline_row();
-            if active != self.last_active {
-                self.last_active = active;
+            if active != self.nav.last_active {
+                self.nav.last_active = active;
                 if let Some(a) = active {
                     if a < self.sidebar_offset {
                         self.sidebar_offset = a;
@@ -69,7 +69,7 @@ impl Reader {
             return self.outline_for_section(self.section);
         }
         let mut best: Option<(usize, usize)> = None; // (line, outline index)
-        for &(oi, line) in &self.heading_lines {
+        for &(oi, line) in &self.nav.heading_lines {
             // Greatest line at/above the viewport top; on ties keep the earlier
             // entry (strictly greater to replace).
             if line <= self.scroll && best.is_none_or(|(bl, _)| line > bl) {
@@ -77,7 +77,7 @@ impl Reader {
             }
         }
         best.map(|(_, oi)| oi)
-            .or_else(|| self.heading_lines.first().map(|&(oi, _)| oi))
+            .or_else(|| self.nav.heading_lines.first().map(|&(oi, _)| oi))
     }
 
     /// The outline index whose target page is the greatest at or before

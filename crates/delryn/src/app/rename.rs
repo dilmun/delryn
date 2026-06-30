@@ -6,8 +6,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use delryn_model::naming::{filename_title, fill_template, sanitize_filename};
 
 use super::confirm::ConfirmAction;
-use super::{App, fmt_series_index, str_delete_before, str_insert};
+use super::{App, Overlay, fmt_series_index};
 use crate::online;
+use crate::ui::TextInput;
 
 /// Default rename template: `Title.ext` (subtitle stripped — see `filename_title`).
 pub const DEFAULT_RENAME_TEMPLATE: &str = "%T.%E";
@@ -24,8 +25,7 @@ pub struct BulkTarget {
 
 /// Bulk-rename popup: one editable template applied to every marked book.
 pub struct BulkRename {
-    pub template: String,
-    pub cursor: usize,
+    pub input: TextInput,
     pub targets: Vec<BulkTarget>,
     /// Expand the popup to (near) full screen for a wider before/after view.
     pub full: bool,
@@ -64,7 +64,7 @@ impl App {
             return RenameOutcome::Skipped;
         }
         // Repoint persistence + move the cached cover to the new key.
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             store.rename_book_path(old, &new);
         }
         let _ = std::fs::rename(
@@ -77,15 +77,20 @@ impl App {
     /// Open the rename popup over the marked books, or — when nothing is marked —
     /// the current book. Snapshots the data the template needs from each.
     pub(crate) fn open_bulk_rename(&mut self) {
-        let current = self.lib_books.get(self.lib_sel).map(|b| b.path.clone());
+        let current = self
+            .library
+            .books
+            .get(self.library.sel)
+            .map(|b| b.path.clone());
         let targets: Vec<BulkTarget> = self
-            .lib_books
+            .library
+            .books
             .iter()
             .filter(|b| {
-                if self.lib_marked.is_empty() {
+                if self.library.marked.is_empty() {
                     Some(&b.path) == current.as_ref()
                 } else {
-                    self.lib_marked.contains(&b.path)
+                    self.library.marked.contains(&b.path)
                 }
             })
             .map(|b| {
@@ -119,10 +124,8 @@ impl App {
         if targets.is_empty() {
             return;
         }
-        let template = DEFAULT_RENAME_TEMPLATE.to_string();
-        self.bulk_rename = Some(BulkRename {
-            cursor: template.chars().count(),
-            template,
+        self.overlay = Overlay::BulkRename(BulkRename {
+            input: TextInput::from(DEFAULT_RENAME_TEMPLATE),
             targets,
             full: false,
         });
@@ -130,13 +133,13 @@ impl App {
 
     /// Apply the bulk-rename template to every target, then close + report.
     pub(crate) fn apply_bulk_rename(&mut self) {
-        let Some(br) = self.bulk_rename.take() else {
+        let Overlay::BulkRename(br) = std::mem::replace(&mut self.overlay, Overlay::None) else {
             return;
         };
         let mut renamed = 0usize;
         let mut skipped = 0usize;
         for t in &br.targets {
-            let new_name = fill_template(&br.template, &t.values, &t.ext);
+            let new_name = fill_template(br.input.text(), &t.values, &t.ext);
             match self.rename_book_file(&t.path, &new_name) {
                 RenameOutcome::Renamed => renamed += 1,
                 RenameOutcome::Unchanged => {}
@@ -145,7 +148,7 @@ impl App {
         }
         self.lib_exit_visual();
         self.refresh_library();
-        self.lib_flash = Some(if skipped == 0 {
+        self.library.flash = Some(if skipped == 0 {
             format!(
                 "renamed {renamed} book{}",
                 if renamed == 1 { "" } else { "s" }
@@ -159,10 +162,14 @@ impl App {
     pub(crate) fn bulk_rename_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Esc => self.bulk_rename = None,
+            KeyCode::Esc => self.overlay = Overlay::None,
             // ^S asks for confirmation before moving files on disk.
             KeyCode::Char('s') if ctrl => {
-                let n = self.bulk_rename.as_ref().map_or(0, |b| b.targets.len());
+                let n = if let Overlay::BulkRename(b) = &self.overlay {
+                    b.targets.len()
+                } else {
+                    0
+                };
                 if n > 0 {
                     let q = format!("Rename {n} book{}?", if n == 1 { "" } else { "s" });
                     self.ask_confirm(&q, ConfirmAction::Rename);
@@ -170,42 +177,15 @@ impl App {
             }
             // Toggle the full-screen before/after view.
             KeyCode::Char('f') if ctrl => {
-                if let Some(b) = self.bulk_rename.as_mut() {
+                if let Overlay::BulkRename(b) = &mut self.overlay {
                     b.full = !b.full;
                 }
             }
-            KeyCode::Left => {
-                if let Some(b) = self.bulk_rename.as_mut() {
-                    b.cursor = b.cursor.saturating_sub(1);
+            _ => {
+                if let Overlay::BulkRename(b) = &mut self.overlay {
+                    b.input.handle_key(key);
                 }
             }
-            KeyCode::Right => {
-                if let Some(b) = self.bulk_rename.as_mut() {
-                    b.cursor = (b.cursor + 1).min(b.template.chars().count());
-                }
-            }
-            KeyCode::Char('u') if ctrl => {
-                if let Some(b) = self.bulk_rename.as_mut() {
-                    b.template.clear();
-                    b.cursor = 0;
-                }
-            }
-            KeyCode::Backspace => {
-                if let Some(b) = self.bulk_rename.as_mut() {
-                    let cur = b.cursor;
-                    if str_delete_before(&mut b.template, cur) {
-                        b.cursor -= 1;
-                    }
-                }
-            }
-            KeyCode::Char(c) if !ctrl => {
-                if let Some(b) = self.bulk_rename.as_mut() {
-                    let cur = b.cursor;
-                    str_insert(&mut b.template, cur, c);
-                    b.cursor += 1;
-                }
-            }
-            _ => {}
         }
     }
 }

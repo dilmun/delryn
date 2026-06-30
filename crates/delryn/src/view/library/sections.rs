@@ -63,7 +63,7 @@ fn section_item(
 pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: bool) {
     // The "＋ New" row parks the cursor without changing the active view, so a
     // section/collection isn't "here" while it's selected.
-    let on_new = app.lib_side_new;
+    let on_new = app.library.side_new;
     // Usable text width inside the pane (drop the L/R border): the column the
     // per-group counts right-align to.
     let inner_w = area.width.saturating_sub(2) as usize;
@@ -71,8 +71,8 @@ pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let here = !on_new && matches!(&app.lib_view, LibView::Section(cur) if cur == s);
-            let count = app.lib_section_counts.get(i).copied();
+            let here = !on_new && matches!(&app.library.view, LibView::Section(cur) if cur == s);
+            let count = app.library.section_counts.get(i).copied();
             section_item(s.label(), count, inner_w, here, focused, theme)
         })
         .collect();
@@ -96,25 +96,23 @@ pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme
         Span::styled(format!(" {}", "─".repeat(fill)), rule),
     ])));
     // Which collection (if any) is being renamed in place.
-    let renaming = app
-        .lib_coll_edit
-        .as_ref()
-        .and_then(|e| e.rename_from.as_deref());
-    let creating = app
-        .lib_coll_edit
-        .as_ref()
-        .filter(|e| e.rename_from.is_none());
+    let renaming = match &app.overlay {
+        Overlay::CollEdit(e) => e.rename_from.as_deref(),
+        _ => None,
+    };
+    let creating = match &app.overlay {
+        Overlay::CollEdit(e) if e.rename_from.is_none() => Some(e),
+        _ => None,
+    };
     // Value width inside the pane: drop the L/R border (2) and the "▸ " marker (2).
     let field_w = area.width.saturating_sub(4).max(2) as usize;
-    for (name, count) in &app.lib_shelves {
+    for (name, count) in &app.library.shelves {
         if Some(name.as_str()) == renaming {
-            items.push(coll_edit_item(
-                app.lib_coll_edit.as_ref().unwrap(),
-                field_w,
-                theme,
-            ));
+            if let Overlay::CollEdit(ci) = &app.overlay {
+                items.push(coll_edit_item(ci, field_w, theme));
+            }
         } else {
-            let here = !on_new && matches!(&app.lib_view, LibView::Shelf(cur) if cur == name);
+            let here = !on_new && matches!(&app.library.view, LibView::Shelf(cur) if cur == name);
             items.push(section_item(
                 name,
                 Some(*count),
@@ -151,8 +149,8 @@ pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme
 fn coll_edit_item(input: &crate::app::CollInput, width: usize, theme: Theme) -> ListItem<'static> {
     let mut spans = vec![Span::styled("▸ ", Style::default().fg(theme.accent))];
     spans.extend(crate::view::field_spans(
-        &input.buf,
-        input.cursor,
+        input.input.text(),
+        input.input.cursor(),
         width,
         theme,
     ));

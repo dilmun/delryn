@@ -10,24 +10,39 @@ impl App {
     /// author when they've changed since the last seed (e.g. after `x` extract or
     /// a manual edit). A no-op when unchanged, so manual search edits are kept.
     pub(crate) fn reseed_search_from_details(&mut self) {
-        let Some(ed) = self.meta_edit.as_mut() else {
+        let Overlay::MetaEdit(ed) = &mut self.overlay else {
             return;
         };
-        let title = ed.values.first().cloned().unwrap_or_default();
-        let author = ed.values.get(1).cloned().unwrap_or_default();
+        let title = ed
+            .values
+            .first()
+            .map(|t| t.text().to_string())
+            .unwrap_or_default();
+        let author = ed
+            .values
+            .get(1)
+            .map(|t| t.text().to_string())
+            .unwrap_or_default();
         if ed.seed_from == (title.clone(), author.clone()) {
             return;
         }
         let name = main_title(&title);
         let author1 = first_author(&author);
-        ed.cover_search.q = format!("{name} {author1}")
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        ed.lookup.name = name;
-        ed.lookup.author = author1;
+        ed.cover_search.q.set(
+            format!("{name} {author1}")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        ed.lookup.name.set(name);
+        ed.lookup.author.set(author1);
         // Year seeds from the book; ISBN stays inactive until the field is focused.
-        ed.lookup.year = ed.values.get(2).cloned().unwrap_or_default();
+        ed.lookup.year.set(
+            ed.values
+                .get(2)
+                .map(|t| t.text().to_string())
+                .unwrap_or_default(),
+        );
         ed.lookup.isbn.clear();
         ed.lookup.focus = 0;
         ed.lookup.editing = false;
@@ -46,9 +61,9 @@ impl App {
     /// then the results; Enter edits a field or applies a result; `/` re-runs the
     /// search; typing on a field starts editing it.
     pub(crate) fn lookup_nav_key(&mut self, key: KeyEvent) {
-        let (focus, results) = match &self.meta_edit {
-            Some(e) => (e.lookup.focus, e.online.results.len()),
-            None => return,
+        let (focus, results) = match &self.overlay {
+            Overlay::MetaEdit(e) => (e.lookup.focus, e.online.results.len()),
+            _ => return,
         };
         let max_focus = LOOKUP_FIELDS - 1 + results; // last field, or last result
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -74,9 +89,14 @@ impl App {
     /// the (empty) ISBN field auto-fills it from the book's own ISBN, so an exact
     /// lookup is one keystroke away.
     fn lookup_set_focus(&mut self, focus: usize) {
-        if let Some(e) = self.meta_edit.as_mut() {
-            if focus == LOOKUP_ISBN && e.lookup.isbn.trim().is_empty() {
-                e.lookup.isbn = e.values.get(7).cloned().unwrap_or_default();
+        if let Overlay::MetaEdit(e) = &mut self.overlay {
+            if focus == LOOKUP_ISBN && e.lookup.isbn.text().trim().is_empty() {
+                e.lookup.isbn.set(
+                    e.values
+                        .get(7)
+                        .map(|t| t.text().to_string())
+                        .unwrap_or_default(),
+                );
             }
             e.lookup.focus = focus;
             e.online.row = focus.saturating_sub(LOOKUP_FIELDS);
@@ -85,70 +105,42 @@ impl App {
 
     /// Enter edit mode on the focused seed field, optionally appending a first char.
     fn lookup_begin_edit(&mut self, first: Option<char>) {
-        let Some(e) = self.meta_edit.as_mut() else {
+        let Overlay::MetaEdit(e) = &mut self.overlay else {
             return;
         };
         if e.lookup.focus >= LOOKUP_FIELDS {
             return;
         }
         e.lookup.editing = true;
+        let i = e.lookup.focus;
+        let field = e.lookup.field_mut(i);
+        field.end(); // caret to the end of the existing value
         if let Some(c) = first {
-            let i = e.lookup.focus;
-            let cur = e.lookup.field(i).chars().count();
-            str_insert(e.lookup.field_mut(i), cur, c);
+            field.insert(c);
         }
-        e.lookup.cursor = e.lookup.focused_len();
     }
 
     /// Lookup field editing: type into the focused field; Enter runs the search,
     /// Esc just leaves edit mode.
     pub(crate) fn lookup_edit_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
-                if let Some(e) = self.meta_edit.as_mut() {
+                if let Overlay::MetaEdit(e) = &mut self.overlay {
                     e.lookup.editing = false;
                 }
             }
             KeyCode::Enter => {
-                if let Some(e) = self.meta_edit.as_mut() {
+                if let Overlay::MetaEdit(e) = &mut self.overlay {
                     e.lookup.editing = false;
                 }
                 self.online_search();
             }
-            KeyCode::Left => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.lookup.cursor = e.lookup.cursor.saturating_sub(1);
-                }
-            }
-            KeyCode::Right => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.lookup.cursor = (e.lookup.cursor + 1).min(e.lookup.focused_len());
-                }
-            }
-            KeyCode::Char('u') if ctrl => {
-                if let Some(e) = self.meta_edit.as_mut() {
+            _ => {
+                if let Overlay::MetaEdit(e) = &mut self.overlay {
                     let i = e.lookup.focus.min(LOOKUP_FIELDS - 1);
-                    e.lookup.field_mut(i).clear();
-                    e.lookup.cursor = 0;
+                    e.lookup.field_mut(i).handle_key(key);
                 }
             }
-            KeyCode::Backspace => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    let (i, cur) = (e.lookup.focus.min(LOOKUP_FIELDS - 1), e.lookup.cursor);
-                    if str_delete_before(e.lookup.field_mut(i), cur) {
-                        e.lookup.cursor -= 1;
-                    }
-                }
-            }
-            KeyCode::Char(c) if !ctrl => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    let (i, cur) = (e.lookup.focus.min(LOOKUP_FIELDS - 1), e.lookup.cursor);
-                    str_insert(e.lookup.field_mut(i), cur, c);
-                    e.lookup.cursor += 1;
-                }
-            }
-            _ => {}
         }
     }
 
@@ -156,8 +148,8 @@ impl App {
     /// bar; j/k move the selection; Enter applies (metadata on Online, the
     /// previewed cover on Cover).
     pub(crate) fn online_nav_key(&mut self, key: KeyEvent) {
-        let (results, tab) = match &self.meta_edit {
-            Some(e) => {
+        let (results, tab) = match &self.overlay {
+            Overlay::MetaEdit(e) => {
                 let n = if e.tab == EditTab::Cover {
                     e.cover_hits.len()
                 } else {
@@ -165,18 +157,18 @@ impl App {
                 };
                 (n, e.tab)
             }
-            None => return,
+            _ => return,
         };
         let last = results.saturating_sub(1);
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(e) = self.meta_edit.as_mut() {
+                if let Overlay::MetaEdit(e) = &mut self.overlay {
                     let s = e.search_mut();
                     s.row = s.row.saturating_sub(1);
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(e) = self.meta_edit.as_mut() {
+                if let Overlay::MetaEdit(e) = &mut self.overlay {
                     let s = e.search_mut();
                     s.row = (s.row + 1).min(last);
                 }
@@ -192,7 +184,11 @@ impl App {
                 } else if tab == EditTab::Cover {
                     self.stage_preview_cover();
                 } else {
-                    let idx = self.meta_edit.as_ref().map_or(0, |e| e.search().row);
+                    let idx = if let Overlay::MetaEdit(e) = &self.overlay {
+                        e.search().row
+                    } else {
+                        0
+                    };
                     self.open_diff(idx);
                 }
             }
@@ -202,71 +198,44 @@ impl App {
 
     /// Enter search-bar editing, optionally seeding the query with a first char.
     pub(crate) fn online_begin_query(&mut self, first: Option<char>) {
-        let Some(ed) = self.meta_edit.as_mut() else {
+        let Overlay::MetaEdit(ed) = &mut self.overlay else {
             return;
         };
         ed.search_mut().editing = true;
+        let s = ed.search_mut();
         if let Some(c) = first {
-            let s = ed.search_mut();
             s.q.clear();
-            s.q.push(c);
+            s.q.insert(c);
+        } else {
+            s.q.end(); // caret to the end of the existing query
         }
-        ed.cursor = ed.search().q.chars().count();
     }
 
     /// Search-bar editing: type the query; Enter runs the search, Esc exits.
     pub(crate) fn online_query_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
-                if let Some(e) = self.meta_edit.as_mut() {
+                if let Overlay::MetaEdit(e) = &mut self.overlay {
                     e.search_mut().editing = false;
                 }
             }
             KeyCode::Enter => {
-                if let Some(e) = self.meta_edit.as_mut() {
+                if let Overlay::MetaEdit(e) = &mut self.overlay {
                     e.search_mut().editing = false;
                 }
                 self.online_search();
             }
-            KeyCode::Left => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.cursor = e.cursor.saturating_sub(1);
+            _ => {
+                if let Overlay::MetaEdit(e) = &mut self.overlay {
+                    e.search_mut().q.handle_key(key);
                 }
             }
-            KeyCode::Right => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.cursor = (e.cursor + 1).min(e.search().q.chars().count());
-                }
-            }
-            KeyCode::Char('u') if ctrl => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    e.search_mut().q.clear();
-                    e.cursor = 0;
-                }
-            }
-            KeyCode::Backspace => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    let cur = e.cursor;
-                    if str_delete_before(&mut e.search_mut().q, cur) {
-                        e.cursor -= 1;
-                    }
-                }
-            }
-            KeyCode::Char(c) => {
-                if let Some(e) = self.meta_edit.as_mut() {
-                    let cur = e.cursor;
-                    str_insert(&mut e.search_mut().q, cur, c);
-                    e.cursor += 1;
-                }
-            }
-            _ => {}
         }
     }
 
     /// Stage the currently-previewed cover (Cover tab Enter) for save.
     fn stage_preview_cover(&mut self) {
-        let Some(ed) = self.meta_edit.as_mut() else {
+        let Overlay::MetaEdit(ed) = &mut self.overlay else {
             return;
         };
         match ed.preview_cover.clone() {
@@ -283,14 +252,14 @@ impl App {
     /// run with an empty query, using just the book's ISBN).
     pub(crate) fn online_search(&mut self) {
         let (query, tab, isbn) = {
-            let Some(ed) = self.meta_edit.as_mut() else {
+            let Overlay::MetaEdit(ed) = &mut self.overlay else {
                 return;
             };
             let tab = ed.tab;
             // The Lookup query is composed from its seed fields; the Cover tab
             // uses its free-text bar (and may run with an empty query via ISBN).
             let query = if tab == EditTab::Cover {
-                ed.cover_search.q.clone()
+                ed.cover_search.q.text().to_string()
             } else {
                 ed.lookup.query()
             };
@@ -301,7 +270,11 @@ impl App {
             // when we replace online_rx below), then mark this one fetching.
             ed.online.fetching = false;
             ed.cover_search.fetching = false;
-            let isbn = ed.values.get(7).cloned().unwrap_or_default();
+            let isbn = ed
+                .values
+                .get(7)
+                .map(|t| t.text().to_string())
+                .unwrap_or_default();
             if tab == EditTab::Cover {
                 ed.cover_hits.clear();
             }
@@ -309,7 +282,7 @@ impl App {
             s.fetching = true;
             s.results.clear();
             s.row = 0;
-            s.q = query.clone();
+            s.q.set(query.clone());
             ed.status_on(tab, "searching…");
             (query, tab, isbn)
         };
@@ -330,7 +303,7 @@ impl App {
     /// candidate, one row per field, ticking the fields whose remote value
     /// differs (and is present), so the reader can review before applying.
     fn open_diff(&mut self, idx: usize) {
-        let Some(ed) = self.meta_edit.as_mut() else {
+        let Overlay::MetaEdit(ed) = &mut self.overlay else {
             return;
         };
         let Some(c) = ed.search().results.get(idx).cloned() else {
@@ -341,7 +314,7 @@ impl App {
         let rows: Vec<DiffRow> = (0..8)
             .map(|field| {
                 let remote = remote_value(&c, field);
-                let apply = !remote.is_empty() && remote != ed.values[field];
+                let apply = !remote.is_empty() && remote != ed.values[field].text();
                 DiffRow {
                     field,
                     remote,
@@ -360,7 +333,7 @@ impl App {
     /// cover, and close the diff onto the Details tab for a final review.
     pub(crate) fn apply_diff(&mut self) {
         let cover_url = {
-            let Some(ed) = self.meta_edit.as_mut() else {
+            let Overlay::MetaEdit(ed) = &mut self.overlay else {
                 return;
             };
             let Some(diff) = ed.diff.take() else {
@@ -368,7 +341,7 @@ impl App {
             };
             for r in &diff.rows {
                 if r.apply {
-                    ed.values[r.field] = r.remote.clone();
+                    ed.values[r.field].set(r.remote.clone());
                 }
             }
             ed.tab = EditTab::Details;
@@ -397,7 +370,7 @@ impl App {
             return false;
         };
         self.online_rx = None;
-        let Some(ed) = self.meta_edit.as_mut() else {
+        let Overlay::MetaEdit(ed) = &mut self.overlay else {
             return true;
         };
         match msg {
@@ -450,14 +423,16 @@ impl App {
 
     /// Is an Open Library request in flight (keeps the loop polling)?
     pub fn online_active(&self) -> bool {
-        self.meta_edit
-            .as_ref()
-            .is_some_and(|e| e.online.fetching || e.cover_search.fetching || e.cover_pending)
+        matches!(
+            &self.overlay,
+            Overlay::MetaEdit(e)
+                if e.online.fetching || e.cover_search.fetching || e.cover_pending
+        )
     }
 
     /// Cover-tab preview: the cover URL of the highlighted result (or empty).
     fn preview_target_url(&self) -> String {
-        let Some(ed) = &self.meta_edit else {
+        let Overlay::MetaEdit(ed) = &self.overlay else {
             return self.edit_cover_url.clone();
         };
         if ed.tab != EditTab::Cover {
@@ -493,7 +468,7 @@ impl App {
         self.edit_cover_url = target.clone();
         if target.is_empty() {
             self.edit_cover = None;
-            if let Some(ed) = self.meta_edit.as_mut() {
+            if let Overlay::MetaEdit(ed) = &mut self.overlay {
                 ed.preview_cover = None;
                 ed.preview_url = String::new();
             }

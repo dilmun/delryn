@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListSt
 
 use ratatui_image::{Resize, StatefulImage};
 
-use crate::app::{App, EditMode, EditTab, LOOKUP_FIELDS, META_FIELDS, MetaEdit};
+use crate::app::{App, EditMode, EditTab, LOOKUP_FIELDS, META_FIELDS, MetaEdit, Overlay};
 use crate::theme::Theme;
 
 /// Left column width for field labels.
@@ -24,7 +24,7 @@ mod hits;
 mod online;
 
 pub fn render(f: &mut Frame, app: &mut App) {
-    if app.meta_edit.is_none() {
+    if !matches!(app.overlay, Overlay::MetaEdit(_)) {
         return;
     }
     let theme = app.config.theme;
@@ -33,7 +33,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     f.render_widget(Clear, area);
     let title = {
-        let ed = app.meta_edit.as_ref().unwrap();
+        let Overlay::MetaEdit(ed) = &app.overlay else {
+            return;
+        };
         // Progress counter when stepping through a multi-book edit queue.
         let progress = if app.edit_total > 1 {
             format!(
@@ -71,7 +73,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     ])
     .split(inner);
 
-    render_tabs(f, rows[0], app.meta_edit.as_ref().unwrap(), theme, bg);
+    if let Overlay::MetaEdit(ed) = &app.overlay {
+        render_tabs(f, rows[0], ed, theme, bg);
+    }
     f.render_widget(
         Paragraph::new(Line::styled(
             "─".repeat(inner.width as usize),
@@ -83,17 +87,31 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Body — each arm takes a fresh short borrow so the Cover tab can also touch
     // app.edit_cover (the preview image protocol) mutably.
     let body = rows[2];
-    match app.meta_edit.as_ref().unwrap().tab {
-        EditTab::Details => render_details(f, body, app.meta_edit.as_ref().unwrap(), theme),
-        EditTab::Online => online::render_online(f, body, app.meta_edit.as_ref().unwrap(), theme),
+    let tab = match &app.overlay {
+        Overlay::MetaEdit(e) => e.tab,
+        _ => return,
+    };
+    match tab {
+        EditTab::Details => {
+            if let Overlay::MetaEdit(ed) = &app.overlay {
+                render_details(f, body, ed, theme);
+            }
+        }
+        EditTab::Online => {
+            if let Overlay::MetaEdit(ed) = &app.overlay {
+                online::render_online(f, body, ed, theme);
+            }
+        }
         EditTab::Cover => online::render_cover(f, body, app, theme),
     }
 
     // One transient line at the foot: search progress / results / errors, else a
     // quiet hint for the lookup tabs. The shortcut legend lives in the app status
     // bar (see view::status), not here.
-    let footer = footer_line(app.meta_edit.as_ref().unwrap(), theme);
-    f.render_widget(Paragraph::new(footer), rows[3]);
+    if let Overlay::MetaEdit(ed) = &app.overlay {
+        let footer = footer_line(ed, theme);
+        f.render_widget(Paragraph::new(footer), rows[3]);
+    }
 
     hits::record_hits(app, rows[0], body);
 
@@ -104,10 +122,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
 /// The metadata-diff overlay: current vs the picked candidate, one row per field,
 /// with a tick on the fields chosen to apply.
 fn render_diff(f: &mut Frame, app: &App, theme: Theme) {
-    let Some(diff) = app.meta_edit.as_ref().and_then(|e| e.diff.as_ref()) else {
+    let Overlay::MetaEdit(ed) = &app.overlay else {
         return;
     };
-    let ed = app.meta_edit.as_ref().unwrap();
+    let Some(diff) = ed.diff.as_ref() else {
+        return;
+    };
     let bg = theme.paper();
     let area = super::centered(f.area(), 84, diff.rows.len() as u16 + 4);
     f.render_widget(Clear, area);
@@ -143,7 +163,7 @@ fn render_diff(f: &mut Frame, app: &App, theme: Theme) {
             } else {
                 "[ ]"
             };
-            let current = super::truncate(&ed.values[r.field], col.max(1));
+            let current = super::truncate(ed.values[r.field].text(), col.max(1));
             let remote = super::truncate(&r.remote, col.max(1));
             Line::from(vec![
                 Span::styled(
@@ -261,14 +281,14 @@ fn render_details(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
         for &i in *fields {
             let focused = i == ed.row;
             let editing = focused && ed.mode == EditMode::Edit;
-            let value = ed.values.get(i).map(String::as_str).unwrap_or("");
+            let value = ed.values.get(i).map(|t| t.text()).unwrap_or("");
             lines.push(form_field(
                 META_FIELDS[i],
                 value,
                 FieldState {
                     focused,
                     editing,
-                    cursor: ed.cursor,
+                    cursor: ed.values.get(i).map_or(0, |t| t.cursor()),
                     invalid: ed.field_invalid(i),
                     changed: ed.changed(i),
                 },

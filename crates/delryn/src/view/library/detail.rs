@@ -10,7 +10,7 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
     f.render_widget(block, area);
 
     // Gather the selected book's fields (immutable) before the mutable cover render.
-    let Some(b) = app.lib_books.get(app.lib_sel) else {
+    let Some(b) = app.library.books.get(app.library.sel) else {
         return;
     };
     let title = b.title.clone();
@@ -33,7 +33,7 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
 
     // Cover (or a fallback box when there's none / no graphics protocol).
     let font = crate::view::image_font(app);
-    if let Some(cover) = app.lib_cover.as_mut() {
+    if let Some(cover) = app.library.cover.as_mut() {
         let rect = crate::view::cover_image_rect(parts[0], font, cover.dims);
         let img = StatefulImage::default().resize(Resize::Scale(None));
         f.render_stateful_widget(img, rect, &mut cover.proto);

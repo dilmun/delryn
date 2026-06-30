@@ -5,8 +5,9 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, LibView, SortKey};
+use super::{App, LibView, Overlay, SortKey};
 use crate::store::LibrarySection;
+use crate::ui::TextInput;
 
 /// An executable palette action.
 #[derive(Clone)]
@@ -30,8 +31,7 @@ pub struct PaletteItem {
 
 /// Open command-palette state.
 pub struct Palette {
-    pub query: String,
-    pub cursor: usize,
+    pub input: TextInput,
     pub sel: usize,
     items: Vec<PaletteItem>,
 }
@@ -39,7 +39,7 @@ pub struct Palette {
 impl Palette {
     /// Items matching the current query, best-ranked first.
     pub fn filtered(&self) -> Vec<&PaletteItem> {
-        delryn_library::fuzzy::rank(&self.query, &self.items, |it| it.label.as_str())
+        delryn_library::fuzzy::rank(self.input.text(), &self.items, |it| it.label.as_str())
     }
 }
 
@@ -81,15 +81,14 @@ impl App {
             item("Export to CSV", Command::Export),
         ];
         // Jump-to-collection commands for each existing shelf.
-        for (name, _) in &self.lib_shelves {
+        for (name, _) in &self.library.shelves {
             items.push(item(
                 format!("Go: collection · {name}"),
                 Command::JumpShelf(name.clone()),
             ));
         }
-        self.palette = Some(Palette {
-            query: String::new(),
-            cursor: 0,
+        self.overlay = Overlay::Palette(Palette {
+            input: TextInput::new(),
             sel: 0,
             items,
         });
@@ -97,11 +96,11 @@ impl App {
 
     /// Keys while the palette is open.
     pub(crate) fn palette_key(&mut self, key: KeyEvent) {
-        let Some(p) = self.palette.as_mut() else {
+        let Overlay::Palette(p) = &mut self.overlay else {
             return;
         };
         match key.code {
-            KeyCode::Esc => self.palette = None,
+            KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Up => {
                 p.sel = p.sel.saturating_sub(1);
             }
@@ -109,60 +108,52 @@ impl App {
                 let n = p.filtered().len();
                 p.sel = (p.sel + 1).min(n.saturating_sub(1));
             }
-            KeyCode::Left => p.cursor = p.cursor.saturating_sub(1),
-            KeyCode::Right => p.cursor = (p.cursor + 1).min(p.query.chars().count()),
-            KeyCode::Backspace => {
-                let cur = p.cursor;
-                if super::str_delete_before(&mut p.query, cur) {
-                    p.cursor -= 1;
-                    p.sel = 0;
-                }
-            }
-            KeyCode::Char(c) => {
-                let cur = p.cursor;
-                super::str_insert(&mut p.query, cur, c);
-                p.cursor += 1;
-                p.sel = 0;
-            }
             KeyCode::Enter => {
                 let cmd = p.filtered().get(p.sel).map(|it| it.cmd.clone());
-                self.palette = None;
+                self.overlay = Overlay::None;
                 if let Some(cmd) = cmd {
                     self.run_command(cmd);
                 }
             }
-            _ => {}
+            _ => {
+                // Editing the query resets the selection to the top match.
+                let before = p.input.text().len();
+                p.input.handle_key(key);
+                if p.input.text().len() != before {
+                    p.sel = 0;
+                }
+            }
         }
     }
 
     fn run_command(&mut self, cmd: Command) {
         match cmd {
             Command::JumpSection(s) => {
-                self.lib_view = LibView::Section(s);
-                self.lib_sel = 0;
+                self.library.view = LibView::Section(s);
+                self.library.sel = 0;
                 self.refresh_library();
             }
             Command::JumpShelf(name) => {
-                self.lib_view = LibView::Shelf(name);
-                self.lib_sel = 0;
+                self.library.view = LibView::Shelf(name);
+                self.library.sel = 0;
                 self.refresh_library();
             }
             Command::Sort(key) => {
                 // Explicit pick starts ascending; cycling with `s` toggles direction.
-                self.lib_sort = key;
-                self.lib_sort_desc = false;
+                self.library.sort = key;
+                self.library.sort_desc = false;
                 self.refresh_library();
             }
             Command::ToggleSortDir => {
-                self.lib_sort_desc = !self.lib_sort_desc;
+                self.library.sort_desc = !self.library.sort_desc;
                 self.refresh_library();
             }
             Command::CycleLayout => {
                 self.config.library_layout = self.config.library_layout.next();
                 self.config.save();
             }
-            Command::ToggleSidebar => self.lib_show_sidebar = !self.lib_show_sidebar,
-            Command::ToggleDetail => self.lib_detail = !self.lib_detail,
+            Command::ToggleSidebar => self.library.show_sidebar = !self.library.show_sidebar,
+            Command::ToggleDetail => self.library.detail = !self.library.detail,
             Command::Stats => self.open_stats(),
             Command::Export => self.export_library(),
         }

@@ -4,14 +4,20 @@
 
 use super::*;
 
+/// Whether `class` contains any of `keywords` as a substring (case-insensitive).
+/// The shared check behind both math-class predicates; the keyword vocabulary
+/// itself lives in the toolchain registry.
+fn class_contains_any(class: &str, keywords: &[&str]) -> bool {
+    let c = class.to_ascii_lowercase();
+    keywords.iter().any(|k| c.contains(k))
+}
+
 /// Whether an element's class marks it as math content. Covers the common
 /// conventions (InDesign `…MathTools…Math_…`, MathJax/MathML wrappers, generic
 /// `math`/`equation` classes) by matching the substring — publisher-agnostic.
 pub(super) fn is_math_class(e: &scraper::node::Element) -> bool {
-    e.attr("class").is_some_and(|c| {
-        let c = c.to_ascii_lowercase();
-        c.contains("math") || c.contains("equation")
-    })
+    e.attr("class")
+        .is_some_and(|c| class_contains_any(c, MATH_CLASS_KEYWORDS))
 }
 
 /// Conservative, math-scoped exponent fix: a run of digits immediately following
@@ -61,8 +67,7 @@ pub(super) fn superscript_math_exponents(spans: &mut [Span]) {
 /// image (Unicode alt as fallback), while math mid-sentence stays inline.
 pub(super) fn display_math_image(node: NodeRef<Node>) -> Option<(String, String)> {
     let class_math = matches!(node.value(), Node::Element(e) if e.attr("class").is_some_and(|c| {
-        let l = c.to_ascii_lowercase();
-        l.contains("math") || l.contains("equation") || l.contains("display")
+        class_contains_any(c, MATH_CLASS_KEYWORDS) || class_contains_any(c, &[DISPLAY_MATH_CLASS_KEYWORD])
     }));
     let mut found = None;
     let mut other_text = false;

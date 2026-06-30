@@ -11,11 +11,11 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::app::App;
+use crate::app::{App, Overlay};
 use crate::view::library::fmt_size;
 
 pub fn render(f: &mut Frame, app: &App) {
-    let Some(dr) = &app.dup_resolve else {
+    let Overlay::DupResolve(dr) = &app.overlay else {
         return;
     };
     let theme = app.config.theme;
@@ -175,7 +175,7 @@ fn member_line(
 /// The ignored-groups manager: one ignored duplicate group per row (its member
 /// filenames), with keys to restore one or all.
 pub fn render_ignored(f: &mut Frame, app: &App) {
-    let Some(v) = &app.ignored_view else {
+    let Overlay::IgnoredView(v) = &app.overlay else {
         return;
     };
     let theme = app.config.theme;

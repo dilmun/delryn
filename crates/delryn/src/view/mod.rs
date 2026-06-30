@@ -17,7 +17,7 @@ pub mod status;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, Overlay};
 
 /// Adapt the theme's resolved (ink, paper) sRGB into a [`media::Ink`] for
 /// recolouring math/line-art images. The colour resolution itself lives on the
@@ -68,24 +68,24 @@ pub fn cover_image_rect(area: Rect, font: (u16, u16), dims: (u32, u32)) -> Rect 
 /// matched to each popup's own `centered(...)` geometry (keep in sync with the
 /// corresponding `*::render`). The full-screen image viewer covers everything.
 fn overlay_occlusion(area: Rect, app: &App) -> Option<Rect> {
-    if app.image_view.is_some() {
+    if matches!(app.overlay, Overlay::ImageView(_)) {
         return Some(area);
     }
-    if app.settings.is_some() {
+    if matches!(app.overlay, Overlay::Settings(_)) {
         return Some(centered(area, 64, 28));
     }
-    if let Some(p) = app.palette.as_ref() {
+    if let Overlay::Palette(p) = &app.overlay {
         let visible = p.filtered().len().min(10) as u16;
         return Some(centered(area, 56, visible + 3));
     }
-    if let Some(s) = app.stats.as_ref() {
+    if let Overlay::Stats(s) = &app.overlay {
         return Some(centered(
             area,
             46,
             (10 + s.top_authors.len() as u16).min(22),
         ));
     }
-    if app.annot.is_some() {
+    if matches!(app.overlay, Overlay::Annot(_)) {
         return Some(centered(area, 74, 20));
     }
     None
@@ -173,32 +173,32 @@ pub fn render(f: &mut Frame, app: &mut App) {
         Mode::Reader => reader::render(f, app),
         Mode::Library => library::render(f, app),
     }
-    if app.settings.is_some() {
+    if matches!(app.overlay, Overlay::Settings(_)) {
         settings::render(f, app);
     }
     annotations::render(f, app);
-    if app.image_view.is_some() {
+    if matches!(app.overlay, Overlay::ImageView(_)) {
         image::render(f, app);
     }
-    if app.meta_edit.is_some() {
+    if matches!(app.overlay, Overlay::MetaEdit(_)) {
         meta_edit::render(f, app);
     }
-    if app.shelf_picker.is_some() {
+    if matches!(app.overlay, Overlay::ShelfPicker(_)) {
         shelf_picker::render(f, app);
     }
-    if app.bulk_rename.is_some() {
+    if matches!(app.overlay, Overlay::BulkRename(_)) {
         bulk_rename::render(f, app);
     }
-    if app.stats.is_some() {
+    if matches!(app.overlay, Overlay::Stats(_)) {
         stats::render(f, app);
     }
-    if app.palette.is_some() {
+    if matches!(app.overlay, Overlay::Palette(_)) {
         palette::render(f, app);
     }
-    if app.dup_resolve.is_some() {
+    if matches!(app.overlay, Overlay::DupResolve(_)) {
         dup_resolve::render(f, app);
     }
-    if app.ignored_view.is_some() {
+    if matches!(app.overlay, Overlay::IgnoredView(_)) {
         dup_resolve::render_ignored(f, app);
     }
     // An open overlay shows its shortcuts on the shared bottom status row,

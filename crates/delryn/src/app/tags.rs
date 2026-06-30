@@ -3,14 +3,14 @@
 //! every marked book; on a single book they *replace* its tags. Storage is
 //! normalised (lowercase, trimmed, deduped) — see `delryn_model::tags`.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, str_delete_before, str_insert};
+use super::{App, Overlay};
+use crate::ui::TextInput;
 
 /// Open tag-edit prompt: a text buffer plus which book paths it applies to.
 pub struct TagInput {
-    pub buf: String,
-    pub cursor: usize,
+    pub input: TextInput,
     /// Books the committed tags apply to (the marked set, else the current book).
     pub targets: Vec<String>,
     /// Whether more than one book is targeted (typed tags are *added*, not
@@ -22,21 +22,19 @@ impl App {
     /// Begin editing tags for the marked books (added to each) or, when nothing
     /// is marked, the selected book (replacing its tags — buffer pre-filled).
     pub(crate) fn open_tag_edit(&mut self) {
-        let (targets, multi, buf) = if !self.lib_marked.is_empty() {
+        let (targets, multi, buf) = if !self.library.marked.is_empty() {
             (
-                self.lib_marked.iter().cloned().collect(),
+                self.library.marked.iter().cloned().collect(),
                 true,
                 String::new(),
             )
-        } else if let Some(b) = self.lib_books.get(self.lib_sel) {
+        } else if let Some(b) = self.library.books.get(self.library.sel) {
             (vec![b.path.clone()], false, b.tags.clone())
         } else {
             return;
         };
-        let cursor = buf.chars().count();
-        self.tag_edit = Some(TagInput {
-            buf,
-            cursor,
+        self.overlay = Overlay::TagEdit(TagInput {
+            input: TextInput::from(buf),
             targets,
             multi,
         });
@@ -45,28 +43,30 @@ impl App {
     /// Commit the typed tags: replace (single) or add to each (multi), then
     /// refresh so the change shows immediately.
     pub(crate) fn tag_edit_commit(&mut self) {
-        let Some(input) = self.tag_edit.take() else {
+        let Overlay::TagEdit(te) = std::mem::replace(&mut self.overlay, Overlay::None) else {
             return;
         };
-        if let Some(store) = &self.store {
-            for path in &input.targets {
-                let next = if input.multi {
+        let typed = te.input.text();
+        if let Some(store) = &self.session.store {
+            for path in &te.targets {
+                let next = if te.multi {
                     // Union the typed tags with whatever the book already has.
                     let existing = self
-                        .lib_books
+                        .library
+                        .books
                         .iter()
                         .find(|b| &b.path == path)
                         .map(|b| b.tags.clone())
                         .unwrap_or_default();
-                    delryn_model::tags::normalize(&format!("{existing}, {}", input.buf))
+                    delryn_model::tags::normalize(&format!("{existing}, {typed}"))
                 } else {
-                    delryn_model::tags::normalize(&input.buf)
+                    delryn_model::tags::normalize(typed)
                 };
                 store.set_tags(path, &next);
             }
         }
-        let n = input.targets.len();
-        self.lib_flash = Some(if n > 1 {
+        let n = te.targets.len();
+        self.library.flash = Some(if n > 1 {
             format!("tagged {n} books")
         } else {
             "tags updated".into()
@@ -76,42 +76,14 @@ impl App {
 
     /// Keys while the tag prompt is active (a simple single-line text input).
     pub(crate) fn tag_edit_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Esc => self.tag_edit = None,
+            KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Enter => self.tag_edit_commit(),
-            KeyCode::Left => {
-                if let Some(i) = self.tag_edit.as_mut() {
-                    i.cursor = i.cursor.saturating_sub(1);
+            _ => {
+                if let Overlay::TagEdit(i) = &mut self.overlay {
+                    i.input.handle_key(key);
                 }
             }
-            KeyCode::Right => {
-                if let Some(i) = self.tag_edit.as_mut() {
-                    i.cursor = (i.cursor + 1).min(i.buf.chars().count());
-                }
-            }
-            KeyCode::Char('u') if ctrl => {
-                if let Some(i) = self.tag_edit.as_mut() {
-                    i.buf.clear();
-                    i.cursor = 0;
-                }
-            }
-            KeyCode::Backspace => {
-                if let Some(i) = self.tag_edit.as_mut() {
-                    let c = i.cursor;
-                    if str_delete_before(&mut i.buf, c) {
-                        i.cursor -= 1;
-                    }
-                }
-            }
-            KeyCode::Char(c) if !ctrl => {
-                if let Some(i) = self.tag_edit.as_mut() {
-                    let cur = i.cursor;
-                    str_insert(&mut i.buf, cur, c);
-                    i.cursor += 1;
-                }
-            }
-            _ => {}
         }
     }
 }

@@ -48,13 +48,13 @@ impl App {
         if self.dup_scan.is_some() {
             return;
         }
-        let Some(store) = &self.store else {
+        let Some(store) = &self.session.store else {
             return;
         };
         let paths: Vec<String> = store.all_books().into_iter().map(|b| b.path).collect();
         let total = paths.len();
         if total == 0 {
-            self.lib_flash = Some("no books to scan".into());
+            self.library.flash = Some("no books to scan".into());
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -69,7 +69,7 @@ impl App {
             // Dropping `tx` here disconnects the channel — the signal that the scan
             // has finished (see the `Disconnected` arm in `poll_dup_scan`).
         });
-        self.lib_flash = Some(format!("reading contents 0/{total}…"));
+        self.library.flash = Some(format!("reading contents 0/{total}…"));
         self.dup_scan = Some(DupScan {
             rx,
             total,
@@ -112,7 +112,7 @@ impl App {
             return true;
         }
         if progressed {
-            self.lib_flash = Some(format!("reading contents {}/{}…", scan.done, scan.total));
+            self.library.flash = Some(format!("reading contents {}/{}…", scan.done, scan.total));
         }
         progressed
     }
@@ -126,11 +126,11 @@ impl App {
             .filter(|id| !id.toc_labels.is_empty())
             .count();
         let pairs = crate::library::dedup::content_link_candidates(&scan.ids);
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             store.replace_scan_dup_links(&pairs);
         }
         self.refresh_library();
-        self.lib_flash = Some(format!(
+        self.library.flash = Some(format!(
             "deep scan done: read {}/{} contents, {} content match{} — press D to resolve",
             with_toc,
             scan.total,
