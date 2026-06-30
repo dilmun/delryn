@@ -20,9 +20,9 @@ pub(super) const PAGE_THEME_AHEAD: usize = 4;
 impl Reader {
     /// Collect finished page themings into the cache (cheap; safe to call often).
     pub(super) fn drain_page_themer(&mut self) {
-        for done in self.page_themer.poll() {
-            self.themed_requested.remove(&done.key);
-            self.themed_pages.put(done.key, done.bytes);
+        for done in self.pages.themer.poll() {
+            self.pages.requested.remove(&done.key);
+            self.pages.themed.put(done.key, done.bytes);
         }
     }
 
@@ -33,7 +33,7 @@ impl Reader {
     /// raw raster directly, so it only records the policy. Called by the view each
     /// frame, before it reads `page_png` to place the pages.
     pub fn sync_pages(&mut self, policy: media::RenderPolicy) {
-        self.page_policy = policy;
+        self.pages.policy = policy;
         self.drain_page_themer();
         if policy.mode == media::ImageMode::Faithful {
             return; // the raw raster is shown as-is; nothing to theme
@@ -47,12 +47,12 @@ impl Reader {
         for s in lo..=hi {
             let key = (s, policy);
             if self.raster_ready(s)
-                && !self.themed_pages.contains(&key)
-                && !self.themed_requested.contains(&key)
+                && !self.pages.themed.contains(&key)
+                && !self.pages.requested.contains(&key)
                 && let Some(raw) = self.raster_png(s)
             {
-                self.themed_requested.insert(key);
-                self.page_themer.request(key, Arc::new(raw));
+                self.pages.requested.insert(key);
+                self.pages.themer.request(key, Arc::new(raw));
             }
         }
     }

@@ -73,7 +73,7 @@ impl App {
         // The in-book search prompt is a focused text input: it must capture
         // every key (including shortcut letters like 'i' / ';' / ':') before any
         // global shortcut below gets a chance to fire.
-        if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.searching) {
+        if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.search.searching) {
             self.search_key(key);
             return;
         }
@@ -460,20 +460,20 @@ impl App {
         };
         match key.code {
             KeyCode::Esc => {
-                reader.searching = false;
-                reader.search_input.clear();
+                reader.search.searching = false;
+                reader.search.input.clear();
             }
             KeyCode::Enter => reader.run_search(),
             KeyCode::Tab => reader.cycle_search_mode(),
             KeyCode::Up => reader.search_history_recall(-1),
             KeyCode::Down => reader.search_history_recall(1),
             KeyCode::Backspace => {
-                reader.history_pos = None;
-                reader.search_input.pop();
+                reader.search.history_pos = None;
+                reader.search.input.pop();
             }
             KeyCode::Char(c) => {
-                reader.history_pos = None;
-                reader.search_input.push(c);
+                reader.search.history_pos = None;
+                reader.search.input.push(c);
             }
             _ => {}
         }
