@@ -6,6 +6,7 @@
 use crossterm::event::KeyModifiers;
 
 use super::*;
+use crate::ui::TextInput;
 
 impl App {
     pub fn on_key(&mut self, key: KeyEvent) {
@@ -297,23 +298,11 @@ impl App {
                 }
             }
             KeyCode::Enter => self.prompt_commit(),
-            KeyCode::Backspace => {
+            _ => {
                 if let Overlay::Prompt(p) = &mut self.overlay {
-                    p.buffer.pop();
+                    p.input.handle_key(key);
                 }
             }
-            // Ctrl-U clears the line (handy for a prefilled rename/folder field).
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Overlay::Prompt(p) = &mut self.overlay {
-                    p.buffer.clear();
-                }
-            }
-            KeyCode::Char(c) => {
-                if let Overlay::Prompt(p) = &mut self.overlay {
-                    p.buffer.push(c);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -323,7 +312,7 @@ impl App {
         let Overlay::Prompt(p) = std::mem::replace(&mut self.overlay, Overlay::None) else {
             return;
         };
-        let text = p.buffer.trim().to_string();
+        let text = p.input.text().trim().to_string();
         let id = match p.kind {
             PromptKind::Name(id) => {
                 if let Some(store) = &self.session.store {
@@ -401,7 +390,7 @@ impl App {
                 if let Some((id, name)) = target {
                     self.overlay = Overlay::Prompt(Prompt {
                         kind: PromptKind::Name(id),
-                        buffer: name,
+                        input: TextInput::from(name),
                     });
                 }
             }
@@ -415,7 +404,7 @@ impl App {
                 if let Some((id, folder)) = target {
                     self.overlay = Overlay::Prompt(Prompt {
                         kind: PromptKind::Folder(id),
-                        buffer: folder,
+                        input: TextInput::from(folder),
                     });
                 }
             }

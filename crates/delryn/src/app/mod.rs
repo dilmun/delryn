@@ -117,7 +117,7 @@ pub enum PromptKind {
 /// file it into a folder).
 pub struct Prompt {
     pub kind: PromptKind,
-    pub buffer: String,
+    pub input: crate::ui::TextInput,
 }
 
 pub struct App {
@@ -1138,7 +1138,7 @@ mod tests {
         app.library.sel = 0;
         let first = app.library.books[0].path.clone();
         app.on_key(key('T'));
-        tag_edit_mut(&mut app).buf = "Fiction, FICTION, sci-fi".into();
+        tag_edit_mut(&mut app).input.set("Fiction, FICTION, sci-fi");
         app.on_key(code(KeyCode::Enter));
         assert!(
             !matches!(app.overlay, Overlay::TagEdit(_)),
@@ -1159,7 +1159,7 @@ mod tests {
         app.library.marked.insert("/a.epub".into());
         app.library.marked.insert("/b.epub".into());
         app.on_key(key('T'));
-        tag_edit_mut(&mut app).buf = "classic".into();
+        tag_edit_mut(&mut app).input.set("classic");
         app.on_key(code(KeyCode::Enter));
         assert_eq!(
             tags_of(&app, &first),

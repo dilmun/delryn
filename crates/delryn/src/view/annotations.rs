@@ -37,7 +37,7 @@ fn render_prompt(f: &mut Frame, app: &App, prompt: &Prompt) {
         PromptKind::Folder(_) => "folder",
     };
     f.render_widget(
-        Paragraph::new(Line::raw(format!("{label}: {}▏", prompt.buffer))).style(style),
+        Paragraph::new(Line::raw(format!("{label}: {}▏", prompt.input.text()))).style(style),
         row,
     );
 }

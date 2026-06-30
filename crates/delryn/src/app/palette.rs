@@ -7,6 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, LibView, Overlay, SortKey};
 use crate::store::LibrarySection;
+use crate::ui::TextInput;
 
 /// An executable palette action.
 #[derive(Clone)]
@@ -30,8 +31,7 @@ pub struct PaletteItem {
 
 /// Open command-palette state.
 pub struct Palette {
-    pub query: String,
-    pub cursor: usize,
+    pub input: TextInput,
     pub sel: usize,
     items: Vec<PaletteItem>,
 }
@@ -39,7 +39,7 @@ pub struct Palette {
 impl Palette {
     /// Items matching the current query, best-ranked first.
     pub fn filtered(&self) -> Vec<&PaletteItem> {
-        delryn_library::fuzzy::rank(&self.query, &self.items, |it| it.label.as_str())
+        delryn_library::fuzzy::rank(self.input.text(), &self.items, |it| it.label.as_str())
     }
 }
 
@@ -88,8 +88,7 @@ impl App {
             ));
         }
         self.overlay = Overlay::Palette(Palette {
-            query: String::new(),
-            cursor: 0,
+            input: TextInput::new(),
             sel: 0,
             items,
         });
@@ -109,21 +108,6 @@ impl App {
                 let n = p.filtered().len();
                 p.sel = (p.sel + 1).min(n.saturating_sub(1));
             }
-            KeyCode::Left => p.cursor = p.cursor.saturating_sub(1),
-            KeyCode::Right => p.cursor = (p.cursor + 1).min(p.query.chars().count()),
-            KeyCode::Backspace => {
-                let cur = p.cursor;
-                if super::str_delete_before(&mut p.query, cur) {
-                    p.cursor -= 1;
-                    p.sel = 0;
-                }
-            }
-            KeyCode::Char(c) => {
-                let cur = p.cursor;
-                super::str_insert(&mut p.query, cur, c);
-                p.cursor += 1;
-                p.sel = 0;
-            }
             KeyCode::Enter => {
                 let cmd = p.filtered().get(p.sel).map(|it| it.cmd.clone());
                 self.overlay = Overlay::None;
@@ -131,7 +115,14 @@ impl App {
                     self.run_command(cmd);
                 }
             }
-            _ => {}
+            _ => {
+                // Editing the query resets the selection to the top match.
+                let before = p.input.text().len();
+                p.input.handle_key(key);
+                if p.input.text().len() != before {
+                    p.sel = 0;
+                }
+            }
         }
     }
 
