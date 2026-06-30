@@ -2,10 +2,11 @@
 //! collection) and the add-to-collection picker (file one or many books onto
 //! existing or new collections).
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use super::confirm::ConfirmAction;
-use super::{App, LibView, Overlay, str_delete_before, str_insert};
+use super::{App, LibView, Overlay};
+use crate::ui::TextInput;
 
 /// Add-to-collection picker: toggle the focused book's membership in existing
 /// collections, or type a new collection name. The last row is "new".
@@ -32,8 +33,7 @@ impl ShelfPicker {
 /// Inline collection editing in the sidebar: typing a name to create a new
 /// collection, or renaming an existing one (clearing the name deletes it).
 pub struct CollInput {
-    pub buf: String,
-    pub cursor: usize,
+    pub input: TextInput,
     /// `Some(old)` while renaming that collection; `None` while creating one.
     pub rename_from: Option<String>,
 }
@@ -68,8 +68,7 @@ impl App {
     /// Begin creating a new collection (inline at the "＋ New" sidebar row).
     pub(crate) fn lib_coll_begin_new(&mut self) {
         self.overlay = Overlay::CollEdit(CollInput {
-            buf: String::new(),
-            cursor: 0,
+            input: TextInput::new(),
             rename_from: None,
         });
     }
@@ -79,8 +78,7 @@ impl App {
         if let LibView::Shelf(name) = &self.library.view {
             let name = name.clone();
             self.overlay = Overlay::CollEdit(CollInput {
-                cursor: name.chars().count(),
-                buf: name.clone(),
+                input: TextInput::from(name.clone()),
                 rename_from: Some(name),
             });
         }
@@ -88,12 +86,12 @@ impl App {
 
     /// Commit the inline edit: rename, create, or (on an emptied name) delete.
     pub(crate) fn lib_coll_commit(&mut self) {
-        let Overlay::CollEdit(input) = std::mem::replace(&mut self.overlay, Overlay::None) else {
+        let Overlay::CollEdit(ce) = std::mem::replace(&mut self.overlay, Overlay::None) else {
             return;
         };
-        let name = input.buf.trim().to_string();
+        let name = ce.input.text().trim().to_string();
         if let Some(store) = &self.session.store {
-            match (&input.rename_from, name.is_empty()) {
+            match (&ce.rename_from, name.is_empty()) {
                 (Some(old), true) => store.delete_shelf(old), // cleared name ⇒ delete
                 (Some(old), false) => store.rename_shelf(old, &name),
                 (None, false) => store.create_collection(&name),
@@ -111,7 +109,6 @@ impl App {
 
     /// Keys while the inline collection editor is active.
     pub(crate) fn lib_coll_edit_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Enter => {
@@ -120,47 +117,21 @@ impl App {
                 match &self.overlay {
                     Overlay::CollEdit(i) if i.rename_from.is_none() => self.lib_coll_commit(),
                     Overlay::CollEdit(i) => {
+                        let typed = i.input.text().trim();
                         let q = match &i.rename_from {
-                            Some(old) if i.buf.trim().is_empty() => format!("Delete “{old}”?"),
-                            _ => format!("Rename to “{}”?", i.buf.trim()),
+                            Some(old) if typed.is_empty() => format!("Delete “{old}”?"),
+                            _ => format!("Rename to “{typed}”?"),
                         };
                         self.ask_confirm(&q, ConfirmAction::Collection);
                     }
                     _ => {}
                 }
             }
-            KeyCode::Left => {
+            _ => {
                 if let Some(i) = self.lib_coll_input_mut() {
-                    i.cursor = i.cursor.saturating_sub(1);
+                    i.input.handle_key(key);
                 }
             }
-            KeyCode::Right => {
-                if let Some(i) = self.lib_coll_input_mut() {
-                    i.cursor = (i.cursor + 1).min(i.buf.chars().count());
-                }
-            }
-            KeyCode::Char('u') if ctrl => {
-                if let Some(i) = self.lib_coll_input_mut() {
-                    i.buf.clear();
-                    i.cursor = 0;
-                }
-            }
-            KeyCode::Backspace => {
-                if let Some(i) = self.lib_coll_input_mut() {
-                    let c = i.cursor;
-                    if str_delete_before(&mut i.buf, c) {
-                        i.cursor -= 1;
-                    }
-                }
-            }
-            KeyCode::Char(c) if !ctrl => {
-                if let Some(i) = self.lib_coll_input_mut() {
-                    let cur = i.cursor;
-                    str_insert(&mut i.buf, cur, c);
-                    i.cursor += 1;
-                }
-            }
-            _ => {}
         }
     }
 

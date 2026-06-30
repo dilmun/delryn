@@ -149,8 +149,8 @@ pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme
 fn coll_edit_item(input: &crate::app::CollInput, width: usize, theme: Theme) -> ListItem<'static> {
     let mut spans = vec![Span::styled("▸ ", Style::default().fg(theme.accent))];
     spans.extend(crate::view::field_spans(
-        &input.buf,
-        input.cursor,
+        input.input.text(),
+        input.input.cursor(),
         width,
         theme,
     ));

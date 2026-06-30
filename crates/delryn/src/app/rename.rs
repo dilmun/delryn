@@ -6,8 +6,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use delryn_model::naming::{filename_title, fill_template, sanitize_filename};
 
 use super::confirm::ConfirmAction;
-use super::{App, Overlay, fmt_series_index, str_delete_before, str_insert};
+use super::{App, Overlay, fmt_series_index};
 use crate::online;
+use crate::ui::TextInput;
 
 /// Default rename template: `Title.ext` (subtitle stripped — see `filename_title`).
 pub const DEFAULT_RENAME_TEMPLATE: &str = "%T.%E";
@@ -24,8 +25,7 @@ pub struct BulkTarget {
 
 /// Bulk-rename popup: one editable template applied to every marked book.
 pub struct BulkRename {
-    pub template: String,
-    pub cursor: usize,
+    pub input: TextInput,
     pub targets: Vec<BulkTarget>,
     /// Expand the popup to (near) full screen for a wider before/after view.
     pub full: bool,
@@ -124,10 +124,8 @@ impl App {
         if targets.is_empty() {
             return;
         }
-        let template = DEFAULT_RENAME_TEMPLATE.to_string();
         self.overlay = Overlay::BulkRename(BulkRename {
-            cursor: template.chars().count(),
-            template,
+            input: TextInput::from(DEFAULT_RENAME_TEMPLATE),
             targets,
             full: false,
         });
@@ -141,7 +139,7 @@ impl App {
         let mut renamed = 0usize;
         let mut skipped = 0usize;
         for t in &br.targets {
-            let new_name = fill_template(&br.template, &t.values, &t.ext);
+            let new_name = fill_template(br.input.text(), &t.values, &t.ext);
             match self.rename_book_file(&t.path, &new_name) {
                 RenameOutcome::Renamed => renamed += 1,
                 RenameOutcome::Unchanged => {}
@@ -183,38 +181,11 @@ impl App {
                     b.full = !b.full;
                 }
             }
-            KeyCode::Left => {
+            _ => {
                 if let Overlay::BulkRename(b) = &mut self.overlay {
-                    b.cursor = b.cursor.saturating_sub(1);
+                    b.input.handle_key(key);
                 }
             }
-            KeyCode::Right => {
-                if let Overlay::BulkRename(b) = &mut self.overlay {
-                    b.cursor = (b.cursor + 1).min(b.template.chars().count());
-                }
-            }
-            KeyCode::Char('u') if ctrl => {
-                if let Overlay::BulkRename(b) = &mut self.overlay {
-                    b.template.clear();
-                    b.cursor = 0;
-                }
-            }
-            KeyCode::Backspace => {
-                if let Overlay::BulkRename(b) = &mut self.overlay {
-                    let cur = b.cursor;
-                    if str_delete_before(&mut b.template, cur) {
-                        b.cursor -= 1;
-                    }
-                }
-            }
-            KeyCode::Char(c) if !ctrl => {
-                if let Overlay::BulkRename(b) = &mut self.overlay {
-                    let cur = b.cursor;
-                    str_insert(&mut b.template, cur, c);
-                    b.cursor += 1;
-                }
-            }
-            _ => {}
         }
     }
 }

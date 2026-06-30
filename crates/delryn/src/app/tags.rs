@@ -3,14 +3,14 @@
 //! every marked book; on a single book they *replace* its tags. Storage is
 //! normalised (lowercase, trimmed, deduped) — see `delryn_model::tags`.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, Overlay, str_delete_before, str_insert};
+use super::{App, Overlay};
+use crate::ui::TextInput;
 
 /// Open tag-edit prompt: a text buffer plus which book paths it applies to.
 pub struct TagInput {
-    pub buf: String,
-    pub cursor: usize,
+    pub input: TextInput,
     /// Books the committed tags apply to (the marked set, else the current book).
     pub targets: Vec<String>,
     /// Whether more than one book is targeted (typed tags are *added*, not
@@ -33,10 +33,8 @@ impl App {
         } else {
             return;
         };
-        let cursor = buf.chars().count();
         self.overlay = Overlay::TagEdit(TagInput {
-            buf,
-            cursor,
+            input: TextInput::from(buf),
             targets,
             multi,
         });
@@ -45,12 +43,13 @@ impl App {
     /// Commit the typed tags: replace (single) or add to each (multi), then
     /// refresh so the change shows immediately.
     pub(crate) fn tag_edit_commit(&mut self) {
-        let Overlay::TagEdit(input) = std::mem::replace(&mut self.overlay, Overlay::None) else {
+        let Overlay::TagEdit(te) = std::mem::replace(&mut self.overlay, Overlay::None) else {
             return;
         };
+        let typed = te.input.text();
         if let Some(store) = &self.session.store {
-            for path in &input.targets {
-                let next = if input.multi {
+            for path in &te.targets {
+                let next = if te.multi {
                     // Union the typed tags with whatever the book already has.
                     let existing = self
                         .library
@@ -59,14 +58,14 @@ impl App {
                         .find(|b| &b.path == path)
                         .map(|b| b.tags.clone())
                         .unwrap_or_default();
-                    delryn_model::tags::normalize(&format!("{existing}, {}", input.buf))
+                    delryn_model::tags::normalize(&format!("{existing}, {typed}"))
                 } else {
-                    delryn_model::tags::normalize(&input.buf)
+                    delryn_model::tags::normalize(typed)
                 };
                 store.set_tags(path, &next);
             }
         }
-        let n = input.targets.len();
+        let n = te.targets.len();
         self.library.flash = Some(if n > 1 {
             format!("tagged {n} books")
         } else {
@@ -77,42 +76,14 @@ impl App {
 
     /// Keys while the tag prompt is active (a simple single-line text input).
     pub(crate) fn tag_edit_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Enter => self.tag_edit_commit(),
-            KeyCode::Left => {
+            _ => {
                 if let Overlay::TagEdit(i) = &mut self.overlay {
-                    i.cursor = i.cursor.saturating_sub(1);
+                    i.input.handle_key(key);
                 }
             }
-            KeyCode::Right => {
-                if let Overlay::TagEdit(i) = &mut self.overlay {
-                    i.cursor = (i.cursor + 1).min(i.buf.chars().count());
-                }
-            }
-            KeyCode::Char('u') if ctrl => {
-                if let Overlay::TagEdit(i) = &mut self.overlay {
-                    i.buf.clear();
-                    i.cursor = 0;
-                }
-            }
-            KeyCode::Backspace => {
-                if let Overlay::TagEdit(i) = &mut self.overlay {
-                    let c = i.cursor;
-                    if str_delete_before(&mut i.buf, c) {
-                        i.cursor -= 1;
-                    }
-                }
-            }
-            KeyCode::Char(c) if !ctrl => {
-                if let Overlay::TagEdit(i) = &mut self.overlay {
-                    let cur = i.cursor;
-                    str_insert(&mut i.buf, cur, c);
-                    i.cursor += 1;
-                }
-            }
-            _ => {}
         }
     }
 }

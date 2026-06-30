@@ -42,8 +42,8 @@ pub fn render(f: &mut Frame, app: &App) {
             .add_modifier(Modifier::BOLD),
     )];
     q.extend(super::field_spans(
-        &p.query,
-        p.cursor,
+        p.input.text(),
+        p.input.cursor(),
         inner.width.saturating_sub(4) as usize,
         theme,
     ));

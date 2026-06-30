@@ -62,7 +62,12 @@ pub fn render(f: &mut Frame, app: &App) {
             .add_modifier(Modifier::BOLD),
     )];
     let w = rows[0].width.saturating_sub(12) as usize; // " template   " = 12 cells
-    spans.extend(super::field_spans(&br.template, br.cursor, w, theme));
+    spans.extend(super::field_spans(
+        br.input.text(),
+        br.input.cursor(),
+        w,
+        theme,
+    ));
     f.render_widget(Paragraph::new(Line::from(spans)), rows[0]);
 
     f.render_widget(
@@ -94,7 +99,7 @@ fn render_preview(
     let cap = area.height as usize;
     let mut lines: Vec<Line> = Vec::new();
     for t in br.targets.iter().take(cap.saturating_sub(1).max(1)) {
-        let new = fill_template(&br.template, &t.values, &t.ext);
+        let new = fill_template(br.input.text(), &t.values, &t.ext);
         lines.push(Line::from(vec![
             Span::styled(
                 format!(" {}", super::truncate(&t.old_name, col)),

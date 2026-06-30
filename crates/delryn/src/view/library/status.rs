@@ -14,7 +14,7 @@ pub(crate) fn render_status(f: &mut Frame, area: Rect, app: &App, theme: Theme) 
             f,
             area,
             theme,
-            &format!("{label}: {}", t.buf),
+            &format!("{label}: {}", t.input.text()),
             "type · ←→ move · ^U clear · ⏎ save · Esc cancel",
         );
         return;
