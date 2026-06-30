@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use epub::doc::EpubDoc;
 
 use super::{Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry};
+use crate::container::filename_eq;
 
 mod content_meta;
 mod nav;
@@ -164,7 +165,7 @@ fn resolve_image(doc: &mut EpubDoc<BufReader<File>>, dir: &Path, src: &str) -> O
     let id = doc
         .resources
         .iter()
-        .find(|(_, r)| r.path.file_name() == Some(fname))
+        .find(|(_, r)| filename_eq(&r.path, fname))
         .map(|(k, _)| k.clone())?;
     doc.get_resource(&id).map(|(bytes, _)| bytes)
 }
