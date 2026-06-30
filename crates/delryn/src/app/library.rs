@@ -83,7 +83,7 @@ impl SortKey {
 
 impl App {
     pub(crate) fn refresh_library(&mut self) {
-        let Some(store) = &self.store else {
+        let Some(store) = &self.session.store else {
             self.library.books.clear();
             self.library.shelves.clear();
             return;
@@ -264,7 +264,10 @@ impl App {
     }
 
     fn lib_favorite(&mut self) {
-        if let (Some(store), Some(book)) = (&self.store, self.library.books.get(self.library.sel)) {
+        if let (Some(store), Some(book)) = (
+            &self.session.store,
+            self.library.books.get(self.library.sel),
+        ) {
             store.set_favorite(&book.path, !book.favorite);
         }
         self.refresh_library();
@@ -291,7 +294,7 @@ impl App {
 
     /// Open the library-statistics overlay (computed over all books).
     pub(crate) fn open_stats(&mut self) {
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             let books = store.all_books();
             let secs = store.total_read_seconds();
             self.stats = Some(crate::library::stats::compute(&books, secs));
@@ -305,7 +308,7 @@ impl App {
         let mut removed = 0;
         for p in paths {
             let gone = std::fs::remove_file(p).is_ok();
-            if let Some(store) = &self.store {
+            if let Some(store) = &self.session.store {
                 store.remove_book(p);
             }
             removed += usize::from(gone);
@@ -318,7 +321,10 @@ impl App {
 
     /// Set the selected book's rating (0 clears), flashing the result.
     fn lib_set_rating(&mut self, rating: u8) {
-        if let (Some(store), Some(book)) = (&self.store, self.library.books.get(self.library.sel)) {
+        if let (Some(store), Some(book)) = (
+            &self.session.store,
+            self.library.books.get(self.library.sel),
+        ) {
             store.set_rating(&book.path, rating);
         }
         self.library.flash = Some(if rating == 0 {
@@ -337,7 +343,7 @@ impl App {
         };
         let next = delryn_model::ReadingStatus::cycle_manual(&book.status);
         let pct = book.pct;
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             store.set_status(&book.path, next);
         }
         let eff = delryn_model::ReadingStatus::effective(pct, next);

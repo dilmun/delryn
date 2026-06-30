@@ -64,7 +64,7 @@ impl App {
             return RenameOutcome::Skipped;
         }
         // Repoint persistence + move the cached cover to the new key.
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             store.rename_book_path(old, &new);
         }
         let _ = std::fs::rename(

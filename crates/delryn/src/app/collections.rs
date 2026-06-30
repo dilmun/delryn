@@ -42,7 +42,7 @@ impl App {
     /// For each existing collection, whether *all* the targets belong to it
     /// (used to pre-tick rows in the picker).
     fn shelf_membership(&self, targets: &[String]) -> Vec<(String, bool)> {
-        let Some(store) = &self.store else {
+        let Some(store) = &self.session.store else {
             return Vec::new();
         };
         store
@@ -89,7 +89,7 @@ impl App {
             return;
         };
         let name = input.buf.trim().to_string();
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             match (&input.rename_from, name.is_empty()) {
                 (Some(old), true) => store.delete_shelf(old), // cleared name ⇒ delete
                 (Some(old), false) => store.rename_shelf(old, &name),
@@ -203,7 +203,10 @@ impl App {
             return;
         };
         let name = name.clone();
-        if let (Some(store), Some(book)) = (&self.store, self.library.books.get(self.library.sel)) {
+        if let (Some(store), Some(book)) = (
+            &self.session.store,
+            self.library.books.get(self.library.sel),
+        ) {
             store.remove_from_shelf(&book.path, &name);
         }
         self.refresh_library();
@@ -223,7 +226,7 @@ impl App {
                 KeyCode::Enter => {
                     let name = buf.trim().to_string();
                     if !name.is_empty() {
-                        if let Some(store) = &self.store {
+                        if let Some(store) = &self.session.store {
                             for path in &p.targets {
                                 store.add_to_shelf(path, &name);
                             }
@@ -271,7 +274,7 @@ impl App {
             return;
         };
         let add = !*member;
-        if let Some(store) = &self.store {
+        if let Some(store) = &self.session.store {
             for path in &p.targets {
                 if add {
                     store.add_to_shelf(path, name);

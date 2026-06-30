@@ -62,7 +62,7 @@ mod library;
 pub use library::{LibPane, LibView, SortKey};
 
 mod state;
-use state::LibraryState;
+use state::{LibraryState, Session};
 
 mod dispatch;
 
@@ -173,11 +173,8 @@ pub struct App {
     pub image_builder: Option<ImageBuilder>,
     /// Direct-Kitty manager for full PDF page images (transmit-once + place).
     page_deck: PageDeck,
-    /// Start of the current reading session, for time tracking.
-    session_start: Option<Instant>,
-    store: Option<Store>,
-    /// Canonical path of the open book; key for persistence.
-    book_path: String,
+    /// The open book, its persistence handle, and session start — see [`Session`].
+    session: Session,
     /// Library list, selection, sort, filter, and covers — see [`LibraryState`].
     pub library: LibraryState,
     /// Open add-to-collection picker, if any.
@@ -376,9 +373,11 @@ impl App {
             picker: None,
             image_builder: None,
             page_deck: PageDeck::default(),
-            session_start: Some(Instant::now()),
-            store,
-            book_path,
+            session: Session {
+                store,
+                book_path,
+                started: Some(Instant::now()),
+            },
             library: LibraryState::default(),
             shelf_picker: None,
             online_rx: None,
@@ -424,9 +423,11 @@ impl App {
             picker: None,
             image_builder: None,
             page_deck: PageDeck::default(),
-            session_start: None,
-            store,
-            book_path: String::new(),
+            session: Session {
+                store,
+                book_path: String::new(),
+                started: None,
+            },
             library: LibraryState::default(),
             shelf_picker: None,
             online_rx: None,
@@ -450,15 +451,15 @@ impl App {
             return;
         };
         self.flush_reading_time();
-        match build_reader(&path, &self.store, self.picker.is_some()) {
+        match build_reader(&path, &self.session.store, self.picker.is_some()) {
             Ok((reader, config, book_path)) => {
                 self.reader = Some(reader);
                 self.config = config;
-                self.book_path = book_path;
+                self.session.book_path = book_path;
                 self.mode = Mode::Reader;
-                self.session_start = Some(Instant::now());
-                if let Some(s) = &self.store {
-                    s.mark_opened(&self.book_path);
+                self.session.started = Some(Instant::now());
+                if let Some(s) = &self.session.store {
+                    s.mark_opened(&self.session.book_path);
                 }
             }
             // Surface the reason (e.g. an unsupported format) on the status row
@@ -469,11 +470,11 @@ impl App {
 
     /// Persist the current reading position (best-effort).
     pub fn save_progress(&self) {
-        if let (Some(store), Some(reader)) = (&self.store, &self.reader)
-            && !self.book_path.is_empty()
+        if let (Some(store), Some(reader)) = (&self.session.store, &self.reader)
+            && !self.session.book_path.is_empty()
         {
             let _ = store.save_progress(
-                &self.book_path,
+                &self.session.book_path,
                 reader.section,
                 reader.within_frac(),
                 self.config.view_mode,
@@ -484,14 +485,14 @@ impl App {
 
     /// Accumulate elapsed reading time into the open book and reset the clock.
     fn flush_reading_time(&mut self) {
-        if let (Some(start), Some(store)) = (self.session_start, &self.store) {
+        if let (Some(start), Some(store)) = (self.session.started, &self.session.store) {
             let secs = start.elapsed().as_secs() as i64;
-            if secs > 0 && !self.book_path.is_empty() {
-                store.add_read_time(&self.book_path, secs);
+            if secs > 0 && !self.session.book_path.is_empty() {
+                store.add_read_time(&self.session.book_path, secs);
             }
         }
-        if self.session_start.is_some() {
-            self.session_start = Some(Instant::now());
+        if self.session.started.is_some() {
+            self.session.started = Some(Instant::now());
         }
     }
 
@@ -502,7 +503,8 @@ impl App {
     }
 
     pub fn total_read_seconds(&self) -> i64 {
-        self.store
+        self.session
+            .store
             .as_ref()
             .map(|s| s.total_read_seconds())
             .unwrap_or(0)
@@ -1321,7 +1323,7 @@ mod tests {
             !std::path::Path::new(&ssmall).exists(),
             "smaller copy deleted"
         );
-        let all = app.store.as_ref().unwrap().all_books();
+        let all = app.session.store.as_ref().unwrap().all_books();
         assert!(all.iter().any(|b| b.path == sbig));
         assert!(!all.iter().any(|b| b.path == ssmall));
         // No duplicates remain → the overlay closes itself.
@@ -1433,7 +1435,8 @@ mod tests {
                 .unwrap();
         }
         let names = |a: &App| {
-            a.store
+            a.session
+                .store
                 .as_ref()
                 .unwrap()
                 .all_shelves()
@@ -1537,7 +1540,7 @@ mod tests {
         app.on_key(code(KeyCode::Enter)); // create + file all
         app.on_key(key('q')); // close (clears the selection)
 
-        let store = app.store.as_ref().unwrap();
+        let store = app.session.store.as_ref().unwrap();
         assert!(store.shelves_for("/a.epub").contains(&"Unread".to_string()));
         assert!(store.shelves_for("/b.epub").contains(&"Unread".to_string()));
         assert!(
