@@ -19,3 +19,9 @@ pub fn config_dir() -> PathBuf {
     }
     PathBuf::from(".delryn")
 }
+
+/// Directory holding user-authored theme files (`<config>/themes/*.toml`). Loaded
+/// alongside the built-in themes at startup.
+pub fn themes_dir() -> PathBuf {
+    config_dir().join("themes")
+}
