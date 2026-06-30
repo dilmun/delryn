@@ -110,6 +110,11 @@ pub struct PageDeck {
     /// Pages currently transmitted to and displayed by the terminal. Image id is
     /// `id(section)`.
     shown: Vec<Target>,
+    /// The theme/image policy the shown pages were transmitted under. Part of the
+    /// "already showing this" check so cycling the theme or image mode — which
+    /// changes the *bytes* but not the (section, rect) targets — still re-transmits
+    /// the re-themed pages instead of leaving the old ones up.
+    shown_policy: Option<media::RenderPolicy>,
 }
 
 impl PageDeck {
@@ -118,9 +123,11 @@ impl PageDeck {
         0x0F00_0000 + section as u32
     }
 
-    /// Whether the deck is already showing exactly `targets`.
-    pub fn shows(&self, targets: &[Target]) -> bool {
-        self.shown.as_slice() == targets
+    /// Whether the deck is already showing exactly `targets` under `policy` — i.e.
+    /// nothing to do this frame. A policy change (theme/mode) re-transmits even
+    /// when the targets are unchanged, because the page *bytes* differ.
+    pub fn shows(&self, targets: &[Target], policy: media::RenderPolicy) -> bool {
+        self.shown.as_slice() == targets && self.shown_policy == Some(policy)
     }
 
     /// Whether anything is on screen (so the loop can skip a clear).
@@ -142,9 +149,10 @@ impl PageDeck {
     pub fn render(
         &mut self,
         targets: &[Target],
+        policy: media::RenderPolicy,
         mut png_for: impl FnMut(usize) -> Option<Vec<u8>>,
     ) -> Vec<String> {
-        if self.shows(targets) {
+        if self.shows(targets, policy) {
             return Vec::new();
         }
         // All new pages must be rasterized before we swap — else keep the
@@ -172,13 +180,16 @@ impl PageDeck {
             ));
         }
         self.shown = targets.to_vec();
+        self.shown_policy = Some(policy);
 
         dbg_log(&format!(
-            "show {:?} ({} escapes)",
+            "show {:?} mode={:?} paper={:?} ({} escapes)",
             targets
                 .iter()
                 .map(|(s, r)| (*s, r.x, r.y, r.width, r.height))
                 .collect::<Vec<_>>(),
+            policy.mode,
+            policy.tint.paper,
             out.len(),
         ));
         out
@@ -192,6 +203,7 @@ impl PageDeck {
             .map(|(s, _)| media::delete_image_seq(Self::id(*s)))
             .collect();
         self.shown.clear();
+        self.shown_policy = None;
         temp_cleanup();
         out
     }
@@ -205,13 +217,31 @@ mod tests {
         Rect::new(x, 0, 40, 50)
     }
 
+    /// A page policy for the deck tests; the deck only compares it, so the colours
+    /// are arbitrary.
+    fn policy(mode: media::ImageMode) -> media::RenderPolicy {
+        media::RenderPolicy {
+            tint: media::Ink {
+                ink: [0, 0, 0],
+                paper: [255, 255, 255],
+            },
+            mode,
+        }
+    }
+
+    fn auto() -> media::RenderPolicy {
+        policy(media::ImageMode::Auto)
+    }
+
     /// A ready page transmits (`a=t`) then places (`a=p`); a spread does both for
     /// each page with distinct image ids and no placement id (`p=`).
     #[test]
     fn shows_spread_transmits_and_places_each_page() {
         let mut deck = PageDeck::default();
         let esc = deck
-            .render(&[(10, rect(0)), (11, rect(40))], |s| Some(vec![s as u8; 4]))
+            .render(&[(10, rect(0)), (11, rect(40))], auto(), |s| {
+                Some(vec![s as u8; 4])
+            })
             .join("");
         assert_eq!(esc.matches("a=t").count(), 2, "both pages transmitted");
         assert_eq!(esc.matches("a=p").count(), 2, "both pages placed");
@@ -228,9 +258,13 @@ mod tests {
     #[test]
     fn turn_deletes_old_then_shows_new() {
         let mut deck = PageDeck::default();
-        deck.render(&[(10, rect(0)), (11, rect(40))], |s| Some(vec![s as u8; 4]));
+        deck.render(&[(10, rect(0)), (11, rect(40))], auto(), |s| {
+            Some(vec![s as u8; 4])
+        });
         let esc = deck
-            .render(&[(11, rect(0)), (12, rect(40))], |s| Some(vec![s as u8; 4]))
+            .render(&[(11, rect(0)), (12, rect(40))], auto(), |s| {
+                Some(vec![s as u8; 4])
+            })
             .join("");
         assert!(esc.contains("a=d"), "old pages deleted");
         assert_eq!(esc.matches("a=p").count(), 2, "new spread placed");
@@ -241,21 +275,41 @@ mod tests {
     #[test]
     fn keeps_old_pages_until_all_ready() {
         let mut deck = PageDeck::default();
-        deck.render(&[(10, rect(0))], |_| Some(vec![1, 2, 3, 4]));
+        deck.render(&[(10, rect(0))], auto(), |_| Some(vec![1, 2, 3, 4]));
         // Page 11 not ready (png_for None for it): no swap, old page stays.
-        let esc = deck.render(&[(11, rect(0)), (12, rect(40))], |s| {
+        let esc = deck.render(&[(11, rect(0)), (12, rect(40))], auto(), |s| {
             (s == 11).then(|| vec![0; 4])
         });
         assert!(esc.is_empty(), "no escapes while a target page is unready");
         assert_eq!(deck.shown, vec![(10, rect(0))], "old page still shown");
     }
 
-    /// Re-rendering the same targets is a no-op (the images persist on screen).
+    /// Re-rendering the same targets under the same policy is a no-op (the images
+    /// persist on screen).
     #[test]
     fn unchanged_targets_emit_nothing() {
         let mut deck = PageDeck::default();
-        deck.render(&[(10, rect(0))], |s| Some(vec![s as u8; 4]));
-        let esc = deck.render(&[(10, rect(0))], |s| Some(vec![s as u8; 4]));
+        deck.render(&[(10, rect(0))], auto(), |s| Some(vec![s as u8; 4]));
+        let esc = deck.render(&[(10, rect(0))], auto(), |s| Some(vec![s as u8; 4]));
         assert!(esc.is_empty());
+    }
+
+    /// Cycling the theme / image mode changes the page *bytes* but not the
+    /// (section, rect) targets — the deck must still re-transmit the re-themed page
+    /// rather than leaving the stale one up.
+    #[test]
+    fn policy_change_retransmits_same_targets() {
+        let mut deck = PageDeck::default();
+        deck.render(&[(10, rect(0))], auto(), |s| Some(vec![s as u8; 4]));
+        let esc = deck
+            .render(
+                &[(10, rect(0))],
+                policy(media::ImageMode::InvertBackgrounds),
+                |s| Some(vec![s as u8; 4]),
+            )
+            .join("");
+        assert!(esc.contains("a=d"), "old page deleted before re-transmit");
+        assert!(esc.contains("a=t"), "re-themed page re-transmitted");
+        assert!(esc.contains("a=p"), "and re-placed");
     }
 }

@@ -316,6 +316,14 @@ only framed/matted to sit in the theme.
       not naive `255−RGB`. `media::RenderPolicy { tint, mode }` is part of the
       image cache key, so changing theme/mode re-renders live. Covers untouched.
       *Optional reader keybind to flip the current view — deferred.*
+- [x] **PDF pages honour the image policy** (`media::theme_page_png` +
+      `PageThemer`): full pages no longer show on a fixed white sheet. **Auto**
+      maps a light *neutral* page into the theme (white→paper, ink→text colour, so
+      a dark theme yields a dark page) while leaving a colourful (photo) page
+      alone; **Invert** themes colourful pages too; **Faithful** keeps the original
+      page. Themed **off-thread**, keyed by `(section, RenderPolicy)` so a
+      theme/mode toggle re-themes from the cached raster (no PDFium re-render) and
+      page turns never stall on the transform. See the PDF v2 entry's *Theming*.
 - [x] **Code blocks** already render on the reader page (highlight.rs takes only
       syntect *foreground*, never its background — no mismatched rectangle). Added
       a faint `Theme::code_surface()` panel (page nudged ~8% toward ink; padded to
@@ -353,6 +361,14 @@ only framed/matted to sit in the theme.
         and transmits go through a **temp file** (`t=t`, must be named
         `tty-graphics-protocol-*`) instead of multi-MB inline base64 — see
         [[delryn-ghostty-graphics]].
+      - **Theming (shipped):** pages respect the same image policy as EPUB figures
+        (Auto / Invert / Faithful) instead of a fixed white sheet. The raw raster
+        is themed by `media::theme_page_png` on a background `media::PageThemer`
+        thread (the direct path can't afford a per-turn decode+transform+re-encode)
+        and cached by `(section, RenderPolicy)`; the deck transmits the themed PNG,
+        and page-readiness (`page_ready`/`pages_loading`) is policy-aware so a turn
+        never shows a half-themed page. A theme/mode toggle re-themes from the
+        cached raster — no PDFium re-render. Lives in `app/reader/pages.rs`.
       - **Out of scope (later):** zoom/fit/pan, in-page search/selection (PDFium
         text-layer seam left for Phase 6/7). Optional future perf: transmit-once +
         `a=p`-only flips (no temp-file write per turn) — current per-turn temp-file
