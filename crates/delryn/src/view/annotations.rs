@@ -4,13 +4,13 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph,
 };
 
 use crate::app::{App, Overlay, Prompt, PromptKind};
+use crate::theme::Role;
 
 pub fn render(f: &mut Frame, app: &App) {
     if let Overlay::Prompt(prompt) = &app.overlay {
@@ -31,7 +31,7 @@ fn render_prompt(f: &mut Frame, app: &App, prompt: &Prompt) {
         height: 1,
     };
     f.render_widget(Clear, row);
-    let style = Style::default().fg(theme.status_fg).bg(theme.status_bg);
+    let style = theme.style(Role::StatusBar);
     let label = match prompt.kind {
         PromptKind::Name(_) => "name",
         PromptKind::Folder(_) => "folder",
@@ -54,19 +54,14 @@ fn render_overlay(f: &mut Frame, app: &App) {
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.accent))
+        .border_style(theme.style(Role::BorderFocus))
         .padding(Padding::horizontal(1))
-        .title(Span::styled(
-            " Bookmarks ",
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
+        .title(Span::styled(" Bookmarks ", theme.style(Role::Title)))
         .title_bottom(Line::from(Span::styled(
             " ↑↓ move · ⏎ jump · r name · f folder · d delete ",
-            Style::default().fg(theme.muted),
+            theme.style(Role::Muted),
         )))
-        .style(Style::default().fg(theme.fg).bg(bg));
+        .style(theme.style(Role::Body).bg(bg));
     // A count badge, right-aligned in the title bar.
     if !state.items.is_empty() {
         let n = state.items.len();
@@ -74,7 +69,7 @@ fn render_overlay(f: &mut Frame, app: &App) {
         block = block.title(
             Line::from(Span::styled(
                 format!(" {n} {unit} "),
-                Style::default().fg(theme.muted),
+                theme.style(Role::Muted),
             ))
             .alignment(Alignment::Right),
         );
@@ -88,10 +83,10 @@ fn render_overlay(f: &mut Frame, app: &App) {
         f.render_widget(
             Paragraph::new(vec![
                 Line::raw(""),
-                Line::styled("  No bookmarks yet.", Style::default().fg(theme.fg)),
+                Line::styled("  No bookmarks yet.", theme.style(Role::Body)),
                 Line::styled(
                     "  Press m in the reader to drop one at your place.",
-                    Style::default().fg(theme.muted),
+                    theme.style(Role::Muted),
                 ),
             ]),
             rows[0],
@@ -116,13 +111,8 @@ fn render_overlay(f: &mut Frame, app: &App) {
             let count = state.items.iter().filter(|x| x.folder == a.folder).count();
             list_items.push(
                 Line::from(vec![
-                    Span::styled(
-                        format!("▾ {title}"),
-                        Style::default()
-                            .fg(theme.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("  {count}"), Style::default().fg(theme.muted)),
+                    Span::styled(format!("▾ {title}"), theme.style(Role::AccentStrong)),
+                    Span::styled(format!("  {count}"), theme.style(Role::Muted)),
                 ])
                 .into(),
             );
@@ -132,19 +122,13 @@ fn render_overlay(f: &mut Frame, app: &App) {
         let label = if a.name.is_empty() { &a.quote } else { &a.name };
         list_items.push(
             Line::from(vec![
-                Span::styled(
-                    format!("   §{} ", a.section + 1),
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled(label.clone(), Style::default().fg(theme.fg)),
+                Span::styled(format!("   §{} ", a.section + 1), theme.style(Role::Muted)),
+                Span::styled(label.clone(), theme.style(Role::Body)),
             ])
             .into(),
         );
     }
-    let highlight = Style::default()
-        .fg(theme.on_accent())
-        .bg(theme.accent)
-        .add_modifier(Modifier::BOLD);
+    let highlight = theme.style(Role::Selection);
     let list = List::new(list_items).highlight_style(highlight);
     let mut st = ListState::default();
     let sel = state.sel.min(state.items.len() - 1);

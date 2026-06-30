@@ -236,7 +236,7 @@ pub fn field_spans(
     width: usize,
     theme: crate::theme::Theme,
 ) -> Vec<ratatui::text::Span<'static>> {
-    use ratatui::style::{Modifier, Style};
+    use crate::theme::Role;
     use ratatui::text::Span;
 
     let chars: Vec<char> = val.chars().collect();
@@ -246,17 +246,12 @@ pub fn field_spans(
     // Anchor the window so the caret sits at its right edge — guarantees the
     // caret (and the text being typed) is always on screen.
     let start = (caret + 1).saturating_sub(win);
-    let text = Style::default()
-        .fg(theme.heading)
-        .add_modifier(Modifier::BOLD);
-    let cursor = Style::default()
-        .fg(theme.on_accent())
-        .bg(theme.accent)
-        .add_modifier(Modifier::BOLD);
+    let text = theme.style(Role::Heading);
+    let cursor = theme.style(Role::Selection);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     if start > 0 {
-        spans.push(Span::styled("…", Style::default().fg(theme.muted)));
+        spans.push(Span::styled("…", theme.style(Role::Muted)));
     }
     let end = (start + win).min(len);
     for (idx, ch) in chars.iter().enumerate().take(end).skip(start) {

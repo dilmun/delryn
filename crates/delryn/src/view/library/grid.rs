@@ -130,7 +130,7 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
                 let frame = Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(theme.muted));
+                    .border_style(theme.style(Role::Muted));
                 let inner = frame.inner(card);
                 f.render_widget(frame, card);
                 let pad = (inner.height / 2).saturating_sub(2) as usize;
@@ -143,7 +143,7 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
                     Paragraph::new(body)
                         .alignment(Alignment::Center)
                         .wrap(Wrap { trim: true })
-                        .style(Style::default().fg(theme.muted)),
+                        .style(theme.style(Role::Muted)),
                     inner,
                 );
             }
@@ -153,9 +153,9 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
         // gutter), so the cover itself stays full-bleed. Accent for the cursor,
         // marker colour for a multi-select mark; unselected covers get no frame.
         let frame_color = if selected {
-            Some(theme.accent)
+            Some(theme.color(Role::BorderFocus))
         } else if *marked {
-            Some(theme.marker)
+            Some(theme.color(Role::Marker))
         } else {
             None
         };
@@ -190,9 +190,7 @@ fn render_caption(f: &mut Frame, area: Rect, b: &BookRow, theme: Theme) {
     let fav = if b.favorite { "★ " } else { "" };
     let title = Line::from(Span::styled(
         crate::view::truncate(&format!("{fav}{}", b.title), width),
-        Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD),
+        theme.style(Role::AccentStrong),
     ));
 
     // Author · Series #N · FORMAT · rating · progress — non-empty parts only.
@@ -218,7 +216,7 @@ fn render_caption(f: &mut Frame, area: Rect, b: &BookRow, theme: Theme) {
     }
     let meta = Line::from(Span::styled(
         crate::view::truncate(&meta.join("  ·  "), width),
-        Style::default().fg(theme.muted),
+        theme.style(Role::Muted),
     ));
 
     f.render_widget(Paragraph::new(vec![title, meta]), area);

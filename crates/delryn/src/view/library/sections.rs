@@ -15,20 +15,15 @@ fn section_item(
     theme: Theme,
 ) -> ListItem<'static> {
     let style = if here && focused {
-        Style::default()
-            .fg(theme.on_accent())
-            .bg(theme.accent)
-            .add_modifier(Modifier::BOLD)
+        theme.style(Role::Selection)
     } else if here {
-        let mut s = Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD);
+        let mut s = theme.style(Role::AccentStrong);
         if let Some(bg) = theme.bg {
             s = s.bg(bg);
         }
         s
     } else {
-        let mut s = Style::default().fg(theme.fg);
+        let mut s = theme.style(Role::Body);
         if let Some(bg) = theme.bg {
             s = s.bg(bg);
         }
@@ -44,7 +39,7 @@ fn section_item(
     let count_style = if here && focused {
         style
     } else {
-        let mut s = Style::default().fg(theme.muted);
+        let mut s = theme.style(Role::Muted);
         if let Some(bg) = theme.bg {
             s = s.bg(bg);
         }
@@ -81,8 +76,8 @@ pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme
     // so "＋ New collection" is reachable even before any collection exists. A
     // blank spacer + a full-width rule separates them from the built-in sections.
     let (mut rule, mut label) = (
-        Style::default().fg(theme.muted),
-        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+        theme.style(Role::Muted),
+        theme.style(Role::Body).add_modifier(Modifier::BOLD),
     );
     if let Some(bg) = theme.bg {
         rule = rule.bg(bg);
@@ -147,7 +142,7 @@ pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme
 /// collection), with a block cursor at the caret. The value scrolls horizontally
 /// within `width` cells so the caret stays visible for long names.
 fn coll_edit_item(input: &crate::app::CollInput, width: usize, theme: Theme) -> ListItem<'static> {
-    let mut spans = vec![Span::styled("▸ ", Style::default().fg(theme.accent))];
+    let mut spans = vec![Span::styled("▸ ", theme.style(Role::Accent))];
     spans.extend(crate::view::field_spans(
         input.input.text(),
         input.input.cursor(),

@@ -12,6 +12,7 @@ use ratatui::widgets::{
 };
 
 use crate::app::{App, Overlay};
+use crate::theme::Role;
 use crate::view::library::fmt_size;
 
 pub fn render(f: &mut Frame, app: &App) {
@@ -32,25 +33,23 @@ pub fn render(f: &mut Frame, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.accent))
+        .border_style(theme.style(Role::BorderFocus))
         .title(Span::styled(
             format!(
                 " Resolve Duplicates — {} group{} · {to_delete} to delete ",
                 dr.groups.len(),
                 if dr.groups.len() == 1 { "" } else { "s" },
             ),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
+            theme.style(Role::Title),
         ))
         .title_bottom(
             Line::from(Span::styled(
                 " ↑↓ space · p preview · r open location · d delete · n ignore · I ignored · o prefs · f full · q ",
-                Style::default().fg(theme.muted),
+                theme.style(Role::Muted),
             ))
             .alignment(Alignment::Center),
         )
-        .style(Style::default().fg(theme.fg).bg(theme.paper()));
+        .style(theme.style(Role::Body).bg(theme.paper()));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -97,7 +96,7 @@ pub fn render(f: &mut Frame, app: &App) {
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
-                .thumb_style(Style::default().fg(theme.accent)),
+                .thumb_style(theme.style(Role::Accent)),
             body,
             &mut sb,
         );
@@ -117,12 +116,7 @@ fn column_header(theme: crate::theme::Theme) -> Line<'static> {
         "  {:<W_CHECK$} {:<W_FMT$} {:>W_SIZE$}  {:<W_SOURCE$} NAME",
         "KEEP", "FMT", "SIZE", "SOURCE",
     );
-    Line::styled(
-        text,
-        Style::default()
-            .fg(theme.muted)
-            .add_modifier(Modifier::DIM | Modifier::BOLD),
-    )
+    Line::styled(text, theme.style(Role::Hint).add_modifier(Modifier::BOLD))
 }
 
 /// One copy row as aligned columns — cursor marker, keep/delete, format, size,
@@ -136,9 +130,9 @@ fn member_line(
 ) -> Line<'static> {
     let marker = if focused { "▸ " } else { "  " };
     let (check, check_color) = if m.checked {
-        ("[✗] del", theme.marker)
+        ("[✗] del", theme.color(Role::Marker))
     } else {
-        ("[✓] keep", theme.accent)
+        ("[✓] keep", theme.color(Role::Accent))
     };
     let source = if m.converted { "converted" } else { "original" };
 
@@ -155,19 +149,19 @@ fn member_line(
     let location = elide_path(&m.path, budget);
 
     let name_style = if m.checked {
-        Style::default().fg(theme.muted)
+        theme.style(Role::Muted)
     } else {
-        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+        theme.style(Role::Body).add_modifier(Modifier::BOLD)
     };
     Line::from(vec![
-        Span::styled(marker.to_string(), Style::default().fg(theme.accent)),
+        Span::styled(marker.to_string(), theme.style(Role::Accent)),
         Span::styled(
             check_cell,
             Style::default()
                 .fg(check_color)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(attrs, Style::default().fg(theme.muted)),
+        Span::styled(attrs, theme.style(Role::Muted)),
         Span::styled(location, name_style),
     ])
 }
@@ -185,21 +179,19 @@ pub fn render_ignored(f: &mut Frame, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.accent))
+        .border_style(theme.style(Role::BorderFocus))
         .title(Span::styled(
             format!(" Ignored Duplicate Groups — {} ", v.signatures.len()),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
+            theme.style(Role::Title),
         ))
         .title_bottom(
             Line::from(Span::styled(
                 " ↑↓ move · u/⏎ restore · C restore all · q ",
-                Style::default().fg(theme.muted),
+                theme.style(Role::Muted),
             ))
             .alignment(Alignment::Center),
         )
-        .style(Style::default().fg(theme.fg).bg(theme.paper()));
+        .style(theme.style(Role::Body).bg(theme.paper()));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -222,13 +214,13 @@ pub fn render_ignored(f: &mut Frame, app: &App) {
                 .saturating_sub(marker.chars().count() + count.chars().count())
                 .max(12);
             let style = if focused {
-                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+                theme.style(Role::Body).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme.muted)
+                theme.style(Role::Muted)
             };
             Line::from(vec![
-                Span::styled(marker.to_string(), Style::default().fg(theme.accent)),
-                Span::styled(count, Style::default().fg(theme.muted)),
+                Span::styled(marker.to_string(), theme.style(Role::Accent)),
+                Span::styled(count, theme.style(Role::Muted)),
                 Span::styled(truncate_end(&names, budget), style),
             ])
         })

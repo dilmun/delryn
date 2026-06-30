@@ -39,12 +39,12 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
         f.render_stateful_widget(img, rect, &mut cover.proto);
     } else {
         let ph = Paragraph::new("\n  (no cover)")
-            .style(Style::default().fg(theme.muted))
+            .style(theme.style(Role::Muted))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(theme.muted)),
+                    .border_style(theme.style(Role::Muted)),
             );
         f.render_widget(ph, parts[0]);
     }
@@ -54,21 +54,16 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
         Line::from(vec![
             Span::styled(
                 if fav { "★ " } else { "" },
-                Style::default().fg(theme.marker),
+                Style::default().fg(theme.color(Role::Marker)),
             ),
-            Span::styled(
-                title,
-                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(title, theme.style(Role::Body).add_modifier(Modifier::BOLD)),
         ]),
-        Line::styled(author, Style::default().fg(theme.muted)),
+        Line::styled(author, theme.style(Role::Muted)),
     ];
     if !subtitle.is_empty() {
         lines.push(Line::styled(
             subtitle,
-            Style::default()
-                .fg(theme.muted)
-                .add_modifier(Modifier::ITALIC),
+            theme.style(Role::Muted).add_modifier(Modifier::ITALIC),
         ));
     }
     lines.push(Line::raw(""));
@@ -95,14 +90,18 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
     }
     lines.push(meta_kv("Size", &size, theme));
     lines.push(Line::from(vec![
-        Span::styled("Source: ", Style::default().fg(theme.muted)),
+        Span::styled("Source: ", theme.style(Role::Muted)),
         Span::styled(
             if converted {
                 "Converted EPUB"
             } else {
                 "Original EPUB"
             },
-            Style::default().fg(if converted { theme.marker } else { theme.fg }),
+            Style::default().fg(if converted {
+                theme.color(Role::Marker)
+            } else {
+                theme.color(Role::Body)
+            }),
         ),
     ]));
     lines.push(meta_kv("Progress", &format!("{pct}%"), theme));
@@ -126,7 +125,7 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
 /// A `key: value` metadata line.
 fn meta_kv(key: &str, val: &str, theme: Theme) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{key}: "), Style::default().fg(theme.muted)),
-        Span::styled(val.to_string(), Style::default().fg(theme.fg)),
+        Span::styled(format!("{key}: "), theme.style(Role::Muted)),
+        Span::styled(val.to_string(), theme.style(Role::Body)),
     ])
 }
