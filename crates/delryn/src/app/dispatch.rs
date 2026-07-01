@@ -6,7 +6,26 @@
 use crossterm::event::KeyModifiers;
 
 use super::*;
+use crate::config::{Config, ViewMode};
 use crate::ui::TextInput;
+
+/// The config knobs that change how a section wraps or how wide the reading
+/// measure is. When any of them changes (a view-mode switch, a reading preset, a
+/// width/spacing tweak), the section re-wraps, so the reader preserves its
+/// reading position across the change via [`Reader::hold_reflow_position`].
+fn reflow_key(c: &Config) -> (ViewMode, u16, u16, u8, u8, bool, bool, bool, bool) {
+    (
+        c.view_mode,
+        c.side_padding,
+        c.page_gap,
+        c.line_spacing,
+        c.paragraph_spacing,
+        c.justify,
+        c.tidy_spacing,
+        c.code_wrap,
+        c.table_wrap,
+    )
+}
 
 impl App {
     pub fn on_key(&mut self, key: KeyEvent) {
@@ -482,6 +501,9 @@ impl App {
         // blanks/flickers it. So page-snap whenever paged mode is on *or* the
         // document is page-image-based, regardless of the continuous-scroll knob.
         let paged = self.config.paged || reader.is_paged_image();
+        // Snapshot the wrap-affecting settings so we can preserve the reading
+        // position if this action re-wraps the text (see below).
+        let wrap_before = reflow_key(&self.config);
         match action {
             Action::Quit => self.should_quit = true,
             Action::Back => {
@@ -677,6 +699,13 @@ impl App {
                 reader.prev_element();
             }
             Action::None => {}
+        }
+
+        // If this action changed a wrap-affecting setting (view mode, width,
+        // spacing, preset), the section re-wraps next frame — anchor the reading
+        // position so it stays put instead of drifting to a stale line offset.
+        if reflow_key(&self.config) != wrap_before {
+            reader.hold_reflow_position();
         }
 
         // Persist on chapter change or a settings change (cheap).

@@ -105,9 +105,12 @@ pub struct Reader {
     pub sidebar_offset: usize,
     /// TOC viewport height in rows, refreshed each draw.
     pub sidebar_h: usize,
-    /// Height of one column in lines, refreshed each draw.
+    /// Height of one column in lines, refreshed each draw. Locates content within
+    /// a single column (image centring, visible-code detection).
     pub viewport_lines: usize,
-    /// Total lines visible at once (2 columns in two-page mode), for scroll math.
+    /// Lines per page for all scroll / paging math (max-scroll, page snap, page
+    /// count). One column's height — in a two-page spread, paging advances one
+    /// column at a time. Currently equal to `viewport_lines`.
     pub page_lines: usize,
     /// Wrap width used by the last render; used to locate jump targets.
     pub last_measure: usize,
@@ -1202,6 +1205,19 @@ impl Reader {
         }
     }
 
+    /// Before a change that re-wraps the section (a view-mode switch, a reading
+    /// preset, a width/spacing tweak), snapshot the reading position as a section
+    /// fraction so [`resolve_pending`](Self::resolve_pending) restores the same
+    /// spot once the text re-wraps at the new geometry — otherwise the raw
+    /// `scroll` line offset points somewhere else in the differently-wrapped text.
+    /// A no-op for paged docs (their position is the page index, unaffected by
+    /// wrapping) and when there's nothing yet to anchor to.
+    pub fn hold_reflow_position(&mut self) {
+        if !self.is_paged_image() && !self.lines.is_empty() {
+            self.pending_frac = Some(self.within_frac());
+        }
+    }
+
     /// Apply a pending resume fraction or figure jump once the section is wrapped.
     pub fn resolve_pending(&mut self) {
         if let Some(frac) = self.pending_frac.take() {
@@ -1575,6 +1591,47 @@ mod tests {
         assert!(r.prev_element(), "back to first element");
         assert_eq!(r.scroll, starts[0].0);
         assert!(!r.prev_element(), "no element above the first");
+    }
+
+    #[test]
+    fn hold_reflow_position_keeps_the_fraction_across_a_rewrap() {
+        // A chapter long enough that changing the measure changes the line count.
+        let mut r = reader_with(vec![para(); 40]);
+        let wide_len = r.lines.len();
+        // Park partway down.
+        r.scroll = wide_len / 2;
+        let frac = r.within_frac();
+        assert!(frac > 0.0 && frac < 1.0);
+
+        // A view-mode switch: hold the position, then re-wrap at a narrower
+        // measure (like Center → TwoPage halving the column).
+        r.hold_reflow_position();
+        assert_eq!(r.pending_frac, Some(frac));
+        r.last_measure = 20;
+        r.ensure_wrapped(20);
+        r.resolve_pending();
+
+        // The reflow changed the line count, and the position tracks the same
+        // fraction (within one line of rounding) rather than the stale offset.
+        assert_ne!(r.lines.len(), wide_len, "the narrower measure re-wrapped");
+        let restored = r.within_frac();
+        assert!(
+            (restored - frac).abs() < 1.0 / r.lines.len() as f32,
+            "fraction {frac} not preserved across re-wrap: got {restored}"
+        );
+    }
+
+    #[test]
+    fn hold_reflow_position_is_a_noop_for_paged_docs() {
+        // A paged (PDF) doc: position is the page index, not a wrap fraction.
+        let doc = MockDoc::new((0..6).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.load(2);
+        r.hold_reflow_position();
+        assert_eq!(
+            r.pending_frac, None,
+            "paged docs don't anchor a wrap fraction"
+        );
     }
 
     #[test]
