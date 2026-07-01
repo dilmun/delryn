@@ -89,14 +89,25 @@ is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
 
 ### R-D — P2 polish
 
-- [ ] View-layer state-writeback (`lib_sort_cycle` ×3, `lib_grid_cols`,
-      `lib_visible_rows`) → returned `LayoutMetrics`, idempotent render.
-- [ ] Image-math perf: reuse classification RGBA in `render_for_theme`; fold
-      `chroma`+`rgb_to_hsl` one-pass in `theme_invert`; `SYMBOLS` → `LazyLock`.
-- [ ] Document the 3 `#[allow(too_many_arguments)]` in `reader/images.rs` (or
-      bundle the geometry args into a struct to remove them).
-- [ ] Misc: `online` cover-url builders ×3; config enum `next/prev/label` macro;
-      `export.rs` JSON via `serde_json`.
+- [x] **View-layer state-writeback → `LayoutMetrics`.** ✅ `sort_cycle`/
+      `visible_rows`/`grid_cols` moved out of `LibraryState` into the render-facts
+      struct (`LayoutRects`→`LayoutMetrics`, where the reader already writes pane
+      rects): the view writes them each frame, input reads them — render is a pure
+      function of state. Commit e0f747c.
+- [~] **Image-math perf.** ✅ `SYMBOLS` → `LazyLock` (the LaTeX table was re-sorted
+      every `replace_symbols` call, on the parse path; bf7fd43). *Deferred (measure
+      first — dev docs): reuse classification RGBA in `render_for_theme` + fold
+      `chroma`/`rgb_to_hsl` in `theme_invert` — both run off-thread once per cached
+      image build, not a measured hot path, and RGBA-reuse would churn 3 public
+      signatures.*
+- [x] **`reader/images.rs` `too_many_arguments`.** ✅ Bundled the
+      (avail/max_rows/max_px/width_pct/policy) geometry into `ImageGeom` — removed
+      all three allows. Commit 9776831.
+- [~] **Misc.** ✅ `online` cover-url → one `ol_cover_url` helper (9407ec4); ✅
+      config enum `next/prev/label` → `cyclic_wrap!`/`cyclic_clamp!` macros
+      (b20098d). *`export.rs` JSON kept hand-rolled — `serde_json` would lose the
+      column order (`Map`) or duplicate the `columns()` schema (derive struct); the
+      existing writer is correct, tested, and dep-free.*
 
 🔮 **Future placeholders** (post-redesign; tree seams reserved now): MOBI/AZW3
 (`delryn-format/src/mobi/`, Phase 5 — NOT first release), graphical math
@@ -572,8 +583,7 @@ grow these further.
 - [ ] `app/dispatch.rs::apply` (234 lines) — the action match; split by action
       group if it grows.
 - [ ] `view/image.rs::render` (196 lines) — full-screen image view render.
-- [ ] 2× undocumented `#[allow(clippy::too_many_arguments)]` in
-      `app/reader/images.rs` (`sync_images`, `remap_section_images`) — regrew
-      after Phase 0's cleanup. Bundle the (avail, max_rows, max_px, width_pct,
-      policy) geometry into a struct to remove them. (The two `Store` row-writer
-      allows are already documented — compliant.)
+- [x] ✅ `#[allow(clippy::too_many_arguments)]` in `app/reader/images.rs` — the
+      three allows are **gone**: the (avail, max_rows, max_px, width_pct, policy)
+      geometry is now an `ImageGeom` struct (R-D, commit 9776831). (The two `Store`
+      row-writer allows remain documented — compliant.)

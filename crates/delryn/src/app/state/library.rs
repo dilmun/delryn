@@ -54,9 +54,6 @@ pub struct LibraryState {
     /// Active sort key and direction for the book list.
     pub sort: SortKey,
     pub sort_desc: bool,
-    /// Sort keys for the currently visible columns, in display order (the `s`
-    /// cycle); set each frame from the rendered columns.
-    pub sort_cycle: Vec<SortKey>,
     /// Active filter query (substring / FTS / DSL).
     pub filter: String,
     /// Editing the filter query.
@@ -73,10 +70,6 @@ pub struct LibraryState {
     /// Path the cover wants to settle on, and when it last changed (debounce).
     pub(crate) cover_target: String,
     pub(crate) cover_at: Instant,
-    /// Grid view: number of columns from the last render (for 2D navigation).
-    pub grid_cols: usize,
-    /// Visible rows from the last list/grid render (for half/full-page nav).
-    pub visible_rows: usize,
     /// Last list navigation went down (toward higher indices) — so cover prefetch
     /// loads ahead in the direction of travel.
     pub nav_down: bool,
@@ -108,7 +101,6 @@ impl Default for LibraryState {
             side_new: false,
             sort: SortKey::Default,
             sort_desc: false,
-            sort_cycle: Vec::new(),
             filter: String::new(),
             filtering: false,
             flash: None,
@@ -117,8 +109,6 @@ impl Default for LibraryState {
             cover_path: String::new(),
             cover_target: String::new(),
             cover_at: Instant::now(),
-            grid_cols: 1,
-            visible_rows: 1,
             nav_down: true,
             grid_covers: LruCache::new(NonZeroUsize::new(COVER_CAP).unwrap()),
             grid_deletes: Vec::new(),

@@ -33,7 +33,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     let cols = columns(compact, area.width, &app.config);
     // The `s` sort cycle follows exactly the columns drawn here, so it skips any
     // the user hid or that collapsed on this width.
-    app.library.sort_cycle = cols.iter().filter_map(|c| c.sort_key()).collect();
+    app.last_layout.sort_cycle = cols.iter().filter_map(|c| c.sort_key()).collect();
 
     // Build rows, interleaving series headers; track the selected book's row
     // index (it shifts down past the headers above it).
@@ -72,7 +72,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     let view_rows = (area.height as usize)
         .saturating_sub(header_h as usize)
         .max(1);
-    app.library.visible_rows = view_rows;
+    app.last_layout.visible_rows = view_rows;
     let max_off = rows.len().saturating_sub(view_rows);
     let centered_off = sel_row.saturating_sub(view_rows / 2).min(max_off);
 

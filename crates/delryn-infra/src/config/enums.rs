@@ -32,6 +32,53 @@ macro_rules! label_serde {
     };
 }
 
+/// Generate the identical cyclic `next`/`prev`/`label` for an option enum from
+/// its variants + on-disk labels, in order — the settings UI cycles with these.
+/// Two flavours: `cyclic_wrap!` cycles round the ends (Center↔TwoPage,
+/// Auto→Invert→Faithful→Auto); `cyclic_clamp!` stops at the first/last (the grid
+/// size deliberately doesn't wrap Small↔XLarge). `from_label` stays hand-written
+/// per enum — its fallback arm carries the default. The enum must be
+/// `Copy + PartialEq`.
+macro_rules! cyclic_wrap {
+    ($ty:ty, [$($v:ident => $lbl:literal),+ $(,)?]) => {
+        impl $ty {
+            pub fn next(self) -> Self {
+                let order = [$(<$ty>::$v),+];
+                let i = order.iter().position(|&x| x == self).unwrap_or(0);
+                order[(i + 1) % order.len()]
+            }
+            pub fn prev(self) -> Self {
+                let order = [$(<$ty>::$v),+];
+                let i = order.iter().position(|&x| x == self).unwrap_or(0);
+                order[(i + order.len() - 1) % order.len()]
+            }
+            pub fn label(self) -> &'static str {
+                match self { $(<$ty>::$v => $lbl,)+ }
+            }
+        }
+    };
+}
+
+macro_rules! cyclic_clamp {
+    ($ty:ty, [$($v:ident => $lbl:literal),+ $(,)?]) => {
+        impl $ty {
+            pub fn next(self) -> Self {
+                let order = [$(<$ty>::$v),+];
+                let i = order.iter().position(|&x| x == self).unwrap_or(0);
+                order[(i + 1).min(order.len() - 1)]
+            }
+            pub fn prev(self) -> Self {
+                let order = [$(<$ty>::$v),+];
+                let i = order.iter().position(|&x| x == self).unwrap_or(0);
+                order[i.saturating_sub(1)]
+            }
+            pub fn label(self) -> &'static str {
+                match self { $(<$ty>::$v => $lbl,)+ }
+            }
+        }
+    };
+}
+
 /// How body text is laid out in the content pane. Both layouts use the same
 /// per-side edge padding (`side_padding`); two-page adds a configurable gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,24 +90,6 @@ pub enum ViewMode {
 }
 
 impl ViewMode {
-    pub fn next(self) -> Self {
-        match self {
-            ViewMode::Center => ViewMode::TwoPage,
-            ViewMode::TwoPage => ViewMode::Center,
-        }
-    }
-
-    pub fn prev(self) -> Self {
-        self.next()
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ViewMode::Center => "center",
-            ViewMode::TwoPage => "two-page",
-        }
-    }
-
     pub fn from_label(s: &str) -> ViewMode {
         match s {
             "two-page" => ViewMode::TwoPage,
@@ -68,6 +97,7 @@ impl ViewMode {
         }
     }
 }
+cyclic_wrap!(ViewMode, [Center => "center", TwoPage => "two-page"]);
 
 /// A reading-experience preset: a named bundle of layout / chrome / flow
 /// settings. `Custom` is the derived state when the live settings match no
@@ -173,30 +203,6 @@ pub enum LibLayout {
 }
 
 impl LibLayout {
-    pub fn next(self) -> Self {
-        match self {
-            LibLayout::List => LibLayout::Compact,
-            LibLayout::Compact => LibLayout::Grid,
-            LibLayout::Grid => LibLayout::List,
-        }
-    }
-
-    pub fn prev(self) -> Self {
-        match self {
-            LibLayout::List => LibLayout::Grid,
-            LibLayout::Compact => LibLayout::List,
-            LibLayout::Grid => LibLayout::Compact,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            LibLayout::List => "list",
-            LibLayout::Compact => "compact",
-            LibLayout::Grid => "grid",
-        }
-    }
-
     pub fn from_label(s: &str) -> LibLayout {
         match s {
             "compact" => LibLayout::Compact,
@@ -205,6 +211,7 @@ impl LibLayout {
         }
     }
 }
+cyclic_wrap!(LibLayout, [List => "list", Compact => "compact", Grid => "grid"]);
 
 /// Cover-card size for the library grid view. Card dimensions are in terminal
 /// cells, sized ~4:3 (cols:rows) so a typical 2:3 portrait cover fills the card.
@@ -217,33 +224,6 @@ pub enum GridSize {
 }
 
 impl GridSize {
-    pub fn next(self) -> Self {
-        match self {
-            GridSize::Small => GridSize::Medium,
-            GridSize::Medium => GridSize::Large,
-            GridSize::Large => GridSize::XLarge,
-            GridSize::XLarge => GridSize::XLarge,
-        }
-    }
-
-    pub fn prev(self) -> Self {
-        match self {
-            GridSize::Small => GridSize::Small,
-            GridSize::Medium => GridSize::Small,
-            GridSize::Large => GridSize::Medium,
-            GridSize::XLarge => GridSize::Large,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            GridSize::Small => "small",
-            GridSize::Medium => "medium",
-            GridSize::Large => "large",
-            GridSize::XLarge => "xlarge",
-        }
-    }
-
     pub fn from_label(s: &str) -> GridSize {
         match s {
             "small" => GridSize::Small,
@@ -263,6 +243,7 @@ impl GridSize {
         }
     }
 }
+cyclic_clamp!(GridSize, [Small => "small", Medium => "medium", Large => "large", XLarge => "xlarge"]);
 
 /// How book images are adapted to the active theme. See `DESIGN.md` §7 and the
 /// "Theming & content coherence" plan. The mode is part of the image cache key,
@@ -285,30 +266,6 @@ pub enum ImageMode {
 }
 
 impl ImageMode {
-    pub fn next(self) -> Self {
-        match self {
-            ImageMode::Auto => ImageMode::InvertBackgrounds,
-            ImageMode::InvertBackgrounds => ImageMode::Faithful,
-            ImageMode::Faithful => ImageMode::Auto,
-        }
-    }
-
-    pub fn prev(self) -> Self {
-        match self {
-            ImageMode::Auto => ImageMode::Faithful,
-            ImageMode::InvertBackgrounds => ImageMode::Auto,
-            ImageMode::Faithful => ImageMode::InvertBackgrounds,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ImageMode::Auto => "auto",
-            ImageMode::InvertBackgrounds => "invert",
-            ImageMode::Faithful => "faithful",
-        }
-    }
-
     pub fn from_label(s: &str) -> ImageMode {
         match s {
             "invert" => ImageMode::InvertBackgrounds,
@@ -317,6 +274,7 @@ impl ImageMode {
         }
     }
 }
+cyclic_wrap!(ImageMode, [Auto => "auto", InvertBackgrounds => "invert", Faithful => "faithful"]);
 
 // `serde` `with`-modules for the persisted enums — each stores its `label()`
 // string. `ReadingMode` is intentionally absent: it is a derived/UI-only state,
