@@ -522,14 +522,20 @@ insight: the draft's ~16 "modes" are ~4 strategies + parameters. *Build the
 engine + high-value presets; defer niche modes behind the interface (dev docs:
 no premature abstraction, no speculative modes).*
 
-- [ ] **7.1 Composition engine (the seam — refactor, no new user modes yet).** A
-      `LayoutStrategy` mapping (viewport cells, position, content) → a list of
-      *placements* (a cell `Rect` + what to draw: a page-image plan or a reflowed
-      text-column slice); the renderer just draws placements. Port today's
-      `Center` and `TwoPage`/PDF-spread onto it. New module `view/layout/` — not
-      more bulk in `view/reader.rs` (pays down its 196-line `render` + the
-      `reader/mod.rs` size debt). **Stable interface = adding a mode never edits
-      the renderer.**
+- [x] **7.1 Composition engine (the seam — refactor, no new user modes yet).** ✅
+      `view/layout/` — a `LayoutStrategy` maps a `LayoutCtx` (body rect, config,
+      content-kind, reading position + spread pairing) → a `LayoutPlan` (the
+      reflow `measure` + `page_lines` scalars, plus a list of `Placement`s:
+      `Page { section, area }` for a PDF page, or `Text { area, scroll, gutter }`
+      for a reflowed column slice). `render_content` is now a dumb renderer: plan
+      → write back the scroll scalars → draw placements (paged → `capture_pdf_
+      targets`; reflow → wrap + draw each text column + gutter + inline figures).
+      `Center`/`TwoPage`+PDF-spread ported onto it byte-for-byte (behaviour-
+      preserving; the old `render_column`/`render_two_page`/`measure_for` are
+      deleted). **Placement planning is pure geometry (no `Frame`) → unit-tested**
+      (5 tests: center reflow/paged, spread reflow/paged/lone-page). `plan()`
+      dispatches on `ViewMode` — **adding a mode is a new strategy file + one match
+      arm, never a renderer edit.** Commit on `refactor/layout-engine`.
 - [ ] **7.2 Cross-cutting plumbing.** Content-kind **registry** (which modes a
       format allows — `Document::paged_image()` already distinguishes them);
       **position preservation across switches** (paged↔paged = page index, trivial;
