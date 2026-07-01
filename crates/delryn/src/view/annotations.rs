@@ -128,10 +128,9 @@ fn render_overlay(f: &mut Frame, app: &App) {
             .into(),
         );
     }
-    let highlight = theme.style(Role::Selection);
-    let list = List::new(list_items).highlight_style(highlight);
+    let list = List::new(list_items).highlight_style(theme.style(Role::Selection));
     let mut st = ListState::default();
     let sel = state.sel.min(state.items.len() - 1);
     st.select(Some(row_of[sel]));
-    f.render_stateful_widget(list, rows[0], &mut st);
+    crate::view::round_list(f, rows[0], list, &mut st, theme);
 }

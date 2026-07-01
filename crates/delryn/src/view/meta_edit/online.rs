@@ -38,7 +38,6 @@ fn search_bar(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
 /// selected only when the keyboard focus has moved past the seed fields into the
 /// results (and not while a field is being edited).
 fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
-    let bg = theme.paper();
     let mut lines: Vec<Line> = Vec::new();
     let sel = if !ed.lookup.editing && ed.lookup.focus >= LOOKUP_FIELDS {
         Some(ed.lookup.focus - LOOKUP_FIELDS)
@@ -64,21 +63,15 @@ fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
             c.year.map(|y| format!(" ({y})")).unwrap_or_default()
         );
         let text = format!("{} — {}{tail}", c.title, c.author_line());
-        let style = if selected {
-            Style::default()
-                .fg(bg)
-                .bg(theme.color(Role::Accent))
-                .add_modifier(Modifier::BOLD)
+        let label = format!(
+            "{marker}{}",
+            crate::view::truncate(&text, area.width.saturating_sub(3) as usize)
+        );
+        if selected {
+            lines.push(crate::view::rounded_line(label, area.width, theme));
         } else {
-            theme.style(Role::Body)
-        };
-        lines.push(Line::from(Span::styled(
-            format!(
-                "{marker}{}",
-                crate::view::truncate(&text, area.width.saturating_sub(3) as usize)
-            ),
-            style,
-        )));
+            lines.push(Line::from(Span::styled(label, theme.style(Role::Body))));
+        }
     }
     f.render_widget(Paragraph::new(lines), area);
 }
@@ -86,27 +79,20 @@ fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
 /// Cover tab: the source-labelled cover-candidate list (Google Books, Open
 /// Library, etc.). The highlighted row drives the live preview.
 fn cover_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
-    let bg = theme.paper();
     let s = &ed.cover_search;
     let mut lines: Vec<Line> = Vec::new();
     for (i, h) in ed.cover_hits.iter().enumerate().take(area.height as usize) {
         let selected = i == s.row && !s.editing;
         let marker = if selected { "▸ " } else { "  " };
-        let style = if selected {
-            Style::default()
-                .fg(bg)
-                .bg(theme.color(Role::Accent))
-                .add_modifier(Modifier::BOLD)
+        let label = format!(
+            "{marker}{}",
+            crate::view::truncate(&h.source, area.width.saturating_sub(3) as usize)
+        );
+        if selected {
+            lines.push(crate::view::rounded_line(label, area.width, theme));
         } else {
-            theme.style(Role::Body)
-        };
-        lines.push(Line::from(Span::styled(
-            format!(
-                "{marker}{}",
-                crate::view::truncate(&h.source, area.width.saturating_sub(3) as usize)
-            ),
-            style,
-        )));
+            lines.push(Line::from(Span::styled(label, theme.style(Role::Body))));
+        }
     }
     f.render_widget(Paragraph::new(lines), area);
 }
