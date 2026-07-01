@@ -86,12 +86,14 @@ fn render_tab_bar(
         if i > 0 {
             spans.push(Span::raw(" "));
         }
-        let style = if i == active {
-            theme.style(Role::Selection)
+        if i == active {
+            spans.extend(super::pill_spans(t.title, theme));
         } else {
-            theme.style(Role::Muted)
-        };
-        spans.push(Span::styled(format!(" {} ", t.title), style));
+            spans.push(Span::styled(
+                format!(" {} ", t.title),
+                theme.style(Role::Muted),
+            ));
+        }
     }
     f.render_widget(
         Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
@@ -126,25 +128,21 @@ fn render_body(
             }
             SettingRow::Item(item) => {
                 let selected = i == sel_row;
+                let label = item.label();
+                let value = item.value(&app.config);
+                let pad = VALUE_COL.saturating_sub(label.chars().count() + 4);
                 if selected {
                     sel_line = lines.len();
-                }
-                let marker = if selected { "  ▸ " } else { "    " };
-                let label = item.label();
-                let label_style = if selected {
-                    theme.style(Role::AccentStrong)
+                    // The selected option → a full-width rounded selection bar.
+                    let text = format!("  ▸ {label}{}{value}", " ".repeat(pad));
+                    lines.push(crate::view::rounded_line(text, area.width, theme));
                 } else {
-                    theme.style(Role::Body)
-                };
-                let pad = VALUE_COL.saturating_sub(label.chars().count() + 4);
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{marker}{label}"), label_style),
-                    Span::raw(" ".repeat(pad)),
-                    Span::styled(
-                        item.value(&app.config),
-                        Style::default().fg(theme.color(Role::Heading)),
-                    ),
-                ]));
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("    {label}"), theme.style(Role::Body)),
+                        Span::raw(" ".repeat(pad)),
+                        Span::styled(value, Style::default().fg(theme.color(Role::Heading))),
+                    ]));
+                }
             }
         }
     }
