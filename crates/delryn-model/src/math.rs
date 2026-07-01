@@ -245,11 +245,20 @@ fn take_group(s: &str, brace: usize) -> Option<(String, usize)> {
     None
 }
 
+/// [`SYMBOLS`] pre-sorted longest-pattern-first (so `\alpha` matches before a
+/// shorter prefix), built once. `replace_symbols` runs per math span during
+/// parsing, so re-cloning and re-sorting the constant table every call was pure
+/// repeated work.
+static SYMBOLS_BY_LEN: std::sync::LazyLock<Vec<(&'static str, &'static str)>> =
+    std::sync::LazyLock::new(|| {
+        let mut pairs = SYMBOLS.to_vec();
+        pairs.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
+        pairs
+    });
+
 fn replace_symbols(input: &str) -> String {
-    let mut pairs: Vec<(&str, &str)> = SYMBOLS.to_vec();
-    pairs.sort_by_key(|(p, _)| std::cmp::Reverse(p.len())); // longest first
     let mut s = input.to_string();
-    for (pat, rep) in pairs {
+    for (pat, rep) in SYMBOLS_BY_LEN.iter() {
         if s.contains(pat) {
             s = s.replace(pat, rep);
         }
