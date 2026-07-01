@@ -5,6 +5,7 @@ pub mod annotations;
 pub mod bulk_rename;
 pub mod dup_resolve;
 pub mod image;
+pub mod layout;
 pub mod library;
 pub mod meta_edit;
 pub mod palette;
