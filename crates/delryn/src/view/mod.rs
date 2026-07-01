@@ -147,6 +147,128 @@ pub fn detail_split(
     }
 }
 
+// ── Rounded selection highlights ─────────────────────────────────────────────
+// Every selection in the app — book list, sidebar, TOC, tabs, overlay lists — is
+// drawn as a rounded capsule instead of a hard rectangle, for one consistent
+// look. Powerline rounded end-caps (a solid half-circle that bulges away from the
+// bar: left cap curves left, right cap curves right) painted in the bar's accent
+// colour on the page behind it do the rounding. Needs a Nerd/Powerline font
+// (delryn's terminal ships FiraCode Nerd Font). The whole look is defined here, so
+// tuning it is a one-place change.
+
+const CAP_LEFT: &str = "\u{e0b6}";
+const CAP_RIGHT: &str = "\u{e0b4}";
+
+/// The cap glyph style: the bar's accent colour, over the page behind the bar so
+/// the rounded ends blend in.
+fn cap_style(theme: crate::theme::Theme) -> ratatui::style::Style {
+    use crate::theme::Role;
+    use ratatui::style::{Color, Style};
+    Style::default()
+        .fg(theme.color(Role::Accent))
+        .bg(theme.bg.unwrap_or(Color::Reset))
+}
+
+/// Round the ends of an already-drawn selection highlight `bar` (its on-screen
+/// rect): paint the caps in the one cell just left and just right of it. The
+/// caller must leave those two margin cells free (inset the widget one column
+/// each side). Used for the widgets that draw their own full-width highlight
+/// (the book `Table`; see [`round_list`]).
+pub fn round_bar(f: &mut Frame, bar: Rect, theme: crate::theme::Theme) {
+    let cap = cap_style(theme);
+    let right_x = bar.x + bar.width;
+    let buf = f.buffer_mut();
+    let max_x = buf.area().right();
+    for row in 0..bar.height {
+        let y = bar.y + row;
+        if bar.x > 0 {
+            buf.set_string(bar.x - 1, y, CAP_LEFT, cap);
+        }
+        if right_x < max_x {
+            buf.set_string(right_x, y, CAP_RIGHT, cap);
+        }
+    }
+}
+
+/// Render a `List` (which draws its own full-width `highlight_style` bar) inset
+/// one column each side so the rounded caps have room, then round the selected
+/// row. The one call sites that use `List` + `ListState` should use instead of
+/// `render_stateful_widget` + a bare `highlight_style`.
+pub fn round_list(
+    f: &mut Frame,
+    area: Rect,
+    list: ratatui::widgets::List<'_>,
+    state: &mut ratatui::widgets::ListState,
+    theme: crate::theme::Theme,
+) {
+    let inset = Rect {
+        x: area.x + 1,
+        y: area.y,
+        width: area.width.saturating_sub(2),
+        height: area.height,
+    };
+    f.render_stateful_widget(list, inset, state);
+    if let Some(sel) = state.selected() {
+        let off = state.offset();
+        if sel >= off {
+            let sy = inset.y + (sel - off) as u16;
+            if sy < inset.y + inset.height {
+                round_bar(
+                    f,
+                    Rect {
+                        x: inset.x,
+                        y: sy,
+                        width: inset.width,
+                        height: 1,
+                    },
+                    theme,
+                );
+            }
+        }
+    }
+}
+
+/// A full-width rounded selection bar as a standalone `Line`: `text` on the accent
+/// fill, padded/truncated to `width`, with rounded caps at the ends. For the
+/// manual (`Paragraph`) selected rows — the TOC, palette, settings, shelf picker.
+pub fn rounded_line(
+    text: impl Into<String>,
+    width: u16,
+    theme: crate::theme::Theme,
+) -> ratatui::text::Line<'static> {
+    use crate::theme::Role;
+    use ratatui::text::{Line, Span};
+
+    let inner_w = (width as usize).saturating_sub(2);
+    let mut s = text.into();
+    let n = s.chars().count();
+    if n > inner_w {
+        s = s.chars().take(inner_w).collect();
+    } else {
+        s.extend(std::iter::repeat_n(' ', inner_w - n));
+    }
+    Line::from(vec![
+        Span::styled(CAP_LEFT, cap_style(theme)),
+        Span::styled(s, theme.style(Role::Selection)),
+        Span::styled(CAP_RIGHT, cap_style(theme)),
+    ])
+}
+
+/// A content-hugging rounded pill (caps snug around `text`) for inline selections
+/// that aren't full-width rows — the settings tab strip and the status pill.
+pub fn pill_spans(
+    text: impl Into<String>,
+    theme: crate::theme::Theme,
+) -> Vec<ratatui::text::Span<'static>> {
+    use crate::theme::Role;
+    use ratatui::text::Span;
+    vec![
+        Span::styled(CAP_LEFT, cap_style(theme)),
+        Span::styled(format!(" {} ", text.into()), theme.style(Role::Selection)),
+        Span::styled(CAP_RIGHT, cap_style(theme)),
+    ]
+}
+
 /// A centered rect of at most `w`×`h`, clamped to `area` (shared by the popups).
 pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width.saturating_sub(2)).max(1);

@@ -112,8 +112,6 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
     let vis = reader.outline_visible();
     let off = reader.sidebar_offset.min(vis.len().saturating_sub(1));
     let height = inner.height as usize;
-    let hilite = theme.style(Role::Selection);
-
     let lines: Vec<Line> = vis
         .iter()
         .enumerate()
@@ -132,16 +130,16 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
                 "  "
             };
             let text = format!("{indent}{marker}{}", e.label);
-            let style = if Some(row) == marked {
-                hilite
+            if Some(row) == marked {
+                // The current chapter / cursor row → a rounded selection bar.
+                crate::view::rounded_line(text, inner.width, theme)
             } else {
                 let mut s = theme.style(Role::Body);
                 if let Some(bg) = theme.bg {
                     s = s.bg(bg);
                 }
-                s
-            };
-            Line::from(Span::styled(text, style))
+                Line::from(Span::styled(text, s))
+            }
         })
         .collect();
 
