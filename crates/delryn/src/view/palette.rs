@@ -39,19 +39,20 @@ pub fn render(f: &mut Frame, app: &App) {
     ));
     f.render_widget(Paragraph::new(Line::from(q)), rows[0]);
 
-    // Filtered command list; the selection gets an accent highlight.
-    let hi = theme.style(Role::Selection);
+    // Filtered command list; the selection gets a rounded accent bar.
     let lines: Vec<Line> = matches
         .iter()
         .take(rows[1].height as usize)
         .enumerate()
         .map(|(i, it)| {
-            let style = if i == p.sel {
-                hi
+            if i == p.sel {
+                crate::view::rounded_line(format!(" {}", it.label), rows[1].width, theme)
             } else {
-                theme.style(Role::Body)
-            };
-            Line::from(Span::styled(format!(" {}", it.label), style))
+                Line::from(Span::styled(
+                    format!(" {}", it.label),
+                    theme.style(Role::Body),
+                ))
+            }
         })
         .collect();
     f.render_widget(Paragraph::new(lines), rows[1]);

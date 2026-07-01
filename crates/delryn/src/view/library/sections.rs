@@ -14,37 +14,46 @@ fn section_item(
     focused: bool,
     theme: Theme,
 ) -> ListItem<'static> {
-    let style = if here && focused {
-        theme.style(Role::Selection)
-    } else if here {
-        let mut s = theme.style(Role::AccentStrong);
-        if let Some(bg) = theme.bg {
-            s = s.bg(bg);
-        }
-        s
-    } else {
-        let mut s = theme.style(Role::Body);
-        if let Some(bg) = theme.bg {
-            s = s.bg(bg);
-        }
-        s
-    };
     let marker = if here { "▸ " } else { "  " };
+
+    // Selected in the focused pane → a full-width rounded selection bar. Lay the
+    // row out to `inner_w - 2` (the rounded caps take one cell each side), count
+    // right-aligned, then let `rounded_line` cap it.
+    if here && focused {
+        let content_w = inner_w.saturating_sub(2);
+        let text = match count {
+            Some(c) => {
+                let count = c.to_string();
+                let cw = count.chars().count();
+                let label = crate::view::truncate(label, content_w.saturating_sub(2 + cw + 1));
+                let pad = content_w.saturating_sub(2 + label.chars().count() + cw);
+                format!("{marker}{label}{}{count}", " ".repeat(pad))
+            }
+            None => format!(
+                "{marker}{}",
+                crate::view::truncate(label, content_w.saturating_sub(2))
+            ),
+        };
+        return ListItem::new(crate::view::rounded_line(text, inner_w as u16, theme));
+    }
+
+    // Otherwise a flat row: accent text for the active (unfocused) entry, plain
+    // body for the rest; the count dims to set the column apart.
+    let mut style = if here {
+        theme.style(Role::AccentStrong)
+    } else {
+        theme.style(Role::Body)
+    };
+    if let Some(bg) = theme.bg {
+        style = style.bg(bg);
+    }
     let Some(count) = count else {
         return ListItem::new(Line::from(Span::styled(format!("{marker}{label}"), style)));
     };
-    // The count keeps the row style while active (so it rides the selection bar),
-    // else dims to set the column apart. The label fills the gap and truncates
-    // before it would collide with the count.
-    let count_style = if here && focused {
-        style
-    } else {
-        let mut s = theme.style(Role::Muted);
-        if let Some(bg) = theme.bg {
-            s = s.bg(bg);
-        }
-        s
-    };
+    let mut count_style = theme.style(Role::Muted);
+    if let Some(bg) = theme.bg {
+        count_style = count_style.bg(bg);
+    }
     let count = count.to_string();
     let cw = count.chars().count();
     let label = crate::view::truncate(label, inner_w.saturating_sub(2 + cw + 1));

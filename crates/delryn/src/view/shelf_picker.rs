@@ -53,17 +53,17 @@ pub fn render(f: &mut Frame, app: &App) {
         let selected = i == p.sel && p.new_name.is_none();
         let marker = if selected { "▸ " } else { "  " };
         let check = if *member { "[✓] " } else { "[ ] " };
-        let style = if selected {
-            theme.style(Role::AccentStrong)
-        } else if *member {
-            theme.style(Role::Body)
+        let label = format!("{marker}{check}{name}");
+        if selected {
+            lines.push(crate::view::rounded_line(label, rows[1].width, theme));
         } else {
-            theme.style(Role::Muted)
-        };
-        lines.push(Line::from(Span::styled(
-            format!("{marker}{check}{name}"),
-            style,
-        )));
+            let style = if *member {
+                theme.style(Role::Body)
+            } else {
+                theme.style(Role::Muted)
+            };
+            lines.push(Line::from(Span::styled(label, style)));
+        }
     }
 
     // The "new collection" row — a label, or a live text input when creating.
@@ -76,15 +76,12 @@ pub fn render(f: &mut Frame, app: &App) {
         ]));
     } else {
         let marker = if new_selected { "▸ " } else { "  " };
-        let style = if new_selected {
-            theme.style(Role::AccentStrong)
+        let label = format!("{marker}＋ New collection…");
+        if new_selected {
+            lines.push(crate::view::rounded_line(label, rows[1].width, theme));
         } else {
-            theme.style(Role::Muted)
-        };
-        lines.push(Line::from(Span::styled(
-            format!("{marker}＋ New collection…"),
-            style,
-        )));
+            lines.push(Line::from(Span::styled(label, theme.style(Role::Muted))));
+        }
     }
     f.render_widget(Paragraph::new(lines), rows[1]);
     // Shortcuts live in the bottom status bar (see view::status).

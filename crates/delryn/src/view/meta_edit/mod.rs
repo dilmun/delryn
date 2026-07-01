@@ -187,7 +187,7 @@ fn render_diff(f: &mut Frame, app: &App, theme: Theme) {
     let list = List::new(items).highlight_style(theme.style(Role::Selection));
     let mut st = ListState::default();
     st.select(Some(diff.row.min(diff.rows.len().saturating_sub(1))));
-    f.render_stateful_widget(list, inner, &mut st);
+    crate::view::round_list(f, inner, list, &mut st, theme);
 }
 
 /// The single foot-of-popup line: the tab's transient status (search progress,

@@ -128,7 +128,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             let list = List::new(items).highlight_style(theme.style(Role::Selection));
             let mut st = ListState::default();
             st.select(Some(viewer.sel));
-            f.render_stateful_widget(list, sidebar, &mut st);
+            crate::view::round_list(f, sidebar, list, &mut st, theme);
         }
     }
 

@@ -86,11 +86,36 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     let mut state = TableState::new()
         .with_offset(centered_off)
         .with_selected(Some(sel_row));
-    f.render_stateful_widget(table, area, &mut state);
+    // Reserve one column each side so the rounded selection caps have room.
+    let table_area = Rect {
+        x: area.x + 1,
+        y: area.y,
+        width: area.width.saturating_sub(2),
+        height: area.height,
+    };
+    f.render_stateful_widget(table, table_area, &mut state);
 
     // Map each on-screen book row to its index for click hit-testing, using the
     // scroll offset the table settled on and the header line (non-compact only).
     let offset = state.offset();
+
+    // Round the ends of the focused selection bar (caps sit in the reserved
+    // margins). Only the solid highlight gets them — not the quiet text selection.
+    if focused && sel_row >= offset {
+        let sy = table_area.y + header_h + (sel_row - offset) as u16;
+        if sy < table_area.y + table_area.height {
+            crate::view::round_bar(
+                f,
+                Rect {
+                    x: table_area.x,
+                    y: sy,
+                    width: table_area.width,
+                    height: 1,
+                },
+                theme,
+            );
+        }
+    }
     let mut hits: Vec<(usize, Rect)> = Vec::with_capacity(row_meta.len());
     for (idx, pos) in row_meta {
         if pos < offset {
