@@ -273,11 +273,14 @@ jump-by-type + a reader cursor.
 
 ## Phase 3 — Library platform
 
-- [~] Views: Table (sortable columns), Cover Wall; refine Grid/List. *(Have:
-      per-column show/hide (Settings → Columns: Author/Year/Type/Source/Progress/
-      Size/Status), every column sortable, `s` cycles only the *visible* columns
+- [x] Views: Table (sortable columns); refine Grid/List. *(Have: per-column
+      show/hide (Settings → Columns: Author/Year/Type/Source/Progress/Size/
+      Status), every column sortable, `s` cycles only the *visible* columns
       ascending↔descending, a `Type` column for the file format (replaced the old
-      title badge). Still: a dedicated Cover Wall.)*
+      title badge). **Cover Wall dropped by decision (2026-07-01)** — the existing
+      Grid already provides an immersive full-cover view; a second cover-first view
+      (a gapless wall / coverflow) isn't needed. A coverflow prototype was built
+      and reverted.)*
 - [x] Smart collections + **filter DSL**: `delryn-library::query` — fields
       (title/author/series/publisher/language/isbn, year/progress/rating numeric),
       flags (favorite/converted/unread/reading/finished/paused/dropped/reference),
