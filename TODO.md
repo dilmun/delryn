@@ -536,13 +536,22 @@ no premature abstraction, no speculative modes).*
       (5 tests: center reflow/paged, spread reflow/paged/lone-page). `plan()`
       dispatches on `ViewMode` — **adding a mode is a new strategy file + one match
       arm, never a renderer edit.** Commit on `refactor/layout-engine`.
-- [ ] **7.2 Cross-cutting plumbing.** Content-kind **registry** (which modes a
-      format allows — `Document::paged_image()` already distinguishes them);
-      **position preservation across switches** (paged↔paged = page index, trivial;
-      reflow re-wrap = map by section + `within_frac`, already stored); per-strategy
-      **keymap** (arrows scroll vs move a tile selection; ←/→ turn pages; Enter in a
-      grid jumps); **presentation/chrome** as an orthogonal toggle (hide header/
-      status/gutter, maximize area), layerable on any mode.
+- [~] **7.2 Cross-cutting plumbing.** ✅ **Position preservation across switches**
+      — a reflow-affecting reader action (view-mode cycle, reading preset, width
+      `]`/`[`, line-spacing) now anchors the reading position so it stays put
+      instead of drifting to a stale line offset after the re-wrap. `apply` snapshots
+      `reflow_key(&config)` (the wrap-affecting knobs: view_mode/side_padding/
+      page_gap/line+paragraph spacing/justify/tidy/code+table wrap) before the
+      action and, if it changed, calls `Reader::hold_reflow_position` → sets
+      `pending_frac = within_frac()`, which `resolve_pending` restores onto the new
+      wrap next frame. No-op for paged docs (position = page index). 2 tests. *Still
+      (deferred until 7.3 gives modes that need them — no premature abstraction):
+      content-kind **registry** (which modes a format allows — every current mode
+      works for both kinds, so nothing to gate yet; `Document::paged_image()` is the
+      seam); per-strategy **keymap** (tile-selection / grid-Enter only exist once
+      7.3's grid/N-up land — today's keymap already fits Center/TwoPage);
+      **presentation/chrome** toggle (`focus_mode` already hides sidebar+status;
+      extend to drop the header for full-bleed when wanted).*
 - [ ] **7.3 Tiled-pages presets (paged) — ONE parameterized strategy.** Params:
       tiles (rows×cols), step (1 = sliding / N = non-overlapping spreads),
       start-offset (cover-alone odd/even binding), direction (LTR / **manga RTL**),
