@@ -159,14 +159,20 @@ pub fn detail_split(
 const CAP_LEFT: &str = "\u{e0b6}";
 const CAP_RIGHT: &str = "\u{e0b4}";
 
-/// The cap glyph style: the bar's accent colour, over the page behind the bar so
-/// the rounded ends blend in.
-fn cap_style(theme: crate::theme::Theme) -> ratatui::style::Style {
+/// The cap glyph style over a given background `bg` — the bar's accent colour on
+/// whatever sits behind the bar, so the rounded ends blend in. Most selections
+/// sit on the page ([`cap_style`]); the status pill and editor tabs sit on the
+/// status/paper background and pass it explicitly.
+fn cap_style_on(theme: crate::theme::Theme, bg: ratatui::style::Color) -> ratatui::style::Style {
     use crate::theme::Role;
-    use ratatui::style::{Color, Style};
-    Style::default()
+    ratatui::style::Style::default()
         .fg(theme.color(Role::Accent))
-        .bg(theme.bg.unwrap_or(Color::Reset))
+        .bg(bg)
+}
+
+/// The cap glyph style over the page background (the common case).
+fn cap_style(theme: crate::theme::Theme) -> ratatui::style::Style {
+    cap_style_on(theme, theme.bg.unwrap_or(ratatui::style::Color::Reset))
 }
 
 /// Round the ends of an already-drawn selection highlight `bar` (its on-screen
@@ -255,18 +261,34 @@ pub fn rounded_line(
 }
 
 /// A content-hugging rounded pill (caps snug around `text`) for inline selections
-/// that aren't full-width rows — the settings tab strip and the status pill.
+/// that aren't full-width rows — a tab strip, a status pill. `cap_bg` is the
+/// colour behind the pill (the page, the status bar, the editor paper) so the
+/// rounded ends blend into it.
+pub fn pill_spans_on(
+    text: impl Into<String>,
+    theme: crate::theme::Theme,
+    cap_bg: ratatui::style::Color,
+) -> Vec<ratatui::text::Span<'static>> {
+    use crate::theme::Role;
+    use ratatui::text::Span;
+    let cap = cap_style_on(theme, cap_bg);
+    vec![
+        Span::styled(CAP_LEFT, cap),
+        Span::styled(format!(" {} ", text.into()), theme.style(Role::Selection)),
+        Span::styled(CAP_RIGHT, cap),
+    ]
+}
+
+/// A content-hugging rounded pill over the page background (the common case).
 pub fn pill_spans(
     text: impl Into<String>,
     theme: crate::theme::Theme,
 ) -> Vec<ratatui::text::Span<'static>> {
-    use crate::theme::Role;
-    use ratatui::text::Span;
-    vec![
-        Span::styled(CAP_LEFT, cap_style(theme)),
-        Span::styled(format!(" {} ", text.into()), theme.style(Role::Selection)),
-        Span::styled(CAP_RIGHT, cap_style(theme)),
-    ]
+    pill_spans_on(
+        text,
+        theme,
+        theme.bg.unwrap_or(ratatui::style::Color::Reset),
+    )
 }
 
 /// A centered rect of at most `w`×`h`, clamped to `area` (shared by the popups).
