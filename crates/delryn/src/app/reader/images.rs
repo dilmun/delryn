@@ -21,22 +21,26 @@ fn size_spec(width: delryn_model::ImageWidth, math: bool) -> media::SizeSpec {
     media::SizeSpec { hint, math }
 }
 
+/// The geometry + render policy that sizes a section's images for the current
+/// frame: column width (`avail`), the row/pixel caps, the default figure width %
+/// for unsized figures, and the theme render policy. Bundled so the image-
+/// lifecycle methods take one argument instead of five — the same values that
+/// key an [`ImgKey`].
+#[derive(Clone, Copy, PartialEq)]
+pub struct ImageGeom {
+    pub avail: u16,
+    pub max_rows: u16,
+    pub max_px: u16,
+    pub width_pct: u16,
+    pub policy: media::RenderPolicy,
+}
+
 impl Reader {
     /// Collect any finished background image builds, and — when the section or
     /// size changes — estimate each image's rows (cheaply, for reflow) and
     /// dispatch the protocol builds to the worker. Never blocks on encoding.
     /// `width_pct` is the default figure width (% of column) for unsized images.
-    #[allow(clippy::too_many_arguments)]
-    pub fn sync_images(
-        &mut self,
-        builder: &ImageBuilder,
-        picker: &Picker,
-        avail: u16,
-        max_rows: u16,
-        max_px: u16,
-        width_pct: u16,
-        policy: media::RenderPolicy,
-    ) {
+    pub fn sync_images(&mut self, builder: &ImageBuilder, picker: &Picker, geom: ImageGeom) {
         // Pick up any sections the background loader has finished — neighbours
         // are requested on navigation but only land in the cache when drained.
         // A two-page spread needs the facing section's blocks *now* (not just on
@@ -70,11 +74,17 @@ impl Reader {
 
         // 2. On section/size change, remap the current section and dispatch any
         //    builds it still needs.
-        let key = (self.section, avail, max_rows, max_px, width_pct);
-        if self.images.images_key != key || self.images.policy != policy {
+        let key = (
+            self.section,
+            geom.avail,
+            geom.max_rows,
+            geom.max_px,
+            geom.width_pct,
+        );
+        if self.images.images_key != key || self.images.policy != geom.policy {
             self.images.images_key = key;
-            self.images.policy = policy;
-            self.remap_section_images(builder, picker, avail, max_rows, max_px, width_pct, policy);
+            self.images.policy = geom.policy;
+            self.remap_section_images(builder, picker, geom);
         }
 
         // 3. Keep the visible images most-recently-used so they can't be evicted:
@@ -87,23 +97,13 @@ impl Reader {
 
         // 4. Pre-build neighbouring sections' images once the current one is ready.
         if !self.images_pending() {
-            self.prefetch_neighbor_images(builder, avail, max_rows, max_px, width_pct, policy);
+            self.prefetch_neighbor_images(builder, geom);
         }
     }
 
     /// Map the current section's images to cache keys, estimate their rows for
     /// reflow, and request builds for any not already cached/in-flight/failed.
-    #[allow(clippy::too_many_arguments)]
-    fn remap_section_images(
-        &mut self,
-        builder: &ImageBuilder,
-        picker: &Picker,
-        avail: u16,
-        max_rows: u16,
-        max_px: u16,
-        width_pct: u16,
-        policy: media::RenderPolicy,
-    ) {
+    fn remap_section_images(&mut self, builder: &ImageBuilder, picker: &Picker, geom: ImageGeom) {
         // A failed build is only blacklisted until the next remap (section change,
         // resize, theme/mode toggle): clear it so a *transient* failure (e.g. the
         // protocol upload losing under load) recovers on its own instead of
@@ -125,19 +125,19 @@ impl Reader {
                 let key = ImgKey {
                     section: self.section,
                     idx,
-                    avail,
-                    max_rows,
-                    max_px,
-                    target_pct: width_pct,
-                    policy,
+                    avail: geom.avail,
+                    max_rows: geom.max_rows,
+                    max_px: geom.max_px,
+                    target_pct: geom.width_pct,
+                    policy: geom.policy,
                 };
                 let fit = media::FitBox {
                     fw,
                     fh,
-                    cols: avail,
-                    rows: max_rows,
-                    max_px,
-                    target_pct: width_pct,
+                    cols: geom.avail,
+                    rows: geom.max_rows,
+                    max_px: geom.max_px,
+                    target_pct: geom.width_pct,
                 };
                 let rows = if let Some(plan) = self.images.cache.peek(&key) {
                     plan.rows
@@ -184,19 +184,9 @@ impl Reader {
 
     /// Build adjacent sections' images ahead of time (from already-prefetched
     /// blocks) so a page turn / chapter crossing is instant. Never forces a load.
-    fn prefetch_neighbor_images(
-        &mut self,
-        builder: &ImageBuilder,
-        avail: u16,
-        max_rows: u16,
-        max_px: u16,
-        width_pct: u16,
-        policy: media::RenderPolicy,
-    ) {
+    fn prefetch_neighbor_images(&mut self, builder: &ImageBuilder, geom: ImageGeom) {
         for sec in [self.section + 1, self.section.wrapping_sub(1)] {
-            self.request_section_image_builds(
-                sec, builder, avail, max_rows, max_px, width_pct, policy,
-            );
+            self.request_section_image_builds(sec, builder, geom);
         }
     }
 
@@ -205,18 +195,11 @@ impl Reader {
     /// A no-op when the section is out of range, is the current one (handled by
     /// `remap_section_images`), or its blocks aren't loaded yet. Shared by the
     /// facing-page eager build and neighbour/look-ahead prefetch.
-    // The geometry args mirror the `sync_images` frame parameters; bundling them
-    // into a struct is tracked as tech debt (TODO.md) across this image pipeline.
-    #[allow(clippy::too_many_arguments)]
     fn request_section_image_builds(
         &mut self,
         section: usize,
         builder: &ImageBuilder,
-        avail: u16,
-        max_rows: u16,
-        max_px: u16,
-        width_pct: u16,
-        policy: media::RenderPolicy,
+        geom: ImageGeom,
     ) {
         if section >= self.doc.section_count() || section == self.section {
             return;
@@ -235,11 +218,11 @@ impl Reader {
                     let key = ImgKey {
                         section,
                         idx,
-                        avail,
-                        max_rows,
-                        max_px,
-                        target_pct: width_pct,
-                        policy,
+                        avail: geom.avail,
+                        max_rows: geom.max_rows,
+                        max_px: geom.max_px,
+                        target_pct: geom.width_pct,
+                        policy: geom.policy,
                     };
                     if !self.images.cache.contains(&key)
                         && !self.images.requested.contains(&key)
