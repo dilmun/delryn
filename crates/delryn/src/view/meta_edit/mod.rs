@@ -222,12 +222,10 @@ fn render_tabs(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme, bg: Color
         }
         let num = i + 1;
         if *t == ed.tab {
-            spans.push(Span::styled(
-                format!(" {num} {} ", t.label()),
-                Style::default()
-                    .fg(bg)
-                    .bg(theme.color(Role::Accent))
-                    .add_modifier(Modifier::BOLD),
+            spans.extend(super::pill_spans_on(
+                format!("{num} {}", t.label()),
+                theme,
+                bg,
             ));
         } else {
             spans.push(Span::styled(format!(" {num} "), theme.style(Role::Accent)));

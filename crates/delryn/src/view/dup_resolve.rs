@@ -145,9 +145,22 @@ fn member_line(
 
     // The name column takes whatever's left after the marker + fixed columns.
     let prefix = marker.chars().count() + check_cell.chars().count() + attrs.chars().count();
+
+    // Focused → a full-width rounded selection bar (uniform accent fill; the
+    // per-column colours stay visible on the unfocused rows). Reserve two extra
+    // cells for the rounded caps.
+    if focused {
+        let budget = width.saturating_sub(prefix + 2).max(12);
+        let location = elide_path(&m.path, budget);
+        return crate::view::rounded_line(
+            format!("{marker}{check_cell}{attrs}{location}"),
+            width as u16,
+            theme,
+        );
+    }
+
     let budget = width.saturating_sub(prefix).max(12);
     let location = elide_path(&m.path, budget);
-
     let name_style = if m.checked {
         theme.style(Role::Muted)
     } else {
@@ -210,18 +223,21 @@ pub fn render_ignored(f: &mut Frame, app: &App) {
                 .map(|p| basename(p))
                 .collect::<Vec<_>>()
                 .join("  ·  ");
-            let budget = body_width
-                .saturating_sub(marker.chars().count() + count.chars().count())
-                .max(12);
-            let style = if focused {
-                theme.style(Role::Body).add_modifier(Modifier::BOLD)
-            } else {
-                theme.style(Role::Muted)
-            };
+            let reserve = marker.chars().count() + count.chars().count();
+            if focused {
+                // Full-width rounded selection bar (reserve two cells for caps).
+                let budget = body_width.saturating_sub(reserve + 2).max(12);
+                return crate::view::rounded_line(
+                    format!("{marker}{count}{}", truncate_end(&names, budget)),
+                    body_width as u16,
+                    theme,
+                );
+            }
+            let budget = body_width.saturating_sub(reserve).max(12);
             Line::from(vec![
                 Span::styled(marker.to_string(), theme.style(Role::Accent)),
                 Span::styled(count, theme.style(Role::Muted)),
-                Span::styled(truncate_end(&names, budget), style),
+                Span::styled(truncate_end(&names, budget), theme.style(Role::Muted)),
             ])
         })
         .collect();
