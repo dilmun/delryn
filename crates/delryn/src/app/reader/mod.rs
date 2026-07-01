@@ -19,6 +19,7 @@ use super::{CACHE_CAP, Focus};
 // Separable reader concerns; each contributes an `impl Reader` block and reaches
 // the core's helpers (find_line, fetch_blocks, …) via the parent module.
 mod images;
+pub use images::ImageGeom;
 mod pages;
 mod search;
 mod sidebar;
