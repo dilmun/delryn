@@ -15,7 +15,7 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
     let inner = block.inner(area);
     f.render_widget(block, area);
     // No columns in the grid, so the `s` sort cycle follows all enabled keys.
-    app.library.sort_cycle = super::sort_cycle(&app.config, false, u16::MAX);
+    app.last_layout.sort_cycle = super::sort_cycle(&app.config, false, u16::MAX);
     if app.library.books.is_empty() {
         let msg = if app.config.library_paths.is_empty() {
             "No library configured.\n\nAdd a folder:  delryn --add <dir>"
@@ -98,8 +98,8 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
         );
     }
 
-    app.library.grid_cols = cols;
-    app.library.visible_rows = rows_screen;
+    app.last_layout.grid_cols = cols;
+    app.last_layout.visible_rows = rows_screen;
     app.ensure_grid_covers(&paths, GRID_BUILD_PER_FRAME);
     let mut book_hits: Vec<(usize, Rect)> = Vec::with_capacity(visible.len());
 

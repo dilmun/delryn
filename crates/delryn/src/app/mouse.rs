@@ -4,13 +4,23 @@
 use crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use super::{App, EditMode, EditTab, Focus, LOOKUP_FIELDS, LibPane, Mode, Overlay};
+use super::{App, EditMode, EditTab, Focus, LOOKUP_FIELDS, LibPane, Mode, Overlay, SortKey};
 
-/// Rects from the last render, used for mouse hit-testing.
+/// Layout facts captured during the last render: pane rects for mouse hit-testing
+/// plus the width-dependent metrics the library input handlers need. Kept here,
+/// out of `LibraryState`, so render stays a pure function of state — the view
+/// *writes* these each frame, the input layer *reads* them, and neither the
+/// semantic state nor the render output depends on the other.
 #[derive(Default)]
-pub struct LayoutRects {
+pub struct LayoutMetrics {
     pub sidebar: Option<Rect>,
     pub content: Option<Rect>,
+    /// Sort keys `s` cycles — only the columns actually drawn at this width.
+    pub sort_cycle: Vec<SortKey>,
+    /// On-screen book rows, for vim half/full-page navigation.
+    pub visible_rows: usize,
+    /// Grid columns, for grid j/k row stepping.
+    pub grid_cols: usize,
 }
 
 /// Clickable regions captured during the last render, for mouse hit-testing.
