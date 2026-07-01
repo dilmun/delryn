@@ -73,7 +73,6 @@ pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
 pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
     let bold = theme.style(Role::StatusStrong);
     let dim = theme.style(Role::StatusDim);
-    let pill = theme.style(Role::Selection);
     let mut bar = StatusBar::new();
 
     // The tag prompt owns the row while active.
@@ -98,9 +97,21 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
     if let Some(flash) = &app.library.flash {
         bar.text(Zone::Left, 9, flash.clone(), bold);
     } else if visual {
-        bar.text(Zone::Left, 9, format!(" VISUAL · {marked} selected "), pill);
+        bar.add(
+            Zone::Left,
+            9,
+            crate::view::pill_spans_on(
+                format!("VISUAL · {marked} selected"),
+                theme,
+                theme.status_bg,
+            ),
+        );
     } else if marked > 0 {
-        bar.text(Zone::Left, 9, format!(" {marked} selected "), pill);
+        bar.add(
+            Zone::Left,
+            9,
+            crate::view::pill_spans_on(format!("{marked} selected"), theme, theme.status_bg),
+        );
     } else if app.library.filtering || !app.library.filter.is_empty() {
         bar.text(Zone::Left, 9, format!("/{}", app.library.filter), bold);
     } else {
