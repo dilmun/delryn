@@ -34,18 +34,21 @@ impl Candidate {
         self.authors.join(", ")
     }
 
-    /// URL of the large cover image, if one is known. `?default=false` makes the
-    /// server 404 (rather than serve a blank placeholder) when there's no cover.
+    /// URL of the large cover image, if one is known: prefer the Open Library
+    /// cover id, else the ISBN.
     pub fn cover_url(&self) -> Option<String> {
         if let Some(id) = self.cover_id {
-            return Some(format!(
-                "https://covers.openlibrary.org/b/id/{id}-L.jpg?default=false"
-            ));
+            return Some(ol_cover_url("id", id));
         }
-        self.isbn
-            .as_ref()
-            .map(|isbn| format!("https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false"))
+        self.isbn.as_ref().map(|isbn| ol_cover_url("isbn", isbn))
     }
+}
+
+/// Open Library large-cover URL, keyed by `"id"` (a cover id) or `"isbn"`.
+/// `?default=false` makes the server 404 rather than serve a blank placeholder
+/// when the book has no cover.
+fn ol_cover_url(key: &str, value: impl std::fmt::Display) -> String {
+    format!("https://covers.openlibrary.org/b/{key}/{value}-L.jpg?default=false")
 }
 
 /// Free-text Open Library search (title + author together). Returns up to
@@ -99,7 +102,7 @@ pub fn cover_candidates(query: &str, isbn_raw: &str, limit: usize) -> Vec<CoverH
         });
         hits.push(CoverHit {
             source: "Open Library".into(),
-            url: format!("https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false"),
+            url: ol_cover_url("isbn", &isbn),
         });
     }
     if !query.trim().is_empty() {
@@ -107,7 +110,7 @@ pub fn cover_candidates(query: &str, isbn_raw: &str, limit: usize) -> Vec<CoverH
             if let Some(id) = c.cover_id {
                 hits.push(CoverHit {
                     source: format!("OL · {}", c.title),
-                    url: format!("https://covers.openlibrary.org/b/id/{id}-L.jpg?default=false"),
+                    url: ol_cover_url("id", id),
                 });
             } else if let Some(isbn) = c.isbn.as_deref().and_then(normalize_isbn) {
                 hits.push(CoverHit {
