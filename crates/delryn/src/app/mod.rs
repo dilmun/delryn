@@ -28,7 +28,7 @@ pub use settings::{
 };
 
 mod mouse;
-pub use mouse::{LayoutRects, MouseHits};
+pub use mouse::{LayoutMetrics, MouseHits};
 
 mod rename;
 pub use rename::{BulkRename, BulkTarget};
@@ -123,7 +123,7 @@ pub struct App {
     pub mode: Mode,
     pub config: Config,
     pub reader: Option<Reader>,
-    pub last_layout: LayoutRects,
+    pub last_layout: LayoutMetrics,
     /// Clickable regions from the last render (mouse hit-testing).
     pub mouse: MouseHits,
     pub pending: Pending,
@@ -303,7 +303,7 @@ impl App {
             mode: Mode::Reader,
             config,
             reader: Some(reader),
-            last_layout: LayoutRects::default(),
+            last_layout: LayoutMetrics::default(),
             mouse: MouseHits::default(),
             pending: Pending::default(),
             should_quit: false,
@@ -341,7 +341,7 @@ impl App {
             mode: Mode::Library,
             config,
             reader: None,
-            last_layout: LayoutRects::default(),
+            last_layout: LayoutMetrics::default(),
             mouse: MouseHits::default(),
             pending: Pending::default(),
             should_quit: false,
@@ -1176,7 +1176,7 @@ mod tests {
 
         let mut app = App::library();
         app.config.library_layout = LibLayout::Grid;
-        app.library.grid_cols = 3; // normally set by the renderer
+        app.last_layout.grid_cols = 3; // normally set by the renderer
         assert_eq!(app.library.sel, 0);
 
         app.on_key(key('l')); // → 1

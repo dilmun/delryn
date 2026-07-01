@@ -160,7 +160,8 @@ impl App {
         // A width-agnostic sort cycle (all enabled columns) so `s` works before
         // the first render and in the grid; the book table refines it per width.
         let compact = self.config.library_layout == LibLayout::Compact;
-        self.library.sort_cycle = crate::view::library::sort_cycle(&self.config, compact, u16::MAX);
+        self.last_layout.sort_cycle =
+            crate::view::library::sort_cycle(&self.config, compact, u16::MAX);
         self.sort_books();
         if self.library.sel >= self.library.books.len() {
             self.library.sel = self.library.books.len().saturating_sub(1);
@@ -212,7 +213,7 @@ impl App {
     /// arrow always lands on a visible header (`lib_sort_cycle` is set at render).
     fn cycle_sort(&mut self) {
         self.lib_exit_visual();
-        let cycle = &self.library.sort_cycle;
+        let cycle = &self.last_layout.sort_cycle;
         if cycle.is_empty() {
             return;
         }
@@ -438,7 +439,7 @@ impl App {
     /// Vertical step for j/k: one grid row in grid view, else one list row.
     fn grid_step(&self) -> isize {
         if self.is_grid() {
-            self.library.grid_cols.max(1) as isize
+            self.last_layout.grid_cols.max(1) as isize
         } else {
             1
         }
@@ -585,7 +586,7 @@ impl App {
         let grid = self.is_grid();
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         // Page sizes (rows) for vim-style half/full-page navigation.
-        let rows = self.library.visible_rows.max(1) as isize;
+        let rows = self.last_layout.visible_rows.max(1) as isize;
         let half = (rows / 2).max(1);
         match key.code {
             // Vim half/full-page nav (Ctrl-d/u/f/b) + Page keys. Guarded on Ctrl
