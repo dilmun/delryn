@@ -17,10 +17,7 @@ use crate::layout::{DisplayLine, LineKind, Run};
 use crate::media::ImageBuilder;
 use crate::search::Matcher;
 use crate::theme::{Role, Theme};
-
-/// Cells reserved in the left margin for the bookmark gutter: the icon plus a
-/// one-cell gap so it never butts against the text.
-const GUTTER_COLS: u16 = 2;
+use crate::view::layout::{GUTTER_COLS, LayoutCtx, Placement};
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let App {
@@ -169,9 +166,87 @@ fn render_content(
     .style(theme.text_style());
     f.render_widget(header, header_area);
 
-    match config.view_mode {
-        ViewMode::Center => render_column(f, body, reader, config, config.side_padding, images),
-        ViewMode::TwoPage => render_two_page(f, body, reader, config, images),
+    // Plan the frame: the active strategy maps the body + reading position +
+    // content kind to a list of placements (paged pages, or reflowed text
+    // columns). The renderer below just draws whatever it's handed.
+    let paged = reader.is_paged_image();
+    let spread = if paged {
+        reader.spread_pages()
+    } else {
+        Vec::new()
+    };
+    let plan = super::layout::plan(
+        config.view_mode,
+        &LayoutCtx {
+            body,
+            config,
+            paged,
+            scroll: reader.scroll,
+            section: reader.section,
+            spread: &spread,
+        },
+    );
+
+    // Write back the geometry the nav / scroll / page-mode math reads.
+    // `viewport_lines` (one column height) and `page_lines` (the scroll unit) are
+    // currently equal in both modes.
+    reader.last_measure = plan.measure as usize;
+    reader.viewport_lines = plan.page_lines;
+    reader.page_lines = plan.page_lines;
+
+    if paged {
+        // PDF: hand the page placements to the deck and leave the cells empty so
+        // the kitty placements show through — no per-cell drawing, no
+        // transmit-on-turn, no black gap.
+        let areas: Vec<(usize, Rect)> = plan
+            .placements
+            .iter()
+            .filter_map(|p| match p {
+                Placement::Page { section, area } => Some((*section, *area)),
+                Placement::Text(_) => None,
+            })
+            .collect();
+        capture_pdf_targets(reader, images, &areas, image_policy(config));
+        return;
+    }
+
+    // Reflow: images align to the column and scale with it; sync (row estimate +
+    // background builds) must run before wrapping.
+    if let Some((picker, builder)) = images {
+        reader.sync_images(
+            builder,
+            picker,
+            image_geom(config, plan.measure, plan.page_lines.max(1) as u16),
+        );
+    }
+    reader.ensure_wrapped(plan.measure as usize);
+    reader.resolve_pending();
+    reader.clamp_scroll();
+
+    // Draw each text column: the wrapped-line slice, then its bookmark ribbon
+    // (only where the column has margin for it).
+    for placement in &plan.placements {
+        let Placement::Text(col) = placement else {
+            continue;
+        };
+        let lines = visible_lines(reader, col.scroll, col.area.height as usize, theme);
+        f.render_widget(
+            Paragraph::new(Text::from(lines)).style(theme.text_style()),
+            col.area,
+        );
+        if col.gutter {
+            draw_gutter(f, col.area, reader, col.scroll, theme);
+        }
+    }
+
+    // Inline figures: deferred until scrolling settles so the heavy transmit
+    // doesn't stutter motion; each column shows the figures in its own slice.
+    if images.is_some() && !reader.is_scrolling() {
+        for placement in &plan.placements {
+            if let Placement::Text(col) = placement {
+                draw_images_in(f, col.area, reader, col.scroll);
+            }
+        }
     }
 }
 
@@ -198,89 +273,6 @@ fn image_geom(config: &Config, avail: u16, max_rows: u16) -> ImageGeom {
 /// The picker + background builder, present only when the terminal supports
 /// images. Bundled so the render functions take one argument instead of two.
 type Images<'a> = Option<(&'a Picker, &'a ImageBuilder)>;
-
-/// The reading column width for a given pane width and per-side padding percent.
-/// With padding on, each side keeps at least the gutter width so a bookmark's
-/// ribbon always has room; a `side_padding` of 0 % is edge-to-edge.
-fn measure_for(pane_width: u16, side_padding: u16) -> u16 {
-    if side_padding == 0 {
-        return pane_width.max(1);
-    }
-    let pad = ((pane_width as u32 * side_padding as u32 / 100) as u16).max(GUTTER_COLS);
-    pane_width
-        .saturating_sub(pad.saturating_mul(2))
-        .max(crate::config::MIN_TEXT_COLS.min(pane_width).max(1))
-}
-
-/// A single reading column padded by `side_padding` percent on each side.
-fn render_column(
-    f: &mut Frame,
-    body: Rect,
-    reader: &mut Reader,
-    config: &Config,
-    side_padding: u16,
-    images: Images,
-) {
-    let theme = config.theme;
-    let measure = measure_for(body.width, side_padding);
-    let left_pad = body.width.saturating_sub(measure) / 2;
-    let cols = Layout::horizontal([
-        Constraint::Length(left_pad),
-        Constraint::Length(measure),
-        Constraint::Min(0),
-    ])
-    .split(body);
-    let text_area = cols[1];
-
-    reader.viewport_lines = text_area.height as usize;
-    reader.page_lines = reader.viewport_lines;
-    reader.last_measure = measure as usize;
-
-    // PDF: the page is a whole image rendered directly via the kitty protocol
-    // (transmit-once + placement) by the PageDeck. Capture where to place it and
-    // leave the area empty so the placement shows through — no per-cell drawing,
-    // no transmit-on-turn, no black gap.
-    if reader.is_paged_image() {
-        capture_pdf_targets(
-            reader,
-            images,
-            &[(reader.section, text_area)],
-            image_policy(config),
-        );
-        return;
-    }
-
-    // Images align to the text column and scale with it. Sync (which estimates
-    // rows + dispatches background builds) must run before wrapping.
-    if let Some((picker, builder)) = images {
-        reader.sync_images(
-            builder,
-            picker,
-            image_geom(config, text_area.width, text_area.height.max(1)),
-        );
-    }
-
-    reader.ensure_wrapped(measure as usize);
-    reader.resolve_pending();
-    reader.clamp_scroll();
-
-    let lines = visible_lines(reader, reader.scroll, reader.viewport_lines, theme);
-    f.render_widget(
-        Paragraph::new(Text::from(lines)).style(theme.text_style()),
-        text_area,
-    );
-
-    // Bookmark ribbons in the left margin (only where padding gives us room).
-    if left_pad >= GUTTER_COLS {
-        draw_gutter(f, text_area, reader, reader.scroll, theme);
-    }
-
-    // Defer the (blocking) image transmit until scrolling settles, so motion
-    // stays smooth; the figure pops in when you stop.
-    if images.is_some() && !reader.is_scrolling() {
-        draw_images_in(f, text_area, reader, reader.scroll);
-    }
-}
 
 /// Draw the bookmark ribbon in the left gutter for any bookmarked line visible in
 /// `[top, top + height)`. The marker sits `GUTTER_COLS` cells left of the text so
@@ -423,90 +415,6 @@ fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize) {
         }
 
         f.render_widget(SlicedImage::new(&plan.proto, SignedPosition { x, y }), area);
-    }
-}
-
-/// Two side-by-side columns forming a spread; the right column continues from
-/// the left, so scrolling flows left-to-right.
-fn render_two_page(
-    f: &mut Frame,
-    body: Rect,
-    reader: &mut Reader,
-    config: &Config,
-    images: Images,
-) {
-    let theme = config.theme;
-    // Same per-side edge padding as Center (at least the gutter width), with a
-    // configurable gap between the two columns.
-    let pad = ((body.width as u32 * config.side_padding as u32 / 100) as u16).max(GUTTER_COLS);
-    let gap = config.page_gap;
-    let usable = body.width.saturating_sub(pad * 2 + gap).max(2);
-    let col_w = (usable / 2).max(1);
-    // Re-center any rounding remainder into the outer margins.
-    let side_pad = body.width.saturating_sub(col_w * 2 + gap) / 2;
-    let cols = Layout::horizontal([
-        Constraint::Length(side_pad),
-        Constraint::Length(col_w),
-        Constraint::Length(gap),
-        Constraint::Length(col_w),
-        Constraint::Min(0),
-    ])
-    .split(body);
-    let left_area = cols[1];
-    let right_area = cols[3];
-
-    let h = left_area.height as usize;
-    reader.viewport_lines = h;
-    reader.page_lines = h;
-    reader.last_measure = col_w as usize;
-
-    // PDF: a facing-page spread, rendered as two whole page images via the
-    // direct-Kitty PageDeck. The reader decides the pairing (cover-offset aware);
-    // a lone page (the cover, or a trailing odd page) centers across the whole
-    // area rather than sitting in one column. Leave the columns empty for the
-    // placements.
-    if reader.is_paged_image() {
-        let pages = reader.spread_pages();
-        let spread: Vec<(usize, Rect)> = match pages.as_slice() {
-            [only] => vec![(*only, body)],
-            [l, r, ..] => vec![(*l, left_area), (*r, right_area)],
-            [] => Vec::new(),
-        };
-        capture_pdf_targets(reader, images, &spread, image_policy(config));
-        return;
-    }
-
-    if let Some((picker, builder)) = images {
-        reader.sync_images(builder, picker, image_geom(config, col_w, h.max(1) as u16));
-    }
-
-    reader.ensure_wrapped(col_w as usize);
-    reader.resolve_pending();
-    reader.clamp_scroll();
-
-    let left = visible_lines(reader, reader.scroll, h, theme);
-    let right = visible_lines(reader, reader.scroll + h, h, theme);
-    f.render_widget(
-        Paragraph::new(Text::from(left)).style(theme.text_style()),
-        left_area,
-    );
-    f.render_widget(
-        Paragraph::new(Text::from(right)).style(theme.text_style()),
-        right_area,
-    );
-
-    // Bookmark ribbons: the left column uses the outer margin (when present), the
-    // right column the inter-column gap (always wide enough).
-    if side_pad >= GUTTER_COLS {
-        draw_gutter(f, left_area, reader, reader.scroll, theme);
-    }
-    draw_gutter(f, right_area, reader, reader.scroll + h, theme);
-
-    // Images: left column shows the first `h` rows, right column the next `h`.
-    // Deferred while scrolling so the heavy transmit doesn't stutter motion.
-    if images.is_some() && !reader.is_scrolling() {
-        draw_images_in(f, left_area, reader, reader.scroll);
-        draw_images_in(f, right_area, reader, reader.scroll + h);
     }
 }
 
