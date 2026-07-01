@@ -52,7 +52,7 @@ pub use editor::{
 };
 
 mod reader;
-pub use reader::Reader;
+pub use reader::{ImageGeom, Reader};
 
 mod image_view;
 pub use image_view::{Figure, ImageViewer};

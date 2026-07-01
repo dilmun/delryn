@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
-use crate::app::{App, Focus, Reader};
+use crate::app::{App, Focus, ImageGeom, Reader};
 use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
 use crate::media::ImageBuilder;
@@ -183,6 +183,18 @@ fn image_policy(config: &Config) -> crate::media::RenderPolicy {
     }
 }
 
+/// The image geometry for this frame: the column width + row cap plus the
+/// config'd pixel cap, figure width %, and theme policy.
+fn image_geom(config: &Config, avail: u16, max_rows: u16) -> ImageGeom {
+    ImageGeom {
+        avail,
+        max_rows,
+        max_px: config.image_max_px,
+        width_pct: config.image_width_pct,
+        policy: image_policy(config),
+    }
+}
+
 /// The picker + background builder, present only when the terminal supports
 /// images. Bundled so the render functions take one argument instead of two.
 type Images<'a> = Option<(&'a Picker, &'a ImageBuilder)>;
@@ -244,11 +256,7 @@ fn render_column(
         reader.sync_images(
             builder,
             picker,
-            text_area.width,
-            text_area.height.max(1),
-            config.image_max_px,
-            config.image_width_pct,
-            image_policy(config),
+            image_geom(config, text_area.width, text_area.height.max(1)),
         );
     }
 
@@ -469,15 +477,7 @@ fn render_two_page(
     }
 
     if let Some((picker, builder)) = images {
-        reader.sync_images(
-            builder,
-            picker,
-            col_w,
-            h.max(1) as u16,
-            config.image_max_px,
-            config.image_width_pct,
-            image_policy(config),
-        );
+        reader.sync_images(builder, picker, image_geom(config, col_w, h.max(1) as u16));
     }
 
     reader.ensure_wrapped(col_w as usize);
