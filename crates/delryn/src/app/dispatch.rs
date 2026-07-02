@@ -600,11 +600,30 @@ impl App {
             Action::Expand => {
                 if reader.focus == Focus::Sidebar {
                     reader.sidebar_expand();
+                } else if reader.is_paged_image() && reader.can_pan_horizontally() {
+                    reader.pan_right(1); // l pans a zoomed page right
                 }
             }
             Action::Collapse => {
                 if reader.focus == Focus::Sidebar {
                     reader.sidebar_collapse();
+                } else if reader.is_paged_image() && reader.can_pan_horizontally() {
+                    reader.pan_left(1); // h pans a zoomed page left
+                }
+            }
+            Action::ZoomIn | Action::ZoomOut | Action::ZoomReset | Action::FitCycle => {
+                // Zoom / pan is a single-page paged (PDF) feature.
+                if reader.is_paged_image() && self.config.view_mode == ViewMode::Center {
+                    match action {
+                        Action::ZoomIn => reader.zoom_in(),
+                        Action::ZoomOut => reader.zoom_out(),
+                        Action::ZoomReset => reader.zoom_reset(),
+                        Action::FitCycle => reader.cycle_fit(),
+                        _ => {}
+                    }
+                    reader.flash = Some(reader.page_view.label());
+                } else if reader.is_paged_image() {
+                    reader.flash = Some("zoom needs single-page view (v)".into());
                 }
             }
             Action::HistBack => reader.history_back(),
@@ -701,6 +720,12 @@ impl App {
             Action::None => {}
         }
 
+        // A page flip while zoomed: start the new page at the top (a forward flip)
+        // or bottom (a backward flip) so vertical panning reads continuously.
+        if reader.is_paged_image() && reader.section != before && reader.page_zoomed() {
+            reader.reset_pan_to(reader.section > before);
+        }
+
         // If this action changed a wrap-affecting setting (view mode, width,
         // spacing, preset), the section re-wraps next frame — anchor the reading
         // position so it stays put instead of drifting to a stale line offset.
@@ -741,15 +766,31 @@ fn apply_nav(reader: &mut Reader, action: Action, paged: bool, flip_ready: bool)
     };
     match action {
         // A count prefix (`10j`) jumps that many pages; a bare/held key flips one.
+        // When the page is zoomed, pan down first and only flip at the bottom
+        // edge (the new page starts at the top — reset centrally in `apply`).
         Action::Down(n) => match reader.focus {
-            Focus::Content if paged && n > 1 => reader.page_jump(n as isize),
-            Focus::Content if paged => page_forward(reader),
+            Focus::Content if paged => {
+                if !reader.try_pan_down(n) {
+                    if n > 1 {
+                        reader.page_jump(n as isize);
+                    } else {
+                        page_forward(reader);
+                    }
+                }
+            }
             Focus::Content => reader.queue_scroll(n as isize),
             Focus::Sidebar => reader.sidebar_move(n as isize),
         },
         Action::Up(n) => match reader.focus {
-            Focus::Content if paged && n > 1 => reader.page_jump(-(n as isize)),
-            Focus::Content if paged => page_backward(reader),
+            Focus::Content if paged => {
+                if !reader.try_pan_up(n) {
+                    if n > 1 {
+                        reader.page_jump(-(n as isize));
+                    } else {
+                        page_backward(reader);
+                    }
+                }
+            }
             Focus::Content => reader.queue_scroll(-(n as isize)),
             Focus::Sidebar => reader.sidebar_move(-(n as isize)),
         },
