@@ -552,14 +552,24 @@ no premature abstraction, no speculative modes).*
       7.3's grid/N-up land — today's keymap already fits Center/TwoPage);
       **presentation/chrome** toggle (`focus_mode` already hides sidebar+status;
       extend to drop the header for full-bleed when wanted).*
-- [ ] **7.3 Tiled-pages presets (paged) — ONE parameterized strategy.** Params:
-      tiles (rows×cols), step (1 = sliding / N = non-overlapping spreads),
-      start-offset (cover-alone odd/even binding), direction (LTR / **manga RTL**),
-      fit (width / height / page / fixed-zoom). The presets fall out: Single,
-      Two-Page spread, Offset/Facing, Continuous-spread (step 1), Sliding window
-      (step k), N-up, Manga. Plus **fit modes + manual zoom/pan** (re-rasterize the
-      page at higher DPI — the zoom deferred from PDF v2 lands here). RTL also flips
-      the gutter side + page-turn keys.
+- [~] **7.3 Tiled-pages presets (paged) — ONE parameterized strategy.** ✅
+      **Fit modes + manual zoom/pan** (single-page paged; the zoom deferred from PDF
+      v2). `app/reader/page_view.rs` — `PageView { fit: Page/Width/Height, zoom,
+      pan }` + a pure, unit-tested `place_page(raster px, viewport, view) →
+      (dest cells, source crop, pan room)`. Zoom shows a **cropped sub-region** of
+      the page raster: `media::place_image_seq` + the deck `PageTarget` gained the
+      Kitty source-rect (`x/y/w/h`) params; `place_page` is also the one fit-page
+      implementation (spread pages pass a default view). Keys (single-page paged):
+      `+`/`-` zoom, `0` fit-page, `W` cycle fit; **pan reuses nav** — `j/k` pan a
+      zoomed page and flip at the vertical edge (new page starts at top/bottom),
+      `h/l` pan horizontally. Status shows the zoom/fit label. 8 tests. *Limits
+      (honest): v1 crops the existing 1400 px raster — crisp to ~2×, softens past
+      that (**re-raster-at-DPI** = the crispness follow-up, needs a size-keyed page
+      cache); pan re-transmits the page (deck delete+retransmit — a **placement-id
+      move** is the perf follow-up); zoom is single-page only (not spread); mouse
+      wheel still flips (doesn't pan).* **Still (the tiled strategy itself):** tiles
+      (rows×cols) → N-up, step → sliding window, start-offset, direction → **manga
+      RTL** (flips gutter + turn keys). Those are the remaining presets.
 - [ ] **7.4 Distinct strategies (not presets).** Continuous **scroll across
       sections** (the long-missing chapter-join, for reflow *and* paged); **grid /
       thumbnail browser** as a visual page-jump complementing the TOC sidebar

@@ -14,12 +14,15 @@ use crate::media;
 use crate::theme;
 use delryn_model::{Anchor, find_footnote};
 
+use super::page_deck::PageTarget;
 use super::{CACHE_CAP, Focus};
 
 // Separable reader concerns; each contributes an `impl Reader` block and reaches
 // the core's helpers (find_line, fetch_blocks, …) via the parent module.
 mod images;
 pub use images::ImageGeom;
+mod page_view;
+pub use page_view::{PageView, PanRoom, place_page};
 mod pages;
 mod search;
 mod sidebar;
@@ -68,10 +71,18 @@ pub struct Reader {
     /// Show the first page alone in a spread (book cover), then pair (2,3),
     /// (4,5)… so facing pages line up as in a physical book (set each render).
     pub cover_offset: bool,
-    /// PDF page placements for this frame (section + absolute cell rect),
-    /// captured by the view and consumed by the direct-Kitty [`PageDeck`]. One
-    /// entry single-page, two for a spread.
-    pub pdf_targets: Vec<(usize, ratatui::layout::Rect)>,
+    /// PDF page placements for this frame (section + cell rect + optional source
+    /// crop), captured by the view and consumed by the direct-Kitty [`PageDeck`].
+    /// One entry single-page, two for a spread.
+    pub pdf_targets: Vec<PageTarget>,
+    /// Zoom / pan / fit for the current paged page (single-page view only).
+    pub page_view: PageView,
+    /// Pan room remaining this frame (from the placement), so nav pans while
+    /// there's room and flips the page at the edge. A render fact — set each
+    /// frame by the view.
+    page_room: PanRoom,
+    /// Pan step per keypress (fraction of the pan range), from the placement.
+    page_step: (f32, f32),
     /// The inputs the current `lines` were wrapped against; a change re-wraps.
     wrapped: WrapKey,
     /// Inline-image lifecycle (built protocols, row estimates, in-flight builds).
@@ -165,6 +176,9 @@ impl Reader {
             spread: false,
             cover_offset: false,
             pdf_targets: Vec::new(),
+            page_view: PageView::default(),
+            page_room: PanRoom::default(),
+            page_step: (0.0, 0.0),
             wrapped: WrapKey::invalid(),
             images: ImageState::default(),
             pages: PageThemeState::default(),
@@ -1218,6 +1232,69 @@ impl Reader {
         }
     }
 
+    /// Store the pan room + step the view computed for this frame's page, so
+    /// navigation can pan the zoomed page while there's room (and flip at the
+    /// edge). No-op geometry when the page is at fit-page (all room false).
+    pub fn set_page_room(&mut self, room: PanRoom, step: (f32, f32)) {
+        self.page_room = room;
+        self.page_step = step;
+    }
+
+    /// Whether the current paged page is zoomed (so nav pans rather than flips).
+    pub fn page_zoomed(&self) -> bool {
+        self.page_view.is_zoomed()
+    }
+
+    pub fn zoom_in(&mut self) {
+        self.page_view.zoom_in();
+    }
+    pub fn zoom_out(&mut self) {
+        self.page_view.zoom_out();
+    }
+    pub fn zoom_reset(&mut self) {
+        self.page_view.reset();
+    }
+    pub fn cycle_fit(&mut self) {
+        self.page_view.cycle_fit();
+    }
+
+    /// Pan the zoomed page down/up by `n` steps if there's room; returns `false`
+    /// when already at that vertical edge (the caller then flips the page).
+    pub fn try_pan_down(&mut self, n: usize) -> bool {
+        if self.page_room.down {
+            self.page_view.pan_y = (self.page_view.pan_y + self.page_step.1 * n as f32).min(1.0);
+            true
+        } else {
+            false
+        }
+    }
+    pub fn try_pan_up(&mut self, n: usize) -> bool {
+        if self.page_room.up {
+            self.page_view.pan_y = (self.page_view.pan_y - self.page_step.1 * n as f32).max(0.0);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Pan the zoomed page horizontally by `n` steps (clamped; no-op at the edge).
+    pub fn pan_left(&mut self, n: usize) {
+        self.page_view.pan_x = (self.page_view.pan_x - self.page_step.0 * n as f32).max(0.0);
+    }
+    pub fn pan_right(&mut self, n: usize) {
+        self.page_view.pan_x = (self.page_view.pan_x + self.page_step.0 * n as f32).min(1.0);
+    }
+    /// Whether the page currently has horizontal pan room (for the h/l keys).
+    pub fn can_pan_horizontally(&self) -> bool {
+        self.page_room.left || self.page_room.right
+    }
+
+    /// After flipping a page while zoomed, start the new page at the top (forward)
+    /// or bottom (backward) so vertical panning reads continuously.
+    pub fn reset_pan_to(&mut self, top: bool) {
+        self.page_view.pan_y = if top { 0.0 } else { 1.0 };
+    }
+
     /// Apply a pending resume fraction or figure jump once the section is wrapped.
     pub fn resolve_pending(&mut self) {
         if let Some(frac) = self.pending_frac.take() {
@@ -1632,6 +1709,33 @@ mod tests {
             r.pending_frac, None,
             "paged docs don't anchor a wrap fraction"
         );
+    }
+
+    #[test]
+    fn zoom_and_pan_edge_flip() {
+        let doc = MockDoc::new((0..4).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        assert!(!r.page_zoomed());
+        r.zoom_in();
+        assert!(r.page_zoomed(), "zooming marks the page zoomed");
+
+        // With downward room, `j` pans and reports handled (no flip).
+        r.set_page_room(
+            PanRoom {
+                down: true,
+                ..Default::default()
+            },
+            (0.0, 0.5),
+        );
+        assert!(r.try_pan_down(1));
+        assert!(r.page_view.pan_y > 0.0, "panned down within the page");
+
+        // At the bottom edge (no room) it reports false, so the caller flips.
+        r.set_page_room(PanRoom::default(), (0.0, 0.0));
+        assert!(!r.try_pan_down(1), "no room → caller flips the page");
+
+        r.zoom_reset();
+        assert!(!r.page_zoomed(), "reset returns to fit-page");
     }
 
     #[test]
