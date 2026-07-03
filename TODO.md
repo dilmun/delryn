@@ -569,7 +569,7 @@ no premature abstraction, no speculative modes).*
       whitespace margin (not a tight crop); `place_page` gains a `content` region so
       fit/zoom/pan operate on it → bigger text but the page keeps breathing room.
       Cached per section (`page_content_box`, from the raw raster, theme-independent);
-      `config.pdf_trim` (default on) + `x` toggles it. (2) **Full-bleed paged
+      `config.pdf_trim` (default on), toggled by `x` or Settings → Content → PDF. (2) **Full-bleed paged
       layout** — Center/Spread fill the pane for paged (no extra reading margin — the
       page carries its own halved margin), and a spread's two pages are
       **spine-aligned** (`PageAlign`) keeping the `page_gap` gutter (like EPUB) so
