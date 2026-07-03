@@ -96,11 +96,10 @@ pub struct Reader {
     /// Trim baked-in whitespace margins from paged (PDF) pages (mirrored from
     /// config each render), so the content fills the viewport.
     trim_margins: bool,
-    /// Cached content bounding box per section for the margin trim, stored as
-    /// *fractions* `(fx, fy, fw, fh)` of the raster so one box applies to any
-    /// raster resolution (base or crisp) — theming/re-raster never move the
-    /// content within the page, only its pixel scale.
-    trim_cache: HashMap<usize, (f32, f32, f32, f32)>,
+    /// PDF margin-trim crop, in percent per edge (mirrored from config each
+    /// render). A *constant* crop applied to every page, so the displayed page
+    /// width is identical across pages (see [`page_content_box`](Self::page_content_box)).
+    trim_pct: u16,
     /// The inputs the current `lines` were wrapped against; a change re-wraps.
     wrapped: WrapKey,
     /// Inline-image lifecycle (built protocols, row estimates, in-flight builds).
@@ -208,7 +207,7 @@ impl Reader {
             page_room: PanRoom::default(),
             page_step: (0.0, 0.0),
             trim_margins: true,
-            trim_cache: HashMap::new(),
+            trim_pct: 6,
             wrapped: WrapKey::invalid(),
             images: ImageState::default(),
             pages: PageThemeState::default(),
@@ -1296,51 +1295,34 @@ impl Reader {
         }
     }
 
-    /// Mirror the margin-trim setting from config (called each render).
-    pub fn set_trim_margins(&mut self, on: bool) {
+    /// Mirror the margin-trim settings from config (called each render).
+    pub fn set_trim(&mut self, on: bool, pct: u16) {
         self.trim_margins = on;
+        self.trim_pct = pct;
     }
 
-    /// The content bounding box `(x, y, w, h)` of `section`'s page for the margin
-    /// trim, in the pixel coordinates of a raster of size `full`. Returns the whole
-    /// raster `(0, 0, w, h)` when trimming is off, the raster isn't ready, or
-    /// there's nothing to trim. The box is cached per section as *fractions* of the
-    /// raster (computed from the base raw raster, theme-independent) and scaled to
-    /// `full` here, so the same box applies to the base and crisp rasters alike.
-    pub fn page_content_box(&mut self, section: usize, full: (u32, u32)) -> (u32, u32, u32, u32) {
-        let whole = (0, 0, full.0, full.1);
-        if !self.trim_margins {
-            return whole;
-        }
-        let frac = match self.trim_cache.get(&section).copied() {
-            Some(f) => f,
-            None => {
-                // Not ready → retry next frame rather than caching a wrong box.
-                let Some(png) = self.raster_png(section) else {
-                    return whole;
-                };
-                let (rw, rh) =
-                    media::image_dimensions(&png).unwrap_or((full.0.max(1), full.1.max(1)));
-                let (rw, rh) = (rw.max(1) as f32, rh.max(1) as f32);
-                // A whole-page box (no trim) → store the full unit box, so a later
-                // frame doesn't re-decode. content_bbox already rejects near-blank.
-                let f = media::content_bbox(&png)
-                    .map(|(x, y, w, h)| {
-                        (x as f32 / rw, y as f32 / rh, w as f32 / rw, h as f32 / rh)
-                    })
-                    .unwrap_or((0.0, 0.0, 1.0, 1.0));
-                self.trim_cache.insert(section, f);
-                f
-            }
+    /// The content box `(x, y, w, h)` of a PDF page for the margin trim, in the
+    /// pixel coordinates of a raster of size `full`: a **constant** crop of
+    /// `trim_pct` % off each edge. Because the crop is the same fraction on every
+    /// page, the displayed region is a constant fraction of the (uniform) page, so
+    /// the page width stays identical when flipping between pages — regardless of
+    /// each page's own baked-in margins. The whole page when trimming is off or the
+    /// percent is 0. Section-independent by design (the parameter is kept for the
+    /// per-page call site and any future per-page override).
+    pub fn page_content_box(&self, _section: usize, full: (u32, u32)) -> (u32, u32, u32, u32) {
+        let pct = if self.trim_margins {
+            self.trim_pct.min(crate::config::MAX_PDF_MARGIN_PCT) as u32
+        } else {
+            0
         };
-        let (fw_x, fh_y, fw_w, fh_h) = frac;
-        let (w, h) = (full.0.max(1) as f32, full.1.max(1) as f32);
-        let x = (fw_x * w).round() as u32;
-        let y = (fh_y * h).round() as u32;
-        // Clamp so the box never exceeds the raster (rounding at the far edge).
-        let bw = ((fw_w * w).round() as u32).clamp(1, full.0.saturating_sub(x).max(1));
-        let bh = ((fh_h * h).round() as u32).clamp(1, full.1.saturating_sub(y).max(1));
-        (x, y, bw, bh)
+        if pct == 0 {
+            return (0, 0, full.0, full.1);
+        }
+        let mx = full.0 * pct / 100;
+        let my = full.1 * pct / 100;
+        let w = full.0.saturating_sub(mx * 2).max(1);
+        let h = full.1.saturating_sub(my * 2).max(1);
+        (mx, my, w, h)
     }
 
     /// Resolve which raster width to display `section` at this frame and record it
@@ -1863,21 +1845,27 @@ mod tests {
         );
     }
 
-    /// The margin-trim content box is stored as fractions and scaled to whatever
-    /// raster width it's queried at, so the base and the (larger) crisp raster get
-    /// the *same* region of the page — just at their own pixel scale.
+    /// The margin trim is a *constant* percent crop off each edge — the same
+    /// fraction of every page and every raster size — so the displayed page width
+    /// stays identical across pages (the whole point of the constant crop).
     #[test]
-    fn content_box_scales_with_the_raster_size() {
+    fn content_box_is_a_constant_percent_crop() {
         let doc = MockDoc::new(vec![image_page()]).paged();
         let mut r = Reader::new(Box::new(doc)).unwrap();
-        r.set_trim_margins(true);
-        // Seed a known fractional box directly (content_bbox of the blank test PNG
-        // would be a no-op); it must scale proportionally at two raster sizes.
-        r.trim_cache.insert(0, (0.1, 0.2, 0.5, 0.6));
-        assert_eq!(r.page_content_box(0, (1000, 2000)), (100, 400, 500, 1200));
-        assert_eq!(r.page_content_box(0, (2000, 4000)), (200, 800, 1000, 2400));
-        // Trimming off → always the whole raster, regardless of the cached box.
-        r.set_trim_margins(false);
+        r.set_trim(true, 10); // 10% off each edge
+        // 10% off each side → origin at 10%, size 80% of the raster — proportional
+        // at any raster resolution (base or crisp), independent of the section.
+        assert_eq!(r.page_content_box(0, (1000, 2000)), (100, 200, 800, 1600));
+        assert_eq!(r.page_content_box(7, (2000, 4000)), (200, 400, 1600, 3200));
+        // A different section / page yields the *same* fractional box → same width.
+        assert_eq!(
+            r.page_content_box(3, (1000, 2000)),
+            r.page_content_box(99, (1000, 2000)),
+        );
+        // Trimming off (or 0%) → the whole raster.
+        r.set_trim(false, 10);
+        assert_eq!(r.page_content_box(0, (1000, 2000)), (0, 0, 1000, 2000));
+        r.set_trim(true, 0);
         assert_eq!(r.page_content_box(0, (1000, 2000)), (0, 0, 1000, 2000));
     }
 

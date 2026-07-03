@@ -48,7 +48,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.spread = matches!(config.view_mode, ViewMode::TwoPage) && reader.is_paged_image();
     reader.cover_offset = config.cover_offset;
     reader.chapter_lock = config.chapter_lock;
-    reader.set_trim_margins(config.pdf_trim);
+    reader.set_trim(config.pdf_trim, config.pdf_margin_pct);
     let area = f.area();
 
     // Distraction-free hides chrome regardless of the show_* flags.

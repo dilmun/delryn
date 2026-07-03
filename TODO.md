@@ -563,13 +563,17 @@ no premature abstraction, no speculative modes).*
       `+`/`-` zoom, `0` fit-page, `W` cycle fit; **pan reuses nav** — `j/k` pan a
       zoomed page and flip at the vertical edge (new page starts at top/bottom),
       `h/l` pan horizontally. Status shows the zoom/fit label. ✅ **Bigger/sharper
-      pages (user feedback):** (1) **halve the page margin** — `delryn-media::
-      content_bbox` (row/column ink projections, speck-robust) finds each page's
-      content box and returns a box that keeps **half** the page's original
-      whitespace margin (not a tight crop); `place_page` gains a `content` region so
-      fit/zoom/pan operate on it → bigger text but the page keeps breathing room.
-      Cached per section (`page_content_box`, from the raw raster, theme-independent);
-      `config.pdf_trim` (default on), toggled by `x` or Settings → Content → PDF. (2) **Full-bleed paged
+      pages (user feedback):** (1) **margin crop** — `place_page` gains a `content`
+      region so fit/zoom/pan operate on the cropped page → bigger text.
+      `config.pdf_trim` (default on), toggled by `x` or Settings → Content → PDF.
+      ✅ **Now a CONSTANT crop** (branch `feature/pdf-const-margin`, stacked on
+      viewport-raster; user: per-page content-detection made page *widths*
+      inconsistent when flipping): `page_content_box` crops a fixed
+      `config.pdf_margin_pct` % off each edge of every page (default 6 %, Settings →
+      Content → PDF "PDF margin crop %", capped 20 %), so the displayed page width
+      is identical across pages. The old content-aware `delryn-media::content_bbox`
+      (ink projections) + the per-section `trim_cache` are **deleted** (dead once the
+      crop is constant). (2) **Full-bleed paged
       layout** — Center/Spread fill the pane for paged (no extra reading margin — the
       page carries its own halved margin), and a spread's two pages are
       **spine-aligned** (`PageAlign`) keeping the `page_gap` gutter (like EPUB) so
