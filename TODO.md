@@ -588,19 +588,33 @@ no premature abstraction, no speculative modes).*
       later; the base raster is shown until the crisp one is ready, so nothing ever
       blanks or stalls. Width is chosen by the pure `raster_width_for_crispness`
       (≥1 raster px per screen px), bucketed + capped at 4096, size-keyed cache
-      (`(section, width[, policy])`); the margin-trim box is now stored *fractionally*
-      so one box serves any raster resolution. Zero overhead when the base already
-      downscales (the common fit-page case). `crisp_awaiting()` keeps the loop
-      drawing until the crisp page pops in; a failed raster is remembered and not
-      retried. Branch `feature/pdf-viewport-raster`. *Remaining limits: crisp is
-      single-page only (spreads sit at fit-page, already crisp); pan re-transmits
-      the page (**placement-id move** = perf follow-up); wheel still flips.* **Still
-      (the tiled strategy itself):** tiles (rows×cols) → N-up, step → sliding
-      window, start-offset, direction → **manga RTL** (flips gutter + turn keys).
-- [ ] **7.4 Distinct strategies (not presets).** Continuous **scroll across
-      sections** (the long-missing chapter-join, for reflow *and* paged); **grid /
+      (`(section, width, policy)`). ✅ merged to main (e8e11b3). Zero overhead when
+      the base already downscales (the common fit-page case). `crisp_awaiting()`
+      keeps the loop drawing until the crisp page pops in; a failed raster is
+      remembered and not retried. *Remaining limits: crisp is single-page only
+      (spreads sit at fit-page, already crisp); pan re-transmits the page
+      (**placement-id move** = perf follow-up); wheel still flips.* **Still (the
+      tiled strategy itself):** tiles (rows×cols) → N-up, step → sliding window,
+      start-offset, direction → **manga RTL** (flips gutter + turn keys).
+- [~] **7.4 Distinct strategies (not presets).** ✅ **Continuous scroll across
+      sections (reflow)** — branch `feature/reader-continuous-scroll`. The
+      long-missing chapter-join: the anchor section's tail and the following
+      sections' heads share the viewport, so a boundary scrolls seamlessly instead
+      of jumping. Additive by design — `self.section`/`self.scroll` stay the
+      canonical position (now the *anchor* + an unclamped offset), so every
+      per-section machinery (headings/anchors/bookmarks/images/search) is untouched;
+      `scroll_down`/`scroll_up` roll the anchor across boundaries
+      (`app/reader/continuous.rs`, pure roll math unit-tested), and the view draws a
+      combined buffer (`continuous_lines`, following sections wrapped once + cached).
+      `config.continuous` (Settings → Content → Pagination) + a "continuous" status
+      tag; Center + reflow only, overridden by page-mode / chapter-lock / paged.
+      *v1 limits (graceful): gutter ribbon + link cursor follow the anchor section;
+      a following section's figures reserve their space until it becomes the anchor;
+      **paged (PDF) continuous** — vertical page-image stacking through the deck —
+      **still deferred** (a distinct, harder problem).* **Still:** **grid /
       thumbnail browser** as a visual page-jump complementing the TOC sidebar
-      (arrows move selection, Enter opens).
+      (arrows move selection, Enter opens) — note the 7.3 N-up *reading* grid landed
+      on `feature/pdf-nup-manga`; this is the selection-driven *browser*.
 - [ ] **7.5 Deferred behind the interface (cheap once 7.1 exists — build on
       demand, NOT speculatively).** Film strip (current page large + neighbours
       small); Comparison (pin arbitrary non-sequential pages — needs a "pinned

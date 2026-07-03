@@ -19,6 +19,7 @@ use super::{CACHE_CAP, Focus};
 
 // Separable reader concerns; each contributes an `impl Reader` block and reaches
 // the core's helpers (find_line, fetch_blocks, …) via the parent module.
+mod continuous;
 mod images;
 pub use images::ImageGeom;
 mod page_view;
@@ -75,6 +76,10 @@ pub struct Reader {
     /// Paginated reading (set each render from config): vertical nav flips whole
     /// pages snapped to page boundaries instead of scrolling line by line.
     pub paged: bool,
+    /// Continuous scroll across sections (set each render): the anchor section's
+    /// tail and the following sections' heads share the viewport, so a chapter
+    /// boundary scrolls seamlessly. Reflow-only; inert for paged/page-mode.
+    pub continuous: bool,
     /// A two-page paged-image spread is on screen (set each render): a page flip
     /// turns a whole leaf (2 sections) so consecutive spreads don't overlap.
     pub spread: bool,
@@ -102,6 +107,12 @@ pub struct Reader {
     trim_pct: u16,
     /// The inputs the current `lines` were wrapped against; a change re-wraps.
     wrapped: WrapKey,
+    /// Continuous scroll: cached wrapped lines of the sections *following* the
+    /// anchor, assembled into the render buffer so a chapter boundary scrolls
+    /// seamlessly. Keyed by section; invalidated wholesale when `cont_key` (the
+    /// wrap inputs) changes. Empty/unused outside continuous mode.
+    cont_cache: HashMap<usize, Vec<DisplayLine>>,
+    cont_key: WrapKey,
     /// Inline-image lifecycle (built protocols, row estimates, in-flight builds).
     images: ImageState,
     /// Paged-image (PDF) page theming (themer + themed-PNG cache + active policy).
@@ -200,6 +211,7 @@ impl Reader {
             tidy_spacing: true,
             chapter_lock: false,
             paged: false,
+            continuous: false,
             spread: false,
             cover_offset: false,
             pdf_targets: Vec::new(),
@@ -209,6 +221,8 @@ impl Reader {
             trim_margins: true,
             trim_pct: 6,
             wrapped: WrapKey::invalid(),
+            cont_cache: HashMap::new(),
+            cont_key: WrapKey::invalid(),
             images: ImageState::default(),
             pages: PageThemeState::default(),
             crisp,
@@ -374,26 +388,33 @@ impl Reader {
             images_key: self.images.images_key,
         };
         if key != self.wrapped {
-            self.lines = wrap_blocks(
-                &self.blocks,
-                &WrapOpts {
-                    width,
-                    code_theme: &self.code_theme,
-                    line_spacing: self.line_spacing,
-                    para_spacing: self.paragraph_spacing,
-                    code_wrap: self.code_wrap,
-                    code_hscroll: self.code_hscroll,
-                    table_wrap: self.table_wrap,
-                    justify: self.justify,
-                    tidy_spacing: self.tidy_spacing,
-                },
-                &self.images.rows_estimate,
-            );
+            self.lines = self.wrap_at(&self.blocks, width);
             self.wrapped = key;
             self.recompute_heading_lines();
             self.recompute_anchors();
             self.recompute_bookmark_lines();
         }
+    }
+
+    /// Wrap `blocks` at `width` under the reader's current typography settings —
+    /// the one place the [`WrapOpts`] are assembled, shared by the anchor section
+    /// ([`ensure_wrapped`](Self::ensure_wrapped)) and the continuous-scroll buffer.
+    fn wrap_at(&self, blocks: &[Block], width: usize) -> Vec<DisplayLine> {
+        wrap_blocks(
+            blocks,
+            &WrapOpts {
+                width,
+                code_theme: &self.code_theme,
+                line_spacing: self.line_spacing,
+                para_spacing: self.paragraph_spacing,
+                code_wrap: self.code_wrap,
+                code_hscroll: self.code_hscroll,
+                table_wrap: self.table_wrap,
+                justify: self.justify,
+                tidy_spacing: self.tidy_spacing,
+            },
+            &self.images.rows_estimate,
+        )
     }
 
     /// Set the open book's bookmarks (`(section, quote)`), then resolve the
@@ -843,6 +864,12 @@ impl Reader {
     }
 
     pub fn clamp_scroll(&mut self) {
+        // Continuous mode mid-book: the anchor's offset intentionally runs past the
+        // section's last page (the next section fills the tail), so don't clamp it —
+        // only the final section has a hard bottom.
+        if self.continuous_active() && self.section + 1 < self.doc.section_count() {
+            return;
+        }
         let m = self.max_scroll();
         if self.scroll > m {
             self.scroll = m;
@@ -891,8 +918,14 @@ impl Reader {
         moved
     }
 
-    /// Scroll down, flowing into the next chapter at the bottom edge.
+    /// Scroll down, flowing into the next chapter at the bottom edge. In continuous
+    /// mode the anchor rolls seamlessly across the boundary (tail + next head share
+    /// the viewport); otherwise the next chapter is loaded fresh at the top.
     pub fn scroll_down(&mut self, n: usize) {
+        if self.continuous_active() {
+            self.continuous_scroll_down(n);
+            return;
+        }
         let max = self.max_scroll();
         if self.scroll < max {
             self.scroll = (self.scroll + n).min(max);
@@ -902,8 +935,12 @@ impl Reader {
     }
 
     /// Scroll up, flowing into the previous chapter at the top edge (unless
-    /// chapter-locked).
+    /// chapter-locked). Continuous mode rolls the anchor back across the boundary.
     pub fn scroll_up(&mut self, n: usize) {
+        if self.continuous_active() {
+            self.continuous_scroll_up(n);
+            return;
+        }
         if self.scroll > 0 {
             self.scroll = self.scroll.saturating_sub(n);
         } else if !self.chapter_lock && self.section > 0 {
@@ -1716,6 +1753,69 @@ mod tests {
         r.last_measure = 40;
         r.ensure_wrapped(40);
         r
+    }
+
+    /// A multi-section reflow reader with continuous scroll on (anchor = section 0,
+    /// wrapped at width 40). Each section has identical multi-paragraph content, so
+    /// its wrapped line count is stable across re-wraps.
+    fn continuous_reader(sections: usize) -> Reader {
+        let secs: Vec<Vec<Block>> = (0..sections)
+            .map(|_| vec![para(), para(), para()])
+            .collect();
+        let mut r = Reader::new(Box::new(MockDoc::new(secs))).unwrap();
+        r.continuous = true;
+        r.last_measure = 40;
+        r.ensure_wrapped(40);
+        r
+    }
+
+    #[test]
+    fn continuous_scroll_down_rolls_the_anchor_across_a_boundary() {
+        let mut r = continuous_reader(3);
+        assert!(r.continuous_active());
+        let l0 = r.lines.len();
+        assert!(l0 > 2, "a multi-paragraph section wraps to several lines");
+        // Sit near the section end, then scroll past it: the anchor rolls to the
+        // next section keeping the leftover offset.
+        r.scroll = l0 - 1;
+        r.scroll_down(3);
+        assert_eq!(r.section, 1, "rolled into the next section");
+        assert_eq!(r.scroll, 2, "kept the leftover offset past the boundary");
+    }
+
+    #[test]
+    fn continuous_scroll_up_rolls_back_across_a_boundary() {
+        let mut r = continuous_reader(3);
+        let l0 = r.lines.len();
+        r.load(1); // anchor at section 1, top
+        assert_eq!((r.section, r.scroll), (1, 0));
+        r.scroll_up(2);
+        assert_eq!(r.section, 0, "rolled back to the previous section");
+        assert_eq!(r.scroll, l0 - 2, "landed two lines up from its top");
+    }
+
+    #[test]
+    fn continuous_scroll_stops_at_the_book_end() {
+        let mut r = continuous_reader(2);
+        r.load(1); // the last section
+        r.ensure_wrapped(40);
+        let max = r.max_scroll();
+        r.scroll_down(9999);
+        assert_eq!(r.section, 1, "there's no section past the last");
+        assert_eq!(
+            r.scroll, max,
+            "clamped to the final page, no scrolling into the void"
+        );
+    }
+
+    #[test]
+    fn continuous_is_inert_when_chapter_locked_or_paged() {
+        let mut r = continuous_reader(3);
+        r.chapter_lock = true;
+        assert!(!r.continuous_active(), "chapter lock overrides continuous");
+        r.chapter_lock = false;
+        r.paged = true;
+        assert!(!r.continuous_active(), "page mode overrides continuous");
     }
 
     fn table() -> Block {
