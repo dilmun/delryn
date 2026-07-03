@@ -276,6 +276,31 @@ impl ImageMode {
 }
 cyclic_wrap!(ImageMode, [Auto => "auto", InvertBackgrounds => "invert", Faithful => "faithful"]);
 
+/// Reading direction for paged (PDF / comic) spreads: left-to-right (default) or
+/// right-to-left (manga / manhua). In RTL a two-page spread swaps the facing pages
+/// so they read right-to-left; page turns still advance forward through the book.
+/// Reflowable text is unaffected (it always reads left-to-right).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReadingDirection {
+    #[default]
+    Ltr,
+    Rtl,
+}
+
+impl ReadingDirection {
+    pub fn from_label(s: &str) -> ReadingDirection {
+        match s {
+            "rtl" => ReadingDirection::Rtl,
+            _ => ReadingDirection::Ltr,
+        }
+    }
+    /// Whether pages read right-to-left (manga).
+    pub fn is_rtl(self) -> bool {
+        matches!(self, ReadingDirection::Rtl)
+    }
+}
+cyclic_wrap!(ReadingDirection, [Ltr => "ltr", Rtl => "rtl"]);
+
 // `serde` `with`-modules for the persisted enums — each stores its `label()`
 // string. `ReadingMode` is intentionally absent: it is a derived/UI-only state,
 // never written to disk.
@@ -283,6 +308,7 @@ label_serde!(view_mode_serde, ViewMode);
 label_serde!(lib_layout_serde, LibLayout);
 label_serde!(grid_size_serde, GridSize);
 label_serde!(image_mode_serde, ImageMode);
+label_serde!(reading_direction_serde, ReadingDirection);
 
 #[cfg(test)]
 mod tests {

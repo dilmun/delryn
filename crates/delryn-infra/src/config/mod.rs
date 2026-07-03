@@ -10,7 +10,7 @@
 
 mod enums;
 
-pub use enums::{GridSize, ImageMode, LibLayout, ReadingMode, ViewMode};
+pub use enums::{GridSize, ImageMode, LibLayout, ReadingDirection, ReadingMode, ViewMode};
 
 use serde::{Deserialize, Serialize};
 
@@ -129,6 +129,10 @@ pub struct Config {
     /// In two-page mode, show the first page alone (like a book cover), then pair
     /// (2,3), (4,5)… so facing pages line up as in a physical book.
     pub cover_offset: bool,
+    /// Reading direction for paged spreads: left-to-right, or right-to-left for
+    /// manga / manhua (the facing pages swap sides). Reflowable text is unaffected.
+    #[serde(with = "enums::reading_direction_serde")]
+    pub reading_direction: ReadingDirection,
     /// Trim baked-in whitespace margins from PDF pages so the content fills the
     /// viewport (bigger text). Toggle with `x` in the reader.
     pub pdf_trim: bool,
@@ -210,6 +214,7 @@ impl Default for Config {
             side_padding: 6,
             page_gap: 5,
             cover_offset: false,
+            reading_direction: ReadingDirection::default(),
             pdf_trim: true,
             pdf_margin_pct: 6,
             line_spacing: 0,
