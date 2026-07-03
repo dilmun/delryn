@@ -11,7 +11,9 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
-use crate::app::{App, Focus, ImageGeom, PageTarget, PageView, PanRoom, Reader, place_page};
+use crate::app::{
+    App, Focus, ImageGeom, PageTarget, PageView, PanRoom, Reader, Viewport, place_page,
+};
 use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
 use crate::media::ImageBuilder;
@@ -45,6 +47,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.spread = matches!(config.view_mode, ViewMode::TwoPage) && reader.is_paged_image();
     reader.cover_offset = config.cover_offset;
     reader.chapter_lock = config.chapter_lock;
+    reader.set_trim_margins(config.pdf_trim);
     let area = f.area();
 
     // Distraction-free hides chrome regardless of the show_* flags.
@@ -305,10 +308,22 @@ fn draw_gutter(f: &mut Frame, text_area: Rect, reader: &Reader, top: usize, them
     );
 }
 
-/// Compute and store the PDF page placements for this frame: aspect-fit + centre
-/// each (section, column-area), and set the look-ahead window. The [`PageDeck`]
-/// reads these after the frame and drives the kitty transmit/placement escapes;
-/// the columns themselves are left empty so the placed images show through.
+/// Where a page sits within its area — centred (single page), or hugging the
+/// spine (a spread's two pages meet in the middle so there's no wasted gutter).
+#[derive(Clone, Copy)]
+enum PageAlign {
+    Center,
+    /// Align to the right edge of the area (a spread's left page).
+    Right,
+    /// Align to the left edge of the area (a spread's right page).
+    Left,
+}
+
+/// Compute and store the PDF page placements for this frame: fit + place each
+/// (section, column-area) — margin-trimmed, zoom/pan-aware for a single page,
+/// spine-aligned for a spread. The [`PageDeck`] reads `pdf_targets` after the
+/// frame and drives the kitty transmit/placement escapes; the columns are left
+/// empty so the placed images show through.
 fn capture_pdf_targets(
     reader: &mut Reader,
     images: Images,
@@ -317,7 +332,7 @@ fn capture_pdf_targets(
 ) {
     let mut targets = Vec::new();
     // Zoom / pan apply only to a single-page view; a spread shows each page at
-    // fit-page (a default, un-zoomed view).
+    // fit-page (a default, un-zoomed view), its two pages hugging the spine.
     let single = areas.len() == 1;
     let mut room = PanRoom::default();
     let mut step = (0.0, 0.0);
@@ -325,27 +340,48 @@ fn capture_pdf_targets(
         // Adapt the visible + look-ahead pages to the theme off-thread; `page_png`
         // (below, and the deck's transmit) then serves the themed PNGs.
         reader.sync_pages(policy);
-        for &(section, area) in areas {
+        let fs = picker.font_size();
+        for (i, &(section, area)) in areas.iter().enumerate() {
+            // Dimensions from the themed PNG (header-only, cheap); the raster must
+            // be ready to place — else emit no targets so the deck holds the old
+            // page(s) up rather than flashing a half spread.
+            let Some((w, h)) = reader
+                .page_png(section)
+                .and_then(|p| crate::media::image_dimensions(&p))
+            else {
+                targets.clear();
+                break;
+            };
             let view = if single {
                 reader.page_view
             } else {
                 PageView::default()
             };
-            match place_pdf_page(reader, section, area, picker, &view) {
-                Some((target, r, st)) => {
-                    targets.push(target);
-                    if single {
-                        room = r;
-                        step = st;
-                    }
-                }
-                // A page isn't rasterized yet: emit no targets at all so the deck
-                // holds the previous page(s) up rather than showing a half spread
-                // (which would flicker the ready page when the other lands).
-                None => {
-                    targets.clear();
-                    break;
-                }
+            // Trim the margins on both single pages and spreads.
+            let content = reader.page_content_box(section, (w, h));
+            let vp = Viewport {
+                cols: area.width,
+                rows: area.height,
+                cell_w: fs.width,
+                cell_h: fs.height,
+            };
+            let p = place_page((w, h), content, vp, &view);
+            let align = if single {
+                PageAlign::Center
+            } else if i == 0 {
+                PageAlign::Right // left page hugs the spine on its right
+            } else {
+                PageAlign::Left // right page hugs the spine on its left
+            };
+            let (x, y) = align_page(area, p.cols, p.rows, align);
+            targets.push(PageTarget {
+                section,
+                rect: Rect::new(x, y, p.cols, p.rows),
+                crop: p.crop,
+            });
+            if single {
+                room = p.room;
+                step = (p.step_x, p.step_y);
             }
         }
     }
@@ -357,28 +393,16 @@ fn capture_pdf_targets(
     reader.pdf_targets = targets;
 }
 
-/// Place `section`'s page in `area` under `view`: aspect-fit + centre at fit-page,
-/// or a centred crop of the raster when zoomed/panned. Returns the deck target
-/// plus the pan room + step. `None` until the page is loaded.
-fn place_pdf_page(
-    reader: &Reader,
-    section: usize,
-    area: Rect,
-    picker: &Picker,
-    view: &PageView,
-) -> Option<(PageTarget, PanRoom, (f32, f32))> {
-    let png = reader.page_png(section)?;
-    let (w, h) = crate::media::image_dimensions(&png)?;
-    let fs = picker.font_size();
-    let p = place_page(w, h, fs.width, fs.height, area.width, area.height, view);
-    let x = area.x + area.width.saturating_sub(p.cols) / 2;
-    let y = area.y + area.height.saturating_sub(p.rows) / 2;
-    let target = PageTarget {
-        section,
-        rect: Rect::new(x, y, p.cols, p.rows),
-        crop: p.crop,
+/// Position a `cols`×`rows` page within `area`, vertically centred and
+/// horizontally aligned per [`PageAlign`].
+fn align_page(area: Rect, cols: u16, rows: u16, align: PageAlign) -> (u16, u16) {
+    let y = area.y + area.height.saturating_sub(rows) / 2;
+    let x = match align {
+        PageAlign::Center => area.x + area.width.saturating_sub(cols) / 2,
+        PageAlign::Right => area.x + area.width.saturating_sub(cols),
+        PageAlign::Left => area.x,
     };
-    Some((target, p.room, (p.step_x, p.step_y)))
+    (x, y)
 }
 
 /// Draw the ready figure images that intersect `[top, top+height)` of the line

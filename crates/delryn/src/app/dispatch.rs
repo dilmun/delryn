@@ -626,6 +626,20 @@ impl App {
                     reader.flash = Some("zoom needs single-page view (v)".into());
                 }
             }
+            Action::ToggleTrim => {
+                if reader.is_paged_image() {
+                    self.config.pdf_trim = !self.config.pdf_trim;
+                    reader.flash = Some(
+                        if self.config.pdf_trim {
+                            "trim margins: on"
+                        } else {
+                            "trim margins: off"
+                        }
+                        .into(),
+                    );
+                    save = true;
+                }
+            }
             Action::HistBack => reader.history_back(),
             Action::HistForward => reader.history_forward(),
             Action::Search => reader.start_search(),

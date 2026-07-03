@@ -562,14 +562,26 @@ no premature abstraction, no speculative modes).*
       implementation (spread pages pass a default view). Keys (single-page paged):
       `+`/`-` zoom, `0` fit-page, `W` cycle fit; **pan reuses nav** — `j/k` pan a
       zoomed page and flip at the vertical edge (new page starts at top/bottom),
-      `h/l` pan horizontally. Status shows the zoom/fit label. 8 tests. *Limits
-      (honest): v1 crops the existing 1400 px raster — crisp to ~2×, softens past
-      that (**re-raster-at-DPI** = the crispness follow-up, needs a size-keyed page
-      cache); pan re-transmits the page (deck delete+retransmit — a **placement-id
-      move** is the perf follow-up); zoom is single-page only (not spread); mouse
-      wheel still flips (doesn't pan).* **Still (the tiled strategy itself):** tiles
-      (rows×cols) → N-up, step → sliding window, start-offset, direction → **manga
-      RTL** (flips gutter + turn keys). Those are the remaining presets.
+      `h/l` pan horizontally. Status shows the zoom/fit label. ✅ **Bigger/sharper
+      pages (user feedback):** (1) **halve the page margin** — `delryn-media::
+      content_bbox` (row/column ink projections, speck-robust) finds each page's
+      content box and returns a box that keeps **half** the page's original
+      whitespace margin (not a tight crop); `place_page` gains a `content` region so
+      fit/zoom/pan operate on it → bigger text but the page keeps breathing room.
+      Cached per section (`page_content_box`, from the raw raster, theme-independent);
+      `config.pdf_trim` (default on), toggled by `x` or Settings → Content → PDF. (2) **Full-bleed paged
+      layout** — Center/Spread fill the pane for paged (no extra reading margin — the
+      page carries its own halved margin), and a spread's two pages are
+      **spine-aligned** (`PageAlign`) keeping the `page_gap` gutter (like EPUB) so
+      they don't touch.
+      (3) **Raster 1400→2000 px** (`PAGE_RASTER_WIDTH`) to offset the trim's
+      upscaling. 12 tests. *Remaining limits: 2000 px is still fixed — the scalable
+      crispness fix is a **viewport-matched re-raster** (size-keyed page cache),
+      deferred; pan re-transmits the page (**placement-id move** = perf follow-up);
+      zoom single-page only; wheel still flips; trim decode is lazy on the main
+      thread (cached) — move to the themer thread if it hitches.* **Still (the tiled
+      strategy itself):** tiles (rows×cols) → N-up, step → sliding window,
+      start-offset, direction → **manga RTL** (flips gutter + turn keys).
 - [ ] **7.4 Distinct strategies (not presets).** Continuous **scroll across
       sections** (the long-missing chapter-join, for reflow *and* paged); **grid /
       thumbnail browser** as a visual page-jump complementing the TOC sidebar
