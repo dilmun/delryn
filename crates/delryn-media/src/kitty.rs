@@ -84,14 +84,30 @@ pub fn transmit_file_seq(id: u32, path: &str) -> String {
 /// Kitty: display the already-transmitted image `id` at terminal cell
 /// (`col`,`row`) (1-based), scaled to fill `cols`×`rows` cells (`a=p`).
 ///
+/// `crop` is an optional source rectangle `(x, y, w, h)` **in image pixels**: only
+/// that region of the transmitted raster is shown (scaled to the `cols`×`rows`
+/// box). This is how page zoom/pan places a sub-window of the full page raster.
+/// `None` shows the whole image (byte-identical to the un-cropped placement).
+///
 /// Deliberately **no placement id** (`p=`): placements key on the
 /// (image-id, placement-id) pair, so two images sharing a placement id make the
 /// second delete the first (the two-page spread's left page went blank). Without
 /// `p=`, each image gets its own placement and they coexist — the approach the
 /// reference kitty PDF viewer (`termpdf.py`) uses. The cursor is saved/restored
 /// (`\x1b7`/`\x1b8`) so the surrounding TUI is undisturbed.
-pub fn place_image_seq(id: u32, col: u16, row: u16, cols: u16, rows: u16) -> String {
-    format!("\x1b7\x1b[{row};{col}H\x1b_Ga=p,i={id},c={cols},r={rows},q=2\x1b\\\x1b8")
+pub fn place_image_seq(
+    id: u32,
+    col: u16,
+    row: u16,
+    cols: u16,
+    rows: u16,
+    crop: Option<(u32, u32, u32, u32)>,
+) -> String {
+    let src = match crop {
+        Some((x, y, w, h)) => format!(",x={x},y={y},w={w},h={h}"),
+        None => String::new(),
+    };
+    format!("\x1b7\x1b[{row};{col}H\x1b_Ga=p,i={id},c={cols},r={rows}{src},q=2\x1b\\\x1b8")
 }
 
 #[cfg(test)]

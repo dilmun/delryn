@@ -67,6 +67,12 @@ pub enum Action {
     PrevAnchor,
     /// Dismiss the link cursor.
     ClearAnchor,
+    /// Zoom the paged (PDF) page in / out / reset to fit-page.
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    /// Cycle the paged fit mode (page → width → height).
+    FitCycle,
 }
 
 pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
@@ -148,6 +154,12 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('c') => Action::ToggleChapterLock,
         KeyCode::Char('J') => Action::NextChapter,
         KeyCode::Char('K') => Action::PrevChapter,
+        // Paged (PDF) zoom & fit. `0` only reaches here as a lone key (a leading
+        // `0` isn't a count digit); with a pending count it's consumed above.
+        KeyCode::Char('+') | KeyCode::Char('=') => Action::ZoomIn,
+        KeyCode::Char('-') => Action::ZoomOut,
+        KeyCode::Char('0') => Action::ZoomReset,
+        KeyCode::Char('W') => Action::FitCycle,
         _ => Action::None,
     }
 }

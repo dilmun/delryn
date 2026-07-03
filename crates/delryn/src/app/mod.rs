@@ -52,7 +52,8 @@ pub use editor::{
 };
 
 mod reader;
-pub use reader::{ImageGeom, Reader};
+pub use page_deck::PageTarget;
+pub use reader::{ImageGeom, PageView, PanRoom, Reader, place_page};
 
 mod image_view;
 pub use image_view::{Figure, ImageViewer};
