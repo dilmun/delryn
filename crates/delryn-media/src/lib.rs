@@ -9,6 +9,7 @@ mod kitty;
 mod page;
 mod recolor;
 mod sizing;
+mod trim;
 
 pub use delryn_infra::config::ImageMode;
 
@@ -25,3 +26,4 @@ pub use recolor::{
     theme_page_png,
 };
 pub use sizing::{FitBox, SizeHint, SizeSpec, target_cells};
+pub use trim::content_bbox;
