@@ -44,6 +44,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.justify = config.justify;
     reader.tidy_spacing = config.tidy_spacing;
     reader.paged = config.paged;
+    // Continuous cross-section scroll is a single-column (Center) reflow mode; the
+    // reader further gates it on reflowable + not-paged + not-chapter-locked.
+    reader.continuous = config.continuous && matches!(config.view_mode, ViewMode::Center);
     reader.spread = matches!(config.view_mode, ViewMode::TwoPage) && reader.is_paged_image();
     reader.cover_offset = config.cover_offset;
     reader.chapter_lock = config.chapter_lock;
@@ -227,12 +230,18 @@ fn render_content(
     reader.clamp_scroll();
 
     // Draw each text column: the wrapped-line slice, then its bookmark ribbon
-    // (only where the column has margin for it).
+    // (only where the column has margin for it). In continuous mode the single
+    // column draws the cross-section render buffer (anchor tail + following heads)
+    // instead of one section's slice.
     for placement in &plan.placements {
         let Placement::Text(col) = placement else {
             continue;
         };
-        let lines = visible_lines(reader, col.scroll, col.area.height as usize, theme);
+        let lines = if reader.continuous_active() {
+            continuous_visible_lines(reader, col.area.height as usize, theme)
+        } else {
+            visible_lines(reader, col.scroll, col.area.height as usize, theme)
+        };
         f.render_widget(
             Paragraph::new(Text::from(lines)).style(theme.text_style()),
             col.area,
@@ -457,6 +466,26 @@ fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize) {
 
         f.render_widget(SlicedImage::new(&plan.proto, SignedPosition { x, y }), area);
     }
+}
+
+/// The rendered lines for continuous mode: the cross-section buffer (anchor tail +
+/// following sections' heads) styled like [`visible_lines`]. The link-cursor
+/// highlight and search matches follow the anchor section — matches are re-found by
+/// text so they still light up in following sections, but the cursor is anchor-only.
+fn continuous_visible_lines(reader: &mut Reader, count: usize, theme: Theme) -> Vec<Line<'static>> {
+    let scroll = reader.scroll;
+    let buf = reader.continuous_lines(count);
+    let matcher = reader.search.matcher.as_ref().filter(|m| !m.is_empty());
+    let sel = reader.selected_anchor();
+    buf.iter()
+        .enumerate()
+        .map(|(off, l)| {
+            let cursor = sel
+                .filter(|h| h.line == scroll + off)
+                .map(|h| (h.start, h.end));
+            to_ratatui(l, theme, matcher, cursor)
+        })
+        .collect()
 }
 
 fn visible_lines(reader: &Reader, start: usize, count: usize, theme: Theme) -> Vec<Line<'static>> {

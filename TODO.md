@@ -582,10 +582,25 @@ no premature abstraction, no speculative modes).*
       thread (cached) — move to the themer thread if it hitches.* **Still (the tiled
       strategy itself):** tiles (rows×cols) → N-up, step → sliding window,
       start-offset, direction → **manga RTL** (flips gutter + turn keys).
-- [ ] **7.4 Distinct strategies (not presets).** Continuous **scroll across
-      sections** (the long-missing chapter-join, for reflow *and* paged); **grid /
+- [~] **7.4 Distinct strategies (not presets).** ✅ **Continuous scroll across
+      sections (reflow)** — branch `feature/reader-continuous-scroll`. The
+      long-missing chapter-join: the anchor section's tail and the following
+      sections' heads share the viewport, so a boundary scrolls seamlessly instead
+      of jumping. Additive by design — `self.section`/`self.scroll` stay the
+      canonical position (now the *anchor* + an unclamped offset), so every
+      per-section machinery (headings/anchors/bookmarks/images/search) is untouched;
+      `scroll_down`/`scroll_up` roll the anchor across boundaries
+      (`app/reader/continuous.rs`, pure roll math unit-tested), and the view draws a
+      combined buffer (`continuous_lines`, following sections wrapped once + cached).
+      `config.continuous` (Settings → Content → Pagination) + a "continuous" status
+      tag; Center + reflow only, overridden by page-mode / chapter-lock / paged.
+      *v1 limits (graceful): gutter ribbon + link cursor follow the anchor section;
+      a following section's figures reserve their space until it becomes the anchor;
+      **paged (PDF) continuous** — vertical page-image stacking through the deck —
+      **still deferred** (a distinct, harder problem).* **Still:** **grid /
       thumbnail browser** as a visual page-jump complementing the TOC sidebar
-      (arrows move selection, Enter opens).
+      (arrows move selection, Enter opens) — note the 7.3 N-up *reading* grid landed
+      on `feature/pdf-nup-manga`; this is the selection-driven *browser*.
 - [ ] **7.5 Deferred behind the interface (cheap once 7.1 exists — build on
       demand, NOT speculatively).** Film strip (current page large + neighbours
       small); Comparison (pin arbitrary non-sequential pages — needs a "pinned
