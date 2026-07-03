@@ -10,10 +10,13 @@ pub(super) struct CenterStrategy;
 
 impl LayoutStrategy for CenterStrategy {
     fn plan(&self, ctx: &LayoutCtx) -> LayoutPlan {
-        // A page image fills the pane edge-to-edge (it carries its own margins,
-        // trimmed at placement); reflowed text keeps its reading margin.
+        // Reflowed text keeps its full reading margin. A page image (which carries
+        // its own, trimmed, margins) uses half that margin on each edge — big, but
+        // not edge-to-edge.
         let measure = if ctx.paged {
-            ctx.body.width.max(1)
+            let full_pad = ((ctx.body.width as u32 * ctx.config.side_padding as u32 / 100) as u16)
+                .max(GUTTER_COLS);
+            ctx.body.width.saturating_sub(full_pad).max(1)
         } else {
             measure_for(ctx.body.width, ctx.config.side_padding)
         };
