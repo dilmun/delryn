@@ -47,6 +47,7 @@ pub enum SettingItem {
     Continuous,
     ChapterLock,
     TrimMargins,
+    PdfMargin,
     Mouse,
     LibLayout,
     GridSize,
@@ -87,6 +88,7 @@ impl SettingItem {
             SettingItem::Continuous => "Continuous scroll",
             SettingItem::ChapterLock => "Chapter lock",
             SettingItem::TrimMargins => "Trim PDF margins",
+            SettingItem::PdfMargin => "PDF margin crop %",
             SettingItem::Mouse => "Mouse",
             SettingItem::LibLayout => "Layout",
             SettingItem::GridSize => "Cover size",
@@ -136,6 +138,7 @@ impl SettingItem {
             SettingItem::Continuous => onoff(c.continuous),
             SettingItem::ChapterLock => onoff(c.chapter_lock),
             SettingItem::TrimMargins => onoff(c.pdf_trim),
+            SettingItem::PdfMargin => format!("{}%", c.pdf_margin_pct),
             SettingItem::Mouse => onoff(c.mouse_enabled),
             SettingItem::LibLayout => c.library_layout.label().to_string(),
             SettingItem::GridSize => c.library_grid_size.label().to_string(),
@@ -218,6 +221,7 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
                     I(ChapterLock),
                     S("PDF"),
                     I(TrimMargins),
+                    I(PdfMargin),
                 ],
             ),
             tab("Input", vec![S("Mouse"), I(Mouse)]),
@@ -411,6 +415,11 @@ impl App {
             SettingItem::Continuous => c.continuous = !c.continuous,
             SettingItem::ChapterLock => c.chapter_lock = !c.chapter_lock,
             SettingItem::TrimMargins => c.pdf_trim = !c.pdf_trim,
+            SettingItem::PdfMargin => {
+                use crate::config::MAX_PDF_MARGIN_PCT;
+                c.pdf_margin_pct =
+                    (c.pdf_margin_pct as i32 + delta).clamp(0, MAX_PDF_MARGIN_PCT as i32) as u16
+            }
             SettingItem::Mouse => c.mouse_enabled = !c.mouse_enabled,
             SettingItem::LibLayout => {
                 c.library_layout = if delta > 0 {

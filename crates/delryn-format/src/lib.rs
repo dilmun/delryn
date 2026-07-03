@@ -30,6 +30,20 @@ pub trait SectionLoader: Send {
     fn load(&mut self, index: usize) -> Vec<Block>;
 }
 
+/// A self-contained, `Send` handle that re-rasterizes a paged (PDF) page to PNG
+/// bytes at an arbitrary pixel width, off the main thread. The base section
+/// loader rasterizes each page once at a generous fixed width for immediate
+/// display; this seam lets the reader render a *viewport-matched* raster on top
+/// (crisper when a page is zoomed in or shown on a large/hi-DPI viewport) without
+/// coupling the format-agnostic section loader to pixels. Only paged formats
+/// provide one (see [`Document::page_rasterizer`]); it reopens its own document
+/// handle, independent of the foreground `Document`.
+pub trait PageRasterizer: Send {
+    /// Rasterize page `index` to PNG bytes at `width` px (aspect preserved).
+    /// `None` when the page is out of range or rendering/encoding fails.
+    fn rasterize(&mut self, index: usize, width: u32) -> Option<Vec<u8>>;
+}
+
 /// The interface the layout + view layers render against.
 pub trait Document {
     fn metadata(&self) -> &Metadata;
@@ -38,6 +52,12 @@ pub trait Document {
     fn outline(&self) -> &[OutlineItem];
     /// A background loader for this document (opens its own handle).
     fn loader(&self) -> Box<dyn SectionLoader>;
+    /// A background page rasterizer for a paged (PDF) document, for rendering a
+    /// page at a viewport-matched width on top of the base raster. `None` for
+    /// reflowable formats (no fixed page image to re-render). Opens its own handle.
+    fn page_rasterizer(&self) -> Option<Box<dyn PageRasterizer>> {
+        None
+    }
     /// Number of ordered sections (spine length).
     fn section_count(&self) -> usize;
     /// Spine index to open at on first read — the start of the body matter
