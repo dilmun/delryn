@@ -229,6 +229,26 @@ pub fn place_page(
     }
 }
 
+/// The raster width at which the base placement `p` would map ~1 raster pixel per
+/// screen pixel — the width a crisp re-raster should target. `base_dims` is the
+/// base raster's size; `vp` the viewport. When the placement *downscales* the base
+/// (the common fit-page case) this is ≤ `base_dims.0`, so no crisp raster is
+/// warranted; it exceeds the base only when the page is zoomed / shown large enough
+/// that the base upscales. Pure — unit-tested below.
+pub fn raster_width_for_crispness(p: &PagePlacement, base_dims: (u32, u32), vp: Viewport) -> u32 {
+    // The source window the placement samples (the whole base raster when there's
+    // no crop), and the screen pixels it's scaled into.
+    let (win_w, win_h) = match p.crop {
+        Some((_, _, w, h)) => (w.max(1), h.max(1)),
+        None => (base_dims.0.max(1), base_dims.1.max(1)),
+    };
+    let dest_w = p.cols as u32 * vp.cell_w.max(1) as u32;
+    let dest_h = p.rows as u32 * vp.cell_h.max(1) as u32;
+    let upscale = (dest_w as f32 / win_w as f32).max(dest_h as f32 / win_h as f32);
+    // Only an *upscale* (>1) needs more raster resolution; a downscale keeps base.
+    (base_dims.0 as f32 * upscale.max(1.0)).ceil() as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,5 +376,28 @@ mod tests {
             v.zoom_out();
         }
         assert_eq!(v.zoom, 1.0);
+    }
+
+    #[test]
+    fn fit_page_downscale_wants_no_more_than_base() {
+        // A tall page fit into a smaller viewport downscales → base is already
+        // crisp, so the wanted width doesn't exceed the base width.
+        let p = place(&PageView::default());
+        let want = raster_width_for_crispness(&p, (IMG_W, IMG_H), vp());
+        assert!(want <= IMG_W, "downscaling keeps the base width: {want}");
+    }
+
+    #[test]
+    fn zooming_in_wants_a_larger_raster() {
+        // Zoom far enough that a small crop is blown up past the base resolution
+        // (with this 1000 px base and small viewport the page still downscales at
+        // low zoom) → the base upscales, so a crisper (wider) raster is wanted.
+        let mut v = PageView::default();
+        for _ in 0..6 {
+            v.zoom_in();
+        }
+        let p = place(&v);
+        let want = raster_width_for_crispness(&p, (IMG_W, IMG_H), vp());
+        assert!(want > IMG_W, "a zoomed page wants a wider raster: {want}");
     }
 }

@@ -102,7 +102,10 @@ mod tests {
         }
         let (x, y, w, h) = content_bbox(&png_of(img)).expect("content found");
         // Each 60px margin is halved (~30px kept) — not removed, not tight.
-        assert!(x > 0 && x < 60, "left margin halved, not removed/tight: {x}");
+        assert!(
+            x > 0 && x < 60,
+            "left margin halved, not removed/tight: {x}"
+        );
         assert!(y > 0 && y < 60, "top margin halved: {y}");
         // The content itself stays fully inside the box.
         assert!(x <= 60 && x + w >= 140, "content preserved horizontally");

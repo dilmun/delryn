@@ -22,13 +22,23 @@ use super::{CACHE_CAP, Focus};
 mod images;
 pub use images::ImageGeom;
 mod page_view;
-pub use page_view::{PageView, PanRoom, Viewport, place_page};
+pub use page_view::{PageView, PanRoom, Viewport, place_page, raster_width_for_crispness};
 mod pages;
+mod raster;
 mod search;
 mod sidebar;
 mod state;
 
-use state::{ImageState, NavState, PageThemeState, Pos, SearchState, SectionCache, WrapKey};
+use state::{
+    ImageState, NavState, PageRasterState, PageThemeState, Pos, SearchState, SectionCache, WrapKey,
+};
+
+/// The nominal width component of the base raster's theme/display cache key — a
+/// discriminator distinguishing the base raster from the larger viewport-matched
+/// crisp rasters (which key on their own width). Placement always uses the
+/// raster's *actual* decoded dimensions, so this need only be a stable label, not
+/// the exact pixel width of every page. See [`crate::document::pdf::PAGE_RASTER_WIDTH`].
+const BASE_RASTER_WIDTH: u32 = crate::document::pdf::PAGE_RASTER_WIDTH as u32;
 
 /// A followable inline anchor located in the wrapped lines (reading order). The
 /// link cursor steps through these; the view highlights the selected one.
@@ -86,14 +96,20 @@ pub struct Reader {
     /// Trim baked-in whitespace margins from paged (PDF) pages (mirrored from
     /// config each render), so the content fills the viewport.
     trim_margins: bool,
-    /// Cached content bounding box per section (raster px) for the margin trim.
-    trim_cache: HashMap<usize, (u32, u32, u32, u32)>,
+    /// Cached content bounding box per section for the margin trim, stored as
+    /// *fractions* `(fx, fy, fw, fh)` of the raster so one box applies to any
+    /// raster resolution (base or crisp) — theming/re-raster never move the
+    /// content within the page, only its pixel scale.
+    trim_cache: HashMap<usize, (f32, f32, f32, f32)>,
     /// The inputs the current `lines` were wrapped against; a change re-wraps.
     wrapped: WrapKey,
     /// Inline-image lifecycle (built protocols, row estimates, in-flight builds).
     images: ImageState,
     /// Paged-image (PDF) page theming (themer + themed-PNG cache + active policy).
     pages: PageThemeState,
+    /// Viewport-matched crisp re-raster (worker + raw crisp-PNG cache + the
+    /// per-section display width chosen this frame). Inert for reflowable docs.
+    crisp: PageRasterState,
     /// In-book navigation (heading/anchor/bookmark indexes, link cursor, history).
     nav: NavState,
     /// In-book search (prompt, history, matcher, matches, cursor).
@@ -162,6 +178,13 @@ impl Reader {
         let first = doc.load_section(start).unwrap_or_default().blocks;
         sections.sections.insert(start, first.clone());
 
+        // Paged (PDF) documents get an off-thread rasterizer for the viewport-
+        // matched crisp path; reflowable ones return `None` (nothing to re-render).
+        let crisp = PageRasterState {
+            worker: doc.page_rasterizer().map(raster::PageRasterWorker::new),
+            ..PageRasterState::default()
+        };
+
         let mut reader = Self {
             doc,
             outline,
@@ -189,6 +212,7 @@ impl Reader {
             wrapped: WrapKey::invalid(),
             images: ImageState::default(),
             pages: PageThemeState::default(),
+            crisp,
             nav: NavState::default(),
             search: SearchState::default(),
             sections,
@@ -913,15 +937,43 @@ impl Reader {
     /// The page bytes the direct-Kitty [`PageDeck`] should transmit for `section`
     /// under the active policy: the original raster in Faithful mode, otherwise the
     /// themed PNG once it's built (`None` until then, so the deck holds the previous
-    /// page rather than flashing an unthemed one). See [`Reader::sync_pages`].
+    /// page rather than flashing an unthemed one). Serves the crisp raster once the
+    /// view chose it for this section this frame (see [`Reader::resolve_page_width`]),
+    /// else the base raster — matching the crop the view computed. See
+    /// [`Reader::sync_pages`].
     pub fn page_png(&self, section: usize) -> Option<Vec<u8>> {
+        let width = self.effective_width(section);
         if self.pages.policy.mode == media::ImageMode::Faithful {
-            return self.raster_png(section);
+            return self.raw_raster_at(section, width);
         }
         self.pages
             .themed
-            .peek(&(section, self.pages.policy))
+            .peek(&(section, width, self.pages.policy))
             .map(|b| b.as_ref().clone())
+    }
+
+    /// The raster width the view chose to display `section` at this frame — a crisp
+    /// width once its raster + theming are ready, else the base width (also the
+    /// default when the section wasn't placed this frame).
+    fn effective_width(&self, section: usize) -> u32 {
+        self.crisp
+            .effective
+            .get(&section)
+            .copied()
+            .unwrap_or(BASE_RASTER_WIDTH)
+    }
+
+    /// The raw (un-themed) PNG for `section` at `width`: the base raster from the
+    /// section cache at the base width, otherwise a cached crisp raster.
+    fn raw_raster_at(&self, section: usize, width: u32) -> Option<Vec<u8>> {
+        if width == BASE_RASTER_WIDTH {
+            self.raster_png(section)
+        } else {
+            self.crisp
+                .rasters
+                .peek(&(section, width))
+                .map(|b| b.as_ref().clone())
+        }
     }
 
     /// The theme/image policy the visible page(s) are themed and shown under (set
@@ -972,7 +1024,11 @@ impl Reader {
         if self.pages.policy.mode == media::ImageMode::Faithful {
             self.raster_ready(section)
         } else {
-            self.pages.themed.contains(&(section, self.pages.policy))
+            // Gate on the *base* raster's theming only — the crisp raster is an
+            // enhancement that pops in a frame later, never a turn blocker.
+            self.pages
+                .themed
+                .contains(&(section, BASE_RASTER_WIDTH, self.pages.policy))
         }
     }
 
@@ -1011,6 +1067,7 @@ impl Reader {
     pub fn poll_loader(&mut self) {
         self.drain_loader();
         self.drain_page_themer();
+        self.drain_crisp();
     }
 
     /// Snap the position to the start of its page (so paged mode shows a clean
@@ -1244,26 +1301,157 @@ impl Reader {
         self.trim_margins = on;
     }
 
-    /// The content bounding box `(x, y, w, h)` of `section`'s page raster for the
-    /// margin trim, cached per section. Returns the whole raster `(0, 0, w, h)`
-    /// when trimming is off, the raster isn't ready yet, or there's nothing to
-    /// trim. Computed from the raw raster (theme-independent), so the box applies
-    /// to the themed PNG too.
+    /// The content bounding box `(x, y, w, h)` of `section`'s page for the margin
+    /// trim, in the pixel coordinates of a raster of size `full`. Returns the whole
+    /// raster `(0, 0, w, h)` when trimming is off, the raster isn't ready, or
+    /// there's nothing to trim. The box is cached per section as *fractions* of the
+    /// raster (computed from the base raw raster, theme-independent) and scaled to
+    /// `full` here, so the same box applies to the base and crisp rasters alike.
     pub fn page_content_box(&mut self, section: usize, full: (u32, u32)) -> (u32, u32, u32, u32) {
         let whole = (0, 0, full.0, full.1);
         if !self.trim_margins {
             return whole;
         }
-        if let Some(bb) = self.trim_cache.get(&section) {
-            return *bb;
-        }
-        // Not ready → retry next frame rather than caching a wrong (whole) box.
-        let Some(png) = self.raster_png(section) else {
-            return whole;
+        let frac = match self.trim_cache.get(&section).copied() {
+            Some(f) => f,
+            None => {
+                // Not ready → retry next frame rather than caching a wrong box.
+                let Some(png) = self.raster_png(section) else {
+                    return whole;
+                };
+                let (rw, rh) =
+                    media::image_dimensions(&png).unwrap_or((full.0.max(1), full.1.max(1)));
+                let (rw, rh) = (rw.max(1) as f32, rh.max(1) as f32);
+                // A whole-page box (no trim) → store the full unit box, so a later
+                // frame doesn't re-decode. content_bbox already rejects near-blank.
+                let f = media::content_bbox(&png)
+                    .map(|(x, y, w, h)| {
+                        (x as f32 / rw, y as f32 / rh, w as f32 / rw, h as f32 / rh)
+                    })
+                    .unwrap_or((0.0, 0.0, 1.0, 1.0));
+                self.trim_cache.insert(section, f);
+                f
+            }
         };
-        let bb = media::content_bbox(&png).unwrap_or(whole);
-        self.trim_cache.insert(section, bb);
-        bb
+        let (fw_x, fh_y, fw_w, fh_h) = frac;
+        let (w, h) = (full.0.max(1) as f32, full.1.max(1) as f32);
+        let x = (fw_x * w).round() as u32;
+        let y = (fh_y * h).round() as u32;
+        // Clamp so the box never exceeds the raster (rounding at the far edge).
+        let bw = ((fw_w * w).round() as u32).clamp(1, full.0.saturating_sub(x).max(1));
+        let bh = ((fh_h * h).round() as u32).clamp(1, full.1.saturating_sub(y).max(1));
+        (x, y, bw, bh)
+    }
+
+    /// Resolve which raster width to display `section` at this frame and record it
+    /// for [`page_png`](Self::page_png). Given the base raster dimensions and the
+    /// width the current placement wants (≥1 raster px per screen px), request a
+    /// crisp re-raster (and its theming) when the base would upscale, and return the
+    /// effective `(width, dimensions)` to place — the crisp raster only once it's
+    /// fully ready (rasterized *and* themed for the active policy), otherwise the
+    /// base. Single-page only; spreads sit at fit-page and keep the base raster.
+    pub fn resolve_page_width(
+        &mut self,
+        section: usize,
+        base_dims: (u32, u32),
+        want_width: u32,
+    ) -> (u32, (u32, u32)) {
+        let base_w = base_dims.0;
+        let chosen = match raster::crisp_target_width(want_width, base_w) {
+            // No worker (reflowable) means no crisp path — keep the base.
+            Some(cw) if self.crisp.worker.is_some() => {
+                if self.crisp_ready(section, cw) {
+                    cw
+                } else {
+                    // Drive the two-step async: request the raster, then (once it's
+                    // cached) its theming. Both are deduped no-ops when pending.
+                    // Show the base this frame; the crisp page pops in when ready.
+                    self.request_crisp(section, cw);
+                    self.request_page_theme(section, cw);
+                    base_w
+                }
+            }
+            _ => base_w,
+        };
+        self.crisp.effective.insert(section, chosen);
+        if chosen == base_w {
+            return (base_w, base_dims);
+        }
+        let dims = self
+            .raw_raster_at(section, chosen)
+            .and_then(|p| media::image_dimensions(&p))
+            .unwrap_or(base_dims);
+        (chosen, dims)
+    }
+
+    /// The pixel dimensions of `section`'s base raster, or `None` until it's
+    /// rasterized. Cached so repeated frames don't re-read the PNG header.
+    pub fn base_raster_dims(&mut self, section: usize) -> Option<(u32, u32)> {
+        if let Some(d) = self.crisp.base_dims.get(&section) {
+            return Some(*d);
+        }
+        let png = self.raster_png(section)?;
+        let d = media::image_dimensions(&png)?;
+        self.crisp.base_dims.insert(section, d);
+        Some(d)
+    }
+
+    /// Whether `section`'s crisp raster at `width` is ready to place: the raw
+    /// raster is cached and, unless in Faithful mode, its theming is built too.
+    fn crisp_ready(&self, section: usize, width: u32) -> bool {
+        if !self.crisp.rasters.contains(&(section, width)) {
+            return false;
+        }
+        self.pages.policy.mode == media::ImageMode::Faithful
+            || self
+                .pages
+                .themed
+                .contains(&(section, width, self.pages.policy))
+    }
+
+    /// Request the crisp re-raster of `section` at `width` if not already cached,
+    /// in flight, or previously failed (deduped). No-op without a worker.
+    fn request_crisp(&mut self, section: usize, width: u32) {
+        let key = (section, width);
+        if self.crisp.rasters.contains(&key)
+            || self.crisp.requested.contains(&key)
+            || self.crisp.failed.contains(&key)
+        {
+            return;
+        }
+        if let Some(worker) = self.crisp.worker.as_ref() {
+            self.crisp.requested.insert(key);
+            worker.request(key);
+        }
+    }
+
+    /// Whether any viewport-matched crisp work is in flight — a re-raster, or the
+    /// theming of one — so the render loop keeps drawing until the crisp page pops
+    /// in (rather than settling on the base after a zoom and waiting for a keypress).
+    /// Self-limiting: a failed raster clears its request and won't be retried.
+    pub fn crisp_awaiting(&self) -> bool {
+        !self.crisp.requested.is_empty()
+            || self
+                .pages
+                .requested
+                .iter()
+                .any(|&(_, w, _)| w != BASE_RASTER_WIDTH)
+    }
+
+    /// Request theming of an already-rasterized crisp page at `width` under the
+    /// active policy (deduped). No-op in Faithful mode (the raw raster is shown).
+    fn request_page_theme(&mut self, section: usize, width: u32) {
+        if self.pages.policy.mode == media::ImageMode::Faithful {
+            return;
+        }
+        let key = (section, width, self.pages.policy);
+        if self.pages.themed.contains(&key) || self.pages.requested.contains(&key) {
+            return;
+        }
+        if let Some(raw) = self.raw_raster_at(section, width) {
+            self.pages.requested.insert(key);
+            self.pages.themer.request(key, std::sync::Arc::new(raw));
+        }
     }
 
     /// Store the pan room + step the view computed for this frame's page, so
@@ -1672,6 +1860,45 @@ mod tests {
             r.placeable_sections(true),
             vec![8, 9],
             "both pages ready → the whole spread is placeable"
+        );
+    }
+
+    /// The margin-trim content box is stored as fractions and scaled to whatever
+    /// raster width it's queried at, so the base and the (larger) crisp raster get
+    /// the *same* region of the page — just at their own pixel scale.
+    #[test]
+    fn content_box_scales_with_the_raster_size() {
+        let doc = MockDoc::new(vec![image_page()]).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.set_trim_margins(true);
+        // Seed a known fractional box directly (content_bbox of the blank test PNG
+        // would be a no-op); it must scale proportionally at two raster sizes.
+        r.trim_cache.insert(0, (0.1, 0.2, 0.5, 0.6));
+        assert_eq!(r.page_content_box(0, (1000, 2000)), (100, 400, 500, 1200));
+        assert_eq!(r.page_content_box(0, (2000, 4000)), (200, 800, 1000, 2400));
+        // Trimming off → always the whole raster, regardless of the cached box.
+        r.set_trim_margins(false);
+        assert_eq!(r.page_content_box(0, (1000, 2000)), (0, 0, 1000, 2000));
+    }
+
+    /// Without a page rasterizer (any reflowable doc, or a mock) there's no crisp
+    /// path: `resolve_page_width` keeps the base width even when a large placement
+    /// wants more, and records it so `page_png` serves the base bytes.
+    #[test]
+    fn resolve_page_width_falls_back_to_base_without_a_worker() {
+        let doc = MockDoc::new(vec![image_page()]).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        let base = (2000u32, 2800u32);
+        let (w, dims) = r.resolve_page_width(0, base, 4000);
+        assert_eq!(
+            (w, dims),
+            (BASE_RASTER_WIDTH, base),
+            "no worker → base raster"
+        );
+        assert_eq!(r.effective_width(0), BASE_RASTER_WIDTH);
+        assert!(
+            !r.crisp_awaiting(),
+            "nothing requested → the loop can settle"
         );
     }
 
