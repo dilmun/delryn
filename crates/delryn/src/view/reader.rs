@@ -13,6 +13,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
 use crate::app::{
     App, Focus, ImageGeom, PageTarget, PageView, PanRoom, Reader, Viewport, place_page,
+    raster_width_for_crispness,
 };
 use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
@@ -342,13 +343,10 @@ fn capture_pdf_targets(
         reader.sync_pages(policy);
         let fs = picker.font_size();
         for (i, &(section, area)) in areas.iter().enumerate() {
-            // Dimensions from the themed PNG (header-only, cheap); the raster must
-            // be ready to place — else emit no targets so the deck holds the old
+            // The base raster's dimensions — the always-present source. The raster
+            // must be ready to place; else emit no targets so the deck holds the old
             // page(s) up rather than flashing a half spread.
-            let Some((w, h)) = reader
-                .page_png(section)
-                .and_then(|p| crate::media::image_dimensions(&p))
-            else {
+            let Some(base_dims) = reader.base_raster_dims(section) else {
                 targets.clear();
                 break;
             };
@@ -357,15 +355,34 @@ fn capture_pdf_targets(
             } else {
                 PageView::default()
             };
-            // Trim the margins on both single pages and spreads.
-            let content = reader.page_content_box(section, (w, h));
             let vp = Viewport {
                 cols: area.width,
                 rows: area.height,
                 cell_w: fs.width,
                 cell_h: fs.height,
             };
-            let p = place_page((w, h), content, vp, &view);
+            // Place against the base raster first (margins trimmed). For a single
+            // page this also sizes the viewport-matched crisp re-raster: if the
+            // base would upscale, request a wider raster and re-place against it
+            // once it's ready (else keep the base this frame).
+            let base_content = reader.page_content_box(section, base_dims);
+            let base_p = place_page(base_dims, base_content, vp, &view);
+            // The effective placement: base, or the crisp raster once it's ready
+            // (its width is recorded on the reader so `page_png` serves matching
+            // bytes to the deck). Spreads always keep the base — they sit at
+            // fit-page and are already crisp.
+            let p = if single {
+                let want = raster_width_for_crispness(&base_p, base_dims, vp);
+                let (_w, dims) = reader.resolve_page_width(section, base_dims, want);
+                if dims == base_dims {
+                    base_p
+                } else {
+                    let content = reader.page_content_box(section, dims);
+                    place_page(dims, content, vp, &view)
+                }
+            } else {
+                base_p
+            };
             let align = if single {
                 PageAlign::Center
             } else if i == 0 {

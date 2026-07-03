@@ -575,13 +575,24 @@ no premature abstraction, no speculative modes).*
       **spine-aligned** (`PageAlign`) keeping the `page_gap` gutter (like EPUB) so
       they don't touch.
       (3) **Raster 1400→2000 px** (`PAGE_RASTER_WIDTH`) to offset the trim's
-      upscaling. 12 tests. *Remaining limits: 2000 px is still fixed — the scalable
-      crispness fix is a **viewport-matched re-raster** (size-keyed page cache),
-      deferred; pan re-transmits the page (**placement-id move** = perf follow-up);
-      zoom single-page only; wheel still flips; trim decode is lazy on the main
-      thread (cached) — move to the themer thread if it hitches.* **Still (the tiled
-      strategy itself):** tiles (rows×cols) → N-up, step → sliding window,
-      start-offset, direction → **manga RTL** (flips gutter + turn keys).
+      upscaling. 12 tests. ✅ **Viewport-matched re-raster (crispness)** — the
+      2000 px base is no longer the ceiling: when a single page *upscales* (zoomed
+      in, or shown on a large/hi-DPI viewport) the reader re-renders it through
+      PDFium at a **viewport-matched width** on a background worker
+      (`app/reader/raster.rs` — `PageRasterizer` seam on `Document`, mirroring
+      `loader()`), themes it via the existing `PageThemer`, and swaps it in a frame
+      later; the base raster is shown until the crisp one is ready, so nothing ever
+      blanks or stalls. Width is chosen by the pure `raster_width_for_crispness`
+      (≥1 raster px per screen px), bucketed + capped at 4096, size-keyed cache
+      (`(section, width[, policy])`); the margin-trim box is now stored *fractionally*
+      so one box serves any raster resolution. Zero overhead when the base already
+      downscales (the common fit-page case). `crisp_awaiting()` keeps the loop
+      drawing until the crisp page pops in; a failed raster is remembered and not
+      retried. Branch `feature/pdf-viewport-raster`. *Remaining limits: crisp is
+      single-page only (spreads sit at fit-page, already crisp); pan re-transmits
+      the page (**placement-id move** = perf follow-up); wheel still flips.* **Still
+      (the tiled strategy itself):** tiles (rows×cols) → N-up, step → sliding
+      window, start-offset, direction → **manga RTL** (flips gutter + turn keys).
 - [ ] **7.4 Distinct strategies (not presets).** Continuous **scroll across
       sections** (the long-missing chapter-join, for reflow *and* paged); **grid /
       thumbnail browser** as a visual page-jump complementing the TOC sidebar

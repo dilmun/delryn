@@ -16,6 +16,6 @@ pub mod wrap;
 pub use cache::SectionCache;
 pub use images::ImageState;
 pub use nav::{NavState, Pos};
-pub use pages::PageThemeState;
+pub use pages::{PageRasterState, PageThemeState};
 pub use search::SearchState;
 pub use wrap::WrapKey;

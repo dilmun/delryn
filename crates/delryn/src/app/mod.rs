@@ -53,7 +53,9 @@ pub use editor::{
 
 mod reader;
 pub use page_deck::PageTarget;
-pub use reader::{ImageGeom, PageView, PanRoom, Reader, Viewport, place_page};
+pub use reader::{
+    ImageGeom, PageView, PanRoom, Reader, Viewport, place_page, raster_width_for_crispness,
+};
 
 mod image_view;
 pub use image_view::{Figure, ImageViewer};
@@ -509,6 +511,11 @@ impl App {
         };
         let spread = matches!(self.config.view_mode, ViewMode::TwoPage);
         if r.pages_loading(spread) {
+            return true;
+        }
+        // A viewport-matched crisp re-raster is in flight (after a zoom / resize):
+        // keep drawing so it pops in without a keypress. Self-limiting.
+        if r.crisp_awaiting() {
             return true;
         }
         let placeable = r.placeable_sections(spread);
