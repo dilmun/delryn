@@ -570,8 +570,9 @@ no premature abstraction, no speculative modes).*
       in the reader (`page_content_box`, computed from the raw raster, theme-
       independent); `config.pdf_trim` (default on) + `x` toggles it. (2)
       **Full-bleed paged layout** — Center/Spread use the whole pane for paged
-      (no reading side-padding, `page_gap`=0), and a spread's two pages are
-      **spine-aligned** (`PageAlign`) so they meet in the middle with no gutter.
+      (no reading side-padding on the outer edges), and a spread's two pages are
+      **spine-aligned** (`PageAlign`) so they sit near the centre keeping the same
+      `page_gap` gutter as the EPUB spread (a small margin, not touching).
       (3) **Raster 1400→2000 px** (`PAGE_RASTER_WIDTH`) to offset the trim's
       upscaling. 12 tests. *Remaining limits: 2000 px is still fixed — the scalable
       crispness fix is a **viewport-matched re-raster** (size-keyed page cache),
