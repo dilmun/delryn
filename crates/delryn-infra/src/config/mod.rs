@@ -62,6 +62,9 @@ pub const MAX_PAGE_GAP: u16 = 16;
 pub const MIN_TEXT_COLS: u16 = 20;
 /// Maximum extra blank lines between text lines.
 pub const MAX_LINE_SPACING: u8 = 3;
+/// Upper bound for the PDF margin-trim crop (percent per edge). Capped well below
+/// 50 % so the crop can't collapse the page or bite deep into content.
+pub const MAX_PDF_MARGIN_PCT: u16 = 20;
 /// Upper bound for the inline-image resolution cap (longest side, px). `0` means
 /// no cap — images fill the text column. A cap trades size for a faster transmit
 /// to the terminal.
@@ -129,6 +132,11 @@ pub struct Config {
     /// Trim baked-in whitespace margins from PDF pages so the content fills the
     /// viewport (bigger text). Toggle with `x` in the reader.
     pub pdf_trim: bool,
+    /// PDF margin trim amount: the percent of each page edge cropped when
+    /// `pdf_trim` is on. A *constant* crop (same for every page) so the displayed
+    /// page width stays identical across pages, regardless of their own varying
+    /// margins. Clamped to [`MAX_PDF_MARGIN_PCT`]; `0` shows the whole page.
+    pub pdf_margin_pct: u16,
     /// Extra blank lines between wrapped text lines (0 = single-spaced).
     pub line_spacing: u8,
     /// Blank lines between blocks/paragraphs.
@@ -198,6 +206,7 @@ impl Default for Config {
             page_gap: 5,
             cover_offset: false,
             pdf_trim: true,
+            pdf_margin_pct: 6,
             line_spacing: 0,
             paragraph_spacing: 1,
             view_mode: ViewMode::Center,
@@ -323,6 +332,7 @@ impl Config {
         };
         c.side_padding = c.side_padding.min(MAX_SIDE_PADDING);
         c.page_gap = c.page_gap.min(MAX_PAGE_GAP);
+        c.pdf_margin_pct = c.pdf_margin_pct.min(MAX_PDF_MARGIN_PCT);
         c.line_spacing = c.line_spacing.min(MAX_LINE_SPACING);
         c.paragraph_spacing = c.paragraph_spacing.min(3);
         c.image_max_px = c.image_max_px.min(MAX_IMAGE_PX);
