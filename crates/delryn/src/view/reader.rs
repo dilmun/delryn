@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
-use crate::app::{App, Focus, ImageGeom, Reader};
+use crate::app::{App, Focus, ImageGeom, PageTarget, PageView, PanRoom, Reader, place_page};
 use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
 use crate::media::ImageBuilder;
@@ -316,13 +316,29 @@ fn capture_pdf_targets(
     policy: crate::media::RenderPolicy,
 ) {
     let mut targets = Vec::new();
+    // Zoom / pan apply only to a single-page view; a spread shows each page at
+    // fit-page (a default, un-zoomed view).
+    let single = areas.len() == 1;
+    let mut room = PanRoom::default();
+    let mut step = (0.0, 0.0);
     if let Some((picker, _)) = images {
         // Adapt the visible + look-ahead pages to the theme off-thread; `page_png`
         // (below, and the deck's transmit) then serves the themed PNGs.
         reader.sync_pages(policy);
         for &(section, area) in areas {
-            match pdf_page_rect(reader, section, area, picker) {
-                Some(rect) => targets.push((section, rect)),
+            let view = if single {
+                reader.page_view
+            } else {
+                PageView::default()
+            };
+            match place_pdf_page(reader, section, area, picker, &view) {
+                Some((target, r, st)) => {
+                    targets.push(target);
+                    if single {
+                        room = r;
+                        step = st;
+                    }
+                }
                 // A page isn't rasterized yet: emit no targets at all so the deck
                 // holds the previous page(s) up rather than showing a half spread
                 // (which would flicker the ready page when the other lands).
@@ -333,35 +349,36 @@ fn capture_pdf_targets(
             }
         }
     }
+    // Record the pan room only once the single page actually placed — an unready
+    // frame keeps the previous room so nav doesn't misfire mid-turn.
+    if single && !targets.is_empty() {
+        reader.set_page_room(room, step);
+    }
     reader.pdf_targets = targets;
 }
 
-/// The absolute, aspect-fitted, centred cell rect to place `section`'s page in
-/// `area`, from the page's pixel dimensions. `None` until the page is loaded.
-fn pdf_page_rect(reader: &Reader, section: usize, area: Rect, picker: &Picker) -> Option<Rect> {
+/// Place `section`'s page in `area` under `view`: aspect-fit + centre at fit-page,
+/// or a centred crop of the raster when zoomed/panned. Returns the deck target
+/// plus the pan room + step. `None` until the page is loaded.
+fn place_pdf_page(
+    reader: &Reader,
+    section: usize,
+    area: Rect,
+    picker: &Picker,
+    view: &PageView,
+) -> Option<(PageTarget, PanRoom, (f32, f32))> {
     let png = reader.page_png(section)?;
     let (w, h) = crate::media::image_dimensions(&png)?;
     let fs = picker.font_size();
-    let fit = crate::media::FitBox {
-        fw: fs.width,
-        fh: fs.height,
-        cols: area.width,
-        rows: area.height,
-        max_px: 0,
-        target_pct: 100,
+    let p = place_page(w, h, fs.width, fs.height, area.width, area.height, view);
+    let x = area.x + area.width.saturating_sub(p.cols) / 2;
+    let y = area.y + area.height.saturating_sub(p.rows) / 2;
+    let target = PageTarget {
+        section,
+        rect: Rect::new(x, y, p.cols, p.rows),
+        crop: p.crop,
     };
-    let (cols, rows) = crate::media::target_cells(
-        w,
-        h,
-        fit,
-        crate::media::SizeSpec {
-            hint: crate::media::SizeHint::Full,
-            math: false,
-        },
-    );
-    let x = area.x + area.width.saturating_sub(cols) / 2;
-    let y = area.y + area.height.saturating_sub(rows) / 2;
-    Some(Rect::new(x, y, cols, rows))
+    Some((target, p.room, (p.step_x, p.step_y)))
 }
 
 /// Draw the ready figure images that intersect `[top, top+height)` of the line

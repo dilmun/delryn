@@ -99,9 +99,16 @@ fn dbg_log(msg: &dyn std::fmt::Display) {
     }
 }
 
-/// A page to show this frame: its section index and the absolute terminal cell
-/// rect (already aspect-fitted + centred by the view) to place it in.
-pub type Target = (usize, Rect);
+/// A page to show this frame: its section index, the absolute terminal cell rect
+/// (already aspect-fitted + centred by the view) to place it in, and an optional
+/// source-pixel crop `(x, y, w, h)` of the raster (zoom/pan shows a sub-window;
+/// `None` = the whole page).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageTarget {
+    pub section: usize,
+    pub rect: Rect,
+    pub crop: Option<(u32, u32, u32, u32)>,
+}
 
 /// Tracks which pages are currently transmitted + on screen, and emits the
 /// escapes to swap to a new set.
@@ -109,7 +116,7 @@ pub type Target = (usize, Rect);
 pub struct PageDeck {
     /// Pages currently transmitted to and displayed by the terminal. Image id is
     /// `id(section)`.
-    shown: Vec<Target>,
+    shown: Vec<PageTarget>,
     /// The theme/image policy the shown pages were transmitted under. Part of the
     /// "already showing this" check so cycling the theme or image mode — which
     /// changes the *bytes* but not the (section, rect) targets — still re-transmits
@@ -125,8 +132,9 @@ impl PageDeck {
 
     /// Whether the deck is already showing exactly `targets` under `policy` — i.e.
     /// nothing to do this frame. A policy change (theme/mode) re-transmits even
-    /// when the targets are unchanged, because the page *bytes* differ.
-    pub fn shows(&self, targets: &[Target], policy: media::RenderPolicy) -> bool {
+    /// when the targets are unchanged, because the page *bytes* differ; a crop
+    /// change (pan/zoom) also differs, so panning re-renders.
+    pub fn shows(&self, targets: &[PageTarget], policy: media::RenderPolicy) -> bool {
         self.shown.as_slice() == targets && self.shown_policy == Some(policy)
     }
 
@@ -138,7 +146,7 @@ impl PageDeck {
     /// The sections currently placed on screen, in order — for the loop to tell
     /// whether the deck has caught up to the pages it should be showing.
     pub fn shown_sections(&self) -> Vec<usize> {
-        self.shown.iter().map(|(s, _)| *s).collect()
+        self.shown.iter().map(|t| t.section).collect()
     }
 
     /// Reconcile the terminal to show `targets`, returning the escapes to write.
@@ -148,7 +156,7 @@ impl PageDeck {
     /// transmitted + placed.
     pub fn render(
         &mut self,
-        targets: &[Target],
+        targets: &[PageTarget],
         policy: media::RenderPolicy,
         mut png_for: impl FnMut(usize) -> Option<Vec<u8>>,
     ) -> Vec<String> {
@@ -158,25 +166,26 @@ impl PageDeck {
         // All new pages must be rasterized before we swap — else keep the
         // current pages up rather than blanking a not-yet-ready slot.
         let mut pngs = Vec::with_capacity(targets.len());
-        for &(sec, _) in targets {
-            match png_for(sec) {
+        for t in targets {
+            match png_for(t.section) {
                 Some(png) => pngs.push(png),
                 None => return Vec::new(),
             }
         }
 
         let mut out = Vec::new();
-        for (sec, _) in &self.shown {
-            out.push(media::delete_image_seq(Self::id(*sec)));
+        for t in &self.shown {
+            out.push(media::delete_image_seq(Self::id(t.section)));
         }
-        for (&(sec, rect), png) in targets.iter().zip(&pngs) {
-            out.push(transmit_seq(Self::id(sec), png));
+        for (t, png) in targets.iter().zip(&pngs) {
+            out.push(transmit_seq(Self::id(t.section), png));
             out.push(media::place_image_seq(
-                Self::id(sec),
-                rect.x + 1,
-                rect.y + 1,
-                rect.width,
-                rect.height,
+                Self::id(t.section),
+                t.rect.x + 1,
+                t.rect.y + 1,
+                t.rect.width,
+                t.rect.height,
+                t.crop,
             ));
         }
         self.shown = targets.to_vec();
@@ -186,7 +195,14 @@ impl PageDeck {
             "show {:?} mode={:?} paper={:?} ({} escapes)",
             targets
                 .iter()
-                .map(|(s, r)| (*s, r.x, r.y, r.width, r.height))
+                .map(|t| (
+                    t.section,
+                    t.rect.x,
+                    t.rect.y,
+                    t.rect.width,
+                    t.rect.height,
+                    t.crop
+                ))
                 .collect::<Vec<_>>(),
             policy.mode,
             policy.tint.paper,
@@ -200,7 +216,7 @@ impl PageDeck {
         let out = self
             .shown
             .iter()
-            .map(|(s, _)| media::delete_image_seq(Self::id(*s)))
+            .map(|t| media::delete_image_seq(Self::id(t.section)))
             .collect();
         self.shown.clear();
         self.shown_policy = None;
@@ -215,6 +231,15 @@ mod tests {
 
     fn rect(x: u16) -> Rect {
         Rect::new(x, 0, 40, 50)
+    }
+
+    /// A whole-page (un-cropped) target at column `x`.
+    fn tgt(section: usize, x: u16) -> PageTarget {
+        PageTarget {
+            section,
+            rect: rect(x),
+            crop: None,
+        }
     }
 
     /// A page policy for the deck tests; the deck only compares it, so the colours
@@ -239,7 +264,7 @@ mod tests {
     fn shows_spread_transmits_and_places_each_page() {
         let mut deck = PageDeck::default();
         let esc = deck
-            .render(&[(10, rect(0)), (11, rect(40))], auto(), |s| {
+            .render(&[tgt(10, 0), tgt(11, 40)], auto(), |s| {
                 Some(vec![s as u8; 4])
             })
             .join("");
@@ -251,37 +276,37 @@ mod tests {
                 && esc.contains(&format!("i={}", PageDeck::id(11))),
             "distinct image ids per page"
         );
-        assert_eq!(deck.shown, vec![(10, rect(0)), (11, rect(40))]);
+        assert_eq!(deck.shown, vec![tgt(10, 0), tgt(11, 40)]);
     }
 
     /// A turn deletes the old pages, then transmits + places the new ones.
     #[test]
     fn turn_deletes_old_then_shows_new() {
         let mut deck = PageDeck::default();
-        deck.render(&[(10, rect(0)), (11, rect(40))], auto(), |s| {
+        deck.render(&[tgt(10, 0), tgt(11, 40)], auto(), |s| {
             Some(vec![s as u8; 4])
         });
         let esc = deck
-            .render(&[(11, rect(0)), (12, rect(40))], auto(), |s| {
+            .render(&[tgt(11, 0), tgt(12, 40)], auto(), |s| {
                 Some(vec![s as u8; 4])
             })
             .join("");
         assert!(esc.contains("a=d"), "old pages deleted");
         assert_eq!(esc.matches("a=p").count(), 2, "new spread placed");
-        assert_eq!(deck.shown, vec![(11, rect(0)), (12, rect(40))]);
+        assert_eq!(deck.shown, vec![tgt(11, 0), tgt(12, 40)]);
     }
 
     /// If any new page isn't rasterized yet, keep the old pages up (no blank).
     #[test]
     fn keeps_old_pages_until_all_ready() {
         let mut deck = PageDeck::default();
-        deck.render(&[(10, rect(0))], auto(), |_| Some(vec![1, 2, 3, 4]));
+        deck.render(&[tgt(10, 0)], auto(), |_| Some(vec![1, 2, 3, 4]));
         // Page 11 not ready (png_for None for it): no swap, old page stays.
-        let esc = deck.render(&[(11, rect(0)), (12, rect(40))], auto(), |s| {
+        let esc = deck.render(&[tgt(11, 0), tgt(12, 40)], auto(), |s| {
             (s == 11).then(|| vec![0; 4])
         });
         assert!(esc.is_empty(), "no escapes while a target page is unready");
-        assert_eq!(deck.shown, vec![(10, rect(0))], "old page still shown");
+        assert_eq!(deck.shown, vec![tgt(10, 0)], "old page still shown");
     }
 
     /// Re-rendering the same targets under the same policy is a no-op (the images
@@ -289,8 +314,8 @@ mod tests {
     #[test]
     fn unchanged_targets_emit_nothing() {
         let mut deck = PageDeck::default();
-        deck.render(&[(10, rect(0))], auto(), |s| Some(vec![s as u8; 4]));
-        let esc = deck.render(&[(10, rect(0))], auto(), |s| Some(vec![s as u8; 4]));
+        deck.render(&[tgt(10, 0)], auto(), |s| Some(vec![s as u8; 4]));
+        let esc = deck.render(&[tgt(10, 0)], auto(), |s| Some(vec![s as u8; 4]));
         assert!(esc.is_empty());
     }
 
@@ -300,10 +325,10 @@ mod tests {
     #[test]
     fn policy_change_retransmits_same_targets() {
         let mut deck = PageDeck::default();
-        deck.render(&[(10, rect(0))], auto(), |s| Some(vec![s as u8; 4]));
+        deck.render(&[tgt(10, 0)], auto(), |s| Some(vec![s as u8; 4]));
         let esc = deck
             .render(
-                &[(10, rect(0))],
+                &[tgt(10, 0)],
                 policy(media::ImageMode::InvertBackgrounds),
                 |s| Some(vec![s as u8; 4]),
             )
@@ -311,5 +336,32 @@ mod tests {
         assert!(esc.contains("a=d"), "old page deleted before re-transmit");
         assert!(esc.contains("a=t"), "re-themed page re-transmitted");
         assert!(esc.contains("a=p"), "and re-placed");
+    }
+
+    /// A cropped target (zoom/pan) places a source sub-rectangle: the placement
+    /// carries the Kitty `x=/y=/w=/h=` params, and a crop change re-renders.
+    #[test]
+    fn cropped_target_emits_source_rectangle() {
+        let mut deck = PageDeck::default();
+        let t = PageTarget {
+            section: 10,
+            rect: rect(0),
+            crop: Some((100, 200, 300, 400)),
+        };
+        let esc = deck
+            .render(&[t], auto(), |s| Some(vec![s as u8; 4]))
+            .join("");
+        assert!(
+            esc.contains("x=100,y=200,w=300,h=400"),
+            "crop → source rectangle; got {esc:?}"
+        );
+        // Panning (a different crop, same section/rect/policy) re-renders.
+        assert!(!deck.shows(
+            &[PageTarget {
+                crop: Some((100, 260, 300, 400)),
+                ..t
+            }],
+            auto()
+        ));
     }
 }
