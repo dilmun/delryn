@@ -10,7 +10,13 @@ pub(super) struct CenterStrategy;
 
 impl LayoutStrategy for CenterStrategy {
     fn plan(&self, ctx: &LayoutCtx) -> LayoutPlan {
-        let measure = measure_for(ctx.body.width, ctx.config.side_padding);
+        // A page image fills the pane edge-to-edge (it carries its own margins,
+        // trimmed at placement); reflowed text keeps its reading margin.
+        let measure = if ctx.paged {
+            ctx.body.width.max(1)
+        } else {
+            measure_for(ctx.body.width, ctx.config.side_padding)
+        };
         let left_pad = ctx.body.width.saturating_sub(measure) / 2;
         let text_area = centered_column(ctx.body, left_pad, measure);
         let page_lines = text_area.height as usize;

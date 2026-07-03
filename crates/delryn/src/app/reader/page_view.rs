@@ -136,67 +136,85 @@ pub struct PagePlacement {
     pub step_y: f32,
 }
 
+/// The terminal viewport a page is placed into: its size in cells plus the pixel
+/// size of one cell (from the image picker).
+#[derive(Debug, Clone, Copy)]
+pub struct Viewport {
+    pub cols: u16,
+    pub rows: u16,
+    pub cell_w: u16,
+    pub cell_h: u16,
+}
+
 /// Map a page raster + viewport + [`PageView`] to a destination cell box and a
 /// source crop. Pure: no terminal, no reader.
 ///
-/// * `img_w`/`img_h` — raster pixel dimensions.
-/// * `cell_w`/`cell_h` — font cell pixel size (from the image picker).
-/// * `vcols`/`vrows` — viewport size in cells.
+/// * `raster` — the page raster's `(width, height)` in pixels.
+/// * `content` — the sub-region `(x, y, w, h)` of the raster to treat as the page
+///   (margin trim); pass `(0, 0, w, h)` for the whole raster. Fit / zoom / pan all
+///   operate within this region, and the emitted crop is in raster coords.
+/// * `vp` — the viewport (cells + cell pixel size).
 pub fn place_page(
-    img_w: u32,
-    img_h: u32,
-    cell_w: u16,
-    cell_h: u16,
-    vcols: u16,
-    vrows: u16,
+    raster: (u32, u32),
+    content: (u32, u32, u32, u32),
+    vp: Viewport,
     view: &PageView,
 ) -> PagePlacement {
-    let img_w = img_w.max(1);
-    let img_h = img_h.max(1);
-    let cw = cell_w.max(1) as f32;
-    let ch = cell_h.max(1) as f32;
-    let vcols = vcols.max(1);
-    let vrows = vrows.max(1);
+    let img_w = raster.0.max(1);
+    let img_h = raster.1.max(1);
+    // The content region, clamped inside the raster.
+    let (cx, cy, cw_px, ch_px) = content;
+    let cx = cx.min(img_w - 1);
+    let cy = cy.min(img_h - 1);
+    let cw_px = cw_px.clamp(1, img_w - cx);
+    let ch_px = ch_px.clamp(1, img_h - cy);
+    let cw = vp.cell_w.max(1) as f32;
+    let ch = vp.cell_h.max(1) as f32;
+    let vcols = vp.cols.max(1);
+    let vrows = vp.rows.max(1);
     let vpx = vcols as f32 * cw; // viewport width in pixels
     let vpy = vrows as f32 * ch; // viewport height in pixels
 
-    // The base fit scale (page px → screen px), then the manual zoom on top.
+    // The base fit scale (content px → screen px), then the manual zoom on top.
     let fit_scale = match view.fit {
-        PageFit::Page => (vpx / img_w as f32).min(vpy / img_h as f32),
-        PageFit::Width => vpx / img_w as f32,
-        PageFit::Height => vpy / img_h as f32,
+        PageFit::Page => (vpx / cw_px as f32).min(vpy / ch_px as f32),
+        PageFit::Width => vpx / cw_px as f32,
+        PageFit::Height => vpy / ch_px as f32,
     };
     let s = (fit_scale * view.zoom).max(f32::MIN_POSITIVE);
 
-    // The source window that fills the viewport at scale `s`, bounded by the page.
-    let crop_w = ((vpx / s).round() as u32).clamp(1, img_w);
-    let crop_h = ((vpy / s).round() as u32).clamp(1, img_h);
-    let range_x = img_w - crop_w;
-    let range_y = img_h - crop_h;
-    let crop_x = (view.pan_x.clamp(0.0, 1.0) * range_x as f32).round() as u32;
-    let crop_y = (view.pan_y.clamp(0.0, 1.0) * range_y as f32).round() as u32;
+    // The source window that fills the viewport at scale `s`, within the content.
+    let win_w = ((vpx / s).round() as u32).clamp(1, cw_px);
+    let win_h = ((vpy / s).round() as u32).clamp(1, ch_px);
+    let range_x = cw_px - win_w;
+    let range_y = ch_px - win_h;
+    let off_x = (view.pan_x.clamp(0.0, 1.0) * range_x as f32).round() as u32;
+    let off_y = (view.pan_y.clamp(0.0, 1.0) * range_y as f32).round() as u32;
+    let crop_x = cx + off_x; // absolute raster coordinates
+    let crop_y = cy + off_y;
 
-    // Destination cell box: the crop scaled by `s`, clamped to the viewport.
-    let cols = (((crop_w as f32 * s) / cw).round() as u16).clamp(1, vcols);
-    let rows = (((crop_h as f32 * s) / ch).round() as u16).clamp(1, vrows);
+    // Destination cell box: the window scaled by `s`, clamped to the viewport.
+    let cols = (((win_w as f32 * s) / cw).round() as u16).clamp(1, vcols);
+    let rows = (((win_h as f32 * s) / ch).round() as u16).clamp(1, vrows);
 
-    let whole = crop_w == img_w && crop_h == img_h;
-    let crop = (!whole).then_some((crop_x, crop_y, crop_w, crop_h));
+    // A crop is needed unless the window is the whole (untrimmed) raster.
+    let whole = win_w == img_w && win_h == img_h && cx == 0 && cy == 0;
+    let crop = (!whole).then_some((crop_x, crop_y, win_w, win_h));
 
     let room = PanRoom {
-        left: crop_x > 0,
-        right: crop_x < range_x,
-        up: crop_y > 0,
-        down: crop_y < range_y,
+        left: off_x > 0,
+        right: off_x < range_x,
+        up: off_y > 0,
+        down: off_y < range_y,
     };
     // One screenful per press: the visible window as a fraction of the range.
     let step_x = if range_x > 0 {
-        (crop_w as f32 / range_x as f32).min(1.0)
+        (win_w as f32 / range_x as f32).min(1.0)
     } else {
         0.0
     };
     let step_y = if range_y > 0 {
-        (crop_h as f32 / range_y as f32).min(1.0)
+        (win_h as f32 / range_y as f32).min(1.0)
     } else {
         0.0
     };
@@ -223,8 +241,35 @@ mod tests {
     const VCOLS: u16 = 100; // 800 px
     const VROWS: u16 = 40; //  640 px
 
+    fn vp() -> Viewport {
+        Viewport {
+            cols: VCOLS,
+            rows: VROWS,
+            cell_w: CW,
+            cell_h: CH,
+        }
+    }
+
     fn place(view: &PageView) -> PagePlacement {
-        place_page(IMG_W, IMG_H, CW, CH, VCOLS, VROWS, view)
+        place_page((IMG_W, IMG_H), (0, 0, IMG_W, IMG_H), vp(), view)
+    }
+
+    #[test]
+    fn trimmed_content_always_crops_within_the_content() {
+        // Margin trim: fit-page on an inset content region shows just that region
+        // (filling the viewport) and always emits a crop, hiding the margins.
+        let content = (150u32, 100u32, 700u32, 1200u32);
+        let p = place_page((IMG_W, IMG_H), content, vp(), &PageView::default());
+        let (x, y, w, h) = p.crop.expect("a trimmed page always crops");
+        assert!(
+            x >= 150 && y >= 100,
+            "crop starts within the content origin"
+        );
+        assert!(
+            x + w <= 150 + 700 && y + h <= 100 + 1200,
+            "crop stays within the content"
+        );
+        assert!(p.rows <= VROWS && p.cols <= VCOLS);
     }
 
     #[test]

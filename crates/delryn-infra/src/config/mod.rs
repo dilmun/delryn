@@ -126,6 +126,9 @@ pub struct Config {
     /// In two-page mode, show the first page alone (like a book cover), then pair
     /// (2,3), (4,5)… so facing pages line up as in a physical book.
     pub cover_offset: bool,
+    /// Trim baked-in whitespace margins from PDF pages so the content fills the
+    /// viewport (bigger text). Toggle with `x` in the reader.
+    pub pdf_trim: bool,
     /// Extra blank lines between wrapped text lines (0 = single-spaced).
     pub line_spacing: u8,
     /// Blank lines between blocks/paragraphs.
@@ -194,6 +197,7 @@ impl Default for Config {
             side_padding: 6,
             page_gap: 5,
             cover_offset: false,
+            pdf_trim: true,
             line_spacing: 0,
             paragraph_spacing: 1,
             view_mode: ViewMode::Center,
