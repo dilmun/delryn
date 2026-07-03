@@ -40,6 +40,10 @@ pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
     if sf.view {
         bar.text(Zone::Right, 3, config.view_mode.label(), dim);
     }
+    // Continuous cross-section scroll indicator (reflow only).
+    if reader.continuous_active() {
+        bar.text(Zone::Right, 3, "continuous", dim);
+    }
     if reader.paged || reader.is_paged_image() {
         // A paged-image (PDF) page is the section itself; reflowable page mode
         // counts virtual pages within the section.
