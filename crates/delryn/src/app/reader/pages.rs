@@ -19,10 +19,29 @@ pub(super) const PAGE_THEME_AHEAD: usize = 4;
 
 impl Reader {
     /// Collect finished page themings into the cache (cheap; safe to call often).
+    /// Serves both the base raster and the viewport-matched crisp rasters — they
+    /// share the themer, keyed by (section, width, policy).
     pub(super) fn drain_page_themer(&mut self) {
         for done in self.pages.themer.poll() {
             self.pages.requested.remove(&done.key);
             self.pages.themed.put(done.key, done.bytes);
+        }
+    }
+
+    /// Collect finished crisp re-rasterizations into the cache (cheap; safe to call
+    /// often). No-op for reflowable documents (no worker).
+    pub(super) fn drain_crisp(&mut self) {
+        let Some(worker) = self.crisp.worker.as_ref() else {
+            return;
+        };
+        let done: Vec<_> = worker.poll().collect();
+        for page in done {
+            self.crisp.requested.remove(&page.key);
+            if page.bytes.is_empty() {
+                self.crisp.failed.insert(page.key); // render failed → don't retry
+            } else {
+                self.crisp.rasters.put(page.key, page.bytes);
+            }
         }
     }
 
@@ -35,6 +54,10 @@ impl Reader {
     pub fn sync_pages(&mut self, policy: media::RenderPolicy) {
         self.pages.policy = policy;
         self.drain_page_themer();
+        self.drain_crisp();
+        // The view rebuilds the per-section display width each frame (via
+        // `resolve_page_width`); clear last frame's so stale sections don't linger.
+        self.crisp.effective.clear();
         if policy.mode == media::ImageMode::Faithful {
             return; // the raw raster is shown as-is; nothing to theme
         }
@@ -45,7 +68,7 @@ impl Reader {
         let lo = self.section.saturating_sub(PAGE_THEME_AHEAD);
         let hi = (self.section + PAGE_THEME_AHEAD).min(n - 1);
         for s in lo..=hi {
-            let key = (s, policy);
+            let key = (s, BASE_RASTER_WIDTH, policy);
             if self.raster_ready(s)
                 && !self.pages.themed.contains(&key)
                 && !self.pages.requested.contains(&key)
