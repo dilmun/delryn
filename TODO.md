@@ -593,9 +593,21 @@ no premature abstraction, no speculative modes).*
       keeps the loop drawing until the crisp page pops in; a failed raster is
       remembered and not retried. *Remaining limits: crisp is single-page only
       (spreads sit at fit-page, already crisp); pan re-transmits the page
-      (**placement-id move** = perf follow-up); wheel still flips.* **Still (the
-      tiled strategy itself):** tiles (rows×cols) → N-up, step → sliding window,
-      start-offset, direction → **manga RTL** (flips gutter + turn keys).
+      (**placement-id move** = perf follow-up); wheel still flips.* ✅ **Manga / RTL
+      direction** (branch `feature/reader-manga-rtl`) — `reading_direction` config
+      (Ltr/Rtl); a paged spread swaps facing pages so it reads right-to-left
+      (`spread.rs` swaps page↔area, spine-align preserved); Settings → Reading + a
+      "manga ←" status tag. Reflowable text stays LTR. 🚫 **N-up page grid — BUILT
+      then DROPPED (2026-07-03, user tested).** A `ViewMode::Grid` tiling the visible
+      page block worked functionally but was **bad in practice**: it transmits N
+      *full-resolution* (~2000 px) page rasters per turn (3×3 = 9 → floods the Kitty
+      deck + theming queue → render loop unresponsive, and left a following PDF page
+      **black** until restart), and equal cells **letterbox** portrait pages into
+      tiny, far-apart thumbnails (gap was `page_gap`=5). Reverted; the reader's paged
+      tiling stays spread-only. **A page grid needs a real thumbnail pipeline
+      (transmit small cell-sized rasters, not full pages) + tight page-aspect packing
+      to be worth it — deferred to the 7.4 thumbnail *browser* below, done right.**
+      Sliding-window/start-offset not built (no demand).
 - [~] **7.4 Distinct strategies (not presets).** ✅ **Continuous scroll across
       sections (reflow)** — branch `feature/reader-continuous-scroll`. The
       long-missing chapter-join: the anchor section's tail and the following
@@ -613,8 +625,10 @@ no premature abstraction, no speculative modes).*
       **paged (PDF) continuous** — vertical page-image stacking through the deck —
       **still deferred** (a distinct, harder problem).* **Still:** **grid /
       thumbnail browser** as a visual page-jump complementing the TOC sidebar
-      (arrows move selection, Enter opens) — note the 7.3 N-up *reading* grid landed
-      on `feature/pdf-nup-manga`; this is the selection-driven *browser*.
+      (arrows move selection, Enter opens). This is where a page grid belongs — a
+      *thumbnail* browser (small cell-sized rasters, tightly packed) for jumping, not
+      a reading layout. The dropped 7.3 N-up grid (above) is the lesson: it must
+      transmit downscaled thumbnails, not full-page rasters.
 - [ ] **7.5 Deferred behind the interface (cheap once 7.1 exists — build on
       demand, NOT speculatively).** Film strip (current page large + neighbours
       small); Comparison (pin arbitrary non-sequential pages — needs a "pinned

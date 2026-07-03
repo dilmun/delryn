@@ -220,6 +220,38 @@ mod tests {
     }
 
     #[test]
+    fn two_page_paged_rtl_swaps_facing_pages() {
+        // Manga: the facing pages swap sides so the spread reads right-to-left —
+        // the later page sits on the left, the earlier on the right.
+        let cfg = Config {
+            reading_direction: crate::config::ReadingDirection::Rtl,
+            ..Config::default()
+        };
+        let spread = [4usize, 5usize];
+        let ctx = LayoutCtx {
+            body: body(),
+            config: &cfg,
+            paged: true,
+            scroll: 0,
+            section: 4,
+            spread: &spread,
+        };
+        let p = plan(ViewMode::TwoPage, &ctx);
+        let mut pages: Vec<(usize, u16)> = p
+            .placements
+            .iter()
+            .filter_map(|pl| match pl {
+                Placement::Page { section, area } => Some((*section, area.x)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pages.len(), 2, "a spread is two pages");
+        pages.sort_by_key(|(_, x)| *x);
+        assert_eq!(pages[0].0, 5, "RTL: the later page is on the left");
+        assert_eq!(pages[1].0, 4, "RTL: the earlier page is on the right");
+    }
+
+    #[test]
     fn two_page_paged_lone_page_spans_the_body() {
         let cfg = Config::default();
         let spread = [0usize];
