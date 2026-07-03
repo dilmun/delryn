@@ -27,12 +27,13 @@ use crate::{
 };
 
 /// Width, in pixels, each page is rasterized to. Sized so the terminal
-/// (which GPU-scales the placement to the display area) still gets a crisp
-/// page, while keeping the PNG small enough that the transmit — the cost on a
-/// page turn — is fast and reliable. Smaller ⇒ snappier fast navigation; a
-/// half-screen spread page only displays ~700px wide, so 1400 super-samples it.
-/// The v2 quality/perf knob.
-const PAGE_RASTER_WIDTH: i32 = 1400;
+/// (which GPU-scales the placement to the display area) still gets a crisp page
+/// — including on a hi-DPI display and after a margin trim upscales the content
+/// region — while keeping the PNG small enough that the transmit (the cost on a
+/// page turn) stays fast. Smaller ⇒ snappier fast navigation but softer text.
+/// The quality/perf knob; the scalable fix is a viewport-matched re-raster (a
+/// size-keyed page cache), deferred. Also drives margin-trim decode cost.
+const PAGE_RASTER_WIDTH: i32 = 2000;
 
 // ---------------------------------------------------------------------------
 // PDFium binding (process-global, bound once)

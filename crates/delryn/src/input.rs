@@ -73,6 +73,8 @@ pub enum Action {
     ZoomReset,
     /// Cycle the paged fit mode (page → width → height).
     FitCycle,
+    /// Toggle trimming the whitespace margins of PDF pages.
+    ToggleTrim,
 }
 
 pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
@@ -160,6 +162,7 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('-') => Action::ZoomOut,
         KeyCode::Char('0') => Action::ZoomReset,
         KeyCode::Char('W') => Action::FitCycle,
+        KeyCode::Char('x') => Action::ToggleTrim,
         _ => Action::None,
     }
 }

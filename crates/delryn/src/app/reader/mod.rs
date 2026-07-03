@@ -22,7 +22,7 @@ use super::{CACHE_CAP, Focus};
 mod images;
 pub use images::ImageGeom;
 mod page_view;
-pub use page_view::{PageView, PanRoom, place_page};
+pub use page_view::{PageView, PanRoom, Viewport, place_page};
 mod pages;
 mod search;
 mod sidebar;
@@ -83,6 +83,11 @@ pub struct Reader {
     page_room: PanRoom,
     /// Pan step per keypress (fraction of the pan range), from the placement.
     page_step: (f32, f32),
+    /// Trim baked-in whitespace margins from paged (PDF) pages (mirrored from
+    /// config each render), so the content fills the viewport.
+    trim_margins: bool,
+    /// Cached content bounding box per section (raster px) for the margin trim.
+    trim_cache: HashMap<usize, (u32, u32, u32, u32)>,
     /// The inputs the current `lines` were wrapped against; a change re-wraps.
     wrapped: WrapKey,
     /// Inline-image lifecycle (built protocols, row estimates, in-flight builds).
@@ -179,6 +184,8 @@ impl Reader {
             page_view: PageView::default(),
             page_room: PanRoom::default(),
             page_step: (0.0, 0.0),
+            trim_margins: true,
+            trim_cache: HashMap::new(),
             wrapped: WrapKey::invalid(),
             images: ImageState::default(),
             pages: PageThemeState::default(),
@@ -1230,6 +1237,33 @@ impl Reader {
         if !self.is_paged_image() && !self.lines.is_empty() {
             self.pending_frac = Some(self.within_frac());
         }
+    }
+
+    /// Mirror the margin-trim setting from config (called each render).
+    pub fn set_trim_margins(&mut self, on: bool) {
+        self.trim_margins = on;
+    }
+
+    /// The content bounding box `(x, y, w, h)` of `section`'s page raster for the
+    /// margin trim, cached per section. Returns the whole raster `(0, 0, w, h)`
+    /// when trimming is off, the raster isn't ready yet, or there's nothing to
+    /// trim. Computed from the raw raster (theme-independent), so the box applies
+    /// to the themed PNG too.
+    pub fn page_content_box(&mut self, section: usize, full: (u32, u32)) -> (u32, u32, u32, u32) {
+        let whole = (0, 0, full.0, full.1);
+        if !self.trim_margins {
+            return whole;
+        }
+        if let Some(bb) = self.trim_cache.get(&section) {
+            return *bb;
+        }
+        // Not ready → retry next frame rather than caching a wrong (whole) box.
+        let Some(png) = self.raster_png(section) else {
+            return whole;
+        };
+        let bb = media::content_bbox(&png).unwrap_or(whole);
+        self.trim_cache.insert(section, bb);
+        bb
     }
 
     /// Store the pan room + step the view computed for this frame's page, so

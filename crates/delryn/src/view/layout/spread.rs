@@ -12,10 +12,17 @@ impl LayoutStrategy for SpreadStrategy {
     fn plan(&self, ctx: &LayoutCtx) -> LayoutPlan {
         let body = ctx.body;
         let config = ctx.config;
-        // Same per-side edge padding as Center (at least the gutter width), with a
-        // configurable gap between the two columns.
-        let pad = ((body.width as u32 * config.side_padding as u32 / 100) as u16).max(GUTTER_COLS);
-        let gap = config.page_gap;
+        // Reflowed columns keep a per-side edge padding (≥ the gutter) and a
+        // configurable gap. Paged (PDF) pages fill the spread edge-to-edge with no
+        // gap — they hug the spine and carry their own (trimmed) margins.
+        let (pad, gap) = if ctx.paged {
+            (0, 0)
+        } else {
+            (
+                ((body.width as u32 * config.side_padding as u32 / 100) as u16).max(GUTTER_COLS),
+                config.page_gap,
+            )
+        };
         let usable = body.width.saturating_sub(pad * 2 + gap).max(2);
         let col_w = (usable / 2).max(1);
         // Re-center any rounding remainder into the outer margins.
