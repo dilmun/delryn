@@ -13,15 +13,16 @@ impl LayoutStrategy for SpreadStrategy {
         let body = ctx.body;
         let config = ctx.config;
         // Both keep the configurable inter-page gap (like the EPUB spread) so the
-        // two pages don't touch. Reflowed columns keep the full per-side reading
-        // margin; paged (PDF) pages use half that on the outer edges (they carry
-        // their own trimmed margins), so they're big but not edge-to-edge.
-        let full_pad =
-            ((body.width as u32 * config.side_padding as u32 / 100) as u16).max(GUTTER_COLS);
+        // two pages don't touch. Reflowed columns keep the per-side reading margin;
+        // paged (PDF) pages fill the outer edges — they carry their own margin
+        // (halved by the trim, toggled with `x`), so no reading margin is added.
         let (pad, gap) = if ctx.paged {
-            (full_pad / 2, config.page_gap)
+            (0, config.page_gap)
         } else {
-            (full_pad, config.page_gap)
+            (
+                ((body.width as u32 * config.side_padding as u32 / 100) as u16).max(GUTTER_COLS),
+                config.page_gap,
+            )
         };
         let usable = body.width.saturating_sub(pad * 2 + gap).max(2);
         let col_w = (usable / 2).max(1);
