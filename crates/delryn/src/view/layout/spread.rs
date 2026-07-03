@@ -43,22 +43,30 @@ impl LayoutStrategy for SpreadStrategy {
         let placements = if ctx.paged {
             // A facing-page spread; the reader decides the pairing (cover-offset
             // aware). A lone page (the cover, or a trailing odd page) centres
-            // across the whole area rather than sitting in one column.
+            // across the whole area rather than sitting in one column. In manga
+            // (RTL) reading the two facing pages swap sides — the earlier page sits
+            // on the right — so the spread reads right-to-left. Placements stay in
+            // [left_area, right_area] order (the renderer spine-aligns by index);
+            // only which page fills each area flips.
+            let rtl = config.reading_direction.is_rtl();
             match ctx.spread {
                 [only] => vec![Placement::Page {
                     section: *only,
                     area: body,
                 }],
-                [l, r, ..] => vec![
-                    Placement::Page {
-                        section: *l,
-                        area: left_area,
-                    },
-                    Placement::Page {
-                        section: *r,
-                        area: right_area,
-                    },
-                ],
+                [l, r, ..] => {
+                    let (left_pg, right_pg) = if rtl { (*r, *l) } else { (*l, *r) };
+                    vec![
+                        Placement::Page {
+                            section: left_pg,
+                            area: left_area,
+                        },
+                        Placement::Page {
+                            section: right_pg,
+                            area: right_area,
+                        },
+                    ]
+                }
                 [] => Vec::new(),
             }
         } else {
