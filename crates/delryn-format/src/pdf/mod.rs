@@ -23,7 +23,8 @@ use pdfium_render::prelude::{
 };
 
 use crate::{
-    Block, Document, ImageWidth, Metadata, OutlineItem, Section, SectionLoader, Span, TocEntry,
+    Block, Document, ImageWidth, Metadata, OutlineItem, PageRasterizer, Section, SectionLoader,
+    Span, TocEntry,
 };
 
 /// Width, in pixels, each page is rasterized to. Sized so the terminal
@@ -31,9 +32,11 @@ use crate::{
 /// — including on a hi-DPI display and after a margin trim upscales the content
 /// region — while keeping the PNG small enough that the transmit (the cost on a
 /// page turn) stays fast. Smaller ⇒ snappier fast navigation but softer text.
-/// The quality/perf knob; the scalable fix is a viewport-matched re-raster (a
-/// size-keyed page cache), deferred. Also drives margin-trim decode cost.
-const PAGE_RASTER_WIDTH: i32 = 2000;
+/// The quality/perf knob. A viewport-matched re-raster (via [`PageRasterizer`])
+/// renders a *larger* crisp raster on top when a page is zoomed in or shown on a
+/// large/hi-DPI viewport; this stays the generous baseline every page loads at.
+/// Also drives margin-trim decode cost.
+pub const PAGE_RASTER_WIDTH: i32 = 2000;
 
 // ---------------------------------------------------------------------------
 // PDFium binding (process-global, bound once)
@@ -139,6 +142,13 @@ impl Document for PdfDocument {
         })
     }
 
+    fn page_rasterizer(&self) -> Option<Box<dyn PageRasterizer>> {
+        Some(Box::new(PdfRasterizer {
+            path: self.path.clone(),
+            doc: None,
+        }))
+    }
+
     fn section_count(&self) -> usize {
         self.page_count
     }
@@ -172,6 +182,23 @@ impl SectionLoader for PdfLoader {
             Some(doc) => render_page(doc, index),
             None => vec![render_failed(index)],
         }
+    }
+}
+
+/// Background rasterizer: re-renders a page at an arbitrary width for the reader's
+/// viewport-matched crisp path. Like [`PdfLoader`] it opens its own PDFium handle
+/// lazily on its thread (trivially `Send` at construction).
+struct PdfRasterizer {
+    path: PathBuf,
+    doc: Option<PdfiumDoc<'static>>,
+}
+
+impl PageRasterizer for PdfRasterizer {
+    fn rasterize(&mut self, index: usize, width: u32) -> Option<Vec<u8>> {
+        if self.doc.is_none() {
+            self.doc = open_pdfium_doc(&self.path).ok();
+        }
+        rasterize_page_png_at(self.doc.as_ref()?, index, width.min(i32::MAX as u32) as i32)
     }
 }
 

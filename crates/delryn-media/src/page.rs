@@ -13,9 +13,12 @@ use std::thread;
 
 use crate::recolor::{RenderPolicy, theme_page_png};
 
-/// Identifies one themed page: the page (section) and the theme policy it was
-/// themed for, so re-theming on a theme/mode change is a plain cache miss.
-pub type PageKey = (usize, RenderPolicy);
+/// Identifies one themed page: the page (section), the pixel width its raster was
+/// rendered at, and the theme policy it was themed for. Width is part of the key
+/// so the viewport-matched crisp raster (rendered at a larger width) themes and
+/// caches independently of the base raster; a theme/mode change is a plain cache
+/// miss that re-themes from the already-rasterized page rather than re-rendering.
+pub type PageKey = (usize, u32, RenderPolicy);
 
 /// A request to theme one page's raster off the main thread.
 struct PageThemeReq {
@@ -46,7 +49,7 @@ impl PageThemer {
             while let Ok(req) = req_rx.recv() {
                 // Fall back to the raw raster when no theming applies, so the page
                 // is still shown (Faithful / dark / photo page) rather than lost.
-                let bytes = theme_page_png(&req.raw, req.key.1)
+                let bytes = theme_page_png(&req.raw, req.key.2)
                     .map(Arc::new)
                     .unwrap_or(req.raw);
                 if res_tx
