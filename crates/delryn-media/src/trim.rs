@@ -12,17 +12,15 @@ use crate::decode::decode;
 
 /// Luma at or below this (0–255) counts as ink against a light page.
 const INK_MAX_LUMA: u8 = 200;
-/// Padding added around the detected content (fraction of the page), so glyph
-/// edges and descenders aren't clipped.
-const PAD_FRAC: f32 = 0.012;
 /// Reject a trim that keeps less than this fraction of the page area — a likely
 /// misdetection or near-blank page. The caller then shows the whole page.
 const MIN_KEEP_FRAC: f32 = 0.15;
 
-/// The padded bounding box `(x, y, w, h)` of the non-background content in `png`.
-/// `None` when it can't decode, the page is (near) blank, the box is implausibly
-/// small, or there's essentially nothing to trim — in every case the caller
-/// should fall back to the whole page.
+/// A page box `(x, y, w, h)` that **halves** each of the page's whitespace
+/// margins around the content (not a tight crop — the page keeps half its
+/// original breathing room). `None` when it can't decode, the page is (near)
+/// blank, the box is implausibly small, or there's essentially nothing to trim —
+/// in every case the caller should fall back to the whole page.
 pub fn content_bbox(png: &[u8]) -> Option<(u32, u32, u32, u32)> {
     let gray = decode(png)?.to_luma8();
     let (w, h) = (gray.width(), gray.height());
@@ -60,13 +58,12 @@ pub fn content_bbox(png: &[u8]) -> Option<(u32, u32, u32, u32)> {
     let min_y = (0..h).find(|&y| row_ink[y as usize] >= row_thresh)?;
     let max_y = (0..h).rev().find(|&y| row_ink[y as usize] >= row_thresh)?;
 
-    // Pad, clamped to the page.
-    let pad_x = (w as f32 * PAD_FRAC) as u32;
-    let pad_y = (h as f32 * PAD_FRAC) as u32;
-    let x0 = min_x.saturating_sub(pad_x);
-    let y0 = min_y.saturating_sub(pad_y);
-    let x1 = (max_x + pad_x).min(w - 1);
-    let y1 = (max_y + pad_y).min(h - 1);
+    // Keep half of each original margin: the box edge sits halfway between the
+    // content and the page edge, so the page loses half its whitespace, not all.
+    let x0 = min_x / 2;
+    let y0 = min_y / 2;
+    let x1 = max_x + (w - 1 - max_x) / 2;
+    let y1 = max_y + (h - 1 - max_y) / 2;
     let bw = x1 - x0 + 1;
     let bh = y1 - y0 + 1;
 
@@ -94,8 +91,9 @@ mod tests {
     }
 
     #[test]
-    fn trims_a_wide_margin_to_the_content() {
-        // A 200×200 white page with a black block in [60,140)² (content).
+    fn halves_the_margin_around_the_content() {
+        // A 200×200 white page with a black block in [60,140) each axis (content),
+        // so every margin is 60 px.
         let mut img = GrayImage::from_pixel(200, 200, Luma([255]));
         for y in 60..140 {
             for x in 60..140 {
@@ -103,13 +101,12 @@ mod tests {
             }
         }
         let (x, y, w, h) = content_bbox(&png_of(img)).expect("content found");
-        // The box hugs the block (± padding), well inside the page.
-        assert!(
-            x <= 60 && y <= 60,
-            "box starts at/around the block: {x},{y}"
-        );
-        assert!(x + w >= 140 && y + h >= 140, "box covers the block");
-        assert!(w < 200 && h < 200, "margins trimmed");
+        // Each 60px margin is halved (~30px kept) — not removed, not tight.
+        assert!(x > 0 && x < 60, "left margin halved, not removed/tight: {x}");
+        assert!(y > 0 && y < 60, "top margin halved: {y}");
+        // The content itself stays fully inside the box.
+        assert!(x <= 60 && x + w >= 140, "content preserved horizontally");
+        assert!(y <= 60 && y + h >= 140, "content preserved vertically");
     }
 
     #[test]
