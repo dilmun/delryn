@@ -328,11 +328,10 @@ impl App {
 /// In paged mode (or for page-image documents) vertical motion flips whole pages;
 /// a held PDF flip is throttled to the drawn frame via `flip_ready`. Split out of
 /// [`App::apply`] so its action dispatch stays a flat router.
-/// Rows scrolled per `j`/`k` tap in continuous-paged (PDF stacking) mode; a held
-/// key repeats it once per drawn frame (throttled via `flip_ready`), so this sets
-/// the smooth-scroll speed. Small enough to read comfortably, large enough that a
-/// held key moves at a good clip.
-const PAGED_STEP: usize = 3;
+/// Rows scrolled per `j`/`k` tap in continuous-paged (PDF stacking) mode. A held
+/// key repeats at the OS rate, so speed ≈ this × repeat-rate; the deck re-places
+/// pages without re-transmitting (transmit-once), so a bigger step stays smooth.
+const PAGED_STEP: usize = 6;
 
 fn apply_nav(reader: &mut Reader, action: Action, paged: bool, flip_ready: bool) {
     // Continuous-paged (PDF page stacking): vertical motion scrolls the vertical

@@ -369,7 +369,15 @@ impl Reader {
     fn prefetch_neighbors(&mut self) {
         self.drain_loader();
         let n = self.doc.section_count();
-        let ahead = if self.is_paged_image() { 4 } else { 1 };
+        // Continuous stacking can pull several pages into view at once and scrolls
+        // through them fast, so it rasterizes a wider window than page-flipping.
+        let ahead = if self.continuous_paged_active() {
+            6
+        } else if self.is_paged_image() {
+            4
+        } else {
+            1
+        };
         let fwd: Vec<usize> = (1..=ahead)
             .map(|d| self.section + d)
             .filter(|&s| s < n)
