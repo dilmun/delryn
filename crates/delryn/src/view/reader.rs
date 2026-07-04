@@ -45,9 +45,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.justify = config.justify;
     reader.tidy_spacing = config.tidy_spacing;
     reader.paged = config.paged;
-    // Continuous cross-section scroll is a single-column (Center) reflow mode; the
-    // reader further gates it on reflowable + not-paged + not-chapter-locked.
-    reader.continuous = config.continuous && matches!(config.view_mode, ViewMode::Center);
+    // The raw continuous flag + view mode; each `continuous_*_active` check gates the
+    // rest (reflow → Center only; paged → Center single stack or TwoPage spread stack).
+    reader.continuous = config.continuous;
+    reader.view_mode = config.view_mode;
+    reader.page_gap = config.page_gap;
     reader.spread = matches!(config.view_mode, ViewMode::TwoPage) && reader.is_paged_image();
     reader.cover_offset = config.cover_offset;
     reader.chapter_lock = config.chapter_lock;
@@ -206,7 +208,12 @@ fn render_content(
         // the kitty placements show through — no per-cell drawing, no
         // transmit-on-turn, no black gap.
         if reader.continuous_paged_active() {
-            // Continuous: a vertical stack of page slices filling the body.
+            // Continuous: a vertical stack of page slices filling the body. It sizes
+            // pages against the *full* body width (even in TwoPage, where the plan's
+            // `measure` is a half column) and computes its own columns/zoom.
+            reader.last_measure = body.width as usize;
+            reader.viewport_lines = body.height as usize;
+            reader.page_lines = body.height as usize;
             capture_pdf_stack(reader, images, body, image_policy(config));
             return;
         }

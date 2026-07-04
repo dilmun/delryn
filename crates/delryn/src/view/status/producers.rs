@@ -58,8 +58,13 @@ pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
         };
         bar.text(Zone::Right, 7, format!("p {cur}/{total}"), plain);
     }
-    // Zoom/fit indicator, only while a PDF page is zoomed off fit-page.
-    if reader.is_paged_image() && reader.page_view.is_zoomed() {
+    // Zoom/fit indicator: the continuous stack's zoom, else a single page zoomed
+    // off fit-page.
+    if reader.continuous_paged_active() {
+        if let Some(z) = reader.cont_zoom_label() {
+            bar.text(Zone::Right, 4, z, plain);
+        }
+    } else if reader.is_paged_image() && reader.page_view.is_zoomed() {
         bar.text(Zone::Right, 4, reader.page_view.label(), plain);
     }
     if sf.position && !reader.is_paged_image() {

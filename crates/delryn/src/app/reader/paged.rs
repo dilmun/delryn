@@ -186,35 +186,136 @@ impl Reader {
     }
 
     /// Assemble the continuous-paged vertical stack for `body` this frame: walk the
-    /// anchor page downward, sizing each to fit-width, until the viewport is filled;
-    /// record the covered sections (for the loader / readiness checks) and emit the
-    /// [`PageTarget`]s for the pages whose pixels are ready to place. Still-loading
-    /// pages are left as gaps this frame and picked up once they land. The pure
-    /// slicing is [`page_stack::stack_targets`].
+    /// anchor band downward (one page per band in Center, a facing pair in TwoPage),
+    /// resolving each tile's zoom/centre/pan horizontally and its height, until the
+    /// viewport is filled; record the covered sections (for the loader / readiness
+    /// checks) and emit the [`PageTarget`]s for the pages whose pixels are ready.
+    /// Still-loading pages are left as gaps this frame and picked up once they land.
+    /// The pure vertical slicing is [`page_stack::stack_targets`].
     pub fn capture_page_stack(&mut self, body: ratatui::layout::Rect) {
         let n = self.doc.section_count();
         let vh = body.height as i64;
-        // Collect the pages that intersect the viewport from the current scroll.
-        let mut pages = Vec::new();
+        let two_page = self.continuous_two_page();
+        let mut bands = Vec::new();
+        let mut visible = Vec::new();
         let mut cursor: i64 = -(self.scroll as i64);
-        let mut s = self.section;
-        while s < n && cursor < vh {
-            let (content, rows) = self.page_metrics(s);
-            pages.push(page_stack::StackPage {
-                section: s,
-                content,
-                rows,
-            });
-            cursor += rows as i64 + page_stack::STACK_GAP as i64;
-            s += 1;
+        let mut anchor = if two_page {
+            self.spread_left(self.section)
+        } else {
+            self.section
+        };
+        while anchor < n && cursor < vh {
+            // The sections this band covers (a single page, or a spread's pair) —
+            // recorded + requested whether or not they've rasterized yet, so a
+            // still-loading page still drives the loader and shows once it lands.
+            let sections = if two_page {
+                self.spread_at(self.spread_left(anchor))
+            } else {
+                vec![anchor]
+            };
+            for &s in &sections {
+                visible.push(s);
+                self.request_page(s);
+            }
+            // Band height from the estimate-aware metrics (stable even while a page
+            // in the band is still loading), so the stack doesn't reflow when it lands.
+            let rows = self.band_rows_of(anchor);
+            let tiles = self.build_tiles(body.width, two_page, &sections);
+            bands.push(page_stack::StackBand { tiles, rows });
+            cursor += rows.max(1) as i64 + page_stack::STACK_GAP as i64;
+            match self.next_band_anchor(anchor) {
+                Some(next) => anchor = next,
+                None => break,
+            }
         }
-        self.visible_stack = pages.iter().map(|p| p.section).collect();
-        let targets = page_stack::stack_targets(body, self.scroll, &pages);
+        self.visible_stack = visible;
+        let targets = page_stack::stack_targets(body, self.scroll, &bands);
         // Only place pages whose themed bytes are ready; the rest fill in next frame.
         self.pdf_targets = targets
             .into_iter()
             .filter(|t| self.page_ready(t.section))
             .collect();
+    }
+
+    /// Build the ready tiles of a band: a single centred/zoomed page (Center) or a
+    /// facing pair laid out in two columns (TwoPage), each tile's horizontal
+    /// placement + height resolved at the current zoom. Unloaded pages are omitted
+    /// (their slot stays blank until they rasterize).
+    fn build_tiles(
+        &mut self,
+        viewport_cols: u16,
+        two_page: bool,
+        sections: &[usize],
+    ) -> Vec<page_stack::StackTile> {
+        let scale = self.continuous_scale();
+        let pan_x = self.continuous_pan_x();
+        let mut tiles = Vec::new();
+        if !two_page || sections.len() == 1 {
+            // Single page (Center, or a lone cover / trailing odd page): full width.
+            if let Some(tile) =
+                self.build_tile(sections[0], (0, viewport_cols), viewport_cols, scale, pan_x)
+            {
+                tiles.push(tile);
+            }
+            return tiles;
+        }
+        // A facing pair: earlier page left, later page right (LTR, gap between).
+        let col_w = viewport_cols.saturating_sub(self.page_gap) / 2;
+        for (i, &section) in sections.iter().enumerate() {
+            let slot = if i == 0 {
+                (0u16, col_w)
+            } else {
+                (col_w + self.page_gap, col_w)
+            };
+            if let Some(tile) = self.build_tile(section, slot, viewport_cols, scale, pan_x) {
+                tiles.push(tile);
+            }
+        }
+        tiles
+    }
+
+    /// Ask the background loader to rasterize `section` if it isn't cached or already
+    /// in flight — so every visible band drives the loader, not just the prefetch
+    /// window (a tall/zoomed-out stack can show more pages than the ±neighbour
+    /// prefetch reaches).
+    fn request_page(&mut self, section: usize) {
+        if section >= self.doc.section_count() || self.sections.sections.contains_key(&section) {
+            return;
+        }
+        if self.sections.requested.insert(section) {
+            let _ = self.sections.req_tx.send(section);
+        }
+    }
+
+    /// Resolve a single page tile for the stack: its content box, horizontal
+    /// placement (zoom/centre/pan against its `(slot_x, slot_w)` at zoom 1), and
+    /// display height. `None` if the page hasn't rasterized yet (so its band leaves a
+    /// gap until it lands — but it is still recorded as visible for loading).
+    fn build_tile(
+        &mut self,
+        section: usize,
+        slot: (u16, u16),
+        viewport_cols: u16,
+        scale: f32,
+        pan_x: f32,
+    ) -> Option<page_stack::StackTile> {
+        let content = self.page_content_of(section)?;
+        let (cx, _, cw, _) = content;
+        let (slot_x, slot_w) = slot;
+        let (x, w, src_x, src_w) =
+            page_stack::tile_h(slot_x, slot_w, viewport_cols, cx, cw, scale, pan_x);
+        // The tile's height uses its scaled slot width (its virtual display width).
+        let disp_w = ((slot_w as f32 * scale).round() as u16).max(1);
+        let rows = self.tile_rows(section, disp_w);
+        Some(page_stack::StackTile {
+            section,
+            content,
+            x,
+            w,
+            src_x,
+            src_w,
+            rows,
+        })
     }
 
     /// Collect any pages the background loader and the page themer have finished
@@ -237,7 +338,7 @@ impl Reader {
     /// The left page of the two-page tile containing `section`. Without a cover
     /// offset, tiles are (0,1),(2,3)…; with one, page 0 is alone, then (1,2),
     /// (3,4)… so the left page is odd.
-    fn spread_left(&self, section: usize) -> usize {
+    pub(super) fn spread_left(&self, section: usize) -> usize {
         if !self.cover_offset {
             section - section % 2
         } else if section == 0 {
@@ -249,10 +350,9 @@ impl Reader {
         }
     }
 
-    /// The page(s) of the current two-page spread: one for a lone page (the cover
-    /// under a cover offset, or a trailing odd page), else the facing pair.
-    pub fn spread_pages(&self) -> Vec<usize> {
-        let left = self.spread_left(self.section);
+    /// The page(s) of the spread whose left page is `left`: one for a lone page (the
+    /// cover under a cover offset, or a trailing odd page), else the facing pair.
+    pub(super) fn spread_at(&self, left: usize) -> Vec<usize> {
         if self.cover_offset && left == 0 {
             return vec![0];
         }
@@ -261,6 +361,17 @@ impl Reader {
             v.push(left + 1);
         }
         v
+    }
+
+    /// How many pages the spread containing `section` steps over — the distance to
+    /// the next spread's left page (1 for a lone cover / trailing page, else 2).
+    pub(super) fn spread_width(&self, section: usize) -> usize {
+        self.spread_at(self.spread_left(section)).len()
+    }
+
+    /// The page(s) of the current two-page spread.
+    pub fn spread_pages(&self) -> Vec<usize> {
+        self.spread_at(self.spread_left(self.section))
     }
 
     /// The section a forward flip lands on — the next tile's left in a spread
