@@ -659,9 +659,16 @@ no premature abstraction, no speculative modes).*
       re-places — a scroll frame is a few tiny escapes, not MB of transmit. Data is
       re-sent only on first appearance / theme change; a page scrolled off frees its
       data (`d=I`). Plus a bigger scroll step (3→6 rows), wider continuous prefetch
-      (±6) + `CACHE_CAP` 11→15 so fast scroll doesn't outrun rasterization. Sizing
-      stays **fit-width** by default (user confirmed after the speed fix — the jank
-      had made it feel small). *v1 limits (graceful): base raster only (no
+      (±6) + `CACHE_CAP` 11→15 so fast scroll doesn't outrun rasterization.
+      ✅ **Fit-page default + side padding (user: "don't stretch to fill width; show a
+      full page; add L/R padding"):** continuous pages now lay out **fit-page**
+      (`page_stack::fit_page_cols` — the whole page sized to fit the viewport, so a
+      portrait page comes out narrower than the pane and centres) instead of
+      fit-width; `place_tile_h` centres it in its slot (pan-crop once zoomed past the
+      viewport). Zoom (`cont_scale`) is now relative to fit-page (1.0 = whole page;
+      `+` grows toward fit-width and beyond). Explicit L/R padding from
+      `config.side_padding` (mirrored to the reader), single page + each two-page
+      column inset by it. *v1 limits (graceful): base raster only (no
       viewport-matched crisp re-raster mid-stack — that's the single-page path);
       two-page continuous is LTR (manga/RTL not yet); the inter-page gap is a fixed 1
       row (not a config knob yet).* **Still:**
