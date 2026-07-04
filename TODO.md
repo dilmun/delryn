@@ -656,15 +656,29 @@ updated dev docs; none block the build (`cargo fmt` + `clippy` are clean
 workspace-wide). Address opportunistically when touching the area — and do not
 grow these further.
 
-- [ ] `app/reader/mod.rs` (~1210 non-test lines; `impl Reader` ~1024) — regrew
-      past the 1000-line refactor trigger after the Phase 0 split to 601. Image
-      lifecycle, sidebar, and search are already child modules; the remaining
-      bulk is the decode/wrap/scroll/nav/history core. Carve further as PDF v2's
-      page path lands, so it doesn't grow again.
-- [ ] `delryn-render/src/layout.rs` (~1008 non-test lines) — the text-wrap engine.
-      `wrap_blocks` is 287 lines (refactor trigger); decompose by block kind.
-- [ ] `app/dispatch.rs::apply` (234 lines) — the action match; split by action
-      group if it grows.
+- [x] ✅ `app/reader/mod.rs` — the PDF v2 + layout-engine work had regrown it to
+      **2211 lines** (~1667 non-test; the logged "~1210" was badly stale), well past
+      the 1000-line refactor trigger. Carved three cohesive concerns into child
+      modules on `refactor/reader-carve`, each a green commit (81 tests, clippy/fmt
+      clean, behaviour-identical): `anchors.rs` (link cursor + footnote/cross-ref/
+      citation nav, 294), `paged.rs` (paged-image navigation + spread/cover-offset +
+      zoom/pan, 353), `crisp.rs` (constant-margin crop + viewport-matched crisp
+      re-raster + theming request, 157). **mod.rs → ~909 non-test** (the decode/wrap/
+      scroll/chapter+history-nav/reflow-position/element-nav coordinator core).
+      Largest reader child is now `page_view.rs` (403, pure geometry). Only three
+      methods needed a `pub(super)` bump; the rest moved with their sole callers.
+- [ ] `delryn-render/src/layout.rs` — **superseded**: R-A (commit 5c6e6ce) already
+      split the monolith into `layout/` (`mod` 311, `blocks` 372, `spans` 511,
+      `table` 350, `code` 203). `spans.rs` (511) is the largest and sits in the
+      *review* band — decompose the fill/emit path if it's touched again.
+- [x] ✅ `app/dispatch.rs` — the flat file had grown to **840 lines** (on_key +
+      the modal overlay key handlers + the `apply` action router all sharing one
+      file). Split into a `dispatch/` tree, each a distinct concern: `mod.rs` (136,
+      the central `on_key` router), `overlays.rs` (342, image/search-prompt/
+      annotation key handlers), `apply.rs` (379, `apply` + `apply_nav` + `reflow_key`).
+      Behaviour-identical (81 tests, clippy/fmt clean). *(Further per-group splitting
+      of `apply` is optional chip-away — a flat action router is inherently one arm
+      per action.)*
 - [ ] `view/image.rs::render` (196 lines) — full-screen image view render.
 - [x] ✅ `#[allow(clippy::too_many_arguments)]` in `app/reader/images.rs` — the
       three allows are **gone**: the (avail, max_rows, max_px, width_pct, policy)

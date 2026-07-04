@@ -1,0 +1,353 @@
+//! Paged-image (PDF) navigation and single-page interaction.
+//!
+//! The reflowable path treats a document as wrapped lines; a paged-image document
+//! is instead a sequence of full-page rasters, one per section. This module drives
+//! that view: which page is current, spread pairing / cover offset, whole-page
+//! turns (throttled to the drawn frame), the readiness / placement queries the
+//! view consults before transmitting to the direct-Kitty deck, and — for a single
+//! zoomed page — the zoom / pan input handlers. The pixels themselves (crop,
+//! viewport-matched crisp re-raster, theming) are resolved in `reader::crisp`; the
+//! pure placement geometry lives in `reader::page_view`.
+
+use super::*;
+
+impl Reader {
+    /// Total pages in the current section (for the page indicator).
+    pub fn page_count(&self) -> usize {
+        self.lines.len().div_ceil(self.page_lines.max(1)).max(1)
+    }
+
+    /// 1-based page number of the current position within the section.
+    pub fn current_page(&self) -> usize {
+        self.scroll / self.page_lines.max(1) + 1
+    }
+
+    /// Whether the document renders each section as a full-page image (PDF), so
+    /// two-page mode shows a facing-page spread rather than two text columns.
+    pub fn is_paged_image(&self) -> bool {
+        self.doc.paged_image()
+    }
+
+    /// Number of sections (= pages, for a paged-image document).
+    pub fn section_count(&self) -> usize {
+        self.doc.section_count()
+    }
+
+    /// The page bytes the direct-Kitty [`PageDeck`] should transmit for `section`
+    /// under the active policy: the original raster in Faithful mode, otherwise the
+    /// themed PNG once it's built (`None` until then, so the deck holds the previous
+    /// page rather than flashing an unthemed one). Serves the crisp raster once the
+    /// view chose it for this section this frame (see [`Reader::resolve_page_width`]),
+    /// else the base raster — matching the crop the view computed. See
+    /// [`Reader::sync_pages`].
+    pub fn page_png(&self, section: usize) -> Option<Vec<u8>> {
+        let width = self.effective_width(section);
+        if self.pages.policy.mode == media::ImageMode::Faithful {
+            return self.raw_raster_at(section, width);
+        }
+        self.pages
+            .themed
+            .peek(&(section, width, self.pages.policy))
+            .map(|b| b.as_ref().clone())
+    }
+
+    /// The raster width the view chose to display `section` at this frame — a crisp
+    /// width once its raster + theming are ready, else the base width (also the
+    /// default when the section wasn't placed this frame).
+    pub(super) fn effective_width(&self, section: usize) -> u32 {
+        self.crisp
+            .effective
+            .get(&section)
+            .copied()
+            .unwrap_or(BASE_RASTER_WIDTH)
+    }
+
+    /// The raw (un-themed) PNG for `section` at `width`: the base raster from the
+    /// section cache at the base width, otherwise a cached crisp raster.
+    pub(super) fn raw_raster_at(&self, section: usize, width: u32) -> Option<Vec<u8>> {
+        if width == BASE_RASTER_WIDTH {
+            self.raster_png(section)
+        } else {
+            self.crisp
+                .rasters
+                .peek(&(section, width))
+                .map(|b| b.as_ref().clone())
+        }
+    }
+
+    /// The theme/image policy the visible page(s) are themed and shown under (set
+    /// each frame by [`Reader::sync_pages`]). The [`PageDeck`] keys its transmit on
+    /// this so a theme/mode change re-sends the re-themed pages.
+    pub fn page_policy(&self) -> media::RenderPolicy {
+        self.pages.policy
+    }
+
+    /// The raw rasterized PNG bytes of `section`'s page from the section cache —
+    /// the un-themed source the page themer adapts (and what Faithful mode shows).
+    pub(super) fn raster_png(&self, section: usize) -> Option<Vec<u8>> {
+        self.sections
+            .sections
+            .get(&section)?
+            .iter()
+            .find_map(|b| match b {
+                Block::Image { data, .. } if !data.is_empty() => Some(data.clone()),
+                _ => None,
+            })
+    }
+
+    /// The sections that should be on screen now — matching exactly what the view
+    /// places (so the deck keep-alive doesn't wait on or spin over the wrong
+    /// pages): the spread's pages (cover-offset aware) in `spread` mode, else the
+    /// current page alone.
+    pub fn visible_sections(&self, spread: bool) -> Vec<usize> {
+        if spread {
+            self.spread_pages()
+        } else {
+            vec![self.section]
+        }
+    }
+
+    /// Whether `section`'s page is rasterized (the raw PNG is cached) — the
+    /// expensive PDFium step, on top of which theming runs. Doesn't clone.
+    pub(super) fn raster_ready(&self, section: usize) -> bool {
+        self.sections.sections.get(&section).is_some_and(|bs| {
+            bs.iter()
+                .any(|b| matches!(b, Block::Image { data, .. } if !data.is_empty()))
+        })
+    }
+
+    /// Whether `section`'s page is ready to *place* under the active policy: the
+    /// raster in Faithful mode, otherwise the themed PNG. Gates the [`PageDeck`]
+    /// spread swap so a turn never shows a half-themed page.
+    pub fn page_ready(&self, section: usize) -> bool {
+        if self.pages.policy.mode == media::ImageMode::Faithful {
+            self.raster_ready(section)
+        } else {
+            // Gate on the *base* raster's theming only — the crisp raster is an
+            // enhancement that pops in a frame later, never a turn blocker.
+            self.pages
+                .themed
+                .contains(&(section, BASE_RASTER_WIDTH, self.pages.policy))
+        }
+    }
+
+    /// Whether `section` resolved but can't be shown (the loader returned it with
+    /// no image — a rasterize failure). Keyed on the *raster*, not theming, since a
+    /// raster failure is policy-independent. The flip throttle treats it as "done"
+    /// so a broken page can't soft-lock navigation.
+    pub fn page_unrenderable(&self, section: usize) -> bool {
+        self.sections.sections.contains_key(&section) && !self.raster_ready(section)
+    }
+
+    /// Whether any visible page is still being prepared — rasterized, or themed on
+    /// top of a ready raster — so the render loop keeps spinning until it lands. A
+    /// page whose raster *failed* (unrenderable) is excluded so it can't spin
+    /// forever.
+    pub fn pages_loading(&self, spread: bool) -> bool {
+        self.visible_sections(spread)
+            .iter()
+            .any(|&s| !self.page_ready(s) && !self.page_unrenderable(s))
+    }
+
+    /// The visible pages the deck should place — all of them once every one is
+    /// ready (an atomic spread swap), otherwise none (hold the previous pages).
+    pub fn placeable_sections(&self, spread: bool) -> Vec<usize> {
+        let v = self.visible_sections(spread);
+        if v.iter().all(|&s| self.page_ready(s)) {
+            v
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Collect any pages the background loader and the page themer have finished
+    /// into their caches. Driven each frame in PDF mode (the direct path skips
+    /// `sync_images`, which is what otherwise drains the loader).
+    pub fn poll_loader(&mut self) {
+        self.drain_loader();
+        self.drain_page_themer();
+        self.drain_crisp();
+    }
+
+    /// Snap the position to the start of its page (so paged mode shows a clean
+    /// page boundary after toggling in or resizing).
+    pub fn snap_to_page(&mut self) {
+        let page = self.page_lines.max(1);
+        self.scroll = self.scroll / page * page;
+        self.scroll_pending = 0;
+    }
+
+    /// The left page of the two-page tile containing `section`. Without a cover
+    /// offset, tiles are (0,1),(2,3)…; with one, page 0 is alone, then (1,2),
+    /// (3,4)… so the left page is odd.
+    fn spread_left(&self, section: usize) -> usize {
+        if !self.cover_offset {
+            section - section % 2
+        } else if section == 0 {
+            0
+        } else if section % 2 == 1 {
+            section
+        } else {
+            section - 1
+        }
+    }
+
+    /// The page(s) of the current two-page spread: one for a lone page (the cover
+    /// under a cover offset, or a trailing odd page), else the facing pair.
+    pub fn spread_pages(&self) -> Vec<usize> {
+        let left = self.spread_left(self.section);
+        if self.cover_offset && left == 0 {
+            return vec![0];
+        }
+        let mut v = vec![left];
+        if left + 1 < self.doc.section_count() {
+            v.push(left + 1);
+        }
+        v
+    }
+
+    /// The section a forward flip lands on — the next tile's left in a spread
+    /// (cover-offset aware), else the next page.
+    fn next_page_section(&self) -> usize {
+        if !self.spread {
+            return self.section + 1;
+        }
+        let left = self.spread_left(self.section);
+        let width = if self.cover_offset && left == 0 { 1 } else { 2 };
+        left + width
+    }
+
+    /// The section a backward flip lands on — the previous tile's left.
+    fn prev_page_section(&self) -> usize {
+        if !self.spread {
+            return self.section.saturating_sub(1);
+        }
+        let left = self.spread_left(self.section);
+        if left <= 1 {
+            0 // back to the cover (offset) or the first leaf
+        } else {
+            left - 2
+        }
+    }
+
+    /// Flip to the next page (snapped to a page boundary), flowing into the next
+    /// chapter at the bottom edge. Used in paged mode.
+    pub fn page_forward(&mut self) {
+        let page = self.page_lines.max(1);
+        if self.scroll < self.max_scroll() {
+            self.scroll = (self.scroll / page + 1) * page;
+            self.clamp_scroll();
+        } else if !self.chapter_lock {
+            // Advance a leaf, clamped to the last page (so a spread whose facing
+            // page is the last one still steps onto it).
+            let last = self.doc.section_count().saturating_sub(1);
+            let target = self.next_page_section().min(last);
+            if target > self.section {
+                self.load(target);
+            }
+        }
+        self.scroll_pending = 0;
+    }
+
+    /// Flip to the previous page boundary, flowing into the previous chapter's
+    /// last page at the top edge. Used in paged mode.
+    pub fn page_backward(&mut self) {
+        let page = self.page_lines.max(1);
+        if self.scroll > 0 {
+            // Previous boundary, or this page's start when mid-page.
+            self.scroll = self.scroll.saturating_sub(1) / page * page;
+        } else if !self.chapter_lock && self.section > 0 {
+            self.load(self.prev_page_section());
+            self.scroll = usize::MAX;
+            self.clamp_scroll();
+            self.snap_to_page();
+        }
+        self.scroll_pending = 0;
+    }
+
+    /// Flip `pages` pages at once (a count-prefixed `j`/`k`, e.g. `10j`). For a
+    /// paged-image doc one page is one section, so it jumps the section directly
+    /// (clamped) — bypassing the per-frame flip throttle, which is only meant to
+    /// pace a *held* key. Reflowable page mode steps page by page.
+    pub fn page_jump(&mut self, pages: isize) {
+        if pages == 0 {
+            return;
+        }
+        if self.is_paged_image() {
+            let max = self.doc.section_count().saturating_sub(1) as isize;
+            let target = (self.section as isize + pages).clamp(0, max) as usize;
+            self.load(target);
+        } else {
+            for _ in 0..pages.unsigned_abs() {
+                if pages > 0 {
+                    self.page_forward();
+                } else {
+                    self.page_backward();
+                }
+            }
+        }
+    }
+
+    /// Store the pan room + step the view computed for this frame's page, so
+    /// navigation can pan the zoomed page while there's room (and flip at the
+    /// edge). No-op geometry when the page is at fit-page (all room false).
+    pub fn set_page_room(&mut self, room: PanRoom, step: (f32, f32)) {
+        self.page_room = room;
+        self.page_step = step;
+    }
+
+    /// Whether the current paged page is zoomed (so nav pans rather than flips).
+    pub fn page_zoomed(&self) -> bool {
+        self.page_view.is_zoomed()
+    }
+
+    pub fn zoom_in(&mut self) {
+        self.page_view.zoom_in();
+    }
+    pub fn zoom_out(&mut self) {
+        self.page_view.zoom_out();
+    }
+    pub fn zoom_reset(&mut self) {
+        self.page_view.reset();
+    }
+    pub fn cycle_fit(&mut self) {
+        self.page_view.cycle_fit();
+    }
+
+    /// Pan the zoomed page down/up by `n` steps if there's room; returns `false`
+    /// when already at that vertical edge (the caller then flips the page).
+    pub fn try_pan_down(&mut self, n: usize) -> bool {
+        if self.page_room.down {
+            self.page_view.pan_y = (self.page_view.pan_y + self.page_step.1 * n as f32).min(1.0);
+            true
+        } else {
+            false
+        }
+    }
+    pub fn try_pan_up(&mut self, n: usize) -> bool {
+        if self.page_room.up {
+            self.page_view.pan_y = (self.page_view.pan_y - self.page_step.1 * n as f32).max(0.0);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Pan the zoomed page horizontally by `n` steps (clamped; no-op at the edge).
+    pub fn pan_left(&mut self, n: usize) {
+        self.page_view.pan_x = (self.page_view.pan_x - self.page_step.0 * n as f32).max(0.0);
+    }
+    pub fn pan_right(&mut self, n: usize) {
+        self.page_view.pan_x = (self.page_view.pan_x + self.page_step.0 * n as f32).min(1.0);
+    }
+    /// Whether the page currently has horizontal pan room (for the h/l keys).
+    pub fn can_pan_horizontally(&self) -> bool {
+        self.page_room.left || self.page_room.right
+    }
+
+    /// After flipping a page while zoomed, start the new page at the top (forward)
+    /// or bottom (backward) so vertical panning reads continuously.
+    pub fn reset_pan_to(&mut self, top: bool) {
+        self.page_view.pan_y = if top { 0.0 } else { 1.0 };
+    }
+}
