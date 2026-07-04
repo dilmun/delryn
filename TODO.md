@@ -649,10 +649,22 @@ no premature abstraction, no speculative modes).*
       facing pairs and rolls the anchor a whole spread at a time (`next/prev_band_anchor`
       + `spread_at`/`spread_width`, cover-offset aware; scale clamped ≤ fit so a page
       never splits the fold). Every visible band is requested + themed (not just the ±4
-      window) so a tall/zoomed-out stack never leaves far bands blank. 12 tests. *v1
-      limits (graceful): base raster only (no viewport-matched crisp re-raster
-      mid-stack — that's the single-page path); two-page continuous is LTR (manga/RTL
-      not yet); the inter-page gap is a fixed 1 row (not a config knob yet).* **Still:**
+      window) so a tall/zoomed-out stack never leaves far bands blank. 12 tests.
+      ✅ **Transmit-once deck (user: "scroll too slow"):** the `PageDeck` was
+      re-sending the full-resolution rasters on every crop change (delete-all +
+      re-transmit-all), so a row-by-row scroll couldn't keep up. Now each page is
+      transmitted **once** and its data stays resident in the terminal (per section +
+      policy); moving it (a turn, or a scroll re-cropping every frame) only deletes
+      the old *placement* (`media::delete_placement_seq`, kitty `d=i` keeps data) and
+      re-places — a scroll frame is a few tiny escapes, not MB of transmit. Data is
+      re-sent only on first appearance / theme change; a page scrolled off frees its
+      data (`d=I`). Plus a bigger scroll step (3→6 rows), wider continuous prefetch
+      (±6) + `CACHE_CAP` 11→15 so fast scroll doesn't outrun rasterization. Sizing
+      stays **fit-width** by default (user confirmed after the speed fix — the jank
+      had made it feel small). *v1 limits (graceful): base raster only (no
+      viewport-matched crisp re-raster mid-stack — that's the single-page path);
+      two-page continuous is LTR (manga/RTL not yet); the inter-page gap is a fixed 1
+      row (not a config knob yet).* **Still:**
       **grid / thumbnail browser** as a visual page-jump complementing the TOC sidebar
       (arrows move selection, Enter opens). This is where a page grid belongs — a
       *thumbnail* browser (small cell-sized rasters, tightly packed) for jumping, not
