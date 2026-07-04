@@ -237,37 +237,31 @@ impl Reader {
             .collect();
     }
 
-    /// Build the ready tiles of a band: a single centred/zoomed page (Center) or a
-    /// facing pair laid out in two columns (TwoPage), each tile's horizontal
-    /// placement + height resolved at the current zoom. Unloaded pages are omitted
-    /// (their slot stays blank until they rasterize).
+    /// Build the ready tiles of a band: a single fit-page page centred in the padded
+    /// content region (Center), or a facing pair fit-page in two columns (TwoPage),
+    /// each tile's horizontal placement + height resolved at the current zoom.
+    /// Unloaded pages are omitted (their slot stays blank until they rasterize).
     fn build_tiles(
         &mut self,
         viewport_cols: u16,
         two_page: bool,
         sections: &[usize],
     ) -> Vec<page_stack::StackTile> {
-        let scale = self.continuous_scale();
         let pan_x = self.continuous_pan_x();
         let mut tiles = Vec::new();
         if !two_page || sections.len() == 1 {
-            // Single page (Center, or a lone cover / trailing odd page): full width.
-            if let Some(tile) =
-                self.build_tile(sections[0], (0, viewport_cols), viewport_cols, scale, pan_x)
-            {
+            // Single page (Center, or a lone cover / trailing odd page).
+            let (slot_x, slot_w) = self.continuous_single_slot();
+            if let Some(tile) = self.build_tile(sections[0], slot_x, slot_w, viewport_cols, pan_x) {
                 tiles.push(tile);
             }
             return tiles;
         }
-        // A facing pair: earlier page left, later page right (LTR, gap between).
-        let col_w = viewport_cols.saturating_sub(self.page_gap) / 2;
+        // A facing pair: earlier page in the left column, later in the right (LTR).
+        let (left_x, col_w, right_x) = self.continuous_column_slot();
         for (i, &section) in sections.iter().enumerate() {
-            let slot = if i == 0 {
-                (0u16, col_w)
-            } else {
-                (col_w + self.page_gap, col_w)
-            };
-            if let Some(tile) = self.build_tile(section, slot, viewport_cols, scale, pan_x) {
+            let slot_x = if i == 0 { left_x } else { right_x };
+            if let Some(tile) = self.build_tile(section, slot_x, col_w, viewport_cols, pan_x) {
                 tiles.push(tile);
             }
         }
@@ -287,26 +281,24 @@ impl Reader {
         }
     }
 
-    /// Resolve a single page tile for the stack: its content box, horizontal
-    /// placement (zoom/centre/pan against its `(slot_x, slot_w)` at zoom 1), and
-    /// display height. `None` if the page hasn't rasterized yet (so its band leaves a
-    /// gap until it lands — but it is still recorded as visible for loading).
+    /// Resolve a single page tile for the stack: its content box, its fit-page
+    /// display size at the current zoom, and its horizontal placement (centred in the
+    /// slot, or pan-cropped when zoomed past the viewport). `None` if the page hasn't
+    /// rasterized yet (its slot stays blank until it lands — it's still recorded as
+    /// visible for loading).
     fn build_tile(
         &mut self,
         section: usize,
-        slot: (u16, u16),
+        slot_x: u16,
+        slot_w: u16,
         viewport_cols: u16,
-        scale: f32,
         pan_x: f32,
     ) -> Option<page_stack::StackTile> {
         let content = self.page_content_of(section)?;
         let (cx, _, cw, _) = content;
-        let (slot_x, slot_w) = slot;
+        let (disp_w, rows) = self.tile_metrics(section, slot_w);
         let (x, w, src_x, src_w) =
-            page_stack::tile_h(slot_x, slot_w, viewport_cols, cx, cw, scale, pan_x);
-        // The tile's height uses its scaled slot width (its virtual display width).
-        let disp_w = ((slot_w as f32 * scale).round() as u16).max(1);
-        let rows = self.tile_rows(section, disp_w);
+            page_stack::place_tile_h(slot_x, slot_w, disp_w, viewport_cols, cx, cw, pan_x);
         Some(page_stack::StackTile {
             section,
             content,

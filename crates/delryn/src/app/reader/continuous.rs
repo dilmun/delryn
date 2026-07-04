@@ -167,20 +167,20 @@ impl Reader {
         self.band_rows_of(anchor) as usize + page_stack::STACK_GAP as usize
     }
 
-    /// A band's display height in rows: the single page's height (Center), or the
+    /// A band's display height in rows: the single fit-page height (Center), or the
     /// taller of the spread's two pages (TwoPage), each at the current zoom.
     pub(super) fn band_rows_of(&mut self, anchor: usize) -> u16 {
         if self.continuous_two_page() {
-            let cols = self.continuous_column_cols();
+            let col_w = self.continuous_column_slot().1;
             self.spread_at(self.spread_left(anchor))
                 .into_iter()
-                .map(|s| self.tile_rows(s, cols))
+                .map(|s| self.tile_metrics(s, col_w).1)
                 .max()
                 .unwrap_or(1)
                 .max(1)
         } else {
-            let cols = self.continuous_single_cols();
-            self.tile_rows(anchor, cols)
+            let slot_w = self.continuous_single_slot().1;
+            self.tile_metrics(anchor, slot_w).1
         }
     }
 
@@ -198,18 +198,29 @@ impl Reader {
         self.cont_pan_x
     }
 
-    /// The single-column tile width in cells at the current zoom (the page's virtual
-    /// display width — may exceed the viewport when zoomed in).
-    pub(super) fn continuous_single_cols(&self) -> u16 {
-        ((self.last_measure.max(1) as f32 * self.continuous_scale()).round() as u16).max(1)
+    /// Left/right padding in cells for the continuous paged content (from
+    /// `side_padding` %), so pages don't touch the screen edges.
+    pub(super) fn continuous_pad(&self) -> u16 {
+        let vp = self.last_measure.max(1) as u32;
+        (vp * self.side_padding as u32 / 100) as u16
     }
 
-    /// One column's tile width in cells for a two-page spread at the current zoom
-    /// (half the viewport minus the gap).
-    pub(super) fn continuous_column_cols(&self) -> u16 {
+    /// The single-page content slot `(x, width)` — the padded region a fit-page
+    /// single page centres within.
+    pub(super) fn continuous_single_slot(&self) -> (u16, u16) {
         let vp = self.last_measure.max(1) as u16;
-        let base = vp.saturating_sub(self.page_gap) / 2;
-        ((base as f32 * self.continuous_scale()).round() as u16).max(1)
+        let pad = self.continuous_pad();
+        (pad, vp.saturating_sub(pad * 2).max(1))
+    }
+
+    /// A two-page spread's left/right column slots `(left_x, col_w, right_x)` inside
+    /// the padded region, split by the inter-page gap.
+    pub(super) fn continuous_column_slot(&self) -> (u16, u16, u16) {
+        let (pad, avail) = self.continuous_single_slot();
+        let col_w = avail.saturating_sub(self.page_gap) / 2;
+        let left_x = pad;
+        let right_x = pad + col_w + self.page_gap;
+        (left_x, col_w.max(1), right_x)
     }
 
     /// The margin-trimmed content box of `section`'s page, or `None` until it's
@@ -219,25 +230,30 @@ impl Reader {
         Some(self.page_content_box(section, dims))
     }
 
-    /// The display height in rows of `section`'s page when scaled to `cols` cells
-    /// wide. Exact once rasterized (and caches the canonical fit-width height as the
-    /// estimate); before that it scales the estimate proportionally to `cols` so the
-    /// scroll math and layout stay stable across near-uniform PDF pages.
-    pub(super) fn tile_rows(&mut self, section: usize, cols: u16) -> u16 {
+    /// The `(display width, display height)` in cells of `section`'s page laid out
+    /// fit-page in a slot `slot_w` cells wide (and the viewport height), scaled by the
+    /// current zoom. Exact once rasterized — and caches the canonical fit-page height
+    /// as the estimate; before that it scales that estimate by the zoom so scroll math
+    /// and layout stay stable across near-uniform PDF pages.
+    pub(super) fn tile_metrics(&mut self, section: usize, slot_w: u16) -> (u16, u16) {
         let cell = self.cell_px;
-        let full = self.last_measure.max(1) as u32;
+        let vh = self.viewport_lines.max(1) as u16;
+        let scale = self.continuous_scale();
         if let Some(content) = self.page_content_of(section) {
-            let rows = page_stack::page_rows(content, cols, cell).max(1);
-            // Back out the canonical fit-width (full-column) height for the estimate.
-            self.est_page_rows = ((rows as u32 * full / cols.max(1) as u32).max(1) as u16).max(1);
-            rows
+            let fit = page_stack::fit_page_cols(content, slot_w, vh, cell);
+            let disp_w = ((fit as f32 * scale).round() as u16).max(1);
+            let rows = page_stack::page_rows(content, disp_w, cell).max(1);
+            // Canonical fit-page height (zoom 1) → the estimate for unloaded pages.
+            self.est_page_rows = page_stack::page_rows(content, fit, cell).max(1);
+            (disp_w, rows)
         } else {
             let base = if self.est_page_rows > 0 {
-                self.est_page_rows as u32
+                self.est_page_rows
             } else {
-                self.viewport_lines.max(1) as u32
+                vh // a portrait page fit-page is about a screen tall
             };
-            ((base * cols.max(1) as u32 / full).max(1) as u16).max(1)
+            let rows = ((base as f32 * scale).round() as u16).max(1);
+            (((slot_w as f32 * scale).round() as u16).max(1), rows)
         }
     }
 

@@ -6,15 +6,19 @@
 //! top to bottom with a small inter-page gap, and scrolls through the stack a row
 //! at a time so a page boundary passes seamlessly (the SumatraPDF / Preview model).
 //!
+//! Pages are laid out **fit-page** — the whole page shows, sized to fit the viewport
+//! (a portrait page in a wide pane comes out narrower than the pane, so it centres
+//! with side padding) rather than stretched to fill the width. [`fit_page_cols`]
+//! computes that width and [`place_tile_h`] the horizontal placement (centre, or a
+//! pan crop once zoomed past the viewport).
+//!
 //! This module is the pure geometry: it never touches the terminal, the reader, or
-//! the image caches. The **horizontal** placement of each tile (its zoom scale,
-//! centring, and pan crop) is resolved by [`tile_h`]; the reader hands the resolved
-//! tiles to [`stack_targets`], which walks the bands **vertically** and slices each
-//! visible tile into a Kitty source-crop that the direct-Kitty
-//! [`PageDeck`](crate::app::page_deck) transmits. Slicing a page to its visible
-//! window reuses the same `crop` the deck already supports for zoom/pan. The
-//! `impl Reader` glue that reads caches + config, and the scroll math, live in
-//! `reader::paged` / `reader::continuous`.
+//! the image caches. The reader hands the resolved tiles to [`stack_targets`], which
+//! walks the bands **vertically** and slices each visible tile into a Kitty
+//! source-crop that the direct-Kitty [`PageDeck`](crate::app::page_deck) transmits —
+//! reusing the same `crop` the deck already supports for zoom/pan. The `impl Reader`
+//! glue that reads caches + config, and the scroll math, live in `reader::paged` /
+//! `reader::continuous`.
 
 use ratatui::layout::Rect;
 
@@ -66,41 +70,62 @@ pub(super) fn page_rows(content: (u32, u32, u32, u32), disp_w: u16, cell: (u16, 
     rows.clamp(1, u16::MAX as u64) as u16
 }
 
-/// Resolve a tile's horizontal destination + source crop. The band's natural width
-/// at zoom 1.0 fills the viewport; a slot `(slot_x, slot_w)` (cells, at zoom 1.0)
-/// positions this tile within that band. Returns `(dest_x, dest_w, src_x, src_w)`:
+/// The display width in cells at which a page's **whole** content fits inside a slot
+/// of `slot_w` cells and `vh` rows (fit-page): the full slot width when the page is
+/// already short enough at that width, else shrunk so its height fits `vh`. This is
+/// the "make a full single page appear" size — a portrait page in a wide slot comes
+/// out narrower than the slot (so it centres with side padding). `cell` = the pixel
+/// size of a terminal cell.
+pub(super) fn fit_page_cols(
+    content: (u32, u32, u32, u32),
+    slot_w: u16,
+    vh: u16,
+    cell: (u16, u16),
+) -> u16 {
+    let rows_at_slot = page_rows(content, slot_w, cell);
+    if rows_at_slot <= vh.max(1) {
+        slot_w.max(1)
+    } else {
+        (slot_w as u32 * vh.max(1) as u32 / rows_at_slot.max(1) as u32).max(1) as u16
+    }
+}
+
+/// Place a tile of display width `disp_w` cells and its source crop:
 ///
-/// * When the scaled band fits the viewport (`scale` ≤ 1, or a narrow band), the
-///   whole band is centred and the tile shows its full content width.
-/// * When the scaled band overflows (zoomed in past the viewport width), the tile
-///   fills the viewport and shows a horizontal sub-window of its content chosen by
-///   `pan_x` ∈ [0, 1] — the reader only lets this happen for a full-width single
-///   tile, so a spread never has to split a page across the fold.
-pub(super) fn tile_h(
+/// * If `disp_w` fits its slot, centre it in the slot (the slot itself is already
+///   inside the padded content region), showing the whole content width.
+/// * If it grew past the slot (zoomed in) but still fits the viewport, centre it in
+///   the viewport (spilling into the side padding).
+/// * If it exceeds the viewport, fill the viewport and show a `pan_x`-selected
+///   horizontal window of the content.
+///
+/// Returns `(dest_x` from the body's left, `dest_w, src_x, src_w)`.
+pub(super) fn place_tile_h(
     slot_x: u16,
     slot_w: u16,
+    disp_w: u16,
     viewport_cols: u16,
     content_x: u32,
     content_w: u32,
-    scale: f32,
     pan_x: f32,
 ) -> (u16, u16, u32, u32) {
-    let vcols = viewport_cols.max(1) as u32;
-    let scaled_band = (vcols as f32 * scale).round().max(1.0) as u32;
-    if scaled_band <= vcols {
-        // Centre the whole band, place the tile within it at the scaled slot.
-        let band_off = (vcols - scaled_band) / 2;
-        let x = band_off + (slot_x as f32 * scale).round() as u32;
-        let w = (slot_w as f32 * scale).round().max(1.0) as u32;
-        (x.min(vcols) as u16, w as u16, content_x, content_w)
+    let vcols = viewport_cols.max(1);
+    let disp_w = disp_w.max(1);
+    if disp_w <= vcols {
+        let (region_x, region_w) = if disp_w <= slot_w {
+            (slot_x, slot_w)
+        } else {
+            (0, vcols)
+        };
+        let x = region_x + region_w.saturating_sub(disp_w) / 2;
+        (x.min(vcols), disp_w, content_x, content_w)
     } else {
-        // Overflow: fill the viewport, show a pan-selected horizontal window.
-        let vis_w = (content_w as f32 * vcols as f32 / scaled_band as f32)
-            .round()
-            .clamp(1.0, content_w.max(1) as f32) as u32;
+        // Overflow: fill the viewport, pan-crop the content horizontally.
+        let vis_w = (content_w as u64 * vcols as u64 / disp_w as u64).max(1) as u32;
+        let vis_w = vis_w.min(content_w.max(1));
         let src_x = content_x
             + (content_w.saturating_sub(vis_w) as f32 * pan_x.clamp(0.0, 1.0)).round() as u32;
-        (0, viewport_cols, src_x, vis_w)
+        (0, vcols, src_x, vis_w)
     }
 }
 
@@ -171,35 +196,45 @@ mod tests {
         assert_eq!(page_rows((0, 0, 1000, 1400), 50, CELL), 35);
     }
 
-    /// At fit-width (scale 1) a single full-width tile fills the viewport with the
-    /// whole content and no crop offset.
+    /// Fit-page: a portrait page in a slot that's short for it shrinks so its height
+    /// fits, coming out narrower than the slot (→ it will centre with padding). A
+    /// page already short enough keeps the full slot width.
     #[test]
-    fn tile_h_fit_width_fills_and_shows_all() {
-        let (x, w, sx, sw) = tile_h(0, 100, 100, 0, 1000, 1.0, 0.0);
-        assert_eq!((x, w), (0, 100));
-        assert_eq!((sx, sw), (0, 1000), "whole content width visible");
+    fn fit_page_shrinks_a_tall_page_to_fit_height() {
+        // 1000×1400 content at 100 cols is 70 rows tall (see page_rows test); in a
+        // 40-row viewport it must shrink to ~40/70 of the width.
+        let w = fit_page_cols((0, 0, 1000, 1400), 100, 40, CELL);
+        assert!(w < 100, "tall page narrower than the slot: {w}");
+        assert_eq!(w, 100 * 40 / 70);
+        // A short (landscape) page already fits the height at full width.
+        assert_eq!(fit_page_cols((0, 0, 1400, 500), 100, 40, CELL), 100);
     }
 
-    /// Zooming out (scale < 1) shrinks the tile and centres it; the whole content
-    /// width still shows.
+    /// A tile narrower than its slot centres within the slot and shows all content.
     #[test]
-    fn tile_h_zoom_out_centres() {
-        let (x, w, sx, sw) = tile_h(0, 100, 100, 0, 1000, 0.5, 0.0);
-        assert_eq!(w, 50, "half width");
-        assert_eq!(x, 25, "centred in the 100-col viewport");
-        assert_eq!((sx, sw), (0, 1000), "still the whole content");
+    fn place_tile_centres_within_the_slot() {
+        // Slot [10, 80] (a padded region), tile 60 wide → centred at 10 + 10.
+        let (x, w, sx, sw) = place_tile_h(10, 80, 60, 100, 0, 1000, 0.0);
+        assert_eq!((x, w), (20, 60));
+        assert_eq!((sx, sw), (0, 1000), "whole content shown");
     }
 
-    /// Zooming in (scale > 1) fills the viewport and crops the content horizontally;
-    /// pan selects which slice.
+    /// A tile grown past its slot but within the viewport centres in the viewport.
     #[test]
-    fn tile_h_zoom_in_crops_and_pans() {
-        let (x, w, sx0, sw) = tile_h(0, 100, 100, 0, 1000, 2.0, 0.0);
+    fn place_tile_spills_into_padding_when_grown() {
+        // Slot [10, 80], tile 90 wide (> slot 80, < viewport 100) → centred at 5.
+        let (x, w, ..) = place_tile_h(10, 80, 90, 100, 0, 1000, 0.0);
+        assert_eq!((x, w), (5, 90));
+    }
+
+    /// A tile wider than the viewport fills it and pan-crops the content.
+    #[test]
+    fn place_tile_overflow_crops_and_pans() {
+        let (x, w, sx0, sw) = place_tile_h(0, 100, 200, 100, 0, 1000, 0.0);
         assert_eq!((x, w), (0, 100), "fills the viewport width");
-        assert_eq!(sw, 500, "shows half the content width at 2×");
+        assert_eq!(sw, 500, "shows half the content at 2× display width");
         assert_eq!(sx0, 0, "pan 0 → left edge");
-        // Pan right → the window moves right.
-        let (_, _, sx1, _) = tile_h(0, 100, 100, 0, 1000, 2.0, 1.0);
+        let (_, _, sx1, _) = place_tile_h(0, 100, 200, 100, 0, 1000, 1.0);
         assert_eq!(sx1, 500, "pan 1 → flush right");
     }
 

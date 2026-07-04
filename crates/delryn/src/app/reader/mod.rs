@@ -95,9 +95,14 @@ pub struct Reader {
     /// Inter-page gap in cells for a two-page layout (mirrored from `config.page_gap`
     /// each render) — the horizontal gutter between a continuous spread's pages.
     pub page_gap: u16,
-    /// Continuous-paged zoom: the page scale relative to fit-width (1.0 = the page
-    /// fills the column). < 1 shrinks + centres the pages; > 1 (single-column only)
-    /// enlarges past the viewport with a horizontal pan window. Set by `+`/`-`/`0`.
+    /// Left/right reading margin as a percent of the pane, mirrored from
+    /// `config.side_padding` each render — the continuous-paged stack insets its
+    /// pages by this so they don't touch the screen edges.
+    pub side_padding: u16,
+    /// Continuous-paged zoom: the page scale relative to fit-page (1.0 = the whole
+    /// page fits the viewport, centred with side padding). < 1 shrinks the pages; > 1
+    /// enlarges past the viewport (single-column: taller → scroll, wider → `h`/`l`
+    /// pan). Set by `+`/`-`/`0`.
     cont_scale: f32,
     /// Continuous-paged horizontal pan ∈ [0, 1] when a single zoomed-in page is
     /// wider than the viewport (0 = left edge). Set by `h`/`l`.
@@ -118,11 +123,11 @@ pub struct Reader {
     /// picker. Lets the continuous-paged scroll math size a page's display height
     /// off the render thread (the picker is only reachable from the view).
     cell_px: (u16, u16),
-    /// Last computed **fit-width** display height (cells, at the full column width)
-    /// of a paged page, the canonical page height reused as the estimate for pages
-    /// not yet rasterized so continuous-paged scroll math + layout stay stable (PDF
-    /// pages are near-uniform). Scaled by target width for a tile. Self-corrects once
-    /// the real raster lands.
+    /// Last computed **fit-page** display height (cells, at zoom 1) of a paged page,
+    /// the canonical page height reused as the estimate for pages not yet rasterized
+    /// so continuous-paged scroll math + layout stay stable (PDF pages are
+    /// near-uniform). Scaled by the zoom for a tile. Self-corrects once the real
+    /// raster lands.
     est_page_rows: u16,
     /// Sections in the current continuous-paged vertical stack (anchor onward),
     /// set each frame by the view. Drives the deck readiness / load checks
@@ -250,6 +255,7 @@ impl Reader {
             continuous: false,
             view_mode: ViewMode::Center,
             page_gap: 0,
+            side_padding: 0,
             cont_scale: 1.0,
             cont_pan_x: 0.0,
             spread: false,
@@ -1293,17 +1299,19 @@ mod tests {
         );
     }
 
-    /// A continuous-paged (PDF stacking) reader: a paged doc with `continuous` on,
-    /// a fixed cell size / viewport, and margin trim off so each page's fit-width
-    /// display height is a clean 14 rows (content 20×28 at 20 cols, cell 10×20:
-    /// 28·(20·10/20)/20 = 14) → slot 15 with the 1-row gap.
+    /// A continuous-paged (PDF stacking) reader: a paged doc with `continuous` on, no
+    /// side padding, a fixed cell size, and a viewport (20 rows) taller than the
+    /// page's fit-width height so fit-page keeps the full slot width — a clean 14-row
+    /// band (content 20×28 at 20 cols, cell 10×20: 28·(20·10/20)/20 = 14) → slot 15
+    /// with the 1-row gap. Margin trim off.
     fn continuous_paged_reader(pages: usize) -> Reader {
         let doc = MockDoc::new((0..pages).map(|_| image_page()).collect()).paged();
         let mut r = Reader::new(Box::new(doc)).unwrap();
         r.continuous = true;
         r.set_cell_px((10, 20));
         r.last_measure = 20;
-        r.viewport_lines = 10;
+        r.viewport_lines = 20;
+        r.side_padding = 0;
         r.set_trim(false, 0);
         // Prime the anchor's height so still-loading pages estimate uniformly.
         assert_eq!(r.band_rows_of(0), 14);
@@ -1365,14 +1373,12 @@ mod tests {
         // At the start, scrolling up is a no-op.
         r.scroll_up(50);
         assert_eq!((r.section, r.scroll), (0, 0));
-        // Scrolling far past the end clamps to the last page's bottom: the page is
-        // 14 rows, the viewport 10, so the deepest offset is 14 − 10 = 4.
+        // Scrolling far past the end clamps to the last page's bottom. Fit-page keeps
+        // the 14-row page inside the 20-row viewport, so it's fully visible and the
+        // deepest offset is 0 (nothing to scroll within the last page).
         r.scroll_down(9999);
         assert_eq!(r.section, 2, "no page past the last");
-        assert_eq!(
-            r.scroll, 4,
-            "clamped so the last page's bottom is the floor"
-        );
+        assert_eq!(r.scroll, 0, "last fit-page page fully visible → floor 0");
     }
 
     #[test]
@@ -1393,6 +1399,20 @@ mod tests {
         assert_eq!((r.section, r.scroll), (2, 3));
         r.scroll_up(4);
         assert_eq!(r.section, 0, "rolled back a whole spread");
+    }
+
+    #[test]
+    fn continuous_single_page_fits_whole_and_pads() {
+        let mut r = continuous_paged_reader(3);
+        r.side_padding = 10; // 10% each side → pad 2, avail 16 of the 20-col pane
+        assert_eq!(r.continuous_single_slot(), (2, 16));
+        // A viewport shorter than the page makes fit-page shrink it below the slot
+        // width, so the whole page shows and it centres (side padding) rather than
+        // stretching to fill the width.
+        r.viewport_lines = 8;
+        let (disp_w, rows) = r.tile_metrics(0, 16);
+        assert!(disp_w < 16, "fit-page is narrower than the slot: {disp_w}");
+        assert!(rows <= 8, "the whole page fits the viewport height: {rows}");
     }
 
     #[test]
