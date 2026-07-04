@@ -20,6 +20,11 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub struct LayoutMetrics {
     pub sidebar: Option<Rect>,
     pub content: Option<Rect>,
+    /// Library book-list pane rect, for routing the wheel to the pane under the
+    /// cursor (so it doesn't scroll the list while the mouse is over another pane).
+    pub lib_list: Option<Rect>,
+    /// Library detail pane rect (right side), when shown.
+    pub lib_detail: Option<Rect>,
     /// Sort keys `s` cycles — only the columns actually drawn at this width.
     pub sort_cycle: Vec<SortKey>,
     /// On-screen book rows, for vim half/full-page navigation.
@@ -67,7 +72,7 @@ impl App {
                 let d: isize = if up { -3 } else { 3 };
                 match self.mode {
                     Mode::Reader => self.reader_wheel(m.column, m.row, d),
-                    Mode::Library => self.library_wheel(d),
+                    Mode::Library => self.library_wheel(m.column, m.row, d),
                 }
             }
             MouseEventKind::Down(button) => self.mouse_down(m.column, m.row, button, m.modifiers),
@@ -109,19 +114,34 @@ impl App {
         true
     }
 
-    /// Wheel in the library: scroll the book list (extending a live visual range),
-    /// unless a modal overlay is up.
-    fn library_wheel(&mut self, d: isize) -> bool {
+    /// Wheel in the library: scroll only the pane under the cursor — the sections
+    /// sidebar, or the book list (extending a live visual range). The detail pane and
+    /// empty areas don't scroll the list. Modal overlays swallow it.
+    fn library_wheel(&mut self, col: u16, row: u16, d: isize) -> bool {
         if self.pending_confirm.is_some()
             || !matches!(self.overlay, Overlay::None)
             || self.library.filtering
         {
             return false;
         }
-        self.library.pane = LibPane::List;
-        self.lib_move(d);
-        self.lib_visual_sync();
-        true
+        let pt = (col, row).into();
+        let (sidebar, detail, list) = (
+            self.last_layout.sidebar,
+            self.last_layout.lib_detail,
+            self.last_layout.lib_list,
+        );
+        if sidebar.is_some_and(|r| r.contains(pt)) {
+            self.lib_side_move(d); // scroll the sections/collections list
+            true
+        } else if detail.is_some_and(|r| r.contains(pt)) {
+            false // detail isn't a scrollable list — don't touch the book list
+        } else if list.is_some_and(|r| r.contains(pt)) {
+            self.lib_move(d);
+            self.lib_visual_sync();
+            true
+        } else {
+            false
+        }
     }
 
     /// Route a mouse-down to the active overlay / mode using the hit rects captured

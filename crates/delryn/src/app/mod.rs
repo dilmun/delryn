@@ -1468,6 +1468,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[test]
+    fn library_wheel_only_scrolls_pane_under_cursor() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_wheel_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for (p, t) in [("/a.epub", "A"), ("/b.epub", "B")] {
+                store
+                    .upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                    .unwrap();
+            }
+        }
+        let mut app = App::library();
+        // Stand in for the render capturing the pane rects: list left, detail right.
+        app.last_layout.lib_list = Some(Rect::new(0, 0, 40, 10));
+        app.last_layout.lib_detail = Some(Rect::new(40, 0, 20, 10));
+        let wheel = |col| crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: col,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        // Over the detail pane: the book list must not scroll.
+        app.library.sel = 0;
+        assert!(
+            !app.on_mouse(wheel(50)),
+            "wheel over detail is inert for the list"
+        );
+        assert_eq!(app.library.sel, 0);
+        // Over the list: it scrolls (moves the cursor, clamped to the last book).
+        assert!(app.on_mouse(wheel(10)), "wheel over the list scrolls it");
+        assert_eq!(app.library.sel, 1);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     // Inline sidebar collection editing: create → rename → delete (clear name).
     #[test]
     fn collections_inline_create_rename_delete() {

@@ -41,6 +41,11 @@ pub struct LibraryState {
     pub books: Vec<BookRow>,
     /// Cursor index into `books`.
     pub sel: usize,
+    /// Top visible row of the book list (scroll offset, in table-row units incl.
+    /// series headers). Persisted so the view scrolls the cursor *into view* rather
+    /// than always re-centring it — a click selects the book in place, the wheel
+    /// scrolls without snapping. Maintained by the list renderer.
+    pub list_offset: usize,
     /// Effective multi-selection for bulk actions, keyed by book path — the union
     /// of `marked_base` and the live visual range.
     pub marked: HashSet<String>,
@@ -95,6 +100,7 @@ impl Default for LibraryState {
             section_counts: Vec::new(),
             books: Vec::new(),
             sel: 0,
+            list_offset: 0,
             marked: HashSet::new(),
             marked_base: HashSet::new(),
             visual: None,
