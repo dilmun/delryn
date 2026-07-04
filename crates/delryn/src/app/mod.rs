@@ -130,6 +130,8 @@ pub struct App {
     pub last_layout: LayoutMetrics,
     /// Clickable regions from the last render (mouse hit-testing).
     pub mouse: MouseHits,
+    /// The last library book clicked and when — for double-click-to-open detection.
+    pub last_click: Option<(usize, Instant)>,
     pub pending: Pending,
     pub should_quit: bool,
     /// The single open overlay/popup (settings, prompt, metadata editor,
@@ -309,6 +311,7 @@ impl App {
             reader: Some(reader),
             last_layout: LayoutMetrics::default(),
             mouse: MouseHits::default(),
+            last_click: None,
             pending: Pending::default(),
             should_quit: false,
             overlay: Overlay::None,
@@ -347,6 +350,7 @@ impl App {
             reader: None,
             last_layout: LayoutMetrics::default(),
             mouse: MouseHits::default(),
+            last_click: None,
             pending: Pending::default(),
             should_quit: false,
             overlay: Overlay::None,
@@ -1417,6 +1421,49 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.library.sel, 1, "click on the second row selects it");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn library_mouse_multiselect() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_msel_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for (p, t) in [("/a.epub", "A"), ("/b.epub", "B")] {
+                store
+                    .upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                    .unwrap();
+            }
+        }
+        let mut app = App::library();
+        app.mouse.books = vec![(0, Rect::new(0, 0, 20, 1)), (1, Rect::new(0, 1, 20, 1))];
+        let ev = |kind, row| crossterm::event::MouseEvent {
+            kind,
+            column: 5,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        use crossterm::event::MouseButton;
+        // Right-click toggles a book into the multi-selection (no advance).
+        app.on_mouse(ev(MouseEventKind::Down(MouseButton::Right), 0));
+        assert_eq!(app.library.marked.len(), 1, "right-click marks the book");
+        assert!(app.library.marked.contains(&app.library.books[0].path));
+        // Right-click again clears it.
+        app.on_mouse(ev(MouseEventKind::Down(MouseButton::Right), 0));
+        assert!(app.library.marked.is_empty(), "right-click again unmarks");
+        // Shift+left-click range-selects from the cursor to the clicked row.
+        app.library.sel = 0;
+        app.on_mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::SHIFT,
+        });
+        assert_eq!(app.library.marked.len(), 2, "shift-click selects the range");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -162,8 +162,11 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
                         dirty = true;
                     }
                     Event::Mouse(m) => {
-                        app.on_mouse(m);
-                        dirty = true;
+                        // Only repaint when the event changed something — an
+                        // any-motion mouse-move flood must not spin the render loop.
+                        if app.on_mouse(m) {
+                            dirty = true;
+                        }
                     }
                     Event::Resize(_, _) => dirty = true,
                     _ => {}

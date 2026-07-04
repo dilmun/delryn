@@ -320,7 +320,14 @@ fn book_row(b: &BookRow, cols: &[Col], grouped: bool, marked: bool, theme: Theme
         Col::Status => status_cell(b, theme),
         Col::Tags => tags_cell(&b.tags, theme),
     });
-    Row::new(cells.collect::<Vec<_>>())
+    let row = Row::new(cells.collect::<Vec<_>>());
+    // A multi-selected (not cursor) row gets a faint surface tint so the selection
+    // reads at a glance, beyond the ✓ in the narrow lead column. The cursor row's
+    // own highlight layers on top of this.
+    match (marked, theme.code_surface()) {
+        (true, Some(bg)) => row.style(Style::default().bg(bg)),
+        _ => row,
+    }
 }
 
 /// The Tags cell: the book's tags, comma-separated and muted (the table clips to
