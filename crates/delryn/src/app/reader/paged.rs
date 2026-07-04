@@ -97,10 +97,12 @@ impl Reader {
 
     /// The sections that should be on screen now — matching exactly what the view
     /// places (so the deck keep-alive doesn't wait on or spin over the wrong
-    /// pages): the spread's pages (cover-offset aware) in `spread` mode, else the
-    /// current page alone.
+    /// pages): the continuous-paged vertical stack (anchor onward), the spread's
+    /// pages (cover-offset aware) in `spread` mode, else the current page alone.
     pub fn visible_sections(&self, spread: bool) -> Vec<usize> {
-        if spread {
+        if self.continuous_paged_active() {
+            self.visible_stack.clone()
+        } else if spread {
             self.spread_pages()
         } else {
             vec![self.section]
@@ -149,15 +151,70 @@ impl Reader {
             .any(|&s| !self.page_ready(s) && !self.page_unrenderable(s))
     }
 
-    /// The visible pages the deck should place — all of them once every one is
-    /// ready (an atomic spread swap), otherwise none (hold the previous pages).
+    /// The visible pages the deck should place. A single page / spread swaps
+    /// atomically — all ready or nothing (so a spread never flickers half). The
+    /// continuous stack instead shows its **ready subset**: with several pages
+    /// sharing the viewport, holding everything until the far edge's next page
+    /// themes would stall scrolling, so a not-yet-ready band just shows the themed
+    /// background for a frame. It reports exactly the sections the view emitted this
+    /// frame (`pdf_targets`), so the loop's "deck caught up" check settles cleanly
+    /// even when the anchor has scrolled into the inter-page gap and dropped out of
+    /// the visible bands.
     pub fn placeable_sections(&self, spread: bool) -> Vec<usize> {
+        if self.continuous_paged_active() {
+            return self.pdf_targets.iter().map(|t| t.section).collect();
+        }
         let v = self.visible_sections(spread);
         if v.iter().all(|&s| self.page_ready(s)) {
             v
         } else {
             Vec::new()
         }
+    }
+
+    /// Mirror the terminal cell pixel size from the picker (called each frame in
+    /// continuous-paged mode) so the scroll math can size pages off the view.
+    pub fn set_cell_px(&mut self, cell: (u16, u16)) {
+        self.cell_px = cell;
+    }
+
+    /// Clear the continuous-paged stack (no image protocol available, or leaving
+    /// the mode), so the deck tears its pages down.
+    pub fn clear_page_stack(&mut self) {
+        self.pdf_targets.clear();
+        self.visible_stack.clear();
+    }
+
+    /// Assemble the continuous-paged vertical stack for `body` this frame: walk the
+    /// anchor page downward, sizing each to fit-width, until the viewport is filled;
+    /// record the covered sections (for the loader / readiness checks) and emit the
+    /// [`PageTarget`]s for the pages whose pixels are ready to place. Still-loading
+    /// pages are left as gaps this frame and picked up once they land. The pure
+    /// slicing is [`page_stack::stack_targets`].
+    pub fn capture_page_stack(&mut self, body: ratatui::layout::Rect) {
+        let n = self.doc.section_count();
+        let vh = body.height as i64;
+        // Collect the pages that intersect the viewport from the current scroll.
+        let mut pages = Vec::new();
+        let mut cursor: i64 = -(self.scroll as i64);
+        let mut s = self.section;
+        while s < n && cursor < vh {
+            let (content, rows) = self.page_metrics(s);
+            pages.push(page_stack::StackPage {
+                section: s,
+                content,
+                rows,
+            });
+            cursor += rows as i64 + page_stack::STACK_GAP as i64;
+            s += 1;
+        }
+        self.visible_stack = pages.iter().map(|p| p.section).collect();
+        let targets = page_stack::stack_targets(body, self.scroll, &pages);
+        // Only place pages whose themed bytes are ready; the rest fill in next frame.
+        self.pdf_targets = targets
+            .into_iter()
+            .filter(|t| self.page_ready(t.section))
+            .collect();
     }
 
     /// Collect any pages the background loader and the page themer have finished

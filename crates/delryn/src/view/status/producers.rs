@@ -40,8 +40,8 @@ pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
     if sf.view {
         bar.text(Zone::Right, 3, config.view_mode.label(), dim);
     }
-    // Continuous cross-section scroll indicator (reflow only).
-    if reader.continuous_active() {
+    // Continuous cross-section scroll indicator (reflow text or PDF page stacking).
+    if reader.continuous_active() || reader.continuous_paged_active() {
         bar.text(Zone::Right, 3, "continuous", dim);
     }
     // Manga (right-to-left) indicator — only meaningful for paged spreads.
