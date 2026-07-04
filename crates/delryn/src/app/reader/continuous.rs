@@ -1,4 +1,9 @@
-//! Continuous scroll across section boundaries (reflowable content).
+//! Continuous scroll across section boundaries.
+//!
+//! Two variants share this concern. The **reflowable** one (the bulk of this file)
+//! joins wrapped-text chapters. The **paged** one (`continuous_paged_*`) stacks PDF
+//! page images vertically and rolls the anchor page in row units — the layout for
+//! it is the pure `reader::page_stack` geometry, assembled in `reader::paged`.
 //!
 //! The reader normally shows one section's wrapped lines and *jumps* to the next
 //! at the bottom edge (the new chapter restarts at the top). Continuous mode makes
@@ -29,13 +34,124 @@ use std::sync::atomic::Ordering;
 
 use crate::layout::DisplayLine;
 
-use super::Reader;
+use super::{Reader, page_stack};
 
 impl Reader {
     /// Whether continuous cross-section scroll is active right now: the flag is on
     /// and the document is reflowable, not page-mode, and not chapter-locked.
     pub fn continuous_active(&self) -> bool {
         self.continuous && !self.is_paged_image() && !self.paged && !self.chapter_lock
+    }
+
+    /// Whether continuous *paged* (PDF page-stacking) scroll is active: the flag is
+    /// on for a paged-image document in single-column (Center) mode, not page-snap
+    /// and not chapter-locked. Mutually exclusive with
+    /// [`continuous_active`](Self::continuous_active) (which excludes paged docs).
+    /// `self.continuous` is only set in Center mode and `self.spread` only in
+    /// TwoPage, so `!spread` restates single-column; `!paged` keeps page-snap and
+    /// continuous exclusive, the same rule as the reflow variant.
+    pub fn continuous_paged_active(&self) -> bool {
+        self.continuous
+            && self.is_paged_image()
+            && !self.spread
+            && !self.paged
+            && !self.chapter_lock
+    }
+
+    /// Continuous-paged scroll-down by `n` rows: advance the anchor page's scroll
+    /// offset, rolling to the next page each time the offset passes the anchor's
+    /// slot (its display height plus the inter-page gap). At the last page it clamps
+    /// so the page's bottom can't scroll above the viewport bottom.
+    pub(super) fn continuous_paged_scroll_down(&mut self, n: usize) {
+        let last = self.doc.section_count().saturating_sub(1);
+        self.scroll += n;
+        while self.section < last {
+            let slot = self.paged_slot_rows(self.section);
+            if self.scroll >= slot {
+                self.scroll -= slot;
+                self.move_paged_anchor(self.section + 1);
+            } else {
+                break;
+            }
+        }
+        if self.section >= last {
+            let bottom = self
+                .page_rows_of(last)
+                .saturating_sub(self.viewport_lines.max(1) as u16);
+            self.scroll = self.scroll.min(bottom as usize);
+        }
+    }
+
+    /// Continuous-paged scroll-up by `n` rows: retreat the anchor's offset, crossing
+    /// into the previous page's slot at its top (landing just below the boundary,
+    /// the exact inverse of the down-roll threshold). Stops at the book start.
+    pub(super) fn continuous_paged_scroll_up(&mut self, n: usize) {
+        let mut up = n;
+        while up > 0 {
+            if self.scroll >= up {
+                self.scroll -= up;
+                break;
+            }
+            up -= self.scroll;
+            self.scroll = 0;
+            if self.section == 0 {
+                break; // at the very start of the book
+            }
+            up -= 1;
+            self.move_paged_anchor(self.section - 1);
+            self.scroll = self.paged_slot_rows(self.section).saturating_sub(1);
+        }
+    }
+
+    /// Move the continuous-paged anchor to `section` without resetting the scroll
+    /// offset: unlike a reflow anchor there are no lines to re-wrap, so this just
+    /// re-points the section, steers the background loader, and prefetches the new
+    /// neighbourhood so upcoming pages rasterize ahead.
+    fn move_paged_anchor(&mut self, section: usize) {
+        if section >= self.doc.section_count() {
+            return;
+        }
+        self.nav.nav_back = section < self.section;
+        self.section = section;
+        self.sections
+            .loader_current
+            .store(section, Ordering::Relaxed);
+        self.prefetch_neighbors();
+    }
+
+    /// A paged page's "slot" height in rows: its fit-width display height plus the
+    /// inter-page gap. One slot is the scroll distance from a page's top to the next
+    /// page's top.
+    pub(super) fn paged_slot_rows(&mut self, section: usize) -> usize {
+        self.page_rows_of(section) as usize + page_stack::STACK_GAP as usize
+    }
+
+    /// A paged page's fit-width display height in rows (see
+    /// [`page_metrics`](Self::page_metrics)).
+    pub(super) fn page_rows_of(&mut self, section: usize) -> u16 {
+        self.page_metrics(section).1
+    }
+
+    /// The margin-trimmed content box and fit-width display height (rows) of
+    /// `section`'s page. Once the page is rasterized this is exact and is cached as
+    /// the estimate for still-loading pages; before that it falls back to that
+    /// estimate (or the viewport height) so scroll math and layout stay stable.
+    pub(super) fn page_metrics(&mut self, section: usize) -> ((u32, u32, u32, u32), u16) {
+        let body_w = self.last_measure.max(1) as u16;
+        let cell = self.cell_px;
+        if let Some(dims) = self.base_raster_dims(section) {
+            let content = self.page_content_box(section, dims);
+            let rows = page_stack::page_rows(content, body_w, cell).max(1);
+            self.est_page_rows = rows;
+            (content, rows)
+        } else {
+            let rows = if self.est_page_rows > 0 {
+                self.est_page_rows
+            } else {
+                self.viewport_lines.max(1) as u16
+            };
+            ((0, 0, 1, 1), rows)
+        }
     }
 
     /// The render buffer for continuous mode: the anchor section's lines from

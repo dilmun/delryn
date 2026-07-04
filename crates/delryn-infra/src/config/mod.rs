@@ -164,10 +164,11 @@ pub struct Config {
     /// Paginated reading: vertical navigation flips whole pages snapped to page
     /// boundaries (true) vs. continuous line scrolling (false).
     pub paged: bool,
-    /// Continuous scroll across chapters (reflowable content): the tail of one
-    /// section and the head of the next share the viewport, so a chapter boundary
-    /// scrolls seamlessly instead of jumping. Ignored in page mode and for paged
-    /// (PDF) documents. Overridden by `chapter_lock`.
+    /// Continuous scroll across sections (single-column / Center mode). Reflowable
+    /// content shares the tail of one chapter and the head of the next in the
+    /// viewport so a boundary scrolls seamlessly; paged (PDF) documents stack their
+    /// page images vertically and scroll through them a row at a time. Overridden
+    /// by `chapter_lock`.
     pub continuous: bool,
     /// Keep scrolling within the current chapter (true) instead of flowing into
     /// the next/previous one at the edges.

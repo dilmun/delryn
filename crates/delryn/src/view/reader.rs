@@ -205,6 +205,11 @@ fn render_content(
         // PDF: hand the page placements to the deck and leave the cells empty so
         // the kitty placements show through — no per-cell drawing, no
         // transmit-on-turn, no black gap.
+        if reader.continuous_paged_active() {
+            // Continuous: a vertical stack of page slices filling the body.
+            capture_pdf_stack(reader, images, body, image_policy(config));
+            return;
+        }
         let areas: Vec<(usize, Rect)> = plan
             .placements
             .iter()
@@ -417,6 +422,27 @@ fn capture_pdf_targets(
         reader.set_page_room(room, step);
     }
     reader.pdf_targets = targets;
+}
+
+/// Compute the continuous-paged vertical page stack for this frame: theme the
+/// visible + look-ahead pages, mirror the cell size, and let the reader assemble
+/// the [`PageTarget`] slices filling `body`. Like [`capture_pdf_targets`], the
+/// cells are left empty so the deck's kitty placements show through; the deck reads
+/// `pdf_targets` after the frame. No-op without an image protocol.
+fn capture_pdf_stack(
+    reader: &mut Reader,
+    images: Images,
+    body: Rect,
+    policy: crate::media::RenderPolicy,
+) {
+    let Some((picker, _)) = images else {
+        reader.clear_page_stack();
+        return;
+    };
+    reader.sync_pages(policy);
+    let fs = picker.font_size();
+    reader.set_cell_px((fs.width, fs.height));
+    reader.capture_page_stack(body);
 }
 
 /// Position a `cols`×`rows` page within `area`, vertically centred and

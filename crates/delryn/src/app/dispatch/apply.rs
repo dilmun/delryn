@@ -306,7 +306,58 @@ impl App {
 /// In paged mode (or for page-image documents) vertical motion flips whole pages;
 /// a held PDF flip is throttled to the drawn frame via `flip_ready`. Split out of
 /// [`App::apply`] so its action dispatch stays a flat router.
+/// Rows scrolled per `j`/`k` tap in continuous-paged (PDF stacking) mode; a held
+/// key repeats it once per drawn frame (throttled via `flip_ready`), so this sets
+/// the smooth-scroll speed. Small enough to read comfortably, large enough that a
+/// held key moves at a good clip.
+const PAGED_STEP: usize = 3;
+
 fn apply_nav(reader: &mut Reader, action: Action, paged: bool, flip_ready: bool) {
+    // Continuous-paged (PDF page stacking): vertical motion scrolls the vertical
+    // page stack in row units rather than flipping whole pages. Unlike a flip it
+    // needs no frame throttle — the scroll offset is absolute state, so buffered
+    // key-repeats just advance it further, never skipping content — and gating it
+    // on the deck (`flip_ready`) could soft-lock when the anchor scrolls into the
+    // inter-page gap and so isn't among the deck's shown pages. Other actions
+    // (Top/Bottom/Goto/sidebar) fall through unchanged.
+    if reader.continuous_paged_active() && reader.focus == Focus::Content {
+        // Home/End jump to the first / last page (a plain PDF's g/G are no-ops
+        // since there are no lines to scroll; here the stack gives them meaning).
+        match action {
+            Action::Top => {
+                reader.jump_to(0, None);
+                return;
+            }
+            Action::Bottom => {
+                let last = reader.section_count().saturating_sub(1);
+                reader.jump_to(last, None);
+                // Scroll-to-end reuses the last-page clamp in the down-roll math.
+                reader.scroll_down(usize::MAX);
+                return;
+            }
+            _ => {}
+        }
+        let half = (reader.viewport_lines.max(2) / 2) as isize;
+        let full = reader.viewport_lines.max(2).saturating_sub(1) as isize;
+        let delta = match action {
+            Action::Down(n) => Some((n as isize).max(1) * PAGED_STEP as isize),
+            Action::Up(n) => Some(-(n as isize).max(1) * PAGED_STEP as isize),
+            Action::HalfDown => Some(half),
+            Action::HalfUp => Some(-half),
+            Action::PageDown => Some(full),
+            Action::PageUp => Some(-full),
+            _ => None,
+        };
+        if let Some(delta) = delta {
+            if delta >= 0 {
+                reader.scroll_down(delta as usize);
+            } else {
+                reader.scroll_up((-delta) as usize);
+            }
+            return;
+        }
+    }
+
     let page_forward = |r: &mut Reader| {
         if flip_ready {
             r.page_forward();

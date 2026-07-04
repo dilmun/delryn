@@ -74,6 +74,15 @@ impl App {
                 if let Some(r) = self.reader.as_mut() {
                     if over_sidebar {
                         r.sidebar_wheel(d);
+                    } else if r.continuous_paged_active() {
+                        // Continuous PDF: the wheel scrolls the vertical page stack
+                        // in row units (re-transmitting the visible slices), not a
+                        // whole-page flip.
+                        if d > 0 {
+                            r.scroll_down(d as usize);
+                        } else {
+                            r.scroll_up((-d) as usize);
+                        }
                     } else if paged || r.is_paged_image() {
                         // Whole-page rasters (PDF) flip pages instead of eased
                         // line-scroll, which would blank/flicker the full-page

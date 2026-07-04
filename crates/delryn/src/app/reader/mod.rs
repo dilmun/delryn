@@ -24,6 +24,7 @@ mod continuous;
 mod crisp;
 mod images;
 pub use images::ImageGeom;
+mod page_stack;
 mod page_view;
 pub use page_view::{PageView, PanRoom, Viewport, place_page, raster_width_for_crispness};
 mod paged;
@@ -95,6 +96,19 @@ pub struct Reader {
     pub pdf_targets: Vec<PageTarget>,
     /// Zoom / pan / fit for the current paged page (single-page view only).
     pub page_view: PageView,
+    /// Pixel size `(w, h)` of one terminal cell, mirrored each frame from the image
+    /// picker. Lets the continuous-paged scroll math size a page's display height
+    /// off the render thread (the picker is only reachable from the view).
+    cell_px: (u16, u16),
+    /// Last computed display height (cells) of a paged page, reused as the estimate
+    /// for pages not yet rasterized so the continuous-paged scroll math and layout
+    /// stay stable (PDF pages are near-uniform in size). Self-corrects once the real
+    /// raster lands.
+    est_page_rows: u16,
+    /// Sections in the current continuous-paged vertical stack (anchor onward),
+    /// set each frame by the view. Drives the deck readiness / load checks
+    /// ([`visible_sections`](Self::visible_sections)); empty outside that mode.
+    visible_stack: Vec<usize>,
     /// Pan room remaining this frame (from the placement), so nav pans while
     /// there's room and flips the page at the edge. A render fact — set each
     /// frame by the view.
@@ -219,6 +233,9 @@ impl Reader {
             cover_offset: false,
             pdf_targets: Vec::new(),
             page_view: PageView::default(),
+            cell_px: (10, 20),
+            est_page_rows: 0,
+            visible_stack: Vec::new(),
             page_room: PanRoom::default(),
             page_step: (0.0, 0.0),
             trim_margins: true,
@@ -586,6 +603,11 @@ impl Reader {
     }
 
     pub fn clamp_scroll(&mut self) {
+        // Continuous-paged (PDF stacking) manages its own scroll bound in row units
+        // against the stacked page heights, not the (empty) wrapped-line count.
+        if self.continuous_paged_active() {
+            return;
+        }
         // Continuous mode mid-book: the anchor's offset intentionally runs past the
         // section's last page (the next section fills the tail), so don't clamp it —
         // only the final section has a hard bottom.
@@ -644,6 +666,10 @@ impl Reader {
     /// mode the anchor rolls seamlessly across the boundary (tail + next head share
     /// the viewport); otherwise the next chapter is loaded fresh at the top.
     pub fn scroll_down(&mut self, n: usize) {
+        if self.continuous_paged_active() {
+            self.continuous_paged_scroll_down(n);
+            return;
+        }
         if self.continuous_active() {
             self.continuous_scroll_down(n);
             return;
@@ -659,6 +685,10 @@ impl Reader {
     /// Scroll up, flowing into the previous chapter at the top edge (unless
     /// chapter-locked). Continuous mode rolls the anchor back across the boundary.
     pub fn scroll_up(&mut self, n: usize) {
+        if self.continuous_paged_active() {
+            self.continuous_paged_scroll_up(n);
+            return;
+        }
         if self.continuous_active() {
             self.continuous_scroll_up(n);
             return;
@@ -1229,6 +1259,82 @@ mod tests {
         assert!(
             !r.crisp_awaiting(),
             "nothing requested → the loop can settle"
+        );
+    }
+
+    /// A continuous-paged (PDF stacking) reader: a paged doc with `continuous` on,
+    /// a fixed cell size / viewport, and margin trim off so each page's fit-width
+    /// display height is a clean 14 rows (content 20×28 at 20 cols, cell 10×20:
+    /// 28·(20·10/20)/20 = 14) → slot 15 with the 1-row gap.
+    fn continuous_paged_reader(pages: usize) -> Reader {
+        let doc = MockDoc::new((0..pages).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.continuous = true;
+        r.set_cell_px((10, 20));
+        r.last_measure = 20;
+        r.viewport_lines = 10;
+        r.set_trim(false, 0);
+        // Prime the anchor's height so still-loading pages estimate uniformly.
+        assert_eq!(r.page_rows_of(0), 14);
+        r
+    }
+
+    #[test]
+    fn continuous_paged_activation_gates_on_mode() {
+        let mut r = continuous_paged_reader(4);
+        assert!(r.continuous_paged_active());
+        r.spread = true; // a two-page spread is not continuous stacking
+        assert!(!r.continuous_paged_active());
+        r.spread = false;
+        r.chapter_lock = true;
+        assert!(!r.continuous_paged_active(), "chapter lock overrides");
+        r.chapter_lock = false;
+        r.continuous = false;
+        assert!(!r.continuous_paged_active(), "flag off");
+    }
+
+    #[test]
+    fn continuous_paged_scroll_down_rolls_the_anchor_across_a_slot() {
+        let mut r = continuous_paged_reader(6);
+        // Within the first page's slot: the anchor stays, the offset advances.
+        r.scroll_down(5);
+        assert_eq!((r.section, r.scroll), (0, 5));
+        // Past the slot (15 = 14 rows + 1 gap): roll to the next page, keep leftover.
+        r.scroll_down(15);
+        assert_eq!((r.section, r.scroll), (1, 5), "rolled one page, kept 5");
+        // A big jump rolls several pages (mid-book, so no end clamp).
+        r.scroll_down(15 + 15);
+        assert_eq!((r.section, r.scroll), (3, 5));
+    }
+
+    #[test]
+    fn continuous_paged_scroll_up_crosses_back_into_the_previous_slot() {
+        let mut r = continuous_paged_reader(4);
+        r.load(2); // anchor page 2, top
+        r.set_trim(false, 0);
+        assert_eq!((r.section, r.scroll), (2, 0));
+        r.scroll_up(1);
+        // Lands just below the boundary: the previous page's slot minus one row.
+        assert_eq!(
+            (r.section, r.scroll),
+            (1, 14),
+            "into page 1 near its bottom"
+        );
+    }
+
+    #[test]
+    fn continuous_paged_clamps_at_both_ends() {
+        let mut r = continuous_paged_reader(3);
+        // At the start, scrolling up is a no-op.
+        r.scroll_up(50);
+        assert_eq!((r.section, r.scroll), (0, 0));
+        // Scrolling far past the end clamps to the last page's bottom: the page is
+        // 14 rows, the viewport 10, so the deepest offset is 14 − 10 = 4.
+        r.scroll_down(9999);
+        assert_eq!(r.section, 2, "no page past the last");
+        assert_eq!(
+            r.scroll, 4,
+            "clamped so the last page's bottom is the floor"
         );
     }
 

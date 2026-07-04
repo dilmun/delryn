@@ -621,9 +621,29 @@ no premature abstraction, no speculative modes).*
       `config.continuous` (Settings → Content → Pagination) + a "continuous" status
       tag; Center + reflow only, overridden by page-mode / chapter-lock / paged.
       *v1 limits (graceful): gutter ribbon + link cursor follow the anchor section;
-      a following section's figures reserve their space until it becomes the anchor;
-      **paged (PDF) continuous** — vertical page-image stacking through the deck —
-      **still deferred** (a distinct, harder problem).* **Still:** **grid /
+      a following section's figures reserve their space until it becomes the anchor.*
+      ✅ **Continuous scroll for paged (PDF) documents** — branch
+      `feature/reader-paged-continuous`, the deferred "distinct, harder problem". The
+      same `config.continuous`, now for PDFs in Center: page images stack vertically
+      (each scaled fit-width, a 1-row inter-page gap) and scroll a few rows at a time,
+      so a page boundary passes seamlessly (the SumatraPDF / Preview model) instead of
+      flipping whole pages. Additive, mirroring the reflow variant: `self.section` is
+      the *anchor* (topmost visible) page and `self.scroll` its row offset;
+      `continuous_paged_scroll_down/up` roll the anchor across page *slots*
+      (fit-width height + gap) in `app/reader/continuous.rs`. The layout is the pure,
+      unit-tested `app/reader/page_stack.rs` — it slices each visible page band into a
+      Kitty source-**crop** (reusing the deck's existing zoom/pan crop path), so the
+      direct-`PageDeck` transmits partial page slices with no new escape machinery.
+      The view (`capture_pdf_stack`) assembles the stack each frame and places only
+      the ready pages (a still-loading band shows the themed background for a frame —
+      no all-or-nothing stall); page theming + async raster prefetch are reused as-is.
+      Scroll needs no flip-throttle (the offset is absolute, nothing gets skipped);
+      `g`/`G` jump to first/last page. Pages sized off `page_stack::page_rows` with a
+      uniform-page estimate for not-yet-rasterized pages (self-correcting). 9 tests
+      (pure geometry + scroll roll/clamp). *v1 limits (graceful): base raster only
+      (no viewport-matched crisp re-raster mid-stack — that's the single-page path);
+      spread + zoom/pan fall back to the paged single/spread views; the inter-page
+      gap is a fixed 1 row (not a config knob yet).* **Still:** **grid /
       thumbnail browser** as a visual page-jump complementing the TOC sidebar
       (arrows move selection, Enter opens). This is where a page grid belongs — a
       *thumbnail* browser (small cell-sized rasters, tightly packed) for jumping, not
