@@ -671,8 +671,14 @@ grow these further.
       split the monolith into `layout/` (`mod` 311, `blocks` 372, `spans` 511,
       `table` 350, `code` 203). `spans.rs` (511) is the largest and sits in the
       *review* band — decompose the fill/emit path if it's touched again.
-- [ ] `app/dispatch.rs::apply` (234 lines) — the action match; split by action
-      group if it grows.
+- [x] ✅ `app/dispatch.rs` — the flat file had grown to **840 lines** (on_key +
+      the modal overlay key handlers + the `apply` action router all sharing one
+      file). Split into a `dispatch/` tree, each a distinct concern: `mod.rs` (136,
+      the central `on_key` router), `overlays.rs` (342, image/search-prompt/
+      annotation key handlers), `apply.rs` (379, `apply` + `apply_nav` + `reflow_key`).
+      Behaviour-identical (81 tests, clippy/fmt clean). *(Further per-group splitting
+      of `apply` is optional chip-away — a flat action router is inherently one arm
+      per action.)*
 - [ ] `view/image.rs::render` (196 lines) — full-screen image view render.
 - [x] ✅ `#[allow(clippy::too_many_arguments)]` in `app/reader/images.rs` — the
       three allows are **gone**: the (avail, max_rows, max_px, width_pct, policy)
