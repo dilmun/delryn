@@ -27,64 +27,83 @@
 //! v1 limits (documented, graceful — no crashes): the bookmark gutter, the link
 //! cursor, and inline-image transmit follow the **anchor** section only; a
 //! following section's figures reserve their space (blank rows) until it becomes
-//! the anchor. Continuous is reflow + single-column (Center) only; page mode,
-//! chapter-lock, and paged (PDF) documents fall back to per-section scrolling.
+//! the anchor. Reflow continuous is single-column (Center) only; page mode and
+//! chapter-lock fall back to per-section scrolling. The **paged** variant
+//! (`continuous_paged_*`) works in Center (one page per band) and TwoPage (a facing
+//! pair per band), with zoom / centre / horizontal pan; page-snap and chapter-lock
+//! disable it.
 
 use std::sync::atomic::Ordering;
 
+use crate::config::ViewMode;
 use crate::layout::DisplayLine;
 
 use super::{Reader, page_stack};
 
+/// Continuous-paged zoom: multiplicative step per keypress, and the bounds relative
+/// to fit-width (1.0). Zoom-out below 1.0 shrinks + centres pages (see more at
+/// once); zoom-in above 1.0 enlarges a single page past the viewport (pan to read).
+const CONT_ZOOM_STEP: f32 = 1.25;
+const CONT_ZOOM_MIN: f32 = 0.25;
+const CONT_ZOOM_MAX: f32 = 4.0;
+
+/// Horizontal pan step (fraction of the overflow) per `h`/`l` press on a zoomed-in
+/// single page.
+const CONT_PAN_STEP: f32 = 0.2;
+
 impl Reader {
     /// Whether continuous cross-section scroll is active right now: the flag is on
-    /// and the document is reflowable, not page-mode, and not chapter-locked.
+    /// and the document is reflowable, single-column (Center), not page-mode, and
+    /// not chapter-locked.
     pub fn continuous_active(&self) -> bool {
-        self.continuous && !self.is_paged_image() && !self.paged && !self.chapter_lock
-    }
-
-    /// Whether continuous *paged* (PDF page-stacking) scroll is active: the flag is
-    /// on for a paged-image document in single-column (Center) mode, not page-snap
-    /// and not chapter-locked. Mutually exclusive with
-    /// [`continuous_active`](Self::continuous_active) (which excludes paged docs).
-    /// `self.continuous` is only set in Center mode and `self.spread` only in
-    /// TwoPage, so `!spread` restates single-column; `!paged` keeps page-snap and
-    /// continuous exclusive, the same rule as the reflow variant.
-    pub fn continuous_paged_active(&self) -> bool {
         self.continuous
-            && self.is_paged_image()
-            && !self.spread
+            && !self.is_paged_image()
+            && self.view_mode == ViewMode::Center
             && !self.paged
             && !self.chapter_lock
     }
 
-    /// Continuous-paged scroll-down by `n` rows: advance the anchor page's scroll
-    /// offset, rolling to the next page each time the offset passes the anchor's
-    /// slot (its display height plus the inter-page gap). At the last page it clamps
-    /// so the page's bottom can't scroll above the viewport bottom.
+    /// Whether continuous *paged* (PDF page-stacking) scroll is active: the flag is
+    /// on for a paged-image document, not page-snap and not chapter-locked. Works in
+    /// both Center (one page per band) and TwoPage (a facing pair per band, see
+    /// [`continuous_two_page`](Self::continuous_two_page)). Mutually exclusive with
+    /// [`continuous_active`](Self::continuous_active) (which excludes paged docs).
+    pub fn continuous_paged_active(&self) -> bool {
+        self.continuous && self.is_paged_image() && !self.paged && !self.chapter_lock
+    }
+
+    /// Whether the continuous-paged stack shows a facing pair per band (TwoPage) vs.
+    /// a single page (Center).
+    pub fn continuous_two_page(&self) -> bool {
+        self.continuous_paged_active() && self.view_mode == ViewMode::TwoPage
+    }
+
+    /// Continuous-paged scroll-down by `n` rows: advance the anchor band's scroll
+    /// offset, rolling to the next band (next page, or next spread in two-page) each
+    /// time the offset passes the band's slot (its display height plus the gap). At
+    /// the last band it clamps so the content bottom can't scroll above the viewport.
     pub(super) fn continuous_paged_scroll_down(&mut self, n: usize) {
-        let last = self.doc.section_count().saturating_sub(1);
         self.scroll += n;
-        while self.section < last {
-            let slot = self.paged_slot_rows(self.section);
+        while let Some(next) = self.next_band_anchor(self.section) {
+            let slot = self.band_slot_rows(self.section);
             if self.scroll >= slot {
                 self.scroll -= slot;
-                self.move_paged_anchor(self.section + 1);
+                self.move_paged_anchor(next);
             } else {
                 break;
             }
         }
-        if self.section >= last {
+        if self.next_band_anchor(self.section).is_none() {
             let bottom = self
-                .page_rows_of(last)
+                .band_rows_of(self.section)
                 .saturating_sub(self.viewport_lines.max(1) as u16);
             self.scroll = self.scroll.min(bottom as usize);
         }
     }
 
     /// Continuous-paged scroll-up by `n` rows: retreat the anchor's offset, crossing
-    /// into the previous page's slot at its top (landing just below the boundary,
-    /// the exact inverse of the down-roll threshold). Stops at the book start.
+    /// into the previous band's slot at its top (landing just below the boundary, the
+    /// exact inverse of the down-roll threshold). Stops at the book start.
     pub(super) fn continuous_paged_scroll_up(&mut self, n: usize) {
         let mut up = n;
         while up > 0 {
@@ -94,12 +113,35 @@ impl Reader {
             }
             up -= self.scroll;
             self.scroll = 0;
-            if self.section == 0 {
+            let Some(prev) = self.prev_band_anchor(self.section) else {
                 break; // at the very start of the book
-            }
+            };
             up -= 1;
-            self.move_paged_anchor(self.section - 1);
-            self.scroll = self.paged_slot_rows(self.section).saturating_sub(1);
+            self.move_paged_anchor(prev);
+            self.scroll = self.band_slot_rows(self.section).saturating_sub(1);
+        }
+    }
+
+    /// The anchor of the band below `left` (the next page, or the next spread's left
+    /// page in two-page), or `None` at the last band.
+    pub(super) fn next_band_anchor(&self, left: usize) -> Option<usize> {
+        let n = self.doc.section_count();
+        let next = if self.continuous_two_page() {
+            self.spread_left(left) + self.spread_width(left)
+        } else {
+            left + 1
+        };
+        (next < n).then_some(next)
+    }
+
+    /// The anchor of the band above `left` (the previous page / spread's left), or
+    /// `None` at the book start.
+    fn prev_band_anchor(&self, left: usize) -> Option<usize> {
+        if self.continuous_two_page() {
+            let l = self.spread_left(left);
+            (l > 0).then(|| self.spread_left(l - 1))
+        } else {
+            left.checked_sub(1)
         }
     }
 
@@ -119,38 +161,129 @@ impl Reader {
         self.prefetch_neighbors();
     }
 
-    /// A paged page's "slot" height in rows: its fit-width display height plus the
-    /// inter-page gap. One slot is the scroll distance from a page's top to the next
-    /// page's top.
-    pub(super) fn paged_slot_rows(&mut self, section: usize) -> usize {
-        self.page_rows_of(section) as usize + page_stack::STACK_GAP as usize
+    /// A band's "slot" height in rows: its display height plus the inter-page gap.
+    /// One slot is the scroll distance from a band's top to the next band's top.
+    pub(super) fn band_slot_rows(&mut self, anchor: usize) -> usize {
+        self.band_rows_of(anchor) as usize + page_stack::STACK_GAP as usize
     }
 
-    /// A paged page's fit-width display height in rows (see
-    /// [`page_metrics`](Self::page_metrics)).
-    pub(super) fn page_rows_of(&mut self, section: usize) -> u16 {
-        self.page_metrics(section).1
-    }
-
-    /// The margin-trimmed content box and fit-width display height (rows) of
-    /// `section`'s page. Once the page is rasterized this is exact and is cached as
-    /// the estimate for still-loading pages; before that it falls back to that
-    /// estimate (or the viewport height) so scroll math and layout stay stable.
-    pub(super) fn page_metrics(&mut self, section: usize) -> ((u32, u32, u32, u32), u16) {
-        let body_w = self.last_measure.max(1) as u16;
-        let cell = self.cell_px;
-        if let Some(dims) = self.base_raster_dims(section) {
-            let content = self.page_content_box(section, dims);
-            let rows = page_stack::page_rows(content, body_w, cell).max(1);
-            self.est_page_rows = rows;
-            (content, rows)
+    /// A band's display height in rows: the single page's height (Center), or the
+    /// taller of the spread's two pages (TwoPage), each at the current zoom.
+    pub(super) fn band_rows_of(&mut self, anchor: usize) -> u16 {
+        if self.continuous_two_page() {
+            let cols = self.continuous_column_cols();
+            self.spread_at(self.spread_left(anchor))
+                .into_iter()
+                .map(|s| self.tile_rows(s, cols))
+                .max()
+                .unwrap_or(1)
+                .max(1)
         } else {
-            let rows = if self.est_page_rows > 0 {
-                self.est_page_rows
+            let cols = self.continuous_single_cols();
+            self.tile_rows(anchor, cols)
+        }
+    }
+
+    /// The effective zoom scale for the stack, clamped so a two-page spread never
+    /// overflows the viewport (a page split across the fold has no sensible pan).
+    pub(super) fn continuous_scale(&self) -> f32 {
+        if self.continuous_two_page() {
+            self.cont_scale.min(1.0)
+        } else {
+            self.cont_scale
+        }
+    }
+
+    pub(super) fn continuous_pan_x(&self) -> f32 {
+        self.cont_pan_x
+    }
+
+    /// The single-column tile width in cells at the current zoom (the page's virtual
+    /// display width — may exceed the viewport when zoomed in).
+    pub(super) fn continuous_single_cols(&self) -> u16 {
+        ((self.last_measure.max(1) as f32 * self.continuous_scale()).round() as u16).max(1)
+    }
+
+    /// One column's tile width in cells for a two-page spread at the current zoom
+    /// (half the viewport minus the gap).
+    pub(super) fn continuous_column_cols(&self) -> u16 {
+        let vp = self.last_measure.max(1) as u16;
+        let base = vp.saturating_sub(self.page_gap) / 2;
+        ((base as f32 * self.continuous_scale()).round() as u16).max(1)
+    }
+
+    /// The margin-trimmed content box of `section`'s page, or `None` until it's
+    /// rasterized.
+    pub(super) fn page_content_of(&mut self, section: usize) -> Option<(u32, u32, u32, u32)> {
+        let dims = self.base_raster_dims(section)?;
+        Some(self.page_content_box(section, dims))
+    }
+
+    /// The display height in rows of `section`'s page when scaled to `cols` cells
+    /// wide. Exact once rasterized (and caches the canonical fit-width height as the
+    /// estimate); before that it scales the estimate proportionally to `cols` so the
+    /// scroll math and layout stay stable across near-uniform PDF pages.
+    pub(super) fn tile_rows(&mut self, section: usize, cols: u16) -> u16 {
+        let cell = self.cell_px;
+        let full = self.last_measure.max(1) as u32;
+        if let Some(content) = self.page_content_of(section) {
+            let rows = page_stack::page_rows(content, cols, cell).max(1);
+            // Back out the canonical fit-width (full-column) height for the estimate.
+            self.est_page_rows = ((rows as u32 * full / cols.max(1) as u32).max(1) as u16).max(1);
+            rows
+        } else {
+            let base = if self.est_page_rows > 0 {
+                self.est_page_rows as u32
             } else {
-                self.viewport_lines.max(1) as u16
+                self.viewport_lines.max(1) as u32
             };
-            ((0, 0, 1, 1), rows)
+            ((base * cols.max(1) as u32 / full).max(1) as u16).max(1)
+        }
+    }
+
+    /// Zoom the continuous-paged stack in one step (bounded). Larger pages, and past
+    /// fit-width a single page enlarges beyond the viewport with a horizontal pan.
+    pub fn cont_zoom_in(&mut self) {
+        self.cont_scale = (self.cont_scale * CONT_ZOOM_STEP).min(CONT_ZOOM_MAX);
+    }
+
+    /// Zoom the continuous-paged stack out one step (bounded), shrinking + centring
+    /// the pages so more of the book is visible at once. Snaps to exactly 1.0 near
+    /// fit-width.
+    pub fn cont_zoom_out(&mut self) {
+        self.cont_scale = (self.cont_scale / CONT_ZOOM_STEP).max(CONT_ZOOM_MIN);
+        if (self.cont_scale - 1.0).abs() < 1e-3 {
+            self.cont_scale = 1.0;
+        }
+    }
+
+    /// Reset the continuous-paged zoom to fit-width and clear any horizontal pan.
+    pub fn cont_zoom_reset(&mut self) {
+        self.cont_scale = 1.0;
+        self.cont_pan_x = 0.0;
+    }
+
+    /// Whether a single continuous page is zoomed wider than the viewport, so `h`/`l`
+    /// pan it horizontally (else they're no-ops).
+    pub fn cont_pannable_x(&self) -> bool {
+        !self.continuous_two_page() && self.continuous_scale() > 1.0
+    }
+
+    /// Pan a zoomed-in continuous page left / right by one step (a fraction of the
+    /// overflow), clamped.
+    pub fn cont_pan_left(&mut self) {
+        self.cont_pan_x = (self.cont_pan_x - CONT_PAN_STEP).max(0.0);
+    }
+    pub fn cont_pan_right(&mut self) {
+        self.cont_pan_x = (self.cont_pan_x + CONT_PAN_STEP).min(1.0);
+    }
+
+    /// A short zoom label for the status bar, or `None` at plain fit-width.
+    pub fn cont_zoom_label(&self) -> Option<String> {
+        if (self.cont_scale - 1.0).abs() < 1e-3 {
+            None
+        } else {
+            Some(format!("{:.0}%", self.cont_scale * 100.0))
         }
     }
 

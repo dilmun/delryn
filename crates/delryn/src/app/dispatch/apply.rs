@@ -139,6 +139,10 @@ impl App {
             Action::Expand => {
                 if reader.focus == Focus::Sidebar {
                     reader.sidebar_expand();
+                } else if reader.continuous_paged_active() {
+                    if reader.cont_pannable_x() {
+                        reader.cont_pan_right(); // l pans a zoomed-in page right
+                    }
                 } else if reader.is_paged_image() && reader.can_pan_horizontally() {
                     reader.pan_right(1); // l pans a zoomed page right
                 }
@@ -146,13 +150,31 @@ impl App {
             Action::Collapse => {
                 if reader.focus == Focus::Sidebar {
                     reader.sidebar_collapse();
+                } else if reader.continuous_paged_active() {
+                    if reader.cont_pannable_x() {
+                        reader.cont_pan_left(); // h pans a zoomed-in page left
+                    }
                 } else if reader.is_paged_image() && reader.can_pan_horizontally() {
                     reader.pan_left(1); // h pans a zoomed page left
                 }
             }
             Action::ZoomIn | Action::ZoomOut | Action::ZoomReset | Action::FitCycle => {
-                // Zoom / pan is a single-page paged (PDF) feature.
-                if reader.is_paged_image() && self.config.view_mode == ViewMode::Center {
+                if reader.continuous_paged_active() {
+                    // Continuous scales the whole stack (both single + two-page).
+                    match action {
+                        Action::ZoomIn => reader.cont_zoom_in(),
+                        Action::ZoomOut => reader.cont_zoom_out(),
+                        Action::ZoomReset => reader.cont_zoom_reset(),
+                        Action::FitCycle => {} // continuous has no fit modes
+                        _ => {}
+                    }
+                    reader.flash = Some(
+                        reader
+                            .cont_zoom_label()
+                            .map(|z| format!("zoom {z}"))
+                            .unwrap_or_else(|| "fit width".into()),
+                    );
+                } else if reader.is_paged_image() && self.config.view_mode == ViewMode::Center {
                     match action {
                         Action::ZoomIn => reader.zoom_in(),
                         Action::ZoomOut => reader.zoom_out(),

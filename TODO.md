@@ -639,12 +639,21 @@ no premature abstraction, no speculative modes).*
       no all-or-nothing stall); page theming + async raster prefetch are reused as-is.
       Scroll needs no flip-throttle (the offset is absolute, nothing gets skipped);
       `g`/`G` jump to first/last page. Pages sized off `page_stack::page_rows` with a
-      uniform-page estimate for not-yet-rasterized pages (self-correcting). 9 tests
-      (pure geometry + scroll roll/clamp). *v1 limits (graceful): base raster only
-      (no viewport-matched crisp re-raster mid-stack — that's the single-page path);
-      spread + zoom/pan fall back to the paged single/spread views; the inter-page
-      gap is a fixed 1 row (not a config knob yet).* **Still:** **grid /
-      thumbnail browser** as a visual page-jump complementing the TOC sidebar
+      uniform-page estimate for not-yet-rasterized pages (self-correcting). ✅ **Zoom /
+      centre / pan + two-page continuous (user feedback on v1):** `page_stack` became a
+      **band/tile** model — a band is one vertical slot holding one tile (Center) or a
+      facing pair (TwoPage). `+`/`-`/`0` zoom the whole stack (`cont_scale`, fit-width
+      = 1.0): zooming out shrinks + **centres** the pages (see more at once), zooming
+      in enlarges a single page past the viewport with `h`/`l` **horizontal pan**
+      (`tile_h` resolves centre-vs-overflow-crop). **Two-page continuous** stacks
+      facing pairs and rolls the anchor a whole spread at a time (`next/prev_band_anchor`
+      + `spread_at`/`spread_width`, cover-offset aware; scale clamped ≤ fit so a page
+      never splits the fold). Every visible band is requested + themed (not just the ±4
+      window) so a tall/zoomed-out stack never leaves far bands blank. 12 tests. *v1
+      limits (graceful): base raster only (no viewport-matched crisp re-raster
+      mid-stack — that's the single-page path); two-page continuous is LTR (manga/RTL
+      not yet); the inter-page gap is a fixed 1 row (not a config knob yet).* **Still:**
+      **grid / thumbnail browser** as a visual page-jump complementing the TOC sidebar
       (arrows move selection, Enter opens). This is where a page grid belongs — a
       *thumbnail* browser (small cell-sized rasters, tightly packed) for jumping, not
       a reading layout. The dropped 7.3 N-up grid (above) is the lesson: it must
