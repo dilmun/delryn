@@ -9,17 +9,20 @@
 //! * Each shown page is **transmitted** (`a=t`, image id = a per-section value)
 //!   and **placed** (`a=p`) with **no placement id** — so two pages of a spread
 //!   coexist instead of one deleting the other's placement.
-//! * On a turn we **delete the old pages and transmit + place the new ones**.
-//!   No placement-id bookkeeping, no "move", no resident-window cache — the
-//!   simplicity is the point; every bug so far came from that machinery.
-//! * The swap only happens once **all** the new pages are rasterized; until
-//!   then the previous pages stay up, so a turn never blanks. The page rasters
-//!   are pre-loaded by the reader's neighbour prefetch, so a ready turn is a
-//!   cheap re-transmit of cached PNG bytes (no re-render).
+//! * Pages are **transmitted once**: their data stays resident in the terminal
+//!   (tracked per section + policy), so moving a page — a page turn, or a
+//!   row-by-row continuous scroll that re-crops it every frame — only deletes the
+//!   old *placement* (`d=i`, keeps the data) and re-places, never re-sending the
+//!   multi-MB raster. Data is re-sent only when a page first appears or its
+//!   theme/mode changes; a page scrolled out of view has its data freed (`d=I`).
+//! * A page is only transmitted once its raster is ready; a page needing
+//!   (re)transmit that isn't ready holds the whole frame (no escapes), so a turn
+//!   never blanks. Rasters are pre-loaded by the reader's neighbour prefetch.
 //!
 //! The deck holds no terminal handle; it returns escape strings for the render
 //! loop to write inside the synchronized-update frame, with the chrome.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ratatui::layout::Rect;
@@ -110,17 +113,21 @@ pub struct PageTarget {
     pub crop: Option<(u32, u32, u32, u32)>,
 }
 
-/// Tracks which pages are currently transmitted + on screen, and emits the
-/// escapes to swap to a new set.
+/// Tracks which pages are transmitted + on screen, and emits the escapes to move
+/// to a new set. Pages are **transmitted once**: their raster data stays resident
+/// in the terminal and only the cheap *placement* changes as the view scrolls, so a
+/// row-by-row continuous scroll re-places a few bytes per page instead of re-sending
+/// multi-MB rasters every frame.
 #[derive(Default)]
 pub struct PageDeck {
-    /// Pages currently transmitted to and displayed by the terminal. Image id is
-    /// `id(section)`.
+    /// The placements currently on screen (section + cell rect + crop). Drives the
+    /// "already showing this" check and the loop's caught-up check.
     shown: Vec<PageTarget>,
-    /// The theme/image policy the shown pages were transmitted under. Part of the
-    /// "already showing this" check so cycling the theme or image mode — which
-    /// changes the *bytes* but not the (section, rect) targets — still re-transmits
-    /// the re-themed pages instead of leaving the old ones up.
+    /// Image data resident in the terminal, per section, with the theme/image policy
+    /// it was themed under. A page stays here across scroll frames (data reused); its
+    /// data is re-sent only when it first appears or its policy (theme/mode) changes.
+    resident: HashMap<usize, media::RenderPolicy>,
+    /// The policy the shown placements were rendered under (part of `shows`).
     shown_policy: Option<media::RenderPolicy>,
 }
 
@@ -131,9 +138,8 @@ impl PageDeck {
     }
 
     /// Whether the deck is already showing exactly `targets` under `policy` — i.e.
-    /// nothing to do this frame. A policy change (theme/mode) re-transmits even
-    /// when the targets are unchanged, because the page *bytes* differ; a crop
-    /// change (pan/zoom) also differs, so panning re-renders.
+    /// nothing to do this frame. A policy change (theme/mode) or a crop/position
+    /// change (scroll/pan/zoom) makes the targets differ, so it re-renders.
     pub fn shows(&self, targets: &[PageTarget], policy: media::RenderPolicy) -> bool {
         self.shown.as_slice() == targets && self.shown_policy == Some(policy)
     }
@@ -150,10 +156,11 @@ impl PageDeck {
     }
 
     /// Reconcile the terminal to show `targets`, returning the escapes to write.
-    /// `png_for` yields a section's rasterized PNG once it's ready. If any target
-    /// isn't ready yet, the current pages are left up (no escapes) so a turn
-    /// never blanks; otherwise the old pages are deleted and the new ones
-    /// transmitted + placed.
+    /// `png_for` yields a section's themed PNG once ready — but it's only consulted
+    /// for a page that needs (re)transmitting (new, or re-themed); a page already
+    /// resident under `policy` is simply re-placed, no PNG needed. If a page that
+    /// *does* need transmitting isn't ready, the current screen is left untouched
+    /// (no escapes, no state change) so a turn never blanks.
     pub fn render(
         &mut self,
         targets: &[PageTarget],
@@ -163,24 +170,56 @@ impl PageDeck {
         if self.shows(targets, policy) {
             return Vec::new();
         }
-        // All new pages must be rasterized before we swap — else keep the
-        // current pages up rather than blanking a not-yet-ready slot.
-        let mut pngs = Vec::with_capacity(targets.len());
+        // Readiness first (no mutation): every page needing (re)transmit must have
+        // its PNG ready. A page already resident under this policy is skipped.
+        let mut pngs: HashMap<usize, Vec<u8>> = HashMap::new();
         for t in targets {
-            match png_for(t.section) {
-                Some(png) => pngs.push(png),
-                None => return Vec::new(),
+            if self.resident.get(&t.section) == Some(&policy) {
+                continue; // resident under this policy — no PNG needed
+            }
+            if let std::collections::hash_map::Entry::Vacant(slot) = pngs.entry(t.section) {
+                match png_for(t.section) {
+                    Some(png) => {
+                        slot.insert(png);
+                    }
+                    None => return Vec::new(),
+                }
             }
         }
 
+        let now: std::collections::HashSet<usize> = targets.iter().map(|t| t.section).collect();
+        let had: std::collections::HashSet<usize> = self.shown.iter().map(|t| t.section).collect();
         let mut out = Vec::new();
-        for t in &self.shown {
-            out.push(media::delete_image_seq(Self::id(t.section)));
+
+        // Free pages leaving the view, or resident under a now-stale policy (frees
+        // their data + placements); the rest keep their resident data.
+        let drop: Vec<usize> = self
+            .resident
+            .iter()
+            .filter(|(s, p)| !now.contains(s) || **p != policy)
+            .map(|(s, _)| *s)
+            .collect();
+        for sec in drop {
+            out.push(media::delete_image_seq(Self::id(sec)));
+            self.resident.remove(&sec);
         }
-        for (t, png) in targets.iter().zip(&pngs) {
-            out.push(transmit_seq(Self::id(t.section), png));
+
+        // Place each target: move an already-placed resident page (delete its old
+        // placement, keep data), transmit a not-yet-resident page's data, then place.
+        for t in targets {
+            let sec = t.section;
+            if had.contains(&sec) && self.resident.contains_key(&sec) {
+                out.push(media::delete_placement_seq(Self::id(sec)));
+            }
+            if let std::collections::hash_map::Entry::Vacant(slot) = self.resident.entry(sec) {
+                out.push(transmit_seq(
+                    Self::id(sec),
+                    pngs.get(&sec).expect("readiness checked above"),
+                ));
+                slot.insert(policy);
+            }
             out.push(media::place_image_seq(
-                Self::id(t.section),
+                Self::id(sec),
                 t.rect.x + 1,
                 t.rect.y + 1,
                 t.rect.width,
@@ -192,7 +231,7 @@ impl PageDeck {
         self.shown_policy = Some(policy);
 
         dbg_log(&format!(
-            "show {:?} mode={:?} paper={:?} ({} escapes)",
+            "show {:?} mode={:?} paper={:?} ({} escapes, {} resident)",
             targets
                 .iter()
                 .map(|t| (
@@ -207,6 +246,7 @@ impl PageDeck {
             policy.mode,
             policy.tint.paper,
             out.len(),
+            self.resident.len(),
         ));
         out
     }
@@ -214,10 +254,11 @@ impl PageDeck {
     /// Remove every page image from the terminal (on leaving the reader / exit).
     pub fn clear(&mut self) -> Vec<String> {
         let out = self
-            .shown
-            .iter()
-            .map(|t| media::delete_image_seq(Self::id(t.section)))
+            .resident
+            .keys()
+            .map(|&s| media::delete_image_seq(Self::id(s)))
             .collect();
+        self.resident.clear();
         self.shown.clear();
         self.shown_policy = None;
         temp_cleanup();
@@ -336,6 +377,24 @@ mod tests {
         assert!(esc.contains("a=d"), "old page deleted before re-transmit");
         assert!(esc.contains("a=t"), "re-themed page re-transmitted");
         assert!(esc.contains("a=p"), "and re-placed");
+    }
+
+    /// Scrolling a page (same section + policy, new crop/position) re-places it
+    /// **without re-transmitting** its data — the whole point of the resident cache.
+    /// `png_for` returns `None` here to prove it isn't consulted for a resident page.
+    #[test]
+    fn scroll_reuses_resident_data_without_resending() {
+        let mut deck = PageDeck::default();
+        deck.render(&[tgt(10, 0)], auto(), |s| Some(vec![s as u8; 4]));
+        let moved = PageTarget {
+            crop: Some((0, 10, 4, 4)),
+            ..tgt(10, 0)
+        };
+        let esc = deck.render(&[moved], auto(), |_| None).join("");
+        assert!(!esc.is_empty(), "the re-place is emitted");
+        assert!(!esc.contains("a=t"), "resident page is not re-transmitted");
+        assert!(esc.contains("d=i"), "old placement removed, data kept");
+        assert!(esc.contains("a=p"), "re-placed at the new crop");
     }
 
     /// A cropped target (zoom/pan) places a source sub-rectangle: the placement

@@ -33,6 +33,15 @@ pub fn delete_image_seq(id: u32) -> String {
     format!("\x1b_Ga=d,d=I,i={id}\x1b\\")
 }
 
+/// Kitty escape to remove image `id`'s **placements** while **keeping its data**
+/// resident (lowercase `d=i`). Used to *move* an already-transmitted page: delete
+/// the old placement, then [`place_image_seq`] it at the new spot — no re-transmit.
+/// This is what makes continuous scrolling cheap (each row change re-places a few
+/// bytes instead of re-sending multi-MB rasters).
+pub fn delete_placement_seq(id: u32) -> String {
+    format!("\x1b_Ga=d,d=i,i={id}\x1b\\")
+}
+
 // ── Direct Kitty image management (for full-page PDF rendering) ───────────────
 //
 // The unicode-placeholder path (inline figures) is for images that flow with
