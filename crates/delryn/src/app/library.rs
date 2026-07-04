@@ -525,7 +525,7 @@ impl App {
 
     /// Move the sidebar cursor by `delta` (clamped), switching the view live.
     /// The cursor ranges over the views plus the trailing "＋ New" row.
-    fn lib_side_move(&mut self, delta: isize) {
+    pub(crate) fn lib_side_move(&mut self, delta: isize) {
         let max = self.lib_view_count(); // index of "＋ New collection"
         let cur = if self.library.side_new {
             max

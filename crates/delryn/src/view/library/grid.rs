@@ -63,11 +63,19 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
     let x0 = wall.x + (wall.width - block_w) / 2;
     let y0 = wall.y + (wall.height - block_h) / 2;
 
-    // Keep the selected row centered in the viewport (clamped at the ends).
+    // Scroll the selected row *into view* (persisted offset), like the list — so a
+    // click selects the cover in place instead of snapping it to the centre.
     let sel_row = sel / cols;
     let total_rows = len.div_ceil(cols);
     let max_top = total_rows.saturating_sub(rows_screen);
-    let top_row = sel_row.saturating_sub(rows_screen / 2).min(max_top);
+    let mut top_row = app.library.list_offset.min(max_top);
+    if sel_row < top_row {
+        top_row = sel_row;
+    } else if sel_row >= top_row + rows_screen {
+        top_row = sel_row + 1 - rows_screen;
+    }
+    top_row = top_row.min(max_top);
+    app.library.list_offset = top_row;
     let start = top_row * cols;
     let end = ((top_row + rows_screen) * cols).min(len);
 

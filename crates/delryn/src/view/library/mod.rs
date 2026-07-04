@@ -60,6 +60,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         (rest, None)
     };
 
+    // Capture the pane rects so the wheel can target the pane under the cursor.
+    app.last_layout.sidebar = sidebar;
+    app.last_layout.lib_list = Some(list_area);
+    app.last_layout.lib_detail = detail;
+
     if let Some(sb) = sidebar {
         sections::render_sections(f, sb, app, theme, app.library.pane == LibPane::Sidebar);
     }
