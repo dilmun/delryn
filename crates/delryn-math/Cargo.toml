@@ -1,0 +1,11 @@
+[package]
+name = "delryn-math"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+delryn-infra = { workspace = true }
+ratex-layout = { workspace = true }
+ratex-parser = { workspace = true }
+ratex-render = { workspace = true }
+ratex-types = { workspace = true }

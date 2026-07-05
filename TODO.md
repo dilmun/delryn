@@ -493,12 +493,60 @@ only framed/matted to sit in the theme.
 
 ## Phase 6 — Graphical math + deep performance
 
-- [ ] **Graphical math**: render LaTeX/MathML → image (typst or a TeX→dvipng/
-      MathJax-node shell-out) → terminal graphics (the existing ratatui-image
-      pipeline), cached by content hash on disk. Fall back to the current
-      Unicode rendering when no renderer/graphics protocol is available. *(Needs
-      a graphics-capable terminal to validate; design the cache + fallback seam
-      so the Unicode path is never regressed.)*
+- [~] **Graphical math** — ✅ **display math shipped** (merged), inline math is the
+      remaining piece (notes below). Renderer:
+      **in-process pure Rust** (user's pick) via **RaTeX** (KaTeX coverage,
+      tiny-skia raster, embedded KaTeX fonts) — pulldown-latex was ruled out
+      (MathML-only, no raster). ✅ **Step 1 — `delryn-math` crate** (`654f20e`):
+      isolates RaTeX behind `render(latex, style) -> Option<Vec<u8>>` (black-on-
+      transparent PNG so delryn's existing equation-image recolour themes it),
+      disk-cached at `<config>/math/<hash>.png` (theme-independent), panic-guarded,
+      Unicode fallback on any failure. Validated end-to-end. ✅ **Step 2 — retain the
+      LaTeX source** (`0ddf0a0`): the parser discarded it (kept only Unicode);
+      `Block::Math { tex }` → `{ unicode, latex: Option<String> }`, `native_math`
+      hands back the raw LaTeX from `alttext`/`<annotation …tex>` (`None` for
+      presentation-MathML-only). ✅ **Step 3 — integration** (`d5e685c`): a display
+      `Block::Math` with a latex source is rendered to a PNG and swapped for a
+      `Block::Image { math: true }`, flowing through the existing inline-image
+      pipeline untouched (index / row-reserve / async build / theme recolour / draw).
+      `app/reader/math.rs::convert_math_blocks` does the swap, gated by two atomics
+      (enabled = config + graphics; em size from the terminal cell height so an
+      equation shows at ~2 text lines, native-px crisp); it runs off the section-loader
+      thread + the inline fetch, disk-cached. The view mirrors the state each frame
+      (`Reader::sync_graphical_math`) and re-decodes the open reflowable sections on a
+      change (paged docs skipped). `config.graphical_math` (default on) + Settings →
+      Content toggle. ✅ **Size control** (`Math size %`, `config.math_scale`,
+      50–250 %, ±10 %, live re-render). Unicode fallback never regressed.
+      User-confirmed size; **merged to main** (branch deleted). Demo EPUB at
+      `~/delryn-math-demo.epub`. Coverage note: the local library is light on native
+      `<math>` (mostly publisher equation images, already shown as pictures) — the
+      broader win is inline math (below) + LaTeXML/Pandoc-converted EPUBs.
+      - [ ] **Inline math** (the hard, deferred piece — build on demand). Currently
+            inline math (`Span` with `Inline.math`) is flattened to the Unicode
+            approximation within its line; only *display* equations render
+            graphically. Making inline math a raster is genuinely hard because the
+            terminal is a **cell grid** and Kitty places images at cell origins:
+            1. *Source.* Inline math spans keep only Unicode today (`native_math().0`
+               in `html/inline.rs`, and the `<img>`/math-class paths); the raw LaTeX
+               must be retained on the span (a new field or a side-table) — the
+               display-math work already retains it on `Block::Math`, so mirror that.
+            2. *Mid-line placement.* No mechanism exists to drop a small image
+               *inside* a wrapped text line. The wrap engine (`delryn-render::layout`)
+               measures text in display columns; an inline equation would need to be
+               an **atomic N-cell-wide run** (N = rendered px / cell width) that the
+               filler reserves like a wide glyph, and a new `Run`/`LineKind` variant
+               carrying an image id that the reader draws into those cells (baseline
+               is cell-aligned, not pixel-aligned — a small vertical offset we accept).
+            3. *Height.* Inline math must fit ~1 line; simple sub/superscripts and
+               symbols do, but a fraction/∑-with-limits is 2–3 cells tall and would
+               overflow the line. Plan: render at ~1 em (Text style), measure the PNG
+               height, and **fall back to Unicode for any inline equation taller than
+               ~1.3 cells** so tall constructs don't smear across lines. Most real
+               inline math (xⁿ, αᵢ, subscripts) fits.
+            Scope when built: retain inline LaTeX → render (Text style, small em) →
+            reserve cells in the wrap → draw the raster in-line, with the >1.3-cell
+            height fallback. Reuses `delryn-math` + the disk cache; the new surface is
+            the wrap/line model + an inline draw path. Defer until a book needs it.
 - [ ] **Deep performance** (measure first — profile before optimizing):
       - Virtualized scrolling: wrap only the visible window + neighbors (some
         background pre-wrap exists via `SectionLoader`); cap retained wrapped

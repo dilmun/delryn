@@ -74,6 +74,11 @@ pub const MAX_IMAGE_PX: u16 = 4096;
 pub const MIN_IMAGE_WIDTH_PCT: u16 = 20;
 pub const MAX_IMAGE_WIDTH_PCT: u16 = 100;
 
+/// Graphical-math display size, as a percent of the default (100 = the built-in
+/// ~2-text-line size); scales the rendered equation up or down.
+pub const MIN_MATH_SCALE: u16 = 50;
+pub const MAX_MATH_SCALE: u16 = 250;
+
 /// Book-format labels in the default duplicate keep-priority (high → low). Kept as
 /// labels (not `BookFormat`, which lives in a crate that depends on this one).
 pub const DUP_FORMAT_ORDER: [&str; 4] = ["EPUB", "PDF", "MOBI", "AZW3"];
@@ -190,6 +195,12 @@ pub struct Config {
     /// How book images adapt to the theme (recolour / invert / faithful).
     #[serde(with = "enums::image_mode_serde")]
     pub image_mode: ImageMode,
+    /// Render display equations as images (LaTeX → picture) instead of the Unicode
+    /// approximation, when a LaTeX source and a graphics protocol are available.
+    /// Falls back to Unicode otherwise.
+    pub graphical_math: bool,
+    /// Graphical-math display size as a percent of the default (100 = built-in).
+    pub math_scale: u16,
     /// Directories scanned for the library.
     pub library_paths: Vec<String>,
     /// How the library lists books (table / dense table / cover grid).
@@ -237,6 +248,8 @@ impl Default for Config {
             image_max_px: 0,     // no cap by default — images fill the text column
             image_width_pct: 85, // normalize unsized figures to 85% of the column
             image_mode: ImageMode::default(),
+            graphical_math: true,
+            math_scale: 100,
             library_paths: Vec::new(),
             library_layout: LibLayout::List,
             library_grid_size: GridSize::Medium,
@@ -351,6 +364,7 @@ impl Config {
         c.image_width_pct = c
             .image_width_pct
             .clamp(MIN_IMAGE_WIDTH_PCT, MAX_IMAGE_WIDTH_PCT);
+        c.math_scale = c.math_scale.clamp(MIN_MATH_SCALE, MAX_MATH_SCALE);
         // Keep only known column keys; an empty list (all hidden) is valid.
         c.library_columns
             .retain(|k| LIB_COLUMNS.iter().any(|(key, _)| key == k));
