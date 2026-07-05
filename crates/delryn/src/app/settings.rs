@@ -43,6 +43,7 @@ pub enum SettingItem {
     ImageWidthPct,
     ImageMode,
     GraphicalMath,
+    MathScale,
     CodeWrap,
     TableWrap,
     Paged,
@@ -86,6 +87,7 @@ impl SettingItem {
             SettingItem::ImageWidthPct => "Figure width %",
             SettingItem::ImageMode => "Image mode",
             SettingItem::GraphicalMath => "Graphical math",
+            SettingItem::MathScale => "Math size %",
             SettingItem::CodeWrap => "Wrap code blocks",
             SettingItem::TableWrap => "Wrap tables",
             SettingItem::Paged => "Page mode",
@@ -141,6 +143,7 @@ impl SettingItem {
             SettingItem::ImageWidthPct => format!("{}%", c.image_width_pct),
             SettingItem::ImageMode => c.image_mode.label().to_string(),
             SettingItem::GraphicalMath => onoff(c.graphical_math),
+            SettingItem::MathScale => format!("{}%", c.math_scale),
             SettingItem::CodeWrap => onoff(c.code_wrap),
             SettingItem::TableWrap => onoff(c.table_wrap),
             SettingItem::Paged => onoff(c.paged),
@@ -222,6 +225,7 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
                     I(ImageWidthPct),
                     I(ImageMode),
                     I(GraphicalMath),
+                    I(MathScale),
                     S("Blocks"),
                     I(CodeWrap),
                     I(TableWrap),
@@ -428,6 +432,13 @@ impl App {
                 }
             }
             SettingItem::GraphicalMath => c.graphical_math = !c.graphical_math,
+            SettingItem::MathScale => {
+                use crate::config::{MAX_MATH_SCALE, MIN_MATH_SCALE};
+                // Step in 10% increments within the allowed band.
+                c.math_scale = (c.math_scale as i32 + delta * 10)
+                    .clamp(MIN_MATH_SCALE as i32, MAX_MATH_SCALE as i32)
+                    as u16
+            }
             SettingItem::CodeWrap => c.code_wrap = !c.code_wrap,
             SettingItem::TableWrap => c.table_wrap = !c.table_wrap,
             SettingItem::Paged => c.paged = !c.paged,
