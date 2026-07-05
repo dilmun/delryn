@@ -504,16 +504,23 @@ only framed/matted to sit in the theme.
       LaTeX source** (`0ddf0a0`): the parser discarded it (kept only Unicode);
       `Block::Math { tex }` → `{ unicode, latex: Option<String> }`, `native_math`
       hands back the raw LaTeX from `alttext`/`<annotation …tex>` (`None` for
-      presentation-MathML-only). *Next — Step 3 (integration): convert a
-      `Block::Math` with a latex source into a themed `Block::Image` via the existing
-      inline-image pipeline, rendering off the section-loader thread (disk-cached, so
-      only first-ever render is slow); Unicode fallback when off / no graphics /
-      parse fails; a `graphical_math` config toggle; tune the display size (math
-      keeps native px → pick the RaTeX font/dpr so a display equation is ~2 text
-      lines). Step 4 — inline math (place a small raster mid-line — the hard case,
-      deferred). Coverage note: the local library is light on native `<math>`
-      (mostly publisher equation images, already shown) — the visible win is
-      LaTeX-source math + future inline; verify on math-heavy EPUBs.*
+      presentation-MathML-only). ✅ **Step 3 — integration** (`d5e685c`): a display
+      `Block::Math` with a latex source is rendered to a PNG and swapped for a
+      `Block::Image { math: true }`, flowing through the existing inline-image
+      pipeline untouched (index / row-reserve / async build / theme recolour / draw).
+      `app/reader/math.rs::convert_math_blocks` does the swap, gated by two atomics
+      (enabled = config + graphics; em size from the terminal cell height so an
+      equation shows at ~2 text lines, native-px crisp); it runs off the section-loader
+      thread + the inline fetch, disk-cached. The view mirrors the state each frame
+      (`Reader::sync_graphical_math`) and re-decodes the open reflowable sections on a
+      change (paged docs skipped). `config.graphical_math` (default on) + Settings →
+      Content toggle. Unicode fallback never regressed. Demo EPUB at
+      `~/delryn-math-demo.epub`. *Next — Step 4: inline math (place a small raster
+      mid-line in the cell grid — the genuinely hard case; deferred). Display-size
+      tuning (`DISPLAY_EM_FACTOR`) is provisional — awaiting real-terminal eyeball.
+      Coverage: local library is light on native `<math>` (mostly publisher equation
+      images, already shown) — the demo EPUB validates it; the broader win is inline
+      math + LaTeXML/Pandoc-converted EPUBs.*
 - [ ] **Deep performance** (measure first — profile before optimizing):
       - Virtualized scrolling: wrap only the visible window + neighbors (some
         background pre-wrap exists via `SectionLoader`); cap retained wrapped
