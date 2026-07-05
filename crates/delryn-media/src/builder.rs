@@ -27,6 +27,9 @@ pub struct ImgKey {
     /// Default figure width (% of column) — part of the key so changing the knob
     /// rebuilds at the new size instead of serving a stale one.
     pub target_pct: u16,
+    /// Equation-picture size (% of auto) — part of the key so changing the knob
+    /// rebuilds at the new size instead of serving a stale one.
+    pub eq_scale: u16,
     /// Sizing policy (normalize vs. faithful) — part of the key so toggling it
     /// rebuilds at the new size rather than serving a stale one.
     pub fit_mode: ImageFit,
@@ -172,6 +175,7 @@ impl ImageBuilder {
                     rows: k.max_rows,
                     max_px: k.max_px,
                     target_pct: k.target_pct,
+                    eq_scale: k.eq_scale,
                     fit_mode: k.fit_mode,
                 };
                 let plan = build_plan(&picker, &req.bytes, fit, k.policy, req.spec);

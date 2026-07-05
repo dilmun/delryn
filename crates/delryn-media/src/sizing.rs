@@ -48,10 +48,23 @@ impl Default for SizeSpec {
 /// figure grow enough to be readable and consistent with its neighbours.
 const MAX_UPSCALE: f64 = 4.0;
 
+/// Target display height (in text lines) an equation picture is auto-boosted *up*
+/// to when it's rendering smaller than this — so a low-resolution equation (whose
+/// glyphs are packed too small to read) grows to a legible size. Taller equations
+/// (multi-line arrays) already exceed it and keep native size; the user's
+/// `eq_scale` knob tunes on top for the rest.
+const EQUATION_MIN_LINES: f64 = 2.0;
+
+/// Upper bound on the *automatic* low-resolution boost (quality guard). The user's
+/// `eq_scale` knob can still enlarge past this deliberately (bounded only by the
+/// column/viewport).
+const EQUATION_AUTO_MAX: f64 = 2.5;
+
 /// The cell geometry and caps an image must fit into: terminal cell size
 /// (`fw`×`fh` px), the available `cols`×`rows` box, the longest-side pixel cap
 /// (`max_px`, 0 = none), the default/normalized figure width (`target_pct`% of
-/// the column), and the sizing policy (`fit_mode`: normalize vs. faithful).
+/// the column), the equation-picture size knob (`eq_scale`%), and the sizing
+/// policy (`fit_mode`: normalize vs. faithful).
 #[derive(Clone, Copy)]
 pub struct FitBox {
     pub fw: u16,
@@ -60,6 +73,7 @@ pub struct FitBox {
     pub rows: u16,
     pub max_px: u16,
     pub target_pct: u16,
+    pub eq_scale: u16,
     pub fit_mode: ImageFit,
 }
 
@@ -73,13 +87,16 @@ pub struct FitBox {
 /// same `target_pct` default. Either way a low-res figure is enlarged up to
 /// [`MAX_UPSCALE`] so it isn't tiny, but never past the `fit.cols`×`fit.rows` box.
 ///
-/// Equations keep native size and only ever shrink to fit — both real math
-/// (`spec.math`) and, in `Fit` mode, *uncaptioned* graphics (equation pictures;
-/// captioned graphics are figures/tables). Captions are the reliable
-/// figure-vs-equation signal: books caption figures and tables but not equations,
-/// where pixel shape (aspect/height) cannot tell a wide table from a wide
-/// equation or a tall equation array from a tall figure. Full-bleed pages
-/// (`SizeHint::Full`) fill the pane.
+/// Equations are sized proportional to the text, not stretched to the column.
+/// Real math (`spec.math`) shows native (its size comes from `math_scale` at
+/// render time). In `Fit` mode an *uncaptioned* graphic is an equation picture
+/// (captioned graphics are figures/tables — captions are the reliable
+/// figure-vs-equation signal, where pixel shape cannot tell a wide table from a
+/// wide equation or a tall array from a tall figure): it shows native, but a
+/// low-resolution one (glyphs too small to read) is auto-boosted up toward
+/// [`EQUATION_MIN_LINES`] tall (quality-capped by [`EQUATION_AUTO_MAX`]), then
+/// scaled by the user's `eq_scale` knob. Full-bleed pages (`SizeHint::Full`) fill
+/// the pane.
 ///
 /// The longest displayed side is finally capped to `fit.max_px` px to bound the
 /// terminal transfer. Used by both the up-front row estimate and the background
@@ -94,18 +111,27 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
     // column width or the viewport height.
     let cap = (f64::from(fit.cols) * fwf / wf).min(f64::from(fit.rows) * fhf / hf);
 
-    // Graphics that read best proportional to the text — real math, or (in Fit
-    // mode) an uncaptioned graphic (an equation picture; captioned graphics are
-    // figures/tables) — keep native size and only shrink to fit, never enlarged
-    // to fill the column.
-    let text_proportional = spec.math || (fit.fit_mode == ImageFit::Fit && !spec.captioned);
+    // An uncaptioned graphic (in Fit mode) is a display equation shipped as a
+    // picture — captioned graphics are figures/tables. It reads best proportional
+    // to the text, not stretched to the column.
+    let is_equation_pic = fit.fit_mode == ImageFit::Fit && !spec.captioned && !spec.math;
 
     let mut scale = if matches!(spec.hint, SizeHint::Full) {
         // A full-bleed page (PDF): fill the pane box, preserving aspect —
         // enlarging a small page or shrinking a large one to the cols×rows box.
         cap
-    } else if text_proportional {
+    } else if spec.math {
+        // Real math (LaTeX/MathML) is already sized by `math_scale` at render
+        // time — show it native, only shrinking to fit.
         cap.min(1.0)
+    } else if is_equation_pic {
+        // An equation picture. Keep it proportional to the text, but auto-boost a
+        // low-resolution one (whose glyphs are packed too small to read) up toward
+        // a readable height, then apply the user's `eq_scale` knob. Bounded by the
+        // box; the automatic part is additionally quality-capped.
+        let auto = (EQUATION_MIN_LINES * fhf / hf).clamp(1.0, EQUATION_AUTO_MAX);
+        let knob = f64::from(fit.eq_scale) / 100.0;
+        (auto * knob).min(cap)
     } else {
         // A figure/table/diagram. The display width we want it to occupy: in Fit
         // mode a consistent fraction of the column (authored width ignored — it's
@@ -154,6 +180,7 @@ mod tests {
             rows,
             max_px: 0,
             target_pct: 85,
+            eq_scale: 100,
             fit_mode: ImageFit::Fit,
         }
     }
@@ -242,6 +269,31 @@ mod tests {
             cols > 40,
             "small authored width is overridden in Fit: {cols}"
         );
+    }
+
+    #[test]
+    fn low_res_equations_auto_boost_to_readable() {
+        // A low-resolution single-line equation (~1 text line tall at native) is
+        // auto-enlarged toward EQUATION_MIN_LINES so its glyphs are legible, even
+        // at the default eq_scale (no manual tuning needed).
+        let (_c, rows) = target_cells(300, 16, fit(200, 60), eq());
+        assert!(rows >= 2, "tiny equation auto-boosted to >=2 rows: {rows}");
+        // A taller multi-line array is already legible and stays native.
+        let (_c2, tall_rows) = target_cells(300, 96, fit(200, 60), eq());
+        assert_eq!(tall_rows, 6, "tall array keeps native ~6 rows: {tall_rows}");
+    }
+
+    #[test]
+    fn eq_scale_knob_scales_equations() {
+        // The eq_scale knob enlarges equation pictures on top of the auto size.
+        let base = fit(200, 200);
+        let big = FitBox {
+            eq_scale: 200,
+            ..base
+        };
+        let (_c1, r1) = target_cells(300, 60, base, eq());
+        let (_c2, r2) = target_cells(300, 60, big, eq());
+        assert!(r2 > r1, "200% eq_scale renders larger: {r2} vs {r1}");
     }
 
     #[test]
