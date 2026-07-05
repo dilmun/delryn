@@ -621,10 +621,58 @@ no premature abstraction, no speculative modes).*
       `config.continuous` (Settings → Content → Pagination) + a "continuous" status
       tag; Center + reflow only, overridden by page-mode / chapter-lock / paged.
       *v1 limits (graceful): gutter ribbon + link cursor follow the anchor section;
-      a following section's figures reserve their space until it becomes the anchor;
-      **paged (PDF) continuous** — vertical page-image stacking through the deck —
-      **still deferred** (a distinct, harder problem).* **Still:** **grid /
-      thumbnail browser** as a visual page-jump complementing the TOC sidebar
+      a following section's figures reserve their space until it becomes the anchor.*
+      ✅ **Continuous scroll for paged (PDF) documents** — branch
+      `feature/reader-paged-continuous`, the deferred "distinct, harder problem". The
+      same `config.continuous`, now for PDFs in Center: page images stack vertically
+      (each scaled fit-width, a 1-row inter-page gap) and scroll a few rows at a time,
+      so a page boundary passes seamlessly (the SumatraPDF / Preview model) instead of
+      flipping whole pages. Additive, mirroring the reflow variant: `self.section` is
+      the *anchor* (topmost visible) page and `self.scroll` its row offset;
+      `continuous_paged_scroll_down/up` roll the anchor across page *slots*
+      (fit-width height + gap) in `app/reader/continuous.rs`. The layout is the pure,
+      unit-tested `app/reader/page_stack.rs` — it slices each visible page band into a
+      Kitty source-**crop** (reusing the deck's existing zoom/pan crop path), so the
+      direct-`PageDeck` transmits partial page slices with no new escape machinery.
+      The view (`capture_pdf_stack`) assembles the stack each frame and places only
+      the ready pages (a still-loading band shows the themed background for a frame —
+      no all-or-nothing stall); page theming + async raster prefetch are reused as-is.
+      Scroll needs no flip-throttle (the offset is absolute, nothing gets skipped);
+      `g`/`G` jump to first/last page. Pages sized off `page_stack::page_rows` with a
+      uniform-page estimate for not-yet-rasterized pages (self-correcting). ✅ **Zoom /
+      centre / pan + two-page continuous (user feedback on v1):** `page_stack` became a
+      **band/tile** model — a band is one vertical slot holding one tile (Center) or a
+      facing pair (TwoPage). `+`/`-`/`0` zoom the whole stack (`cont_scale`, fit-width
+      = 1.0): zooming out shrinks + **centres** the pages (see more at once), zooming
+      in enlarges a single page past the viewport with `h`/`l` **horizontal pan**
+      (`tile_h` resolves centre-vs-overflow-crop). **Two-page continuous** stacks
+      facing pairs and rolls the anchor a whole spread at a time (`next/prev_band_anchor`
+      + `spread_at`/`spread_width`, cover-offset aware; scale clamped ≤ fit so a page
+      never splits the fold). Every visible band is requested + themed (not just the ±4
+      window) so a tall/zoomed-out stack never leaves far bands blank. 12 tests.
+      ✅ **Transmit-once deck (user: "scroll too slow"):** the `PageDeck` was
+      re-sending the full-resolution rasters on every crop change (delete-all +
+      re-transmit-all), so a row-by-row scroll couldn't keep up. Now each page is
+      transmitted **once** and its data stays resident in the terminal (per section +
+      policy); moving it (a turn, or a scroll re-cropping every frame) only deletes
+      the old *placement* (`media::delete_placement_seq`, kitty `d=i` keeps data) and
+      re-places — a scroll frame is a few tiny escapes, not MB of transmit. Data is
+      re-sent only on first appearance / theme change; a page scrolled off frees its
+      data (`d=I`). Plus a bigger scroll step (3→6 rows), wider continuous prefetch
+      (±6) + `CACHE_CAP` 11→15 so fast scroll doesn't outrun rasterization.
+      ✅ **Fit-page default + side padding (user: "don't stretch to fill width; show a
+      full page; add L/R padding"):** continuous pages now lay out **fit-page**
+      (`page_stack::fit_page_cols` — the whole page sized to fit the viewport, so a
+      portrait page comes out narrower than the pane and centres) instead of
+      fit-width; `place_tile_h` centres it in its slot (pan-crop once zoomed past the
+      viewport). Zoom (`cont_scale`) is now relative to fit-page (1.0 = whole page;
+      `+` grows toward fit-width and beyond). Explicit L/R padding from
+      `config.side_padding` (mirrored to the reader), single page + each two-page
+      column inset by it. *v1 limits (graceful): base raster only (no
+      viewport-matched crisp re-raster mid-stack — that's the single-page path);
+      two-page continuous is LTR (manga/RTL not yet); the inter-page gap is a fixed 1
+      row (not a config knob yet).* **Still:**
+      **grid / thumbnail browser** as a visual page-jump complementing the TOC sidebar
       (arrows move selection, Enter opens). This is where a page grid belongs — a
       *thumbnail* browser (small cell-sized rasters, tightly packed) for jumping, not
       a reading layout. The dropped 7.3 N-up grid (above) is the lesson: it must

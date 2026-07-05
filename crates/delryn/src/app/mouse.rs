@@ -1,10 +1,15 @@
 //! Mouse handling: the hit-rects captured during render and the click/scroll
 //! routing that consults them.
 
-use crossterm::event::{MouseEvent, MouseEventKind};
+use std::time::{Duration, Instant};
+
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use super::{App, EditMode, EditTab, Focus, LOOKUP_FIELDS, LibPane, Mode, Overlay, SortKey};
+
+/// Max gap between two clicks on the same book to count as a double-click (→ open).
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// Layout facts captured during the last render: pane rects for mouse hit-testing
 /// plus the width-dependent metrics the library input handlers need. Kept here,
@@ -15,6 +20,11 @@ use super::{App, EditMode, EditTab, Focus, LOOKUP_FIELDS, LibPane, Mode, Overlay
 pub struct LayoutMetrics {
     pub sidebar: Option<Rect>,
     pub content: Option<Rect>,
+    /// Library book-list pane rect, for routing the wheel to the pane under the
+    /// cursor (so it doesn't scroll the list while the mouse is over another pane).
+    pub lib_list: Option<Rect>,
+    /// Library detail pane rect (right side), when shown.
+    pub lib_detail: Option<Rect>,
     /// Sort keys `s` cycles — only the columns actually drawn at this width.
     pub sort_cycle: Vec<SortKey>,
     /// On-screen book rows, for vim half/full-page navigation.
@@ -50,83 +60,165 @@ impl MouseHits {
 }
 
 impl App {
-    pub fn on_mouse(&mut self, m: MouseEvent) {
+    /// Handle a mouse event; returns whether it changed anything (so the loop only
+    /// repaints then — a mouse-move flood from any-motion reporting is ignored).
+    pub fn on_mouse(&mut self, m: MouseEvent) -> bool {
         if !self.config.mouse_enabled {
-            return;
+            return false;
         }
         match m.kind {
-            // The wheel scrolls whichever reader pane the cursor is over: the TOC
-            // (without changing the selection) or the content.
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-                if self.mode != Mode::Reader {
-                    return;
-                }
-                let d: isize = if matches!(m.kind, MouseEventKind::ScrollUp) {
-                    -3
-                } else {
-                    3
-                };
-                let over_sidebar = self
-                    .last_layout
-                    .sidebar
-                    .is_some_and(|sb| sb.contains((m.column, m.row).into()));
-                let paged = self.config.paged;
-                if let Some(r) = self.reader.as_mut() {
-                    if over_sidebar {
-                        r.sidebar_wheel(d);
-                    } else if paged || r.is_paged_image() {
-                        // Whole-page rasters (PDF) flip pages instead of eased
-                        // line-scroll, which would blank/flicker the full-page
-                        // image every frame.
-                        if d > 0 {
-                            r.page_forward();
-                        } else {
-                            r.page_backward();
-                        }
-                    } else {
-                        r.queue_scroll(d);
-                    }
+                let up = matches!(m.kind, MouseEventKind::ScrollUp);
+                let d: isize = if up { -3 } else { 3 };
+                match self.mode {
+                    Mode::Reader => self.reader_wheel(m.column, m.row, d),
+                    Mode::Library => self.library_wheel(m.column, m.row, d),
                 }
             }
-            MouseEventKind::Down(_) => self.mouse_down(m.column, m.row),
-            _ => {}
+            MouseEventKind::Down(button) => self.mouse_down(m.column, m.row, button, m.modifiers),
+            _ => false,
         }
     }
 
-    /// Route a left-click to the active overlay / mode using the hit rects
-    /// captured during the last render.
-    fn mouse_down(&mut self, col: u16, row: u16) {
+    /// Wheel in the reader: scroll whichever pane the cursor is over — the TOC
+    /// (without changing the selection), the continuous PDF stack, a paged flip, or
+    /// eased line-scroll.
+    fn reader_wheel(&mut self, col: u16, row: u16, d: isize) -> bool {
+        let over_sidebar = self
+            .last_layout
+            .sidebar
+            .is_some_and(|sb| sb.contains((col, row).into()));
+        let paged = self.config.paged;
+        let Some(r) = self.reader.as_mut() else {
+            return false;
+        };
+        if over_sidebar {
+            r.sidebar_wheel(d);
+        } else if r.continuous_paged_active() {
+            // Continuous PDF: the wheel scrolls the vertical page stack in row units.
+            if d > 0 {
+                r.scroll_down(d as usize);
+            } else {
+                r.scroll_up((-d) as usize);
+            }
+        } else if paged || r.is_paged_image() {
+            // Whole-page rasters (PDF) flip pages instead of eased line-scroll.
+            if d > 0 {
+                r.page_forward();
+            } else {
+                r.page_backward();
+            }
+        } else {
+            r.queue_scroll(d);
+        }
+        true
+    }
+
+    /// Wheel in the library: scroll only the pane under the cursor — the sections
+    /// sidebar, or the book list (extending a live visual range). The detail pane and
+    /// empty areas don't scroll the list. Modal overlays swallow it.
+    fn library_wheel(&mut self, col: u16, row: u16, d: isize) -> bool {
+        if self.pending_confirm.is_some()
+            || !matches!(self.overlay, Overlay::None)
+            || self.library.filtering
+        {
+            return false;
+        }
+        let pt = (col, row).into();
+        let (sidebar, detail, list) = (
+            self.last_layout.sidebar,
+            self.last_layout.lib_detail,
+            self.last_layout.lib_list,
+        );
+        if sidebar.is_some_and(|r| r.contains(pt)) {
+            // The sections list is short and each move reloads the book list, so
+            // step one section per notch (not the list's multi-row scroll amount).
+            self.lib_side_move(d.signum());
+            true
+        } else if detail.is_some_and(|r| r.contains(pt)) {
+            false // detail isn't a scrollable list — don't touch the book list
+        } else if list.is_some_and(|r| r.contains(pt)) {
+            self.lib_move(d);
+            self.lib_visual_sync();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Route a mouse-down to the active overlay / mode using the hit rects captured
+    /// during the last render. Returns whether it changed anything.
+    fn mouse_down(&mut self, col: u16, row: u16, button: MouseButton, mods: KeyModifiers) -> bool {
         // A pending confirmation is modal — swallow clicks until it's answered.
         if self.pending_confirm.is_some() {
-            return;
+            return false;
         }
         if matches!(self.overlay, Overlay::MetaEdit(_)) {
-            self.editor_click(col, row);
-            return;
+            if button == MouseButton::Left {
+                self.editor_click(col, row);
+            }
+            return true;
         }
-        // Other overlays are keyboard-driven (no hit rects); swallow the click.
-        if matches!(self.overlay, Overlay::Settings(_))
-            || matches!(self.overlay, Overlay::ShelfPicker(_))
-            || matches!(self.overlay, Overlay::BulkRename(_))
-            || matches!(self.overlay, Overlay::Annot(_))
-            || matches!(self.overlay, Overlay::ImageView(_))
-            || matches!(self.overlay, Overlay::Prompt(_))
-        {
-            return;
+        // Any other overlay is keyboard-driven (no hit rects); swallow the click.
+        if !matches!(self.overlay, Overlay::None) {
+            return false;
         }
         match self.mode {
-            Mode::Reader => self.mouse_click(col, row),
-            Mode::Library => self.library_click(col, row),
+            Mode::Reader => {
+                if button == MouseButton::Left {
+                    self.mouse_click(col, row);
+                }
+                true
+            }
+            Mode::Library => self.library_click(col, row, button, mods),
         }
     }
 
-    /// Library click: select the clicked book and focus the list pane.
-    fn library_click(&mut self, col: u16, row: u16) {
+    /// Library click. Left-click moves the cursor to the book (double-click opens
+    /// it); Shift+left-click range-selects to it; right-click toggles it in the
+    /// multi-selection (the mouse counterpart to `Space`). Returns whether a book
+    /// was hit.
+    fn library_click(
+        &mut self,
+        col: u16,
+        row: u16,
+        button: MouseButton,
+        mods: KeyModifiers,
+    ) -> bool {
         let pt = (col, row).into();
-        if let Some(&(idx, _)) = self.mouse.books.iter().find(|(_, r)| r.contains(pt)) {
-            self.library.sel = idx.min(self.library.books.len().saturating_sub(1));
-            self.library.pane = LibPane::List;
+        let Some(&(idx, _)) = self.mouse.books.iter().find(|(_, r)| r.contains(pt)) else {
+            return false;
+        };
+        let idx = idx.min(self.library.books.len().saturating_sub(1));
+        self.library.pane = LibPane::List;
+
+        if button == MouseButton::Right {
+            self.lib_mouse_toggle_mark(idx);
+            self.last_click = None;
+            return true;
         }
+        if button == MouseButton::Left && mods.contains(KeyModifiers::SHIFT) {
+            self.lib_mouse_range_to(idx);
+            self.last_click = None;
+            return true;
+        }
+        if button != MouseButton::Left {
+            self.library.sel = idx;
+            return true;
+        }
+        // Plain left-click: a second click on the same book opens it; else select.
+        let now = Instant::now();
+        let double = self
+            .last_click
+            .is_some_and(|(prev, t)| prev == idx && now.duration_since(t) < DOUBLE_CLICK);
+        self.library.sel = idx;
+        if double {
+            self.last_click = None;
+            self.open_selected();
+        } else {
+            self.last_click = Some((idx, now));
+        }
+        true
     }
 
     /// Editor click: switch tab, focus + edit a field (caret at the click),

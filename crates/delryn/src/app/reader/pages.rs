@@ -68,15 +68,29 @@ impl Reader {
         let lo = self.section.saturating_sub(PAGE_THEME_AHEAD);
         let hi = (self.section + PAGE_THEME_AHEAD).min(n - 1);
         for s in lo..=hi {
-            let key = (s, BASE_RASTER_WIDTH, policy);
-            if self.raster_ready(s)
-                && !self.pages.themed.contains(&key)
-                && !self.pages.requested.contains(&key)
-                && let Some(raw) = self.raster_png(s)
-            {
-                self.pages.requested.insert(key);
-                self.pages.themer.request(key, Arc::new(raw));
+            self.theme_base_page(s, policy);
+        }
+        // A continuous stack can show more pages than the ±neighbour window reaches
+        // (a tall / zoomed-out spread stack), so theme every visible band too — else
+        // the far bands would stay blank.
+        if self.continuous_paged_active() {
+            for s in self.visible_stack.clone() {
+                self.theme_base_page(s, policy);
             }
+        }
+    }
+
+    /// Dispatch theming of `section`'s base raster under `policy` if it's rasterized
+    /// and not already themed or in flight (deduped).
+    fn theme_base_page(&mut self, section: usize, policy: media::RenderPolicy) {
+        let key = (section, BASE_RASTER_WIDTH, policy);
+        if self.raster_ready(section)
+            && !self.pages.themed.contains(&key)
+            && !self.pages.requested.contains(&key)
+            && let Some(raw) = self.raster_png(section)
+        {
+            self.pages.requested.insert(key);
+            self.pages.themer.request(key, Arc::new(raw));
         }
     }
 }
