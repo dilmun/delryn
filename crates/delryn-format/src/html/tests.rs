@@ -503,6 +503,79 @@ fn parses_authored_image_width() {
     assert_eq!(parse_img_width(None, None), ImageWidth::Auto);
 }
 
+/// The first `Block::Image` with its caption text, if any.
+fn first_captioned_image(blocks: &[Block]) -> Option<(&str, String)> {
+    blocks.iter().find_map(|b| match b {
+        Block::Image { src, caption, .. } => Some((
+            src.as_str(),
+            caption.iter().map(|s| s.text.as_str()).collect::<String>(),
+        )),
+        _ => None,
+    })
+}
+
+#[test]
+fn figure_caption_attaches_to_the_image() {
+    // Publishers commonly mark a figure caption up as an <h6>/<p> beside the
+    // <img> (not a <figcaption>). The parser merges them so the caption becomes
+    // the image's caption (rendered centred beneath it), not a stray heading.
+    let blocks = parse_blocks(
+        r#"<html><body><figure><div class="figure">
+            <img alt="a chart" src="assets/fig.png" width="500"/>
+            <h6><span class="label">Figure 4-5. </span>Compare distributions.</h6>
+        </div></figure></body></html>"#,
+    );
+    let (src, caption) = first_captioned_image(&blocks).expect("a captioned image");
+    assert_eq!(src, "assets/fig.png");
+    assert_eq!(caption, "Figure 4-5. Compare distributions.");
+    // The caption is not ALSO emitted as a separate heading/paragraph block.
+    assert!(
+        !blocks.iter().any(|b| matches!(b, Block::Heading { .. })),
+        "caption consumed into the image, not left as a heading: {blocks:?}"
+    );
+    // A <figcaption> works the same way.
+    let blocks = parse_blocks(
+        r#"<html><body><figure>
+            <img alt="d" src="d.png"/><figcaption>Fig 2: the pipeline</figcaption>
+        </figure></body></html>"#,
+    );
+    let (_, caption) = first_captioned_image(&blocks).expect("captioned image");
+    assert_eq!(caption, "Fig 2: the pipeline");
+}
+
+#[test]
+fn imagewrap_div_with_caption_class_merges() {
+    // No <figure>/<figcaption>: a `<div class="imagewrap">` holding one image and
+    // a caption-classed `<p>` (Pearson-style). The caption-class marker makes it a
+    // figure so the caption attaches to the image and centres beneath it.
+    let blocks = parse_blocks(
+        r#"<html><body><div id="fig1-2" class="imagewrap">
+            <img class="image" src="../images/img_p26.png" alt="images" width="255"/>
+            <p class="EB28FSCaption"><strong>Figure 1.2:</strong> Fundamental relationship.</p>
+        </div></body></html>"#,
+    );
+    let (src, caption) = first_captioned_image(&blocks).expect("captioned image");
+    assert_eq!(src, "../images/img_p26.png");
+    assert_eq!(caption, "Figure 1.2: Fundamental relationship.");
+    assert!(
+        !blocks.iter().any(|b| matches!(b, Block::Para { .. })),
+        "caption consumed into the image, not left as a paragraph: {blocks:?}"
+    );
+
+    // A plain content div (no caption marker) is NOT merged — its prose survives.
+    let blocks = parse_blocks(
+        r#"<html><body><div>
+            <img src="x.png" alt="x"/><p>This is ordinary body prose, not a caption.</p>
+        </div></body></html>"#,
+    );
+    assert!(
+        blocks
+            .iter()
+            .any(|b| matches!(b, Block::Para { spans, .. } if spans.iter().any(|s| s.text.contains("ordinary body prose")))),
+        "non-figure div keeps its prose paragraph: {blocks:?}"
+    );
+}
+
 #[test]
 fn icon_images_become_glyphs_not_labels() {
     // Dummies-style marker icons render as a symbol, not "[tip]"/"[check]".

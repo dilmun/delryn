@@ -267,6 +267,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             math: false,
             width: parse_img_width(e.attr("width"), e.attr("style")),
         }),
+        ElementRole::Figure => emit_figure(node, ctx, out),
         ElementRole::AsideIconTable(kind) => {
             let mut content = Vec::new();
             for cell in content_cells(node) {
@@ -297,6 +298,59 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             walk_children(node, &c, out);
         }
     }
+}
+
+/// Emit a `<figure>` as one captioned image: the picture plus its caption text,
+/// so the caption renders centred beneath the image (see `layout::emit_image`)
+/// instead of leaking out as a stray left-aligned heading/paragraph next to it.
+///
+/// Only the common single-picture figure is merged. A figure with no *real*
+/// image (a text-only figure, or one wrapping a math/icon image) or with several
+/// falls back to the generic container walk, so nothing is dropped or misread.
+fn emit_figure(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
+    let mut images = node.descendants().filter_map(|d| match d.value() {
+        Node::Element(e) if matches!(e.name(), "img" | "image") && is_real_image(e) => Some(e),
+        _ => None,
+    });
+    let (Some(img), None) = (images.next(), images.next()) else {
+        walk_children(node, ctx, out);
+        return;
+    };
+    out.push(Block::Image {
+        src: img_src(img).unwrap_or_default(),
+        alt: img.attr("alt").unwrap_or("").to_string(),
+        data: Vec::new(),
+        caption: figure_caption_spans(node),
+        math: false,
+        width: parse_img_width(img.attr("width"), img.attr("style")),
+    });
+}
+
+/// The caption text of a figure wrapper, in priority order: a `<figcaption>`, a
+/// caption-classed element (`<p class="…Caption">`), else the first non-empty
+/// heading/paragraph beside the image (publishers mark captions up as any of
+/// these rather than always a `<figcaption>`). Empty when there is no caption.
+fn figure_caption_spans(figure: NodeRef<Node>) -> Vec<Span> {
+    let is_el = |d: &NodeRef<Node>, pred: &dyn Fn(&scraper::node::Element) -> bool| matches!(d.value(), Node::Element(e) if pred(e));
+    let caption_node = figure
+        .descendants()
+        .find(|d| is_el(d, &|e| e.name() == "figcaption"))
+        .or_else(|| {
+            figure.descendants().find(|d| {
+                is_el(d, &|e| {
+                    e.attr("class")
+                        .is_some_and(|c| c.to_ascii_lowercase().contains("caption"))
+                })
+            })
+        })
+        .or_else(|| {
+            figure.descendants().find(|d| {
+                is_el(d, &|e| {
+                    matches!(e.name(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p")
+                }) && inline_spans(*d).iter().any(|s| !s.text.trim().is_empty())
+            })
+        });
+    caption_node.map(inline_spans).unwrap_or_default()
 }
 
 /// The authored display width of an `<img>`, from its inline CSS `width` (which
