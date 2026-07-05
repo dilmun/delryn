@@ -41,9 +41,11 @@ pub enum SettingItem {
     StatusGauge,
     ImageMaxPx,
     ImageWidthPct,
+    ImageFit,
     ImageMode,
     GraphicalMath,
     MathScale,
+    EquationScale,
     CodeWrap,
     TableWrap,
     Paged,
@@ -85,9 +87,11 @@ impl SettingItem {
             SettingItem::StatusGauge => "Gauge",
             SettingItem::ImageMaxPx => "Max resolution (px)",
             SettingItem::ImageWidthPct => "Figure width %",
+            SettingItem::ImageFit => "Figure sizing",
             SettingItem::ImageMode => "Image mode",
             SettingItem::GraphicalMath => "Graphical math",
             SettingItem::MathScale => "Math size %",
+            SettingItem::EquationScale => "Equation size %",
             SettingItem::CodeWrap => "Wrap code blocks",
             SettingItem::TableWrap => "Wrap tables",
             SettingItem::Paged => "Page mode",
@@ -141,9 +145,11 @@ impl SettingItem {
                 }
             }
             SettingItem::ImageWidthPct => format!("{}%", c.image_width_pct),
+            SettingItem::ImageFit => c.image_fit.label().to_string(),
             SettingItem::ImageMode => c.image_mode.label().to_string(),
             SettingItem::GraphicalMath => onoff(c.graphical_math),
             SettingItem::MathScale => format!("{}%", c.math_scale),
+            SettingItem::EquationScale => format!("{}%", c.equation_scale),
             SettingItem::CodeWrap => onoff(c.code_wrap),
             SettingItem::TableWrap => onoff(c.table_wrap),
             SettingItem::Paged => onoff(c.paged),
@@ -223,9 +229,11 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
                     S("Images"),
                     I(ImageMaxPx),
                     I(ImageWidthPct),
+                    I(ImageFit),
                     I(ImageMode),
                     I(GraphicalMath),
                     I(MathScale),
+                    I(EquationScale),
                     S("Blocks"),
                     I(CodeWrap),
                     I(TableWrap),
@@ -424,6 +432,13 @@ impl App {
                     .clamp(MIN_IMAGE_WIDTH_PCT as i32, MAX_IMAGE_WIDTH_PCT as i32)
                     as u16
             }
+            SettingItem::ImageFit => {
+                c.image_fit = if delta > 0 {
+                    c.image_fit.next()
+                } else {
+                    c.image_fit.prev()
+                }
+            }
             SettingItem::ImageMode => {
                 c.image_mode = if delta > 0 {
                     c.image_mode.next()
@@ -437,6 +452,13 @@ impl App {
                 // Step in 10% increments within the allowed band.
                 c.math_scale = (c.math_scale as i32 + delta * 10)
                     .clamp(MIN_MATH_SCALE as i32, MAX_MATH_SCALE as i32)
+                    as u16
+            }
+            SettingItem::EquationScale => {
+                use crate::config::{MAX_EQUATION_SCALE, MIN_EQUATION_SCALE};
+                // Step in 10% increments within the allowed band.
+                c.equation_scale = (c.equation_scale as i32 + delta * 10)
+                    .clamp(MIN_EQUATION_SCALE as i32, MAX_EQUATION_SCALE as i32)
                     as u16
             }
             SettingItem::CodeWrap => c.code_wrap = !c.code_wrap,

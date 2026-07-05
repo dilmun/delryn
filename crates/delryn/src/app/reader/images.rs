@@ -10,15 +10,22 @@ use super::*;
 use crate::app::IMAGE_CACHE_CAP;
 use crate::media::{ImageBuilder, ImagePlan, ImgKey};
 
-/// Map a block's authored width + math flag to the media layer's sizing intent.
-fn size_spec(width: delryn_model::ImageWidth, math: bool) -> media::SizeSpec {
+/// Map a block's authored width, math flag, and caption presence to the media
+/// layer's sizing intent. A caption is the reliable figure/table-vs-equation
+/// signal: figures and tables are captioned and normalize to the column band;
+/// equation pictures are uncaptioned and stay text-proportional.
+fn size_spec(width: delryn_model::ImageWidth, math: bool, captioned: bool) -> media::SizeSpec {
     let hint = match width {
         delryn_model::ImageWidth::Auto => media::SizeHint::Auto,
         delryn_model::ImageWidth::Pct(p) => media::SizeHint::Pct(p),
         delryn_model::ImageWidth::Px(px) => media::SizeHint::Px(px),
         delryn_model::ImageWidth::Full => media::SizeHint::Full,
     };
-    media::SizeSpec { hint, math }
+    media::SizeSpec {
+        hint,
+        math,
+        captioned,
+    }
 }
 
 /// The geometry + render policy that sizes a section's images for the current
@@ -32,6 +39,8 @@ pub struct ImageGeom {
     pub max_rows: u16,
     pub max_px: u16,
     pub width_pct: u16,
+    pub eq_scale: u16,
+    pub fit_mode: media::ImageFit,
     pub policy: media::RenderPolicy,
 }
 
@@ -102,6 +111,8 @@ impl Reader {
             geom.max_rows,
             geom.max_px,
             geom.width_pct,
+            geom.eq_scale,
+            geom.fit_mode,
         );
         if self.images.images_key != key || self.images.policy != geom.policy {
             self.images.images_key = key;
@@ -132,10 +143,14 @@ impl Reader {
         let mut idx = 0;
         for block in &self.blocks {
             if let Block::Image {
-                data, math, width, ..
+                data,
+                math,
+                width,
+                caption,
+                ..
             } = block
             {
-                let spec = size_spec(*width, *math);
+                let spec = size_spec(*width, *math, !caption.is_empty());
                 let key = ImgKey {
                     section: self.section,
                     idx,
@@ -143,6 +158,8 @@ impl Reader {
                     max_rows: geom.max_rows,
                     max_px: geom.max_px,
                     target_pct: geom.width_pct,
+                    eq_scale: geom.eq_scale,
+                    fit_mode: geom.fit_mode,
                     policy: geom.policy,
                 };
                 let fit = media::FitBox {
@@ -152,6 +169,8 @@ impl Reader {
                     rows: geom.max_rows,
                     max_px: geom.max_px,
                     target_pct: geom.width_pct,
+                    eq_scale: geom.eq_scale,
+                    fit_mode: geom.fit_mode,
                 };
                 let rows = if let Some(plan) = self.images.cache.peek(&key) {
                     plan.rows
@@ -238,7 +257,11 @@ impl Reader {
         let mut idx = 0;
         for block in blocks {
             if let Block::Image {
-                data, math, width, ..
+                data,
+                math,
+                width,
+                caption,
+                ..
             } = block
             {
                 if !data.is_empty() {
@@ -249,13 +272,19 @@ impl Reader {
                         max_rows: geom.max_rows,
                         max_px: geom.max_px,
                         target_pct: geom.width_pct,
+                        eq_scale: geom.eq_scale,
+                        fit_mode: geom.fit_mode,
                         policy: geom.policy,
                     };
                     if !self.images.cache.contains(&key)
                         && !self.images.requested.contains(&key)
                         && !self.images.failed.contains(&key)
                     {
-                        requests.push((key, data.clone(), size_spec(*width, *math)));
+                        requests.push((
+                            key,
+                            data.clone(),
+                            size_spec(*width, *math, !caption.is_empty()),
+                        ));
                         budget -= 1;
                         if budget == 0 {
                             break; // spare exhausted — prefetch the rest on reveal

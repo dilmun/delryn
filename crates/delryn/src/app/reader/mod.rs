@@ -1739,6 +1739,8 @@ mod tests {
             max_rows: 40,
             max_px: 0,
             width_pct: 85,
+            eq_scale: 100,
+            fit_mode: media::ImageFit::default(),
             policy: media::RenderPolicy {
                 tint: media::Ink {
                     ink: [0, 0, 0],
