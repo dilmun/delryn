@@ -78,14 +78,19 @@ is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
       `[roles]` overrides — the seam is `role::resolve` (give `Theme` an optional
       leaked role-table), but it would pressure `Copy`, so not until asked.* Docs:
       `docs/theming.md`.
-- [~] **Status bar: segment model, modern + unified.** ✅ (9eb5276)
+- [x] **Status bar: segment model, modern + unified.** ✅ (9eb5276)
       `view/status/{mod,segment,render,producers}` — Left/Center/Right zoned
       segments with drop-priority overflow; one renderer; reader/library/overlay
       producers. **Deleted** `view/reader.rs::render_status`, `view/library/status.rs`,
       and the old `legend` cascade. Selection pill + consistent state-Left/
       hints-Right. ✅ Now painted in `Role::Status*` + `Role::Selection` (the Role
-      system landed above). **Remaining:** the `[status]` config block (reorder/
-      toggle segments per zone). Docs: `docs/status.md`.
+      system landed above). ✅ **`[status]` config block** (branch
+      `feat/status-config`): every segment now carries a `SegmentId`; the
+      `[status]` block reorders segments per zone (`left`/`center`/`right` by id
+      label — reorder-only, unlisted keep built-in order so nothing vanishes),
+      sets the `separator`, and toggles a wall-clock `clock` segment (chrono,
+      already transitive). Visibility toggles + clock also in Settings. Docs:
+      `docs/status.md`.
 
 ### R-D — P2 polish
 

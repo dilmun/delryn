@@ -4,7 +4,7 @@
 //! and the overlay `legend` cascade now live, as segment producers.
 
 use super::render::{GAUGE_WIDTH, gauge};
-use super::segment::{StatusBar, Zone};
+use super::segment::{SegmentId, StatusBar, Zone};
 use crate::app::{App, EditMode, EditTab, LibView, MetaEdit, Overlay, Reader, SortKey};
 use crate::config::Config;
 use crate::store::LibrarySection;
@@ -19,34 +19,49 @@ pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
     let mut bar = StatusBar::new();
 
     let meta = reader.doc.metadata();
-    let left = if let Some(flash) = &reader.flash {
-        flash.clone()
+    let (left_id, left) = if let Some(flash) = &reader.flash {
+        (SegmentId::Flash, flash.clone())
     } else if meta.authors.is_empty() {
-        meta.title.clone()
+        (SegmentId::Context, meta.title.clone())
     } else {
-        format!("{} — {}", meta.title, meta.author_line())
+        (
+            SegmentId::Context,
+            format!("{} — {}", meta.title, meta.author_line()),
+        )
     };
-    bar.text(Zone::Left, 9, left, bold);
+    bar.text(left_id, Zone::Left, 9, left, bold);
 
-    let sf = config.status;
+    let sf = &config.status;
     if reader.search.matcher.is_some() {
         let n = reader.search_count();
         let cur = if n == 0 { 0 } else { reader.search.idx + 1 };
-        bar.text(Zone::Right, 8, format!("⌕ {cur}/{n}"), plain);
+        bar.text(
+            SegmentId::Search,
+            Zone::Right,
+            8,
+            format!("⌕ {cur}/{n}"),
+            plain,
+        );
     }
     if sf.theme {
-        bar.text(Zone::Right, 3, theme.name, dim);
+        bar.text(SegmentId::Theme, Zone::Right, 3, theme.name, dim);
     }
     if sf.view {
-        bar.text(Zone::Right, 3, config.view_mode.label(), dim);
+        bar.text(
+            SegmentId::View,
+            Zone::Right,
+            3,
+            config.view_mode.label(),
+            dim,
+        );
     }
     // Continuous cross-section scroll indicator (reflow text or PDF page stacking).
     if reader.continuous_active() || reader.continuous_paged_active() {
-        bar.text(Zone::Right, 3, "continuous", dim);
+        bar.text(SegmentId::Continuous, Zone::Right, 3, "continuous", dim);
     }
     // Manga (right-to-left) indicator — only meaningful for paged spreads.
     if reader.is_paged_image() && config.reading_direction.is_rtl() {
-        bar.text(Zone::Right, 3, "manga ←", dim);
+        bar.text(SegmentId::Manga, Zone::Right, 3, "manga ←", dim);
     }
     if reader.paged || reader.is_paged_image() {
         // A paged-image (PDF) page is the section itself; reflowable page mode
@@ -56,19 +71,32 @@ pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
         } else {
             (reader.current_page(), reader.page_count())
         };
-        bar.text(Zone::Right, 7, format!("p {cur}/{total}"), plain);
+        bar.text(
+            SegmentId::Page,
+            Zone::Right,
+            7,
+            format!("p {cur}/{total}"),
+            plain,
+        );
     }
     // Zoom/fit indicator: the continuous stack's zoom, else a single page zoomed
     // off fit-page.
     if reader.continuous_paged_active() {
         if let Some(z) = reader.cont_zoom_label() {
-            bar.text(Zone::Right, 4, z, plain);
+            bar.text(SegmentId::Zoom, Zone::Right, 4, z, plain);
         }
     } else if reader.is_paged_image() && reader.page_view.is_zoomed() {
-        bar.text(Zone::Right, 4, reader.page_view.label(), plain);
+        bar.text(
+            SegmentId::Zoom,
+            Zone::Right,
+            4,
+            reader.page_view.label(),
+            plain,
+        );
     }
     if sf.position && !reader.is_paged_image() {
         bar.text(
+            SegmentId::Position,
             Zone::Right,
             6,
             format!("{}/{}", reader.section + 1, reader.doc.section_count()),
@@ -77,10 +105,25 @@ pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
     }
     if sf.percent {
         let pct = (reader.progress() * 100.0).round() as u32;
-        bar.text(Zone::Right, 5, format!("{pct}%"), plain);
+        bar.text(SegmentId::Percent, Zone::Right, 5, format!("{pct}%"), plain);
     }
     if sf.gauge {
-        bar.text(Zone::Right, 2, gauge(reader.progress(), GAUGE_WIDTH), dim);
+        bar.text(
+            SegmentId::Gauge,
+            Zone::Right,
+            2,
+            gauge(reader.progress(), GAUGE_WIDTH),
+            dim,
+        );
+    }
+    if sf.clock {
+        bar.text(
+            SegmentId::Clock,
+            Zone::Right,
+            4,
+            super::clock::local_hhmm(),
+            dim,
+        );
     }
     bar
 }
@@ -99,8 +142,15 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
         } else {
             "Edit tags".to_string()
         };
-        bar.text(Zone::Left, 9, format!("{label}: {}", t.input.text()), bold);
         bar.text(
+            SegmentId::Context,
+            Zone::Left,
+            9,
+            format!("{label}: {}", t.input.text()),
+            bold,
+        );
+        bar.text(
+            SegmentId::Keys,
             Zone::Right,
             2,
             "type · ←→ move · ^U clear · ⏎ save · Esc cancel",
@@ -112,9 +162,10 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
     let marked = app.library.marked.len();
     let visual = app.library.visual.is_some();
     if let Some(flash) = &app.library.flash {
-        bar.text(Zone::Left, 9, flash.clone(), bold);
+        bar.text(SegmentId::Flash, Zone::Left, 9, flash.clone(), bold);
     } else if visual {
         bar.add(
+            SegmentId::Context,
             Zone::Left,
             9,
             crate::view::pill_spans_on(
@@ -125,12 +176,19 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
         );
     } else if marked > 0 {
         bar.add(
+            SegmentId::Context,
             Zone::Left,
             9,
             crate::view::pill_spans_on(format!("{marked} selected"), theme, theme.status_bg),
         );
     } else if app.library.filtering || !app.library.filter.is_empty() {
-        bar.text(Zone::Left, 9, format!("/{}", app.library.filter), bold);
+        bar.text(
+            SegmentId::Context,
+            Zone::Left,
+            9,
+            format!("/{}", app.library.filter),
+            bold,
+        );
     } else {
         let read = app.total_read_seconds();
         let sort = if app.library.sort == SortKey::Default {
@@ -162,7 +220,7 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
             read / 3600,
             (read % 3600) / 60,
         );
-        bar.text(Zone::Left, 9, state, bold);
+        bar.text(SegmentId::Context, Zone::Left, 9, state, bold);
     }
 
     let dups = matches!(
@@ -180,7 +238,7 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
     } else {
         "hjkl move · ⏎ open · e edit · r rename · T tag · D dedup · c shelf · s sort · q"
     };
-    bar.text(Zone::Right, 2, keys, dim);
+    bar.text(SegmentId::Keys, Zone::Right, 2, keys, dim);
     bar
 }
 
@@ -192,8 +250,20 @@ pub fn overlay_bar(app: &App, theme: Theme) -> Option<StatusBar> {
     }
     let (context, keys) = legend(app)?;
     let mut bar = StatusBar::new();
-    bar.text(Zone::Left, 9, context, theme.style(Role::StatusStrong));
-    bar.text(Zone::Right, 2, keys, theme.style(Role::StatusDim));
+    bar.text(
+        SegmentId::Context,
+        Zone::Left,
+        9,
+        context,
+        theme.style(Role::StatusStrong),
+    );
+    bar.text(
+        SegmentId::Keys,
+        Zone::Right,
+        2,
+        keys,
+        theme.style(Role::StatusDim),
+    );
     Some(bar)
 }
 
