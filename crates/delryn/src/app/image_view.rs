@@ -90,6 +90,13 @@ pub struct ImageViewer {
     /// render policy) it was built for — so changing the image mode rebuilds it.
     proto: Option<StatefulProtocol>,
     proto_for: Option<(usize, RenderPolicy)>,
+    /// Terminal (Kitty) image ids the viewer has finished with — superseded by a
+    /// figure change / mode toggle / filter, or the shown image at close. Drained
+    /// into the app's delete stream so each rebuild frees its old resident image;
+    /// otherwise every toggle leaks one until the terminal evicts *everything*
+    /// (covers included) to reclaim graphics memory. Mirrors the reader/cover
+    /// caches, which delete-on-eviction.
+    pending_deletes: Vec<u32>,
     /// Transient status (e.g. "saved …"), shown in the title.
     pub flash: Option<String>,
 }
@@ -111,6 +118,7 @@ impl ImageViewer {
             save_path: String::new(),
             proto: None,
             proto_for: None,
+            pending_deletes: Vec::new(),
             flash: None,
         })
     }
@@ -171,12 +179,40 @@ impl ImageViewer {
     ) -> Option<&mut StatefulProtocol> {
         let fi = *self.view.get(self.sel)?;
         if self.proto_for != Some((fi, policy)) {
+            // Free the outgoing image's terminal data before overwriting the
+            // protocol, else its Kitty id is leaked (a new random id is minted
+            // below) and the resident image lingers forever.
+            self.retire_current();
             self.proto = decode(&self.figs[fi].bytes).map(|img| {
                 picker.new_resize_protocol(render_for_theme(&img, policy.tint, policy.mode))
             });
             self.proto_for = Some((fi, policy));
         }
         self.proto.as_mut()
+    }
+
+    /// Queue the currently shown figure's terminal image for deletion and forget
+    /// the built protocol, so the next [`ensure_proto`](Self::ensure_proto)
+    /// rebuilds it. A no-op for non-Kitty protocols (no image id).
+    fn retire_current(&mut self) {
+        if let Some(id) = self.proto.as_ref().and_then(StatefulProtocol::image_id) {
+            self.pending_deletes.push(id);
+        }
+        self.proto = None;
+        self.proto_for = None;
+    }
+
+    /// Take the terminal image ids the viewer is done with, to feed the app's
+    /// delete stream. Call [`close`](Self::close) first when tearing the viewer
+    /// down so the last shown image is freed too.
+    pub fn take_deletes(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.pending_deletes)
+    }
+
+    /// Prepare the viewer for teardown: retire the shown image so its terminal
+    /// data is freed (drained via [`take_deletes`](Self::take_deletes)).
+    pub fn close(&mut self) {
+        self.retire_current();
     }
 
     /// Re-filter the list by caption / name substring (case-insensitive).
@@ -283,4 +319,103 @@ fn expand_tilde(path: &str) -> std::path::PathBuf {
         return home.join(rest.trim_start_matches('/'));
     }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::{ImageMode, Ink};
+    use ratatui_image::picker::{Picker, ProtocolType};
+
+    // A small opaque PNG so `decode` succeeds and a real Kitty protocol (the
+    // only kind that carries an image id) gets built.
+    fn png_bytes() -> Vec<u8> {
+        let img = image::DynamicImage::new_rgb8(4, 4);
+        let mut buf = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        buf
+    }
+
+    /// A picker forced to the Kitty protocol so built protocols expose image ids
+    /// (headless test terminals otherwise fall back to halfblocks → no id).
+    fn kitty_picker() -> Picker {
+        let mut p = Picker::halfblocks();
+        p.set_protocol_type(ProtocolType::Kitty);
+        p
+    }
+
+    fn fig(name: &str) -> Figure {
+        Figure {
+            section: 0,
+            image_index: 0,
+            name: name.to_string(),
+            caption: String::new(),
+            bytes: png_bytes(),
+            dims: Some((4, 4)),
+        }
+    }
+
+    fn policy(mode: ImageMode) -> RenderPolicy {
+        RenderPolicy {
+            tint: Ink {
+                ink: [0, 0, 0],
+                paper: [255, 255, 255],
+            },
+            mode,
+        }
+    }
+
+    fn id_of(proto: Option<&mut StatefulProtocol>) -> u32 {
+        proto
+            .and_then(|p| p.image_id())
+            .expect("kitty protocol carries an image id")
+    }
+
+    // Toggling the image mode rebuilds under a fresh id and must free the old
+    // terminal image — the leak that made covers/inline images vanish once the
+    // terminal's graphics quota filled with orphaned figures.
+    #[test]
+    fn mode_toggle_frees_the_previous_terminal_image() {
+        let picker = kitty_picker();
+        let mut viewer = ImageViewer::new(vec![fig("a")], false).unwrap();
+
+        let id_a = id_of(viewer.ensure_proto(&picker, policy(ImageMode::Faithful)));
+        assert!(
+            viewer.take_deletes().is_empty(),
+            "nothing to free on first build"
+        );
+
+        let id_b = id_of(viewer.ensure_proto(&picker, policy(ImageMode::InvertBackgrounds)));
+        assert_ne!(id_a, id_b, "mode change mints a new id");
+        assert_eq!(
+            viewer.take_deletes(),
+            vec![id_a],
+            "old image queued for deletion"
+        );
+
+        // Re-rendering the same mode neither rebuilds nor deletes.
+        viewer.ensure_proto(&picker, policy(ImageMode::InvertBackgrounds));
+        assert!(viewer.take_deletes().is_empty());
+
+        // Closing frees the last shown image too.
+        viewer.close();
+        assert_eq!(viewer.take_deletes(), vec![id_b]);
+    }
+
+    // Navigating to another figure must free the one we moved off.
+    #[test]
+    fn navigating_between_figures_frees_the_previous_image() {
+        let picker = kitty_picker();
+        let mut viewer = ImageViewer::new(vec![fig("a"), fig("b")], false).unwrap();
+        let pol = policy(ImageMode::Faithful);
+
+        let id0 = id_of(viewer.ensure_proto(&picker, pol));
+        let _ = viewer.take_deletes();
+
+        viewer.move_sel(1);
+        let id1 = id_of(viewer.ensure_proto(&picker, pol));
+        assert_ne!(id0, id1);
+        assert_eq!(viewer.take_deletes(), vec![id0]);
+    }
 }
