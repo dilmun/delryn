@@ -429,6 +429,17 @@ only framed/matted to sit in the theme.
       not naive `255−RGB`. `media::RenderPolicy { tint, mode }` is part of the
       image cache key, so changing theme/mode re-renders live. Covers untouched.
       *Optional reader keybind to flip the current view — deferred.*
+- [x] **Invert reaches transparent colour charts** (`recolor::render_for_theme`):
+      a chart shipped on a *transparent* background (coloured fills + black axes,
+      ticks, labels) previously took the colour-graphic path — flattened onto the
+      page but never inverted — so on a dark theme its dark neutral ink rendered
+      black-on-black (invisible axes/labels). **Invert** now `theme_invert`s these
+      too (dark ink → light, coloured strokes keep their hue, transparency → page);
+      Auto/Faithful stay faithful. The opaque-figure path was already handled.
+- [x] **Figure captions centred under the image** (`layout::blocks::emit_image`):
+      inline images are centred in the column, but the italic caption wrapped
+      flush-left. Each caption line is now left-padded to centre within the column
+      (`center_line`), sitting on the image's axis.
 - [x] **PDF pages honour the image policy** (`media::theme_page_png` +
       `PageThemer`): full pages no longer show on a fixed white sheet. **Auto**
       maps a light *neutral* page into the theme (white→paper, ink→text colour, so
