@@ -131,7 +131,9 @@ impl App {
             self.last_layout.lib_list,
         );
         if sidebar.is_some_and(|r| r.contains(pt)) {
-            self.lib_side_move(d); // scroll the sections/collections list
+            // The sections list is short and each move reloads the book list, so
+            // step one section per notch (not the list's multi-row scroll amount).
+            self.lib_side_move(d.signum());
             true
         } else if detail.is_some_and(|r| r.contains(pt)) {
             false // detail isn't a scrollable list — don't touch the book list
