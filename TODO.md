@@ -493,12 +493,27 @@ only framed/matted to sit in the theme.
 
 ## Phase 6 — Graphical math + deep performance
 
-- [ ] **Graphical math**: render LaTeX/MathML → image (typst or a TeX→dvipng/
-      MathJax-node shell-out) → terminal graphics (the existing ratatui-image
-      pipeline), cached by content hash on disk. Fall back to the current
-      Unicode rendering when no renderer/graphics protocol is available. *(Needs
-      a graphics-capable terminal to validate; design the cache + fallback seam
-      so the Unicode path is never regressed.)*
+- [~] **Graphical math** (branch `feature/graphical-math`, in progress). Renderer
+      decided: **in-process pure Rust** (user's pick) via **RaTeX** (KaTeX coverage,
+      tiny-skia raster, embedded KaTeX fonts) — pulldown-latex was ruled out
+      (MathML-only, no raster). ✅ **Step 1 — `delryn-math` crate** (`654f20e`):
+      isolates RaTeX behind `render(latex, style) -> Option<Vec<u8>>` (black-on-
+      transparent PNG so delryn's existing equation-image recolour themes it),
+      disk-cached at `<config>/math/<hash>.png` (theme-independent), panic-guarded,
+      Unicode fallback on any failure. Validated end-to-end. ✅ **Step 2 — retain the
+      LaTeX source** (`0ddf0a0`): the parser discarded it (kept only Unicode);
+      `Block::Math { tex }` → `{ unicode, latex: Option<String> }`, `native_math`
+      hands back the raw LaTeX from `alttext`/`<annotation …tex>` (`None` for
+      presentation-MathML-only). *Next — Step 3 (integration): convert a
+      `Block::Math` with a latex source into a themed `Block::Image` via the existing
+      inline-image pipeline, rendering off the section-loader thread (disk-cached, so
+      only first-ever render is slow); Unicode fallback when off / no graphics /
+      parse fails; a `graphical_math` config toggle; tune the display size (math
+      keeps native px → pick the RaTeX font/dpr so a display equation is ~2 text
+      lines). Step 4 — inline math (place a small raster mid-line — the hard case,
+      deferred). Coverage note: the local library is light on native `<math>`
+      (mostly publisher equation images, already shown) — the visible win is
+      LaTeX-source math + future inline; verify on math-heavy EPUBs.*
 - [ ] **Deep performance** (measure first — profile before optimizing):
       - Virtualized scrolling: wrap only the visible window + neighbors (some
         background pre-wrap exists via `SectionLoader`); cap retained wrapped
