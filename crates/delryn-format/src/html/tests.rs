@@ -725,9 +725,20 @@ fn plain_divs_are_not_code() {
 /// First `Block::Math`'s rendered text, if any.
 fn first_math(blocks: &[Block]) -> Option<&str> {
     blocks.iter().find_map(|b| match b {
-        Block::Math { tex } => Some(tex.as_str()),
+        Block::Math { unicode, .. } => Some(unicode.as_str()),
         _ => None,
     })
+}
+
+/// The first `Block::Math`'s recovered LaTeX source (`None` when MathML-only).
+fn first_math_latex(blocks: &[Block]) -> Option<String> {
+    blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Math { latex, .. } => Some(latex.clone()),
+            _ => None,
+        })
+        .flatten()
 }
 
 #[test]
@@ -767,6 +778,27 @@ fn native_math_prefers_authored_tex() {
         Some("α"),
         "annotation TeX → unicode"
     );
+}
+
+#[test]
+fn native_math_retains_latex_source() {
+    // `alttext` LaTeX is retained (alongside the Unicode) for the graphical renderer.
+    let alt = parse_blocks(
+        r#"<html><body><math display="block" alttext="\int_0^1 x\,dx"><mi>noise</mi></math></body></html>"#,
+    );
+    assert_eq!(first_math_latex(&alt).as_deref(), Some(r"\int_0^1 x\,dx"));
+
+    // `<annotation …tex>` LaTeX is retained too.
+    let annotated = parse_blocks(
+        r#"<html><body><math display="block"><mi>x</mi><annotation encoding="application/x-tex">\alpha</annotation></math></body></html>"#,
+    );
+    assert_eq!(first_math_latex(&annotated).as_deref(), Some(r"\alpha"));
+
+    // Presentation-MathML-only math has no LaTeX to recover → None (Unicode only).
+    let mathml = parse_blocks(
+        r#"<html><body><math display="block"><msup><mi>x</mi><mn>2</mn></msup></math></body></html>"#,
+    );
+    assert_eq!(first_math_latex(&mathml), None);
 }
 
 #[test]

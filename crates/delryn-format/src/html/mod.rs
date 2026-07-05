@@ -217,9 +217,9 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             }
         }
         ElementRole::DisplayMath => {
-            let tex = native_math_unicode(node);
-            if !tex.trim().is_empty() {
-                out.push(Block::Math { tex });
+            let (unicode, latex) = native_math(node);
+            if !unicode.trim().is_empty() {
+                out.push(Block::Math { unicode, latex });
             }
         }
         ElementRole::Heading(level) => {

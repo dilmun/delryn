@@ -158,10 +158,14 @@ pub enum Block {
         lang: Option<String>,
         lines: Vec<String>,
     },
-    /// Display (block-level) mathematics. `tex` is TeX-like source; the layout
-    /// pass renders it to Unicode (see [`crate::math`]).
+    /// Display (block-level) mathematics. `unicode` is the always-present Unicode
+    /// approximation the layout pass centres (see [`crate::math`]); `latex` is the
+    /// original LaTeX source when the parser could recover it (`alttext` /
+    /// `<annotation …tex>`), for the graphical-math renderer to rasterise — `None`
+    /// when only presentation MathML was available (Unicode only).
     Math {
-        tex: String,
+        unicode: String,
+        latex: Option<String>,
     },
     /// A table: an optional header row, then body rows. Each cell is styled spans.
     Table {
