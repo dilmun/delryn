@@ -31,12 +31,27 @@ impl App {
             return;
         };
         let whole = !v.whole_book;
-        if let Some(reader) = self.reader.as_mut() {
-            let figs = reader.figures(whole);
-            // Keep the viewer open even if the new scope is empty (shouldn't be).
-            if let Some(v) = ImageViewer::new(figs, whole) {
-                self.overlay = Overlay::ImageView(v);
-            }
+        let Some(reader) = self.reader.as_mut() else {
+            return;
+        };
+        let figs = reader.figures(whole);
+        // Keep the viewer open even if the new scope is empty (shouldn't be).
+        let Some(new_viewer) = ImageViewer::new(figs, whole) else {
+            return;
+        };
+        // Free the outgoing viewer's terminal image before it's replaced.
+        self.retire_image_viewer();
+        self.overlay = Overlay::ImageView(new_viewer);
+    }
+
+    /// Free the open image viewer's last shown terminal image (before the viewer
+    /// is dropped or replaced), queuing its id for the app's delete stream so the
+    /// resident Kitty image isn't leaked. No-op when the viewer isn't open.
+    fn retire_image_viewer(&mut self) {
+        if let Overlay::ImageView(v) = &mut self.overlay {
+            v.close();
+            let deletes = v.take_deletes();
+            self.overlay_image_deletes.extend(deletes);
         }
     }
 
@@ -93,7 +108,10 @@ impl App {
             v.flash = None;
         }
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => self.overlay = Overlay::None,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => {
+                self.retire_image_viewer();
+                self.overlay = Overlay::None;
+            }
             KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('n') => {
                 if let Overlay::ImageView(v) = &mut self.overlay {
                     v.move_sel(1);
@@ -148,6 +166,7 @@ impl App {
                     if let Some(r) = self.reader.as_mut() {
                         r.jump_to_image(section, image_index);
                     }
+                    self.retire_image_viewer();
                     self.overlay = Overlay::None;
                 }
             }
