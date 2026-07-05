@@ -39,6 +39,7 @@ pub struct ImageGeom {
     pub max_rows: u16,
     pub max_px: u16,
     pub width_pct: u16,
+    pub eq_scale: u16,
     pub fit_mode: media::ImageFit,
     pub policy: media::RenderPolicy,
 }
@@ -110,6 +111,7 @@ impl Reader {
             geom.max_rows,
             geom.max_px,
             geom.width_pct,
+            geom.eq_scale,
             geom.fit_mode,
         );
         if self.images.images_key != key || self.images.policy != geom.policy {
@@ -156,6 +158,7 @@ impl Reader {
                     max_rows: geom.max_rows,
                     max_px: geom.max_px,
                     target_pct: geom.width_pct,
+                    eq_scale: geom.eq_scale,
                     fit_mode: geom.fit_mode,
                     policy: geom.policy,
                 };
@@ -166,6 +169,7 @@ impl Reader {
                     rows: geom.max_rows,
                     max_px: geom.max_px,
                     target_pct: geom.width_pct,
+                    eq_scale: geom.eq_scale,
                     fit_mode: geom.fit_mode,
                 };
                 let rows = if let Some(plan) = self.images.cache.peek(&key) {
@@ -268,6 +272,7 @@ impl Reader {
                         max_rows: geom.max_rows,
                         max_px: geom.max_px,
                         target_pct: geom.width_pct,
+                        eq_scale: geom.eq_scale,
                         fit_mode: geom.fit_mode,
                         policy: geom.policy,
                     };

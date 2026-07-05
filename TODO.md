@@ -229,7 +229,17 @@ the size guidelines.
       `WrapKey`, so a live Fit⇄Faithful / width-% toggle re-renders without leaving
       the section. *Watch: dense-image sections now transmit larger figures — keep an
       eye on the Ghostty eviction budget; `image_max_px` remains the ceiling if it
-      bites.*
+      bites.* (4) **Equation legibility** — publisher equation *images* are often
+      low-resolution (glyphs packed too small). `target_cells` now auto-boosts an
+      equation picture whose native height is under `EQUATION_MIN_LINES` (2 text
+      lines) up toward that, quality-capped by `EQUATION_AUTO_MAX` (2.5×), so tiny
+      equations become legible with no manual tuning; taller multi-line arrays keep
+      native. On top of that a live **Equation size %** knob (`config.equation_scale`,
+      Settings → Content, 50–300%, default 100, independent of `math_scale` which
+      sizes *real* rendered math) scales all equation pictures. `eq_scale` threads
+      through `ImageGeom`/`FitBox`/`ImgKey` + the remap key + `WrapKey` (live,
+      cache-invalidating). Classification stays caption-based (captioned = figure/
+      table → band; uncaptioned = equation → auto-boost + knob).
 
 Phase 1 content model is complete end-to-end (parse → rich `Block` → render).
 The deferred bits are all *interactive navigation*, gathered into Phase 2's

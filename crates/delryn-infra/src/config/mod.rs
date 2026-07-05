@@ -81,6 +81,12 @@ pub const MAX_IMAGE_WIDTH_PCT: u16 = 100;
 pub const MIN_MATH_SCALE: u16 = 50;
 pub const MAX_MATH_SCALE: u16 = 250;
 
+/// Equation-picture display size, as a percent of the auto-sized default (100 =
+/// the auto-detected readable size). Scales publisher equation *images* (not real
+/// graphical math, which uses `math_scale`) up or down.
+pub const MIN_EQUATION_SCALE: u16 = 50;
+pub const MAX_EQUATION_SCALE: u16 = 300;
+
 /// Book-format labels in the default duplicate keep-priority (high → low). Kept as
 /// labels (not `BookFormat`, which lives in a crate that depends on this one).
 pub const DUP_FORMAT_ORDER: [&str; 4] = ["EPUB", "PDF", "MOBI", "AZW3"];
@@ -207,6 +213,11 @@ pub struct Config {
     pub graphical_math: bool,
     /// Graphical-math display size as a percent of the default (100 = built-in).
     pub math_scale: u16,
+    /// Publisher equation-*image* display size as a percent of the auto-sized
+    /// default (100 = auto). Enlarges/shrinks uncaptioned equation pictures; low-
+    /// resolution ones are already auto-boosted toward a readable size, this tunes
+    /// that on top. Independent of `math_scale` (which sizes real rendered math).
+    pub equation_scale: u16,
     /// Directories scanned for the library.
     pub library_paths: Vec<String>,
     /// How the library lists books (table / dense table / cover grid).
@@ -257,6 +268,7 @@ impl Default for Config {
             image_fit: ImageFit::default(),
             graphical_math: true,
             math_scale: 100,
+            equation_scale: 100,
             library_paths: Vec::new(),
             library_layout: LibLayout::List,
             library_grid_size: GridSize::Medium,
@@ -372,6 +384,9 @@ impl Config {
             .image_width_pct
             .clamp(MIN_IMAGE_WIDTH_PCT, MAX_IMAGE_WIDTH_PCT);
         c.math_scale = c.math_scale.clamp(MIN_MATH_SCALE, MAX_MATH_SCALE);
+        c.equation_scale = c
+            .equation_scale
+            .clamp(MIN_EQUATION_SCALE, MAX_EQUATION_SCALE);
         // Keep only known column keys; an empty list (all hidden) is valid.
         c.library_columns
             .retain(|k| LIB_COLUMNS.iter().any(|(key, _)| key == k));
