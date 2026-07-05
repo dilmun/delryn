@@ -42,6 +42,7 @@ pub enum SettingItem {
     ImageMaxPx,
     ImageWidthPct,
     ImageMode,
+    GraphicalMath,
     CodeWrap,
     TableWrap,
     Paged,
@@ -84,6 +85,7 @@ impl SettingItem {
             SettingItem::ImageMaxPx => "Max resolution (px)",
             SettingItem::ImageWidthPct => "Figure width %",
             SettingItem::ImageMode => "Image mode",
+            SettingItem::GraphicalMath => "Graphical math",
             SettingItem::CodeWrap => "Wrap code blocks",
             SettingItem::TableWrap => "Wrap tables",
             SettingItem::Paged => "Page mode",
@@ -138,6 +140,7 @@ impl SettingItem {
             }
             SettingItem::ImageWidthPct => format!("{}%", c.image_width_pct),
             SettingItem::ImageMode => c.image_mode.label().to_string(),
+            SettingItem::GraphicalMath => onoff(c.graphical_math),
             SettingItem::CodeWrap => onoff(c.code_wrap),
             SettingItem::TableWrap => onoff(c.table_wrap),
             SettingItem::Paged => onoff(c.paged),
@@ -218,6 +221,7 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
                     I(ImageMaxPx),
                     I(ImageWidthPct),
                     I(ImageMode),
+                    I(GraphicalMath),
                     S("Blocks"),
                     I(CodeWrap),
                     I(TableWrap),
@@ -423,6 +427,7 @@ impl App {
                     c.image_mode.prev()
                 }
             }
+            SettingItem::GraphicalMath => c.graphical_math = !c.graphical_math,
             SettingItem::CodeWrap => c.code_wrap = !c.code_wrap,
             SettingItem::TableWrap => c.table_wrap = !c.table_wrap,
             SettingItem::Paged => c.paged = !c.paged,
