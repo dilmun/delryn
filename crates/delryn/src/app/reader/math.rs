@@ -70,12 +70,13 @@ pub(crate) fn convert_math_blocks(blocks: &mut [Block]) {
 
 impl Reader {
     /// Mirror the graphical-math state from the view each frame: `on` = the config
-    /// toggle AND a graphics protocol; `cell_h` = the terminal cell height in px.
-    /// When the effective state changes (startup, toggle, or a cell-size change) the
-    /// open sections are re-decoded so equations switch between image and Unicode
-    /// live, without reopening the book.
-    pub fn sync_graphical_math(&mut self, on: bool, cell_h: u16) {
-        let em = (cell_h.max(1) as f32 * DISPLAY_EM_FACTOR).round() as u32;
+    /// toggle AND a graphics protocol; `cell_h` = the terminal cell height in px;
+    /// `scale_pct` = the "Math size %" setting (100 = the built-in size). When the
+    /// effective state changes (startup, toggle, size, or a cell-size change) the open
+    /// sections are re-decoded so equations switch / resize live, without reopening.
+    pub fn sync_graphical_math(&mut self, on: bool, cell_h: u16, scale_pct: u16) {
+        let em = (cell_h.max(1) as f32 * DISPLAY_EM_FACTOR * scale_pct.max(1) as f32 / 100.0)
+            .round() as u32;
         let changed =
             ENABLED.swap(on, Ordering::Relaxed) != on || EM_PX.swap(em, Ordering::Relaxed) != em;
         // Only reflowable docs have math to (un)convert; never drop a paged doc's
