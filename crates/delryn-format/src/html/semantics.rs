@@ -31,6 +31,9 @@ pub(super) enum ElementRole {
     Quote,
     Rule,
     Image,
+    /// A `<figure>`: a (single) picture plus its caption, merged so the caption
+    /// renders beneath the image rather than as a stray heading/paragraph.
+    Figure,
     /// A definition list (`<dl>`): `<dt>` terms paired with `<dd>` descriptions.
     DefList,
     /// An aside/callout laid out as an icon-cell + content-cell table.
@@ -75,6 +78,7 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
     match name {
         "math" => ElementRole::DisplayMath,
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => ElementRole::Heading(name.as_bytes()[1] - b'0'),
+        "figure" => ElementRole::Figure,
         "p" => ElementRole::Paragraph,
         "ul" | "ol" => ElementRole::List {
             ordered: name == "ol",

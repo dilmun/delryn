@@ -503,6 +503,46 @@ fn parses_authored_image_width() {
     assert_eq!(parse_img_width(None, None), ImageWidth::Auto);
 }
 
+/// The first `Block::Image` with its caption text, if any.
+fn first_captioned_image(blocks: &[Block]) -> Option<(&str, String)> {
+    blocks.iter().find_map(|b| match b {
+        Block::Image { src, caption, .. } => Some((
+            src.as_str(),
+            caption.iter().map(|s| s.text.as_str()).collect::<String>(),
+        )),
+        _ => None,
+    })
+}
+
+#[test]
+fn figure_caption_attaches_to_the_image() {
+    // Publishers commonly mark a figure caption up as an <h6>/<p> beside the
+    // <img> (not a <figcaption>). The parser merges them so the caption becomes
+    // the image's caption (rendered centred beneath it), not a stray heading.
+    let blocks = parse_blocks(
+        r#"<html><body><figure><div class="figure">
+            <img alt="a chart" src="assets/fig.png" width="500"/>
+            <h6><span class="label">Figure 4-5. </span>Compare distributions.</h6>
+        </div></figure></body></html>"#,
+    );
+    let (src, caption) = first_captioned_image(&blocks).expect("a captioned image");
+    assert_eq!(src, "assets/fig.png");
+    assert_eq!(caption, "Figure 4-5. Compare distributions.");
+    // The caption is not ALSO emitted as a separate heading/paragraph block.
+    assert!(
+        !blocks.iter().any(|b| matches!(b, Block::Heading { .. })),
+        "caption consumed into the image, not left as a heading: {blocks:?}"
+    );
+    // A <figcaption> works the same way.
+    let blocks = parse_blocks(
+        r#"<html><body><figure>
+            <img alt="d" src="d.png"/><figcaption>Fig 2: the pipeline</figcaption>
+        </figure></body></html>"#,
+    );
+    let (_, caption) = first_captioned_image(&blocks).expect("captioned image");
+    assert_eq!(caption, "Fig 2: the pipeline");
+}
+
 #[test]
 fn icon_images_become_glyphs_not_labels() {
     // Dummies-style marker icons render as a symbol, not "[tip]"/"[check]".
