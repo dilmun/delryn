@@ -531,10 +531,21 @@ only framed/matted to sit in the theme.
         text-layer seam left for Phase 6/7). Optional future perf: transmit-once +
         `a=p`-only flips (no temp-file write per turn) — current per-turn temp-file
         transmit is already fast enough.
-- [ ] **MOBI / AZW3**: parse the PalmDB/MOBI header + record stream; KF8 (AZW3)
-      is essentially zipped XHTML — reuse the existing `html` → `Block` pipeline
-      once records are decompressed (PalmDOC/HUFF-CDIC). Evaluate `mobi` crate
-      vs a minimal in-house reader. Same validation discipline as PDF.
+- [~] **MOBI / AZW3** ✅ **v1 shipped** (branch `feat/mobi-azw3`): a minimal
+      in-house reader in `delryn-format/src/mobi/` (no new deps — hand-rolled
+      big-endian parsing + PalmDOC LZ77). `pdb.rs` parses the PalmDB record stream;
+      `palmdoc.rs` decompresses type-2 (LZ77) text (type-1 uncompressed passes
+      through); `mod.rs` reads the PalmDOC+MOBI headers, strips each text record's
+      trailing entries (extra-data-flags), decodes UTF-8 / CP1252, splits on
+      `<mbp:pagebreak>` into sections, and feeds each to the shared
+      `html::parse_blocks` — the same pipeline as EPUB. `MobiDocument: Document`;
+      images resolved from records via `recindex`; EXTH → `Metadata`
+      (title/author/publisher/isbn/year + cover); flat outline from each section's
+      first heading. Library scan indexes MOBI/AZW3 with real metadata
+      (`index_meta`, shared with EPUB). AZW3/KF8 shares the backend (record 0 parsed
+      the same way). *Still: HUFF/CDIC (type 17480) decompression → reported
+      unsupported; DRM → reported; full KF8 skeleton/fragment reconstruction + real
+      `filepos` NCX TOC; MOBI full-text index.* Same validation discipline as PDF.
 
 ## Phase 6 — Graphical math + deep performance
 
