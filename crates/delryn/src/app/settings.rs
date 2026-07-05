@@ -39,6 +39,7 @@ pub enum SettingItem {
     StatusPosition,
     StatusPercent,
     StatusGauge,
+    StatusClock,
     ImageMaxPx,
     ImageWidthPct,
     ImageFit,
@@ -85,6 +86,7 @@ impl SettingItem {
             SettingItem::StatusPosition => "Position",
             SettingItem::StatusPercent => "Percent",
             SettingItem::StatusGauge => "Gauge",
+            SettingItem::StatusClock => "Clock",
             SettingItem::ImageMaxPx => "Max resolution (px)",
             SettingItem::ImageWidthPct => "Figure width %",
             SettingItem::ImageFit => "Figure sizing",
@@ -137,6 +139,7 @@ impl SettingItem {
             SettingItem::StatusPosition => onoff(c.status.position),
             SettingItem::StatusPercent => onoff(c.status.percent),
             SettingItem::StatusGauge => onoff(c.status.gauge),
+            SettingItem::StatusClock => onoff(c.status.clock),
             SettingItem::ImageMaxPx => {
                 if c.image_max_px == 0 {
                     "off".into()
@@ -221,6 +224,7 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
                     I(StatusPosition),
                     I(StatusPercent),
                     I(StatusGauge),
+                    I(StatusClock),
                 ],
             ),
             tab(
@@ -419,6 +423,7 @@ impl App {
             SettingItem::StatusPosition => c.status.position = !c.status.position,
             SettingItem::StatusPercent => c.status.percent = !c.status.percent,
             SettingItem::StatusGauge => c.status.gauge = !c.status.gauge,
+            SettingItem::StatusClock => c.status.clock = !c.status.clock,
             SettingItem::ImageMaxPx => {
                 // 0 = off (uncapped); otherwise step in 128px increments.
                 c.image_max_px = (c.image_max_px as i32 + delta * 128)

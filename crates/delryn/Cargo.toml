@@ -15,6 +15,7 @@ delryn-library = { workspace = true }
 delryn-math = { workspace = true }
 anyhow.workspace = true
 arboard.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 crossterm.workspace = true
 image.workspace = true
 lru.workspace = true
