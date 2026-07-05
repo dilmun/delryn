@@ -807,21 +807,25 @@ grow these further.
       made genuinely disjoint (reserve a high range for the deck and mask it out of
       the random draw, or move to a shared monotonic allocator in the vendored
       picker).
-- [ ] **Inline images can't recover from terminal-side graphics eviction**
-      (image-reliability follow-up; the *intermittent* half of the 2026-07-05
-      image bug — the reliable halves, j/k-blanking + visible-image eviction, are
-      fixed on main, merge f4574ab). Inline figures transmit **once** (the
-      `transmitted` `AtomicBool` in vendored `ratatui-image`
-      `protocol/kitty.rs:42-50`); delryn then only places unicode placeholders. If
-      the *terminal* frees an image because its graphics-memory quota filled, delryn
-      is never told — the `ImagePlan` stays cached, `make_transmit` returns `None`,
-      and the placeholder references a dead id → permanent blank until the LRU
-      happens to evict+rebuild it. Quota pressure is real: `image_max_px` defaults
-      to **0 = uncapped** (`config/mod.rs:248`), so an inline image is stored at its
-      full display-box RGBA size; a figure-dense section (cap = `section + 32`) plus
-      the 96-entry cover cache can reach hundreds of MB. Two complementary fixes:
-      (a) a sane default `image_max_px` (e.g. ~1600) to bound resident bytes, and/or
-      (b) re-transmit on re-reveal instead of trusting transmit-once — e.g. drop the
-      cached plan's transmit flag when it has been off-screen, or track resident
-      terminal bytes and cap them well under a conservative quota. Measure a real
-      book's footprint before picking the cap.
+- [x] **Image-dense books blanked their visible figures on scroll**
+      (`fix/inline-image-prefetch-eviction`, USER-CONFIRMED "problem solved").
+      *Diagnosed with a `FOLIO_IMG_LOG` trace, not by guessing* — earlier guesses
+      (terminal-side Ghostty eviction; re-transmit-on-reveal) were **wrong and one
+      regressed it**: Ghostty issue #6711 makes re-transmit-by-id delete the image,
+      so a restage() attempt blanked figures on every settle (reverted). The real
+      cause was **delryn evicting its own cache**: the inline cache is sized to the
+      current section + `IMAGE_CACHE_CAP`(32) spare, but a stats textbook has 60+
+      figures/equations *per section*. Prefetching the neighbour section (also 65
+      images) flooded the cache — 65 current + 65 neighbour ≫ 97 slots — so the
+      neighbour's builds evicted the current section's **visible** images, which
+      then never rebuilt until a section change (remap) → permanent blank. Other
+      books have few images/section, so the neighbour never overflows the spare —
+      hence "only this book". Fix (`app/reader/images.rs`): (a) **bound neighbour
+      prefetch to the cache's actual spare room** (`request_section_image_builds`
+      requests at most `cap − len − in-flight`; the rest build on reveal); (b) a
+      **hard guarantee in the drain** — a non-current build is dropped when the
+      cache is full, so a prefetch can never evict a current-section image.
+      Regression test `neighbour_prefetch_is_bounded_to_cache_spare`. *(The
+      `image_max_px`-default / byte-budget ideas were moot — the figures here are
+      ~140 KB each, nowhere near a memory quota; this was never a terminal-memory
+      problem.)*

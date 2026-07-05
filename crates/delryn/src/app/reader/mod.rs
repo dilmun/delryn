@@ -1706,4 +1706,54 @@ mod tests {
         r.section = 2; // before Ch@3 → Ch@0
         assert_eq!(r.active_outline(), Some(0));
     }
+
+    fn img_block(i: usize) -> Block {
+        Block::Image {
+            src: format!("{i}.png"),
+            alt: String::new(),
+            data: vec![1, 2, 3, 4],
+            caption: Vec::new(),
+            math: false,
+            width: delryn_model::ImageWidth::Auto,
+        }
+    }
+
+    #[test]
+    fn neighbour_prefetch_is_bounded_to_cache_spare() {
+        // The blank-figures bug: an image-dense neighbour section (a stats textbook
+        // has 50+ figures/equations per section) was prefetched wholesale, flooding
+        // the cache and evicting the *current* section's visible images. Prefetch
+        // must never request more than the cache's spare room.
+        use std::num::NonZeroUsize;
+        let dense: Vec<Block> = (0..50).map(img_block).collect();
+        let doc = MockDoc::new(vec![vec![img_block(0)], dense.clone()]);
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        // The neighbour's blocks must be loaded for prefetch to see them.
+        r.sections.sections.insert(1, dense);
+        // A small cache so the bound clearly bites: spare = 10 with an empty cache.
+        r.images.cache.resize(NonZeroUsize::new(10).unwrap());
+
+        let builder = crate::media::ImageBuilder::new(ratatui_image::picker::Picker::halfblocks());
+        let geom = ImageGeom {
+            avail: 40,
+            max_rows: 40,
+            max_px: 0,
+            width_pct: 85,
+            policy: media::RenderPolicy {
+                tint: media::Ink {
+                    ink: [0, 0, 0],
+                    paper: [255, 255, 255],
+                },
+                mode: media::ImageMode::default(),
+            },
+        };
+        r.request_section_image_builds(1, &builder, geom);
+
+        let n = r.images.requested.len();
+        assert!(n > 0, "prefetch still happens");
+        assert!(
+            n <= 10,
+            "prefetch bounded to the cache's spare room, not the 50-image neighbour: {n}"
+        );
+    }
 }
