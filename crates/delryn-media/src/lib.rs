@@ -16,8 +16,8 @@ pub use builder::{BuiltImage, ImageBuilder, ImagePlan, ImgKey};
 pub use cover::{CoverImage, build_cover};
 pub use decode::{decode, image_dimensions};
 pub use kitty::{
-    delete_image_seq, detect_picker, place_image_seq, terminal_background, transmit_file_seq,
-    transmit_image_seq,
+    delete_image_seq, delete_placement_seq, detect_picker, place_image_seq, terminal_background,
+    transmit_file_seq, transmit_image_seq,
 };
 pub use page::{PageKey, PageThemer, ThemedPage};
 pub use recolor::{

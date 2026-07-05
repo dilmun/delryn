@@ -79,10 +79,11 @@ use page_deck::PageDeck;
 /// is (re)built, so holding j/k stays smooth.
 const COVER_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(110);
 
-/// Number of decoded sections kept in memory (current ± neighbours). Sized to
-/// hold a PDF's full pre-rasterization window (current ± 4 pages) so the
-/// direct-Kitty deck can transmit them ahead for fast navigation.
-const CACHE_CAP: usize = 11;
+/// Number of decoded sections kept in memory (current ± neighbours). Sized to hold
+/// a PDF's full pre-rasterization window (continuous scroll prefetches ± 6 pages) so
+/// the direct-Kitty deck can transmit them ahead for fast navigation without the
+/// cache thrashing a page it just rasterized.
+const CACHE_CAP: usize = 15;
 /// Number of built image protocols kept in memory / GPU-resident in the
 /// terminal. Reused across section revisits; LRU-evicted (and deleted from the
 /// terminal) beyond this.
@@ -129,6 +130,8 @@ pub struct App {
     pub last_layout: LayoutMetrics,
     /// Clickable regions from the last render (mouse hit-testing).
     pub mouse: MouseHits,
+    /// The last library book clicked and when — for double-click-to-open detection.
+    pub last_click: Option<(usize, Instant)>,
     pub pending: Pending,
     pub should_quit: bool,
     /// The single open overlay/popup (settings, prompt, metadata editor,
@@ -308,6 +311,7 @@ impl App {
             reader: Some(reader),
             last_layout: LayoutMetrics::default(),
             mouse: MouseHits::default(),
+            last_click: None,
             pending: Pending::default(),
             should_quit: false,
             overlay: Overlay::None,
@@ -346,6 +350,7 @@ impl App {
             reader: None,
             last_layout: LayoutMetrics::default(),
             mouse: MouseHits::default(),
+            last_click: None,
             pending: Pending::default(),
             should_quit: false,
             overlay: Overlay::None,
@@ -1416,6 +1421,87 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.library.sel, 1, "click on the second row selects it");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn library_mouse_multiselect() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_msel_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for (p, t) in [("/a.epub", "A"), ("/b.epub", "B")] {
+                store
+                    .upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                    .unwrap();
+            }
+        }
+        let mut app = App::library();
+        app.mouse.books = vec![(0, Rect::new(0, 0, 20, 1)), (1, Rect::new(0, 1, 20, 1))];
+        let ev = |kind, row| crossterm::event::MouseEvent {
+            kind,
+            column: 5,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        use crossterm::event::MouseButton;
+        // Right-click toggles a book into the multi-selection (no advance).
+        app.on_mouse(ev(MouseEventKind::Down(MouseButton::Right), 0));
+        assert_eq!(app.library.marked.len(), 1, "right-click marks the book");
+        assert!(app.library.marked.contains(&app.library.books[0].path));
+        // Right-click again clears it.
+        app.on_mouse(ev(MouseEventKind::Down(MouseButton::Right), 0));
+        assert!(app.library.marked.is_empty(), "right-click again unmarks");
+        // Shift+left-click range-selects from the cursor to the clicked row.
+        app.library.sel = 0;
+        app.on_mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::SHIFT,
+        });
+        assert_eq!(app.library.marked.len(), 2, "shift-click selects the range");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn library_wheel_only_scrolls_pane_under_cursor() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_wheel_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            for (p, t) in [("/a.epub", "A"), ("/b.epub", "B")] {
+                store
+                    .upsert_book(p, t, "Auth", None, 1, 1, 1, "", None, "", "", "", "")
+                    .unwrap();
+            }
+        }
+        let mut app = App::library();
+        // Stand in for the render capturing the pane rects: list left, detail right.
+        app.last_layout.lib_list = Some(Rect::new(0, 0, 40, 10));
+        app.last_layout.lib_detail = Some(Rect::new(40, 0, 20, 10));
+        let wheel = |col| crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: col,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        // Over the detail pane: the book list must not scroll.
+        app.library.sel = 0;
+        assert!(
+            !app.on_mouse(wheel(50)),
+            "wheel over detail is inert for the list"
+        );
+        assert_eq!(app.library.sel, 0);
+        // Over the list: it scrolls (moves the cursor, clamped to the last book).
+        assert!(app.on_mouse(wheel(10)), "wheel over the list scrolls it");
+        assert_eq!(app.library.sel, 1);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

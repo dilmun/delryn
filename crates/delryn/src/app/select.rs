@@ -34,6 +34,41 @@ impl App {
         self.lib_move(1);
     }
 
+    /// Toggle the book at `idx` in the individual selection **without advancing** —
+    /// the mouse (right-click) counterpart to `Space`, which moves on after marking.
+    pub(crate) fn lib_mouse_toggle_mark(&mut self, idx: usize) {
+        if self.library.visual.is_some() {
+            self.library.marked_base = self.library.marked.clone();
+            self.library.visual = None;
+        }
+        if let Some(b) = self.library.books.get(idx) {
+            let path = b.path.clone();
+            if !self.library.marked_base.remove(&path) {
+                self.library.marked_base.insert(path);
+            }
+        }
+        self.library.marked = self.library.marked_base.clone();
+        self.library.sel = idx;
+    }
+
+    /// Range-select from the current cursor to `idx` (Shift-click), adding the span
+    /// to the individual selection — the mouse counterpart to a visual range.
+    pub(crate) fn lib_mouse_range_to(&mut self, idx: usize) {
+        let n = self.library.books.len();
+        if n == 0 {
+            return;
+        }
+        let idx = idx.min(n - 1);
+        let (lo, hi) = (self.library.sel.min(idx), self.library.sel.max(idx));
+        let span: Vec<String> = self.library.books[lo..=hi]
+            .iter()
+            .map(|b| b.path.clone())
+            .collect();
+        self.library.marked_base.extend(span);
+        self.library.marked = self.library.marked_base.clone();
+        self.library.sel = idx;
+    }
+
     /// Select every book in the current list (for bulk actions over the library).
     pub(crate) fn lib_mark_all(&mut self) {
         self.library.visual = None;

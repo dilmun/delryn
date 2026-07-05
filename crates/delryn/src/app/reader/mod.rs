@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 
+use crate::config::ViewMode;
 use crate::document::{Block, Document, OutlineItem};
 use crate::layout::{DisplayLine, LineKind, WrapOpts, wrap_blocks};
 use crate::media;
@@ -24,6 +25,7 @@ mod continuous;
 mod crisp;
 mod images;
 pub use images::ImageGeom;
+mod page_stack;
 mod page_view;
 pub use page_view::{PageView, PanRoom, Viewport, place_page, raster_width_for_crispness};
 mod paged;
@@ -79,10 +81,32 @@ pub struct Reader {
     /// Paginated reading (set each render from config): vertical nav flips whole
     /// pages snapped to page boundaries instead of scrolling line by line.
     pub paged: bool,
-    /// Continuous scroll across sections (set each render): the anchor section's
-    /// tail and the following sections' heads share the viewport, so a chapter
-    /// boundary scrolls seamlessly. Reflow-only; inert for paged/page-mode.
+    /// Continuous scroll across sections (set each render, the raw config flag):
+    /// the anchor's tail and the following heads share the viewport so a boundary
+    /// scrolls seamlessly. Reflow uses it single-column only; paged (PDF) uses it in
+    /// both Center (one stack) and TwoPage (spread stack). Inert in page-mode /
+    /// chapter-lock. See [`continuous_active`](Self::continuous_active) /
+    /// [`continuous_paged_active`](Self::continuous_paged_active).
     pub continuous: bool,
+    /// Active view mode (set each render) — lets the continuous checks tell
+    /// single-column (Center) from spread (TwoPage) without the view pre-gating the
+    /// `continuous` flag.
+    pub view_mode: ViewMode,
+    /// Inter-page gap in cells for a two-page layout (mirrored from `config.page_gap`
+    /// each render) — the horizontal gutter between a continuous spread's pages.
+    pub page_gap: u16,
+    /// Left/right reading margin as a percent of the pane, mirrored from
+    /// `config.side_padding` each render — the continuous-paged stack insets its
+    /// pages by this so they don't touch the screen edges.
+    pub side_padding: u16,
+    /// Continuous-paged zoom: the page scale relative to fit-page (1.0 = the whole
+    /// page fits the viewport, centred with side padding). < 1 shrinks the pages; > 1
+    /// enlarges past the viewport (single-column: taller → scroll, wider → `h`/`l`
+    /// pan). Set by `+`/`-`/`0`.
+    cont_scale: f32,
+    /// Continuous-paged horizontal pan ∈ [0, 1] when a single zoomed-in page is
+    /// wider than the viewport (0 = left edge). Set by `h`/`l`.
+    cont_pan_x: f32,
     /// A two-page paged-image spread is on screen (set each render): a page flip
     /// turns a whole leaf (2 sections) so consecutive spreads don't overlap.
     pub spread: bool,
@@ -95,6 +119,20 @@ pub struct Reader {
     pub pdf_targets: Vec<PageTarget>,
     /// Zoom / pan / fit for the current paged page (single-page view only).
     pub page_view: PageView,
+    /// Pixel size `(w, h)` of one terminal cell, mirrored each frame from the image
+    /// picker. Lets the continuous-paged scroll math size a page's display height
+    /// off the render thread (the picker is only reachable from the view).
+    cell_px: (u16, u16),
+    /// Last computed **fit-page** display height (cells, at zoom 1) of a paged page,
+    /// the canonical page height reused as the estimate for pages not yet rasterized
+    /// so continuous-paged scroll math + layout stay stable (PDF pages are
+    /// near-uniform). Scaled by the zoom for a tile. Self-corrects once the real
+    /// raster lands.
+    est_page_rows: u16,
+    /// Sections in the current continuous-paged vertical stack (anchor onward),
+    /// set each frame by the view. Drives the deck readiness / load checks
+    /// ([`visible_sections`](Self::visible_sections)); empty outside that mode.
+    visible_stack: Vec<usize>,
     /// Pan room remaining this frame (from the placement), so nav pans while
     /// there's room and flips the page at the edge. A render fact — set each
     /// frame by the view.
@@ -215,10 +253,18 @@ impl Reader {
             chapter_lock: false,
             paged: false,
             continuous: false,
+            view_mode: ViewMode::Center,
+            page_gap: 0,
+            side_padding: 0,
+            cont_scale: 1.0,
+            cont_pan_x: 0.0,
             spread: false,
             cover_offset: false,
             pdf_targets: Vec::new(),
             page_view: PageView::default(),
+            cell_px: (10, 20),
+            est_page_rows: 0,
+            visible_stack: Vec::new(),
             page_room: PanRoom::default(),
             page_step: (0.0, 0.0),
             trim_margins: true,
@@ -329,7 +375,15 @@ impl Reader {
     fn prefetch_neighbors(&mut self) {
         self.drain_loader();
         let n = self.doc.section_count();
-        let ahead = if self.is_paged_image() { 4 } else { 1 };
+        // Continuous stacking can pull several pages into view at once and scrolls
+        // through them fast, so it rasterizes a wider window than page-flipping.
+        let ahead = if self.continuous_paged_active() {
+            6
+        } else if self.is_paged_image() {
+            4
+        } else {
+            1
+        };
         let fwd: Vec<usize> = (1..=ahead)
             .map(|d| self.section + d)
             .filter(|&s| s < n)
@@ -586,6 +640,11 @@ impl Reader {
     }
 
     pub fn clamp_scroll(&mut self) {
+        // Continuous-paged (PDF stacking) manages its own scroll bound in row units
+        // against the stacked page heights, not the (empty) wrapped-line count.
+        if self.continuous_paged_active() {
+            return;
+        }
         // Continuous mode mid-book: the anchor's offset intentionally runs past the
         // section's last page (the next section fills the tail), so don't clamp it —
         // only the final section has a hard bottom.
@@ -644,6 +703,10 @@ impl Reader {
     /// mode the anchor rolls seamlessly across the boundary (tail + next head share
     /// the viewport); otherwise the next chapter is loaded fresh at the top.
     pub fn scroll_down(&mut self, n: usize) {
+        if self.continuous_paged_active() {
+            self.continuous_paged_scroll_down(n);
+            return;
+        }
         if self.continuous_active() {
             self.continuous_scroll_down(n);
             return;
@@ -659,6 +722,10 @@ impl Reader {
     /// Scroll up, flowing into the previous chapter at the top edge (unless
     /// chapter-locked). Continuous mode rolls the anchor back across the boundary.
     pub fn scroll_up(&mut self, n: usize) {
+        if self.continuous_paged_active() {
+            self.continuous_paged_scroll_up(n);
+            return;
+        }
         if self.continuous_active() {
             self.continuous_scroll_up(n);
             return;
@@ -1230,6 +1297,140 @@ mod tests {
             !r.crisp_awaiting(),
             "nothing requested → the loop can settle"
         );
+    }
+
+    /// A continuous-paged (PDF stacking) reader: a paged doc with `continuous` on, no
+    /// side padding, a fixed cell size, and a viewport (20 rows) taller than the
+    /// page's fit-width height so fit-page keeps the full slot width — a clean 14-row
+    /// band (content 20×28 at 20 cols, cell 10×20: 28·(20·10/20)/20 = 14) → slot 15
+    /// with the 1-row gap. Margin trim off.
+    fn continuous_paged_reader(pages: usize) -> Reader {
+        let doc = MockDoc::new((0..pages).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.continuous = true;
+        r.set_cell_px((10, 20));
+        r.last_measure = 20;
+        r.viewport_lines = 20;
+        r.side_padding = 0;
+        r.set_trim(false, 0);
+        // Prime the anchor's height so still-loading pages estimate uniformly.
+        assert_eq!(r.band_rows_of(0), 14);
+        r
+    }
+
+    #[test]
+    fn continuous_paged_activation_gates_on_mode() {
+        let mut r = continuous_paged_reader(4);
+        assert!(r.continuous_paged_active());
+        assert!(!r.continuous_two_page(), "Center → single stack");
+        // TwoPage is a valid continuous mode (a spread per band).
+        r.view_mode = crate::config::ViewMode::TwoPage;
+        assert!(r.continuous_paged_active());
+        assert!(r.continuous_two_page(), "TwoPage → spread stack");
+        r.view_mode = crate::config::ViewMode::Center;
+        r.chapter_lock = true;
+        assert!(!r.continuous_paged_active(), "chapter lock overrides");
+        r.chapter_lock = false;
+        r.paged = true;
+        assert!(!r.continuous_paged_active(), "page-snap overrides");
+        r.paged = false;
+        r.continuous = false;
+        assert!(!r.continuous_paged_active(), "flag off");
+    }
+
+    #[test]
+    fn continuous_paged_scroll_down_rolls_the_anchor_across_a_slot() {
+        let mut r = continuous_paged_reader(6);
+        // Within the first page's slot: the anchor stays, the offset advances.
+        r.scroll_down(5);
+        assert_eq!((r.section, r.scroll), (0, 5));
+        // Past the slot (15 = 14 rows + 1 gap): roll to the next page, keep leftover.
+        r.scroll_down(15);
+        assert_eq!((r.section, r.scroll), (1, 5), "rolled one page, kept 5");
+        // A big jump rolls several pages (mid-book, so no end clamp).
+        r.scroll_down(15 + 15);
+        assert_eq!((r.section, r.scroll), (3, 5));
+    }
+
+    #[test]
+    fn continuous_paged_scroll_up_crosses_back_into_the_previous_slot() {
+        let mut r = continuous_paged_reader(4);
+        r.load(2); // anchor page 2, top
+        r.set_trim(false, 0);
+        assert_eq!((r.section, r.scroll), (2, 0));
+        r.scroll_up(1);
+        // Lands just below the boundary: the previous page's slot minus one row.
+        assert_eq!(
+            (r.section, r.scroll),
+            (1, 14),
+            "into page 1 near its bottom"
+        );
+    }
+
+    #[test]
+    fn continuous_paged_clamps_at_both_ends() {
+        let mut r = continuous_paged_reader(3);
+        // At the start, scrolling up is a no-op.
+        r.scroll_up(50);
+        assert_eq!((r.section, r.scroll), (0, 0));
+        // Scrolling far past the end clamps to the last page's bottom. Fit-page keeps
+        // the 14-row page inside the 20-row viewport, so it's fully visible and the
+        // deepest offset is 0 (nothing to scroll within the last page).
+        r.scroll_down(9999);
+        assert_eq!(r.section, 2, "no page past the last");
+        assert_eq!(r.scroll, 0, "last fit-page page fully visible → floor 0");
+    }
+
+    #[test]
+    fn continuous_two_page_rolls_by_spread() {
+        let mut r = continuous_paged_reader(6);
+        r.view_mode = crate::config::ViewMode::TwoPage;
+        r.page_gap = 0;
+        assert!(r.continuous_two_page());
+        // Each page is half-width (10 cols) → 7 rows tall; the band slot is 8.
+        assert_eq!(r.band_rows_of(0), 7);
+        r.scroll_down(8);
+        assert_eq!(
+            (r.section, r.scroll),
+            (2, 0),
+            "rolled to the next spread (0,1)→(2,3)"
+        );
+        r.scroll_down(3);
+        assert_eq!((r.section, r.scroll), (2, 3));
+        r.scroll_up(4);
+        assert_eq!(r.section, 0, "rolled back a whole spread");
+    }
+
+    #[test]
+    fn continuous_single_page_fits_whole_and_pads() {
+        let mut r = continuous_paged_reader(3);
+        r.side_padding = 10; // 10% each side → pad 2, avail 16 of the 20-col pane
+        assert_eq!(r.continuous_single_slot(), (2, 16));
+        // A viewport shorter than the page makes fit-page shrink it below the slot
+        // width, so the whole page shows and it centres (side padding) rather than
+        // stretching to fill the width.
+        r.viewport_lines = 8;
+        let (disp_w, rows) = r.tile_metrics(0, 16);
+        assert!(disp_w < 16, "fit-page is narrower than the slot: {disp_w}");
+        assert!(rows <= 8, "the whole page fits the viewport height: {rows}");
+    }
+
+    #[test]
+    fn continuous_zoom_scales_pages_and_gates_pan() {
+        let mut r = continuous_paged_reader(4);
+        assert_eq!(r.band_rows_of(0), 14); // fit-width
+        assert!(!r.cont_pannable_x(), "fit-width doesn't overflow");
+        r.cont_zoom_in();
+        assert!(r.band_rows_of(0) > 14, "zooming in makes pages taller");
+        assert!(
+            r.cont_pannable_x(),
+            "zoomed past fit → horizontally pannable"
+        );
+        r.cont_zoom_reset();
+        assert_eq!(r.band_rows_of(0), 14, "reset returns to fit-width");
+        r.cont_zoom_out();
+        assert!(r.band_rows_of(0) < 14, "zooming out shrinks pages");
+        assert!(!r.cont_pannable_x(), "zoomed out never overflows");
     }
 
     #[test]

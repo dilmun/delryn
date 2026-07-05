@@ -66,15 +66,24 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
         theme.style(Role::AccentStrong)
     };
 
-    // Center the selected row in the viewport (clamped at the ends), like the
-    // sidebar — instead of letting it stick to whichever edge we scroll toward.
+    // Scroll the cursor *into view* rather than always re-centring it: keep the
+    // last offset, nudging it only when the selection would fall off the top or
+    // bottom edge. So a click selects the book in place (no snap-to-centre) and the
+    // wheel scrolls freely — the selection stays where it is on screen.
     let header_h: u16 = if compact { 0 } else { 1 };
     let view_rows = (area.height as usize)
         .saturating_sub(header_h as usize)
         .max(1);
     app.last_layout.visible_rows = view_rows;
     let max_off = rows.len().saturating_sub(view_rows);
-    let centered_off = sel_row.saturating_sub(view_rows / 2).min(max_off);
+    let mut off = app.library.list_offset.min(max_off);
+    if sel_row < off {
+        off = sel_row;
+    } else if sel_row >= off + view_rows {
+        off = sel_row + 1 - view_rows;
+    }
+    let centered_off = off.min(max_off);
+    app.library.list_offset = centered_off;
 
     let mut table = Table::new(rows, widths)
         .column_spacing(1)
@@ -320,7 +329,14 @@ fn book_row(b: &BookRow, cols: &[Col], grouped: bool, marked: bool, theme: Theme
         Col::Status => status_cell(b, theme),
         Col::Tags => tags_cell(&b.tags, theme),
     });
-    Row::new(cells.collect::<Vec<_>>())
+    let row = Row::new(cells.collect::<Vec<_>>());
+    // A multi-selected (not cursor) row gets a faint surface tint so the selection
+    // reads at a glance, beyond the ✓ in the narrow lead column. The cursor row's
+    // own highlight layers on top of this.
+    match (marked, theme.code_surface()) {
+        (true, Some(bg)) => row.style(Style::default().bg(bg)),
+        _ => row,
+    }
 }
 
 /// The Tags cell: the book's tags, comma-separated and muted (the table clips to

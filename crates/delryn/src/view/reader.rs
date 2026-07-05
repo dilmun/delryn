@@ -45,9 +45,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.justify = config.justify;
     reader.tidy_spacing = config.tidy_spacing;
     reader.paged = config.paged;
-    // Continuous cross-section scroll is a single-column (Center) reflow mode; the
-    // reader further gates it on reflowable + not-paged + not-chapter-locked.
-    reader.continuous = config.continuous && matches!(config.view_mode, ViewMode::Center);
+    // The raw continuous flag + view mode; each `continuous_*_active` check gates the
+    // rest (reflow → Center only; paged → Center single stack or TwoPage spread stack).
+    reader.continuous = config.continuous;
+    reader.view_mode = config.view_mode;
+    reader.page_gap = config.page_gap;
+    reader.side_padding = config.side_padding;
     reader.spread = matches!(config.view_mode, ViewMode::TwoPage) && reader.is_paged_image();
     reader.cover_offset = config.cover_offset;
     reader.chapter_lock = config.chapter_lock;
@@ -205,6 +208,16 @@ fn render_content(
         // PDF: hand the page placements to the deck and leave the cells empty so
         // the kitty placements show through — no per-cell drawing, no
         // transmit-on-turn, no black gap.
+        if reader.continuous_paged_active() {
+            // Continuous: a vertical stack of page slices filling the body. It sizes
+            // pages against the *full* body width (even in TwoPage, where the plan's
+            // `measure` is a half column) and computes its own columns/zoom.
+            reader.last_measure = body.width as usize;
+            reader.viewport_lines = body.height as usize;
+            reader.page_lines = body.height as usize;
+            capture_pdf_stack(reader, images, body, image_policy(config));
+            return;
+        }
         let areas: Vec<(usize, Rect)> = plan
             .placements
             .iter()
@@ -417,6 +430,27 @@ fn capture_pdf_targets(
         reader.set_page_room(room, step);
     }
     reader.pdf_targets = targets;
+}
+
+/// Compute the continuous-paged vertical page stack for this frame: theme the
+/// visible + look-ahead pages, mirror the cell size, and let the reader assemble
+/// the [`PageTarget`] slices filling `body`. Like [`capture_pdf_targets`], the
+/// cells are left empty so the deck's kitty placements show through; the deck reads
+/// `pdf_targets` after the frame. No-op without an image protocol.
+fn capture_pdf_stack(
+    reader: &mut Reader,
+    images: Images,
+    body: Rect,
+    policy: crate::media::RenderPolicy,
+) {
+    let Some((picker, _)) = images else {
+        reader.clear_page_stack();
+        return;
+    };
+    reader.sync_pages(policy);
+    let fs = picker.font_size();
+    reader.set_cell_px((fs.width, fs.height));
+    reader.capture_page_stack(body);
 }
 
 /// Position a `cols`×`rows` page within `area`, vertically centred and
