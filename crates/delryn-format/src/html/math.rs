@@ -110,28 +110,35 @@ pub(super) fn is_display_math(e: &scraper::node::Element) -> bool {
         .is_some_and(|d| d.eq_ignore_ascii_case("block"))
 }
 
-/// Convert a native `<math>` element to Unicode. Prefers the authored text
-/// equivalents (`alttext` / `<annotation encoding="…tex">`, which carry LaTeX and
-/// aren't otherwise rendered), then walks the presentation MathML.
-pub(super) fn native_math_unicode(node: NodeRef<Node>) -> String {
+/// Convert a native `<math>` element to `(Unicode, Option<LaTeX source>)`. Prefers
+/// the authored text equivalents (`alttext` / `<annotation encoding="…tex">`, which
+/// carry LaTeX and aren't otherwise rendered) — those also hand back the raw LaTeX
+/// for the graphical renderer — then falls back to walking the presentation MathML
+/// (Unicode only, no LaTeX to recover).
+pub(super) fn native_math(node: NodeRef<Node>) -> (String, Option<String>) {
     let Some(e) = node.value().as_element() else {
-        return String::new();
+        return (String::new(), None);
     };
     // 1. alttext attribute (usually LaTeX, e.g. from LaTeXML).
     if let Some(alt) = e.attr("alttext")
         && !alt.trim().is_empty()
     {
-        return delryn_model::math::latex_to_unicode(alt);
+        return (
+            delryn_model::math::latex_to_unicode(alt),
+            Some(alt.to_string()),
+        );
     }
     // 2. <annotation encoding="application/x-tex"> embedded LaTeX.
     if let Some(tex) = annotation_tex(node) {
-        return delryn_model::math::latex_to_unicode(&tex);
+        let unicode = delryn_model::math::latex_to_unicode(&tex);
+        return (unicode, Some(tex));
     }
     // 3. Walk the presentation MathML (serialise the subtree, then transcode).
-    match scraper::ElementRef::wrap(node) {
+    let unicode = match scraper::ElementRef::wrap(node) {
         Some(el) => crate::mathml::to_unicode(&el.html()),
         None => String::new(),
-    }
+    };
+    (unicode, None)
 }
 
 /// The text of a `<math>`'s TeX `<annotation>`, if present.

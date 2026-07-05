@@ -1140,7 +1140,8 @@ mod tests {
     }
     fn math() -> Block {
         Block::Math {
-            tex: r"\alpha".to_string(),
+            unicode: r"\alpha".to_string(),
+            latex: None,
         }
     }
 
