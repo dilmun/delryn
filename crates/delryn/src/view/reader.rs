@@ -271,12 +271,16 @@ fn render_content(
         }
     }
 
-    // Inline figures: deferred until scrolling settles so the heavy transmit
-    // doesn't stutter motion; each column shows the figures in its own slice.
-    if images.is_some() && !reader.is_scrolling() {
+    // Inline figures: each column shows the figures in its own slice. During a
+    // smooth scroll, keep already-uploaded images placed — placement is cheap and
+    // they scroll with the text — but defer a not-yet-transmitted image's first,
+    // heavy upload until motion settles, so it doesn't stutter the scroll. (The
+    // old blanket skip-while-scrolling made every visible figure vanish on j/k.)
+    if images.is_some() {
+        let scrolling = reader.is_scrolling();
         for placement in &plan.placements {
             if let Placement::Text(col) = placement {
-                draw_images_in(f, col.area, reader, col.scroll);
+                draw_images_in(f, col.area, reader, col.scroll, scrolling);
             }
         }
     }
@@ -475,7 +479,7 @@ fn align_page(area: Rect, cols: u16, rows: u16, align: PageAlign) -> (u16, u16) 
 /// flow into `area`, centered. Uses a sliced protocol with a signed vertical
 /// offset so an image scrolling past either edge shows its visible slice
 /// (rather than appearing/vanishing whole).
-fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize) {
+fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize, scrolling: bool) {
     let view_end = top + area.height as usize;
     let lines = &reader.lines;
     let mut i = 0;
@@ -497,6 +501,12 @@ fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize) {
         let Some(plan) = reader.image_plan(idx) else {
             continue;
         };
+        // Rendering an un-transmitted image uploads it (heavy); defer that to the
+        // frame the scroll settles so it doesn't stutter motion. Already-uploaded
+        // images only get re-placed here, so they stay on screen while scrolling.
+        if scrolling && plan.needs_pretransmit() {
+            continue;
+        }
 
         let x = (area.width.saturating_sub(plan.cols) / 2) as i16;
         let y = start as i16 - top as i16; // negative when the top scrolled off
