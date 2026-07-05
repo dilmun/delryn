@@ -97,8 +97,35 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
         ),
         "table" => ElementRole::Table,
         "td" | "th" => ElementRole::Cell,
+        // A wrapper div/section around a single figure + its caption (publishers
+        // use `<div class="imagewrap">` / `class="figure">` with a caption `<p>`
+        // instead of `<figure>`/`<figcaption>`). Merge so the caption renders
+        // centred beneath the image, like a real figure.
+        "div" | "section" if is_figure_container(e, node) => ElementRole::Figure,
         _ => ElementRole::Container,
     }
+}
+
+/// Whether a `<div>`/`<section>` is a single-image figure wrapper whose caption
+/// should render beneath the image. Gated on an unambiguous caption marker among
+/// the direct children — a `<figcaption>` or a caption-classed element (e.g.
+/// `<p class="…Caption">`) — so ordinary content divs are never scanned or merged
+/// (a loose "has an image" test could swallow real prose into a caption).
+fn is_figure_container(_e: &scraper::node::Element, node: NodeRef<Node>) -> bool {
+    let has_caption = node.children().any(|c| {
+        matches!(c.value(), Node::Element(el)
+            if el.name() == "figcaption"
+            || el.attr("class").is_some_and(|cl| cl.to_ascii_lowercase().contains("caption")))
+    });
+    if !has_caption {
+        return false;
+    }
+    // Confirm exactly one real (figure/cover) image — not zero, not a gallery.
+    let mut imgs = node.descendants().filter(|d| {
+        matches!(d.value(), Node::Element(el)
+            if matches!(el.name(), "img" | "image") && is_real_image(el))
+    });
+    imgs.next().is_some() && imgs.next().is_none()
 }
 
 /// Whether an element *is* a table-of-contents root — a `<nav>` or an element

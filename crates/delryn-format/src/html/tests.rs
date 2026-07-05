@@ -544,6 +544,39 @@ fn figure_caption_attaches_to_the_image() {
 }
 
 #[test]
+fn imagewrap_div_with_caption_class_merges() {
+    // No <figure>/<figcaption>: a `<div class="imagewrap">` holding one image and
+    // a caption-classed `<p>` (Pearson-style). The caption-class marker makes it a
+    // figure so the caption attaches to the image and centres beneath it.
+    let blocks = parse_blocks(
+        r#"<html><body><div id="fig1-2" class="imagewrap">
+            <img class="image" src="../images/img_p26.png" alt="images" width="255"/>
+            <p class="EB28FSCaption"><strong>Figure 1.2:</strong> Fundamental relationship.</p>
+        </div></body></html>"#,
+    );
+    let (src, caption) = first_captioned_image(&blocks).expect("captioned image");
+    assert_eq!(src, "../images/img_p26.png");
+    assert_eq!(caption, "Figure 1.2: Fundamental relationship.");
+    assert!(
+        !blocks.iter().any(|b| matches!(b, Block::Para { .. })),
+        "caption consumed into the image, not left as a paragraph: {blocks:?}"
+    );
+
+    // A plain content div (no caption marker) is NOT merged — its prose survives.
+    let blocks = parse_blocks(
+        r#"<html><body><div>
+            <img src="x.png" alt="x"/><p>This is ordinary body prose, not a caption.</p>
+        </div></body></html>"#,
+    );
+    assert!(
+        blocks
+            .iter()
+            .any(|b| matches!(b, Block::Para { spans, .. } if spans.iter().any(|s| s.text.contains("ordinary body prose")))),
+        "non-figure div keeps its prose paragraph: {blocks:?}"
+    );
+}
+
+#[test]
 fn icon_images_become_glyphs_not_labels() {
     // Dummies-style marker icons render as a symbol, not "[tip]"/"[check]".
     let blocks = parse_blocks(

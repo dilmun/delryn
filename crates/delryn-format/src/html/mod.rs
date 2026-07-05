@@ -326,19 +326,28 @@ fn emit_figure(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
     });
 }
 
-/// The caption text of a `<figure>`: its `<figcaption>` if present, else the
-/// first non-empty heading/paragraph beside the image (publishers commonly mark
-/// the caption up as an `<h6>`/`<p>` rather than a `<figcaption>`). Empty when
-/// the figure carries no caption.
+/// The caption text of a figure wrapper, in priority order: a `<figcaption>`, a
+/// caption-classed element (`<p class="…Caption">`), else the first non-empty
+/// heading/paragraph beside the image (publishers mark captions up as any of
+/// these rather than always a `<figcaption>`). Empty when there is no caption.
 fn figure_caption_spans(figure: NodeRef<Node>) -> Vec<Span> {
+    let is_el = |d: &NodeRef<Node>, pred: &dyn Fn(&scraper::node::Element) -> bool| matches!(d.value(), Node::Element(e) if pred(e));
     let caption_node = figure
         .descendants()
-        .find(|d| matches!(d.value(), Node::Element(e) if e.name() == "figcaption"))
+        .find(|d| is_el(d, &|e| e.name() == "figcaption"))
         .or_else(|| {
             figure.descendants().find(|d| {
-                matches!(d.value(), Node::Element(e)
-                    if matches!(e.name(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p"))
-                    && inline_spans(*d).iter().any(|s| !s.text.trim().is_empty())
+                is_el(d, &|e| {
+                    e.attr("class")
+                        .is_some_and(|c| c.to_ascii_lowercase().contains("caption"))
+                })
+            })
+        })
+        .or_else(|| {
+            figure.descendants().find(|d| {
+                is_el(d, &|e| {
+                    matches!(e.name(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p")
+                }) && inline_spans(*d).iter().any(|s| !s.text.trim().is_empty())
             })
         });
     caption_node.map(inline_spans).unwrap_or_default()
