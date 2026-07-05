@@ -796,3 +796,21 @@ grow these further.
       made genuinely disjoint (reserve a high range for the deck and mask it out of
       the random draw, or move to a shared monotonic allocator in the vendored
       picker).
+- [ ] **Inline images can't recover from terminal-side graphics eviction**
+      (image-reliability follow-up; the *intermittent* half of the 2026-07-05
+      image bug — the reliable halves, j/k-blanking + visible-image eviction, are
+      fixed on main, merge f4574ab). Inline figures transmit **once** (the
+      `transmitted` `AtomicBool` in vendored `ratatui-image`
+      `protocol/kitty.rs:42-50`); delryn then only places unicode placeholders. If
+      the *terminal* frees an image because its graphics-memory quota filled, delryn
+      is never told — the `ImagePlan` stays cached, `make_transmit` returns `None`,
+      and the placeholder references a dead id → permanent blank until the LRU
+      happens to evict+rebuild it. Quota pressure is real: `image_max_px` defaults
+      to **0 = uncapped** (`config/mod.rs:248`), so an inline image is stored at its
+      full display-box RGBA size; a figure-dense section (cap = `section + 32`) plus
+      the 96-entry cover cache can reach hundreds of MB. Two complementary fixes:
+      (a) a sane default `image_max_px` (e.g. ~1600) to bound resident bytes, and/or
+      (b) re-transmit on re-reveal instead of trusting transmit-once — e.g. drop the
+      cached plan's transmit flag when it has been off-screen, or track resident
+      terminal bytes and cap them well under a conservative quota. Measure a real
+      book's footprint before picking the cap.
