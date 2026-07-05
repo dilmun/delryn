@@ -190,6 +190,10 @@ pub struct Config {
     /// How book images adapt to the theme (recolour / invert / faithful).
     #[serde(with = "enums::image_mode_serde")]
     pub image_mode: ImageMode,
+    /// Render display equations as images (LaTeX → picture) instead of the Unicode
+    /// approximation, when a LaTeX source and a graphics protocol are available.
+    /// Falls back to Unicode otherwise.
+    pub graphical_math: bool,
     /// Directories scanned for the library.
     pub library_paths: Vec<String>,
     /// How the library lists books (table / dense table / cover grid).
@@ -237,6 +241,7 @@ impl Default for Config {
             image_max_px: 0,     // no cap by default — images fill the text column
             image_width_pct: 85, // normalize unsized figures to 85% of the column
             image_mode: ImageMode::default(),
+            graphical_math: true,
             library_paths: Vec::new(),
             library_layout: LibLayout::List,
             library_grid_size: GridSize::Medium,

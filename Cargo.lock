@@ -1002,6 +1002,7 @@ dependencies = [
  "delryn-format",
  "delryn-infra",
  "delryn-library",
+ "delryn-math",
  "delryn-media",
  "delryn-model",
  "delryn-online",
