@@ -73,6 +73,15 @@ impl Reader {
             }
             match done.plan {
                 Some(plan) => {
+                    // Hard guarantee: a neighbour prefetch build must never evict a
+                    // current-section image. If the cache is full and this build is
+                    // for another section, drop it (it's re-requested once there's
+                    // room). Current-section builds always cache (evicting a
+                    // neighbour, which is the least-recently-used after step 1).
+                    let is_current = done.key.section == self.section;
+                    if !is_current && self.images.cache.len() >= self.images.cache.cap().get() {
+                        continue;
+                    }
                     if let Some((_, evicted)) = self.images.cache.push(done.key, plan)
                         && let Some(id) = evicted.image_id()
                     {
@@ -200,7 +209,7 @@ impl Reader {
     /// A no-op when the section is out of range, is the current one (handled by
     /// `remap_section_images`), or its blocks aren't loaded yet. Shared by the
     /// facing-page eager build and neighbour/look-ahead prefetch.
-    fn request_section_image_builds(
+    pub(super) fn request_section_image_builds(
         &mut self,
         section: usize,
         builder: &ImageBuilder,
@@ -212,6 +221,19 @@ impl Reader {
         let Some(blocks) = self.sections.sections.get(&section) else {
             return;
         };
+        // Bound neighbour prefetch to the cache's spare room. The cache is sized to
+        // the current section + `IMAGE_CACHE_CAP` spare; an *image-dense* neighbour
+        // (a stats textbook can have 60+ figures/equations per section) would
+        // otherwise flood the cache and evict the current section's *visible*
+        // images — they'd then never rebuild until a section change, leaving blanks.
+        // The current section's own builds go through `remap_section_images`, which
+        // is never bounded. A neighbour build that doesn't fit is simply requested
+        // later, once the cache frees room / that section becomes current.
+        let cap = self.images.cache.cap().get();
+        let mut budget = cap.saturating_sub(self.images.cache.len() + self.images.requested.len());
+        if budget == 0 {
+            return;
+        }
         let mut requests: Vec<(ImgKey, Vec<u8>, media::SizeSpec)> = Vec::new();
         let mut idx = 0;
         for block in blocks {
@@ -234,6 +256,10 @@ impl Reader {
                         && !self.images.failed.contains(&key)
                     {
                         requests.push((key, data.clone(), size_spec(*width, *math)));
+                        budget -= 1;
+                        if budget == 0 {
+                            break; // spare exhausted — prefetch the rest on reveal
+                        }
                     }
                 }
                 idx += 1;
