@@ -257,10 +257,13 @@ impl Reader {
             }
             return tiles;
         }
-        // A facing pair: earlier page in the left column, later in the right (LTR).
+        // A facing pair. LTR: earlier page left, later page right. Manga (RTL):
+        // swap sides so the earlier page sits on the right and the spread reads
+        // right-to-left (the vertical scroll order is unchanged).
         let (left_x, col_w, right_x) = self.continuous_column_slot();
         for (i, &section) in sections.iter().enumerate() {
-            let slot_x = if i == 0 { left_x } else { right_x };
+            let in_left_col = if self.rtl { i == 1 } else { i == 0 };
+            let slot_x = if in_left_col { left_x } else { right_x };
             if let Some(tile) = self.build_tile(section, slot_x, col_w, viewport_cols, pan_x) {
                 tiles.push(tile);
             }

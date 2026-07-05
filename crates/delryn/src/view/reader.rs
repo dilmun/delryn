@@ -51,6 +51,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.view_mode = config.view_mode;
     reader.page_gap = config.page_gap;
     reader.side_padding = config.side_padding;
+    reader.rtl = config.reading_direction.is_rtl();
     reader.spread = matches!(config.view_mode, ViewMode::TwoPage) && reader.is_paged_image();
     reader.cover_offset = config.cover_offset;
     reader.chapter_lock = config.chapter_lock;

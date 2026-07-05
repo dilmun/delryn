@@ -668,15 +668,18 @@ no premature abstraction, no speculative modes).*
       viewport). Zoom (`cont_scale`) is now relative to fit-page (1.0 = whole page;
       `+` grows toward fit-width and beyond). Explicit L/R padding from
       `config.side_padding` (mirrored to the reader), single page + each two-page
-      column inset by it. *v1 limits (graceful): base raster only (no
-      viewport-matched crisp re-raster mid-stack — that's the single-page path);
-      two-page continuous is LTR (manga/RTL not yet); the inter-page gap is a fixed 1
-      row (not a config knob yet).* **Still:**
-      **grid / thumbnail browser** as a visual page-jump complementing the TOC sidebar
-      (arrows move selection, Enter opens). This is where a page grid belongs — a
-      *thumbnail* browser (small cell-sized rasters, tightly packed) for jumping, not
-      a reading layout. The dropped 7.3 N-up grid (above) is the lesson: it must
-      transmit downscaled thumbnails, not full-page rasters.
+      column inset by it. ✅ **Manga / RTL two-page continuous** — with
+      `reading_direction = Rtl` a continuous spread swaps its facing pages (earlier
+      page on the right) so it reads right-to-left; vertical scroll order unchanged.
+      `reader.rtl` mirror + a one-line column swap in `build_tiles` (mirrors the
+      non-continuous spread). Reflowable text stays LTR. *v1 limits (graceful): base
+      raster only (no viewport-matched crisp re-raster mid-stack — that's the
+      single-page path); the inter-page gap is a fixed 1 row (not a config knob yet).*
+      🚫 **Grid / thumbnail page-jump browser — DROPPED (2026-07-04, user decision).**
+      Not building a thumbnail browser (the TOC sidebar + `Ng` goto already cover
+      page jumping); the N-up reading grid was already dropped in 7.3. If a visual
+      page-jump is ever wanted, it must transmit *downscaled* thumbnails (not
+      full-page rasters) — but it's out of scope now.
 - [ ] **7.5 Deferred behind the interface (cheap once 7.1 exists — build on
       demand, NOT speculatively).** Film strip (current page large + neighbours
       small); Comparison (pin arbitrary non-sequential pages — needs a "pinned
