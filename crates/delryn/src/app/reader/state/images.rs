@@ -19,8 +19,10 @@ pub struct ImageState {
     /// Reserved rows per image index, estimated up front so reflow doesn't wait
     /// on the background build.
     pub rows_estimate: Vec<u16>,
-    /// (section, avail-cols, max-rows, max-px, width-pct) the estimates are for.
-    pub images_key: (usize, u16, u16, u16, u16),
+    /// (section, avail-cols, max-rows, max-px, width-pct, fit-mode) the estimates
+    /// are for — a change re-remaps so a live sizing-config change takes effect
+    /// without leaving the section.
+    pub images_key: (usize, u16, u16, u16, u16, media::ImageFit),
     /// Theme tint + mode the current image builds used; a change re-requests them
     /// so images re-render when the theme cycles or the image mode changes.
     pub policy: media::RenderPolicy,
@@ -36,7 +38,7 @@ impl Default for ImageState {
             cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
             section_images: HashMap::new(),
             rows_estimate: Vec::new(),
-            images_key: (usize::MAX, 0, 0, 0, 0),
+            images_key: (usize::MAX, 0, 0, 0, 0, media::ImageFit::default()),
             policy: media::RenderPolicy {
                 tint: media::Ink {
                     ink: [0, 0, 0],

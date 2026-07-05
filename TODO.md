@@ -217,13 +217,19 @@ the size guidelines.
       the raw pixels) and normalizes every figure to `image_width_pct` of the
       column, with `MAX_UPSCALE` raised 2.5→4.0 so low-res figures actually reach
       the band; Faithful honors the authored width exactly (the old behaviour).
-      (3) **Equations stay text-proportional** — in Fit mode a wide/short equation
-      strip shipped as a picture (`is_equation_shaped`: aspect ≥ 3 and ≤ 4 lines
-      tall at native size vs the cell height) is kept native rather than blown up to
-      the column, so publisher equation PNGs stop rendering huge. `fit_mode` threads
-      through `ImageGeom`/`FitBox`/`ImgKey` (cache-invalidating). *Watch: dense-image
-      sections now transmit larger figures — keep an eye on the Ghostty eviction
-      budget; `image_max_px` remains the ceiling if it bites.*
+      (3) **Equations stay text-proportional** — in Fit mode an *uncaptioned*
+      graphic (an equation picture) is kept native rather than blown up to the
+      column, so publisher equation PNGs stop rendering huge. Classification is by
+      **caption presence** (`SizeSpec.captioned`), not pixel shape: books caption
+      figures/tables but not equations, and aspect/height can't tell a wide table
+      from a wide equation or a tall equation array from a tall figure (an earlier
+      `is_equation_shaped` aspect heuristic misfired — tables/dotplots rendered tiny,
+      multi-line arrays huge). `fit_mode` threads through `ImageGeom`/`FitBox`/
+      `ImgKey` (cache-invalidating) and the `sync_images` remap-trigger key + the
+      `WrapKey`, so a live Fit⇄Faithful / width-% toggle re-renders without leaving
+      the section. *Watch: dense-image sections now transmit larger figures — keep an
+      eye on the Ghostty eviction budget; `image_max_px` remains the ceiling if it
+      bites.*
 
 Phase 1 content model is complete end-to-end (parse → rich `Block` → render).
 The deferred bits are all *interactive navigation*, gathered into Phase 2's
