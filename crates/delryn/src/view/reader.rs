@@ -36,6 +36,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
     };
     // Images need both the protocol picker and the background builder.
     let images = picker.as_ref().zip(image_builder.as_ref());
+    // Graphical math needs the config toggle + a graphics protocol; the cell height
+    // sizes equations. A change here re-decodes the open sections (image ⇆ Unicode).
+    let math_on = config.graphical_math && images.is_some();
+    let cell_h = images.map(|(p, _)| p.font_size().height).unwrap_or(20);
+    reader.sync_graphical_math(math_on, cell_h, config.math_scale);
     let theme = config.theme;
     reader.code_theme = theme.syntect.to_string();
     reader.line_spacing = config.line_spacing;

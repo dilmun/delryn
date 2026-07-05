@@ -329,7 +329,8 @@ mod tests {
     fn math_centres_prerendered_unicode() {
         // The parser resolves LaTeX/MathML to Unicode; layout only centres it.
         let block = Block::Math {
-            tex: "α + β".to_string(),
+            unicode: "α + β".to_string(),
+            latex: None,
         };
         let lines = texts(&wrap_blocks(&[block], &WrapOpts::default(), &[]));
         let joined = lines.join("\n");

@@ -107,7 +107,9 @@ pub(super) fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<S
                 // block level). Don't recurse, or the raw token text leaks out.
                 "math" => {
                     out.push(Span {
-                        text: native_math_unicode(node),
+                        // Inline math stays Unicode for now (graphical inline math is
+                        // a follow-up); the recovered LaTeX source is unused here.
+                        text: native_math(node).0,
                         style: Inline {
                             math: true,
                             ..style

@@ -24,6 +24,7 @@ mod anchors;
 mod continuous;
 mod crisp;
 mod images;
+pub(crate) mod math;
 pub use images::ImageGeom;
 mod page_stack;
 mod page_view;
@@ -230,7 +231,8 @@ impl Reader {
         // owned by the section cache (see `SectionCache::new`). Seed the cache with
         // the start section's blocks, decoded inline so the first frame can wrap.
         let mut sections = SectionCache::new(doc.loader(), start);
-        let first = doc.load_section(start).unwrap_or_default().blocks;
+        let mut first = doc.load_section(start).unwrap_or_default().blocks;
+        math::convert_math_blocks(&mut first);
         sections.sections.insert(start, first.clone());
 
         // Paged (PDF) documents get an off-thread rasterizer for the viewport-
@@ -335,11 +337,12 @@ impl Reader {
             }
             return Vec::new();
         }
-        let blocks = self
+        let mut blocks = self
             .doc
             .load_section(section)
             .map(|s| s.blocks)
             .unwrap_or_default();
+        math::convert_math_blocks(&mut blocks);
         self.sections.sections.insert(section, blocks.clone());
         blocks
     }
@@ -1140,7 +1143,8 @@ mod tests {
     }
     fn math() -> Block {
         Block::Math {
-            tex: r"\alpha".to_string(),
+            unicode: r"\alpha".to_string(),
+            latex: None,
         }
     }
 
