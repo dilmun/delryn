@@ -32,6 +32,7 @@ pub struct ImageGeom {
     pub max_rows: u16,
     pub max_px: u16,
     pub width_pct: u16,
+    pub fit_mode: media::ImageFit,
     pub policy: media::RenderPolicy,
 }
 
@@ -143,6 +144,7 @@ impl Reader {
                     max_rows: geom.max_rows,
                     max_px: geom.max_px,
                     target_pct: geom.width_pct,
+                    fit_mode: geom.fit_mode,
                     policy: geom.policy,
                 };
                 let fit = media::FitBox {
@@ -152,6 +154,7 @@ impl Reader {
                     rows: geom.max_rows,
                     max_px: geom.max_px,
                     target_pct: geom.width_pct,
+                    fit_mode: geom.fit_mode,
                 };
                 let rows = if let Some(plan) = self.images.cache.peek(&key) {
                     plan.rows
@@ -249,6 +252,7 @@ impl Reader {
                         max_rows: geom.max_rows,
                         max_px: geom.max_px,
                         target_pct: geom.width_pct,
+                        fit_mode: geom.fit_mode,
                         policy: geom.policy,
                     };
                     if !self.images.cache.contains(&key)

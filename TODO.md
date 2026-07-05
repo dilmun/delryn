@@ -206,6 +206,24 @@ the size guidelines.
       (Settings → Content "Figure width %", default 85%) — enlarging low-res
       figures up to a bounded `MAX_UPSCALE` (2.5×, so tiny icons aren't blown up)
       but never past the column/viewport. Equation images keep native size.
+- [x] **Image sizing normalization + quality pass** (extends the above; branch
+      `feat/image-size-normalization`): three refinements so figures/equations are
+      consistent *and* crisp across every publisher. (1) **Quality** — the resize
+      filter is now `Lanczos3` (was bilinear `Triangle`), the best traditional
+      filter for the text/line-art/equations in book figures; sharp on both up- and
+      down-scaling, paid once off-thread + cached. (2) **Consistency** — a new
+      `ImageFit` policy (Settings → Content "Figure sizing": **Fit** default /
+      **Faithful**). Fit *ignores* the publisher's authored width (as unreliable as
+      the raw pixels) and normalizes every figure to `image_width_pct` of the
+      column, with `MAX_UPSCALE` raised 2.5→4.0 so low-res figures actually reach
+      the band; Faithful honors the authored width exactly (the old behaviour).
+      (3) **Equations stay text-proportional** — in Fit mode a wide/short equation
+      strip shipped as a picture (`is_equation_shaped`: aspect ≥ 3 and ≤ 4 lines
+      tall at native size vs the cell height) is kept native rather than blown up to
+      the column, so publisher equation PNGs stop rendering huge. `fit_mode` threads
+      through `ImageGeom`/`FitBox`/`ImgKey` (cache-invalidating). *Watch: dense-image
+      sections now transmit larger figures — keep an eye on the Ghostty eviction
+      budget; `image_max_px` remains the ceiling if it bites.*
 
 Phase 1 content model is complete end-to-end (parse → rich `Block` → render).
 The deferred bits are all *interactive navigation*, gathered into Phase 2's

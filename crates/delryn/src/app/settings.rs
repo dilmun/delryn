@@ -41,6 +41,7 @@ pub enum SettingItem {
     StatusGauge,
     ImageMaxPx,
     ImageWidthPct,
+    ImageFit,
     ImageMode,
     GraphicalMath,
     MathScale,
@@ -85,6 +86,7 @@ impl SettingItem {
             SettingItem::StatusGauge => "Gauge",
             SettingItem::ImageMaxPx => "Max resolution (px)",
             SettingItem::ImageWidthPct => "Figure width %",
+            SettingItem::ImageFit => "Figure sizing",
             SettingItem::ImageMode => "Image mode",
             SettingItem::GraphicalMath => "Graphical math",
             SettingItem::MathScale => "Math size %",
@@ -141,6 +143,7 @@ impl SettingItem {
                 }
             }
             SettingItem::ImageWidthPct => format!("{}%", c.image_width_pct),
+            SettingItem::ImageFit => c.image_fit.label().to_string(),
             SettingItem::ImageMode => c.image_mode.label().to_string(),
             SettingItem::GraphicalMath => onoff(c.graphical_math),
             SettingItem::MathScale => format!("{}%", c.math_scale),
@@ -223,6 +226,7 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
                     S("Images"),
                     I(ImageMaxPx),
                     I(ImageWidthPct),
+                    I(ImageFit),
                     I(ImageMode),
                     I(GraphicalMath),
                     I(MathScale),
@@ -423,6 +427,13 @@ impl App {
                 c.image_width_pct = (c.image_width_pct as i32 + delta * 5)
                     .clamp(MIN_IMAGE_WIDTH_PCT as i32, MAX_IMAGE_WIDTH_PCT as i32)
                     as u16
+            }
+            SettingItem::ImageFit => {
+                c.image_fit = if delta > 0 {
+                    c.image_fit.next()
+                } else {
+                    c.image_fit.prev()
+                }
             }
             SettingItem::ImageMode => {
                 c.image_mode = if delta > 0 {

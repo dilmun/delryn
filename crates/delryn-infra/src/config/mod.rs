@@ -10,7 +10,9 @@
 
 mod enums;
 
-pub use enums::{GridSize, ImageMode, LibLayout, ReadingDirection, ReadingMode, ViewMode};
+pub use enums::{
+    GridSize, ImageFit, ImageMode, LibLayout, ReadingDirection, ReadingMode, ViewMode,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -195,6 +197,10 @@ pub struct Config {
     /// How book images adapt to the theme (recolour / invert / faithful).
     #[serde(with = "enums::image_mode_serde")]
     pub image_mode: ImageMode,
+    /// Whether figures are normalized to a consistent size (`Fit`) or shown at the
+    /// publisher's authored size (`Faithful`). Distinct from `image_mode` (colour).
+    #[serde(with = "enums::image_fit_serde")]
+    pub image_fit: ImageFit,
     /// Render display equations as images (LaTeX → picture) instead of the Unicode
     /// approximation, when a LaTeX source and a graphics protocol are available.
     /// Falls back to Unicode otherwise.
@@ -248,6 +254,7 @@ impl Default for Config {
             image_max_px: 0,     // no cap by default — images fill the text column
             image_width_pct: 85, // normalize unsized figures to 85% of the column
             image_mode: ImageMode::default(),
+            image_fit: ImageFit::default(),
             graphical_math: true,
             math_scale: 100,
             library_paths: Vec::new(),
