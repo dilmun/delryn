@@ -99,6 +99,10 @@ pub struct Reader {
     /// `config.side_padding` each render — the continuous-paged stack insets its
     /// pages by this so they don't touch the screen edges.
     pub side_padding: u16,
+    /// Right-to-left (manga) reading, mirrored from `config.reading_direction` each
+    /// render. A continuous two-page spread swaps its facing pages so the earlier
+    /// page sits on the right; the vertical scroll order is unchanged.
+    pub rtl: bool,
     /// Continuous-paged zoom: the page scale relative to fit-page (1.0 = the whole
     /// page fits the viewport, centred with side padding). < 1 shrinks the pages; > 1
     /// enlarges past the viewport (single-column: taller → scroll, wider → `h`/`l`
@@ -256,6 +260,7 @@ impl Reader {
             view_mode: ViewMode::Center,
             page_gap: 0,
             side_padding: 0,
+            rtl: false,
             cont_scale: 1.0,
             cont_pan_x: 0.0,
             spread: false,
@@ -1413,6 +1418,52 @@ mod tests {
         let (disp_w, rows) = r.tile_metrics(0, 16);
         assert!(disp_w < 16, "fit-page is narrower than the slot: {disp_w}");
         assert!(rows <= 8, "the whole page fits the viewport height: {rows}");
+    }
+
+    /// Manga (RTL) two-page continuous: the facing pages swap sides, so the earlier
+    /// page (0) sits to the right of the later page (1). Drives the mock loader +
+    /// themer so both pages are placeable, then inspects the emitted tile positions.
+    #[test]
+    fn continuous_two_page_manga_swaps_columns() {
+        let doc = MockDoc::new((0..4).map(|_| image_page()).collect()).paged();
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.continuous = true;
+        r.view_mode = crate::config::ViewMode::TwoPage;
+        r.rtl = true;
+        r.set_cell_px((10, 20));
+        r.last_measure = 20;
+        r.viewport_lines = 20;
+        r.side_padding = 0;
+        r.page_gap = 0;
+        r.set_trim(false, 0);
+        // Rasterize + theme pages 0 and 1 (both needed for the facing spread).
+        for _ in 0..200 {
+            r.poll_loader();
+            r.sync_pages(paged_policy());
+            if r.page_ready(0) && r.page_ready(1) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            r.page_ready(0) && r.page_ready(1),
+            "both spread pages themed"
+        );
+        r.capture_page_stack(ratatui::layout::Rect::new(0, 0, 20, 20));
+        let x0 = r
+            .pdf_targets
+            .iter()
+            .find(|t| t.section == 0)
+            .map(|t| t.rect.x);
+        let x1 = r
+            .pdf_targets
+            .iter()
+            .find(|t| t.section == 1)
+            .map(|t| t.rect.x);
+        assert!(
+            matches!((x0, x1), (Some(a), Some(b)) if a > b),
+            "RTL: earlier page 0 sits right of later page 1 (x0={x0:?}, x1={x1:?})"
+        );
     }
 
     #[test]
