@@ -457,7 +457,7 @@ impl Reader {
             self.wrapped = key;
             self.recompute_heading_lines();
             self.recompute_anchors();
-            self.recompute_bookmark_lines();
+            self.recompute_annotation_lines();
         }
     }
 
@@ -482,27 +482,45 @@ impl Reader {
         )
     }
 
-    /// Set the open book's bookmarks (`(section, quote)`), then resolve the
-    /// current section's into gutter lines. Called by the app on any change.
-    pub fn set_bookmarks(&mut self, bookmarks: Vec<(usize, String)>) {
+    /// Set the open book's annotations as `(section, quote, is_note)`, splitting
+    /// them into bookmarks and notes, then resolve the current section's into
+    /// gutter lines. Called by the app on any change.
+    pub fn set_annotations(&mut self, items: Vec<(usize, String, bool)>) {
+        let (mut bookmarks, mut notes) = (Vec::new(), Vec::new());
+        for (section, quote, is_note) in items {
+            if is_note {
+                notes.push((section, quote));
+            } else {
+                bookmarks.push((section, quote));
+            }
+        }
         self.nav.bookmarks = bookmarks;
-        self.recompute_bookmark_lines();
+        self.nav.notes = notes;
+        self.recompute_annotation_lines();
     }
 
-    /// Resolve this section's bookmark quotes to display lines (once per re-wrap).
-    fn recompute_bookmark_lines(&mut self) {
-        self.nav.bookmark_lines = self
-            .nav
-            .bookmarks
-            .iter()
-            .filter(|(section, _)| *section == self.section)
-            .filter_map(|(_, quote)| find_line(&self.lines, quote))
-            .collect();
+    /// Resolve this section's bookmark + note quotes to display lines (once per
+    /// re-wrap), so the gutter can mark them cheaply.
+    fn recompute_annotation_lines(&mut self) {
+        let resolve = |marks: &[(usize, String)], section: usize, lines: &[DisplayLine]| {
+            marks
+                .iter()
+                .filter(|(s, _)| *s == section)
+                .filter_map(|(_, quote)| find_line(lines, quote))
+                .collect::<std::collections::HashSet<usize>>()
+        };
+        self.nav.bookmark_lines = resolve(&self.nav.bookmarks, self.section, &self.lines);
+        self.nav.note_lines = resolve(&self.nav.notes, self.section, &self.lines);
     }
 
     /// Whether a display line carries a bookmark (for the left-gutter marker).
     pub fn is_bookmark_line(&self, line: usize) -> bool {
         self.nav.bookmark_lines.contains(&line)
+    }
+
+    /// Whether a display line carries a note (drawn with a pen glyph in the gutter).
+    pub fn is_note_line(&self, line: usize) -> bool {
+        self.nav.note_lines.contains(&line)
     }
 
     /// Recompute each current-section outline entry's line position (for the

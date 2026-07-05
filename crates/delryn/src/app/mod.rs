@@ -101,19 +101,63 @@ pub enum Focus {
     Sidebar,
 }
 
-/// Open bookmarks overlay state (the folder-grouped list + cursor).
+/// Open annotations overlay state (the folder-grouped bookmark + note list, a
+/// cursor, and an optional search filter).
 pub struct AnnotState {
     pub items: Vec<Annotation>,
+    /// Cursor index into the *filtered* view (see [`AnnotState::filtered`]).
     pub sel: usize,
+    /// Current search text (`''` = show everything).
+    pub filter: String,
+    /// Whether keystrokes are being typed into the filter.
+    pub filtering: bool,
 }
 
-/// What a one-line text prompt's typed text becomes when committed. Both target
-/// a bookmark; notes are a Phase 4 concern with their own flow.
+impl AnnotState {
+    /// A fresh state showing `items`, no filter.
+    pub fn new(items: Vec<Annotation>) -> AnnotState {
+        AnnotState {
+            items,
+            sel: 0,
+            filter: String::new(),
+            filtering: false,
+        }
+    }
+
+    /// Items matching the current filter — a case-insensitive substring over the
+    /// name, quote, note body, and folder. All items when the filter is empty.
+    pub fn filtered(&self) -> Vec<&Annotation> {
+        if self.filter.is_empty() {
+            return self.items.iter().collect();
+        }
+        let needle = self.filter.to_lowercase();
+        self.items
+            .iter()
+            .filter(|a| {
+                a.name.to_lowercase().contains(&needle)
+                    || a.quote.to_lowercase().contains(&needle)
+                    || a.note.to_lowercase().contains(&needle)
+                    || a.folder.to_lowercase().contains(&needle)
+            })
+            .collect()
+    }
+
+    /// The annotation the cursor is on (within the filtered view).
+    pub fn selected(&self) -> Option<Annotation> {
+        self.filtered().get(self.sel).map(|a| (*a).clone())
+    }
+}
+
+/// What a one-line text prompt's typed text becomes when committed.
 pub enum PromptKind {
-    /// The custom name of bookmark `id` (empty clears it back to the quote).
+    /// The custom name of annotation `id` (empty clears it back to the quote).
     Name(i64),
-    /// The folder bookmark `id` belongs to (empty = ungrouped).
+    /// The folder annotation `id` belongs to (empty = ungrouped).
     Folder(i64),
+    /// Commentary for a new note being created at `(section, quote)` in the reader.
+    NewNote { section: usize, quote: String },
+    /// New commentary for existing note `id`.
+    EditNote(i64),
 }
 
 /// A one-line text prompt shown at the bottom of the reader (rename a bookmark /
@@ -291,14 +335,17 @@ fn build_reader(
         reader.load(p.section);
         reader.pending_frac = Some(p.frac);
     }
-    // Seed the gutter with this book's bookmarks (independent of saved progress).
+    // Seed the gutter with this book's annotations (independent of saved progress).
     if let Some(store) = store {
         let marks = store
-            .list_bookmarks(&book_path)
+            .list_annotations(&book_path)
             .into_iter()
-            .map(|a| (a.section, a.quote))
+            .map(|a| {
+                let is_note = a.is_note();
+                (a.section, a.quote, is_note)
+            })
             .collect();
-        reader.set_bookmarks(marks);
+        reader.set_annotations(marks);
     }
     Ok((reader, config, book_path))
 }
