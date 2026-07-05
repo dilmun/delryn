@@ -14,7 +14,7 @@ pub struct WrapKey {
     pub table_wrap: bool,
     pub justify: bool,
     pub tidy: bool,
-    pub images_key: (usize, u16, u16, u16, u16),
+    pub images_key: (usize, u16, u16, u16, u16, u16, crate::media::ImageFit),
 }
 
 impl WrapKey {

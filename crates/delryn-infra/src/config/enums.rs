@@ -276,6 +276,36 @@ impl ImageMode {
 }
 cyclic_wrap!(ImageMode, [Auto => "auto", InvertBackgrounds => "invert", Faithful => "faithful"]);
 
+/// Whether book figures are normalized to a consistent display size or shown at
+/// the publisher's authored size. Orthogonal to [`ImageMode`] (which is about
+/// *colour*, not size) and part of the image cache key, so switching it
+/// re-renders on the fly. See `DESIGN.md` §7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ImageFit {
+    /// Normalize every figure/table to a consistent share of the text column
+    /// (`image_width_pct`) — enlarging low-res figures and shrinking oversized
+    /// ones — so figures look the same across books regardless of the publisher's
+    /// authored width or the file's pixel resolution (both are unreliable).
+    /// Equation-shaped graphics stay text-proportional (never stretched to the
+    /// column). The best general default.
+    #[default]
+    Fit,
+    /// Honor the publisher's authored width (or, failing that, the file's pixel
+    /// resolution) exactly, only shrinking to fit the column — publisher intent,
+    /// warts and all.
+    Faithful,
+}
+
+impl ImageFit {
+    pub fn from_label(s: &str) -> ImageFit {
+        match s {
+            "faithful" => ImageFit::Faithful,
+            _ => ImageFit::Fit,
+        }
+    }
+}
+cyclic_wrap!(ImageFit, [Fit => "fit", Faithful => "faithful"]);
+
 /// Reading direction for paged (PDF / comic) spreads: left-to-right (default) or
 /// right-to-left (manga / manhua). In RTL a two-page spread swaps the facing pages
 /// so they read right-to-left; page turns still advance forward through the book.
@@ -308,6 +338,7 @@ label_serde!(view_mode_serde, ViewMode);
 label_serde!(lib_layout_serde, LibLayout);
 label_serde!(grid_size_serde, GridSize);
 label_serde!(image_mode_serde, ImageMode);
+label_serde!(image_fit_serde, ImageFit);
 label_serde!(reading_direction_serde, ReadingDirection);
 
 #[cfg(test)]

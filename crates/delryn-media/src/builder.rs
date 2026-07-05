@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
+use delryn_infra::config::ImageFit;
 use image::GenericImageView;
 use ratatui_image::picker::Picker;
 use ratatui_image::sliced::SlicedProtocol;
@@ -26,6 +27,12 @@ pub struct ImgKey {
     /// Default figure width (% of column) — part of the key so changing the knob
     /// rebuilds at the new size instead of serving a stale one.
     pub target_pct: u16,
+    /// Equation-picture size (% of auto) — part of the key so changing the knob
+    /// rebuilds at the new size instead of serving a stale one.
+    pub eq_scale: u16,
+    /// Sizing policy (normalize vs. faithful) — part of the key so toggling it
+    /// rebuilds at the new size rather than serving a stale one.
+    pub fit_mode: ImageFit,
     /// Theme tint + adaptation mode — part of the key so re-theming or changing
     /// the mode rebuilds the image rather than serving a stale one from cache.
     pub policy: RenderPolicy,
@@ -80,12 +87,16 @@ fn build_plan(
     };
     let (cols, rows) = target_cells(w, h, fit, spec);
 
-    // Resize to exactly the target cell box in pixels (Triangle: fast, fine for
-    // figures; up- or down-scales), so the protocol fills (cols, rows) precisely.
+    // Resize to exactly the target cell box in pixels so the protocol fills
+    // (cols, rows) precisely. Lanczos3 is the highest-quality resampling filter
+    // for the text, equations, and line-art common in book figures — sharp on
+    // both the up-scaling of low-res figures and the down-scaling of oversized
+    // ones, where the old bilinear (Triangle) filter left everything soft. The
+    // cost is paid once, off-thread, and the result is cached.
     let img = img.resize(
         cols as u32 * fs.width.max(1) as u32,
         rows as u32 * fs.height.max(1) as u32,
-        image::imageops::FilterType::Triangle,
+        image::imageops::FilterType::Lanczos3,
     );
     // Adapt the graphic to the theme (recolour ink / flatten / invert) per mode.
     let img = render_for_theme(&img, policy.tint, policy.mode);
@@ -164,6 +175,8 @@ impl ImageBuilder {
                     rows: k.max_rows,
                     max_px: k.max_px,
                     target_pct: k.target_pct,
+                    eq_scale: k.eq_scale,
+                    fit_mode: k.fit_mode,
                 };
                 let plan = build_plan(&picker, &req.bytes, fit, k.policy, req.spec);
                 if res_tx
