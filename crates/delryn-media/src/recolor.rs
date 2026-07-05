@@ -305,10 +305,18 @@ pub fn render_for_theme(img: &DynamicImage, tint: Ink, mode: ImageMode) -> Dynam
     let rgba = img.to_rgba8();
     if transparent_frac(&rgba) > TRANSPARENT_FRAC {
         // Transparent graphic. Monochrome ink is line-art/equations (text) →
-        // recolour to the theme so it's legible on any background, in all modes;
-        // a transparent *colour* graphic keeps its colours, composited onto the page.
-        return if opaque_chroma(&rgba) < INK_CHROMA_MAX {
-            recolor_ink(img, tint)
+        // recolour to the theme so it's legible on any background, in all modes.
+        if opaque_chroma(&rgba) < INK_CHROMA_MAX {
+            return recolor_ink(img, tint);
+        }
+        // Transparent *colour* graphic (a chart/diagram: coloured fills plus dark
+        // neutral axes, ticks, and labels on a transparent background). Composite
+        // onto the page so nothing is hidden. In Invert mode also lightness-invert
+        // it, so its dark ink — invisible black-on-black on a dark page otherwise —
+        // becomes legible while the coloured strokes keep their hue; Auto/Faithful
+        // keep the colours exactly as authored.
+        return if mode == ImageMode::InvertBackgrounds {
+            flatten_onto(&theme_invert(img, tint), tint.paper)
         } else {
             flatten_onto(img, tint.paper)
         };
@@ -485,6 +493,58 @@ mod tests {
             out.get_pixel(10, 10).0,
             [220, 30, 30, 255],
             "red stroke kept"
+        );
+    }
+
+    #[test]
+    fn invert_transparent_colour_chart_lightens_dark_ink() {
+        // A chart shipped on a *transparent* background: a saturated blue fill (a
+        // data region) plus a black axis line. On a dark page the black axis is
+        // invisible, so Invert must lightness-invert the graphic — the dark ink
+        // becomes light — while keeping the colour and mapping the transparent
+        // background to the page. Auto keeps it faithful (dark ink stays dark).
+        let mut img = RgbaImage::from_pixel(20, 20, Rgba([0, 0, 0, 0]));
+        for y in 4..16 {
+            for x in 4..16 {
+                img.put_pixel(x, y, Rgba([30, 90, 220, 255]));
+            }
+        }
+        for x in 0..20 {
+            img.put_pixel(x, 18, Rgba([0, 0, 0, 255])); // black axis
+        }
+        let img = DynamicImage::ImageRgba8(img);
+
+        // Auto: faithful — the black axis stays black, transparency onto paper.
+        let auto = render_for_theme(&img, DARK, ImageMode::Auto).to_rgba8();
+        assert_eq!(
+            auto.get_pixel(0, 18).0,
+            [0, 0, 0, 255],
+            "auto keeps black axis"
+        );
+        assert_eq!(
+            auto.get_pixel(0, 0).0,
+            [10, 12, 16, 255],
+            "transparent → paper"
+        );
+
+        // Invert: the black axis is lightened (now visible on the dark page)…
+        let inv = render_for_theme(&img, DARK, ImageMode::InvertBackgrounds).to_rgba8();
+        let axis = inv.get_pixel(0, 18).0;
+        assert!(
+            delryn_infra::color::luma([axis[0], axis[1], axis[2]]) > 128.0,
+            "invert lightens the dark axis: {axis:?}"
+        );
+        // …the transparent background maps to the page colour…
+        assert_eq!(
+            inv.get_pixel(0, 0).0,
+            [10, 12, 16, 255],
+            "transparent → paper"
+        );
+        // …and the blue fill keeps its hue (still blue-dominant).
+        let blue = inv.get_pixel(10, 10).0;
+        assert!(
+            blue[2] > blue[0] && blue[2] > blue[1],
+            "blue kept: {blue:?}"
         );
     }
 

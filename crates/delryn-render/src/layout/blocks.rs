@@ -101,7 +101,9 @@ pub(super) fn emit_image(
             kind: LineKind::Body,
         });
     }
-    // Figure caption (italic), wrapped under the image.
+    // Figure caption (italic), wrapped and centred beneath the image — images
+    // are centred in the column (see the reader view), so the caption sits on
+    // the same axis rather than hugging the left margin.
     if !caption.is_empty() {
         let italic: Vec<Span> = caption
             .iter()
@@ -114,7 +116,30 @@ pub(super) fn emit_image(
                 anchor: s.anchor.clone(),
             })
             .collect();
-        wrap_spans(&italic, width, "", "", LineKind::Body, false, out);
+        let mut cap = Vec::new();
+        wrap_spans(&italic, width, "", "", LineKind::Body, false, &mut cap);
+        for mut line in cap {
+            center_line(&mut line, width);
+            out.push(line);
+        }
+    }
+}
+
+/// Left-pad a display line so its content is centred within `width` (the wrapper
+/// already kept each line ≤ `width`). Used for figure captions.
+fn center_line(line: &mut DisplayLine, width: usize) {
+    let w: usize = line.runs.iter().map(|r| r.text.chars().count()).sum();
+    let pad = width.saturating_sub(w) / 2;
+    if pad > 0 {
+        line.runs.insert(
+            0,
+            Run {
+                text: " ".repeat(pad),
+                style: Inline::default(),
+                fg: None,
+                anchor: None,
+            },
+        );
     }
 }
 
@@ -357,6 +382,34 @@ mod tests {
         let joined = lines.join("\n");
         assert!(joined.contains("[image: diagram]"));
         assert!(joined.contains("Figure 1: the pipeline"));
+    }
+
+    #[test]
+    fn image_caption_is_centred_under_the_image() {
+        // A short caption narrower than the column is padded on the left so it
+        // sits centred (images are centred in the column), not flush-left.
+        let block = Block::Image {
+            src: "x.png".into(),
+            alt: String::new(),
+            data: Vec::new(),
+            caption: vec![Span::plain("Figure 1")],
+            math: false,
+            width: delryn_model::ImageWidth::Auto,
+        };
+        let opts = WrapOpts {
+            width: 40,
+            ..Default::default()
+        };
+        let caption = texts(&wrap_blocks(&[block], &opts, &[]))
+            .into_iter()
+            .find(|l| l.contains("Figure 1"))
+            .expect("caption line");
+        assert!(
+            caption.starts_with(' ') && caption.trim() == "Figure 1",
+            "caption centred: {caption:?}"
+        );
+        let lead = caption.len() - caption.trim_start().len();
+        assert_eq!(lead, (40 - "Figure 1".len()) / 2, "centred padding");
     }
 
     #[test]
