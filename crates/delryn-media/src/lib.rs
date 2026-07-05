@@ -10,7 +10,7 @@ mod page;
 mod recolor;
 mod sizing;
 
-pub use delryn_infra::config::ImageMode;
+pub use delryn_infra::config::{ImageFit, ImageMode};
 
 pub use builder::{BuiltImage, ImageBuilder, ImagePlan, ImgKey};
 pub use cover::{CoverImage, build_cover};

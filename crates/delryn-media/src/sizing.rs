@@ -1,5 +1,7 @@
 //! Image display sizing: fitting figures and pages into the terminal cell grid.
 
+use delryn_infra::config::ImageFit;
+
 /// How an image's display size was authored (mirrors `delryn_model::ImageWidth`,
 /// kept here so this crate stays independent of the content model).
 #[derive(Clone, Copy, PartialEq)]
@@ -35,14 +37,40 @@ impl Default for SizeSpec {
 }
 
 /// Upper bound on how far a low-resolution figure may be enlarged to reach its
-/// target display width. Caps the softness from upscaling — and keeps genuinely
-/// tiny images (icons, ornaments) from being blown up to fill the column.
-const MAX_UPSCALE: f64 = 2.5;
+/// target display width. Bounds the softness from upscaling (paired with a
+/// quality resampling filter in the build step) while still letting a low-res
+/// figure grow enough to be readable and consistent with its neighbours.
+const MAX_UPSCALE: f64 = 4.0;
+
+/// Aspect ratio (width ÷ height) at or above which a *short* graphic looks like a
+/// display-equation strip rather than a figure — equations are wide and thin.
+const EQUATION_MIN_ASPECT: f64 = 3.0;
+
+/// Native height (in text lines, i.e. cell heights) at or below which a wide
+/// graphic is treated as an equation strip. Figures, diagrams, and tables are
+/// taller (more rows) and fall through to figure sizing.
+const EQUATION_MAX_LINES: f64 = 4.0;
+
+/// Whether a `w`×`h` px graphic is shaped like a display equation: wide and no
+/// more than a few text lines tall at native size (measured against the terminal
+/// cell height `fh`). Such strips read best proportional to the surrounding text
+/// — normalizing them to the column width blows them up into a giant equation.
+/// A rare very-wide, short *photo* can be misclassified; `Faithful` mode is the
+/// escape hatch. Uses only the pixel dimensions + cell height, so the up-front
+/// row estimate and the background build agree without a decode.
+fn is_equation_shaped(w: u32, h: u32, fh: u16) -> bool {
+    if h == 0 || fh == 0 {
+        return false;
+    }
+    let aspect = f64::from(w) / f64::from(h);
+    let native_lines = f64::from(h) / f64::from(fh);
+    aspect >= EQUATION_MIN_ASPECT && native_lines <= EQUATION_MAX_LINES
+}
 
 /// The cell geometry and caps an image must fit into: terminal cell size
 /// (`fw`×`fh` px), the available `cols`×`rows` box, the longest-side pixel cap
-/// (`max_px`, 0 = none), and the default figure width (`target_pct`% of the
-/// column) for images with no authored size.
+/// (`max_px`, 0 = none), the default/normalized figure width (`target_pct`% of
+/// the column), and the sizing policy (`fit_mode`: normalize vs. faithful).
 #[derive(Clone, Copy)]
 pub struct FitBox {
     pub fw: u16,
@@ -51,14 +79,26 @@ pub struct FitBox {
     pub rows: u16,
     pub max_px: u16,
     pub target_pct: u16,
+    pub fit_mode: ImageFit,
 }
 
-/// Cell size (cols, rows) for a `w`×`h` px image. Figures are sized to a
-/// *consistent display width* — the authored width (`spec.hint`) when known, else
-/// `fit.target_pct`% of the column — enlarging low-res figures up to
-/// [`MAX_UPSCALE`] so they aren't tiny, but never past the `fit.cols`×`fit.rows`
-/// box. Equation images (`spec.math`) keep native size and only ever shrink to
-/// fit. The longest displayed side is then capped to `fit.max_px` px to bound the
+/// Cell size (cols, rows) for a `w`×`h` px image.
+///
+/// Figures are sized to a *consistent display width* so they look the same across
+/// books, regardless of the publisher's authored width or the file's resolution
+/// (both unreliable). In [`ImageFit::Fit`] (the default) that width is
+/// `fit.target_pct`% of the column — the authored width is deliberately ignored;
+/// in [`ImageFit::Faithful`] the authored width (`spec.hint`) is honored, else the
+/// same `target_pct` default. Either way a low-res figure is enlarged up to
+/// [`MAX_UPSCALE`] so it isn't tiny, but never past the `fit.cols`×`fit.rows` box.
+///
+/// Equations keep native size and only ever shrink to fit — both real math
+/// (`spec.math`) and, in `Fit` mode, wide/short equation strips shipped as
+/// pictures (see [`is_equation_shaped`]) — so they stay proportional to the text
+/// instead of being blown up to the column. Full-bleed pages (`SizeHint::Full`)
+/// fill the pane.
+///
+/// The longest displayed side is finally capped to `fit.max_px` px to bound the
 /// terminal transfer. Used by both the up-front row estimate and the background
 /// build, so the two always agree (no gap).
 pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
@@ -71,23 +111,34 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
     // column width or the viewport height.
     let cap = (f64::from(fit.cols) * fwf / wf).min(f64::from(fit.rows) * fhf / hf);
 
-    let mut scale = if spec.math {
-        // Equations read best at native size, proportional to the surrounding
-        // text; only shrink to fit, never enlarge.
-        cap.min(1.0)
-    } else if matches!(spec.hint, SizeHint::Full) {
+    // Graphics that read best proportional to the text — real math, or (in Fit
+    // mode) a wide/short equation strip shipped as a picture — keep native size
+    // and only shrink to fit, never enlarged to fill the column.
+    let text_proportional =
+        spec.math || (fit.fit_mode == ImageFit::Fit && is_equation_shaped(w, h, fit.fh));
+
+    let mut scale = if matches!(spec.hint, SizeHint::Full) {
         // A full-bleed page (PDF): fill the pane box, preserving aspect —
         // enlarging a small page or shrinking a large one to the cols×rows box.
         cap
+    } else if text_proportional {
+        cap.min(1.0)
     } else {
-        // The display width we want this figure to occupy, in pixels.
-        let want_px = match spec.hint {
-            SizeHint::Pct(p) => f64::from(fit.cols) * fwf * f64::from(p).clamp(0.0, 1.0),
-            SizeHint::Px(px) => f64::from(px),
-            SizeHint::Auto => f64::from(fit.cols) * fwf * f64::from(fit.target_pct) / 100.0,
-            SizeHint::Full => unreachable!("full-bleed handled above"),
+        // A figure/table/diagram. The display width we want it to occupy: in Fit
+        // mode a consistent fraction of the column (authored width ignored — it's
+        // as unreliable as the pixel resolution); in Faithful mode the authored
+        // width, else the same normalized default.
+        let want_px = if fit.fit_mode == ImageFit::Fit {
+            f64::from(fit.cols) * fwf * f64::from(fit.target_pct) / 100.0
+        } else {
+            match spec.hint {
+                SizeHint::Pct(p) => f64::from(fit.cols) * fwf * f64::from(p).clamp(0.0, 1.0),
+                SizeHint::Px(px) => f64::from(px),
+                SizeHint::Auto => f64::from(fit.cols) * fwf * f64::from(fit.target_pct) / 100.0,
+                SizeHint::Full => unreachable!("full-bleed handled above"),
+            }
         };
-        // Reach it (up- or down-scaling), but never blow up tiny art past the
+        // Reach it (up- or down-scaling), but never blow up low-res art past the
         // upscale cap and never exceed the box.
         (want_px / wf).min(cap).min(MAX_UPSCALE)
     };
@@ -110,7 +161,8 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
 mod tests {
     use super::*;
 
-    /// A cell box `cols` wide (8×16px cells, `rows` tall, no px cap, 85% target).
+    /// A cell box `cols` wide (8×16px cells, `rows` tall, no px cap, 85% target)
+    /// in the default `Fit` (normalizing) mode.
     fn fit(cols: u16, rows: u16) -> FitBox {
         FitBox {
             fw: 8,
@@ -119,6 +171,15 @@ mod tests {
             rows,
             max_px: 0,
             target_pct: 85,
+            fit_mode: ImageFit::Fit,
+        }
+    }
+
+    /// The same box in `Faithful` mode (honors the authored width).
+    fn faithful(cols: u16, rows: u16) -> FitBox {
+        FitBox {
+            fit_mode: ImageFit::Faithful,
+            ..fit(cols, rows)
         }
     }
 
@@ -145,7 +206,40 @@ mod tests {
             cols > 10,
             "low-res figure is upscaled past native ~10 cols: {cols}"
         );
-        assert!(cols <= 25, "but bounded by the upscale cap: {cols}");
+        assert!(cols <= 40, "but bounded by the upscale cap (~4×): {cols}");
+    }
+
+    #[test]
+    fn equation_strips_stay_text_proportional() {
+        // A wide, short graphic (a display equation shipped as a picture) is kept
+        // near native size in Fit mode — a few text lines tall — not stretched to
+        // the column the way a figure is.
+        let (_eq_cols, eq_rows) = target_cells(400, 50, fit(200, 60), SizeSpec::default());
+        assert!(
+            eq_rows <= 5,
+            "equation strip stays a few lines tall: {eq_rows}"
+        );
+        // A squarer graphic of the same width is a figure: normalized up, taller.
+        let (_fig_cols, fig_rows) = target_cells(400, 300, fit(200, 60), SizeSpec::default());
+        assert!(
+            fig_rows > eq_rows,
+            "a taller figure is enlarged, unlike the strip: {fig_rows} vs {eq_rows}"
+        );
+    }
+
+    #[test]
+    fn fit_mode_overrides_small_authored_width() {
+        // In Fit mode a publisher's tiny authored width is ignored: the figure is
+        // normalized to the target band, not left small (~5 cols if honored).
+        let small = SizeSpec {
+            hint: SizeHint::Px(40),
+            math: false,
+        };
+        let (cols, _) = target_cells(400, 300, fit(200, 200), small);
+        assert!(
+            cols > 40,
+            "small authored width is overridden in Fit: {cols}"
+        );
     }
 
     #[test]
@@ -164,13 +258,14 @@ mod tests {
     }
 
     #[test]
-    fn authored_width_is_honored() {
-        // A 50% CSS width targets half the column regardless of pixel resolution.
+    fn faithful_mode_honors_authored_width() {
+        // In Faithful mode a 50% CSS width targets half the column regardless of
+        // pixel resolution (in Fit mode the authored width is ignored instead).
         let half = SizeSpec {
             hint: SizeHint::Pct(0.5),
             math: false,
         };
-        let (cols, _) = target_cells(4000, 2000, fit(100, 200), half);
+        let (cols, _) = target_cells(4000, 2000, faithful(100, 200), half);
         assert!(
             (i32::from(cols) - 50).abs() <= 2,
             "≈50% of 100 cols: {cols}"
