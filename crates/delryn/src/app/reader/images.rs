@@ -52,7 +52,20 @@ impl Reader {
         // sections (avoids a fast-scroll backlog delaying the current one).
         builder.set_current(self.section);
 
-        // 1. Move finished builds into the cache; evictions free the terminal image.
+        // 1. Protect the images currently on screen from eviction *before* draining
+        //    new builds. A figure/equation-dense neighbour can finish >IMAGE_CACHE_CAP
+        //    builds in one poll drain; pushing them would walk past the cache's spare
+        //    headroom and evict a *visible* image — deleting it from the terminal
+        //    mid-scroll — since marking it most-recently-used only happened afterwards.
+        //    Touch them first so the eviction victims are the off-screen prefetch
+        //    entries. (An evicted image also rebuilds with a fresh protocol whose
+        //    transmit flag is reset, causing a re-transmit flicker.)
+        let visible: Vec<ImgKey> = self.images.section_images.values().copied().collect();
+        for k in &visible {
+            self.images.cache.get(k);
+        }
+
+        // 2. Move finished builds into the cache; evictions free the terminal image.
         for done in builder.poll() {
             self.images.requested.remove(&done.key);
             if done.stale {
@@ -72,7 +85,7 @@ impl Reader {
             }
         }
 
-        // 2. On section/size change, remap the current section and dispatch any
+        // 3. On section/size change, remap the current section and dispatch any
         //    builds it still needs.
         let key = (
             self.section,
@@ -85,14 +98,6 @@ impl Reader {
             self.images.images_key = key;
             self.images.policy = geom.policy;
             self.remap_section_images(builder, picker, geom);
-        }
-
-        // 3. Keep the visible images most-recently-used so they can't be evicted:
-        //    an evicted image rebuilds with a fresh protocol (transmit flag reset),
-        //    which re-transmits (flicker).
-        let keys: Vec<ImgKey> = self.images.section_images.values().copied().collect();
-        for k in keys {
-            self.images.cache.get(&k);
         }
 
         // 4. Pre-build neighbouring sections' images once the current one is ready.

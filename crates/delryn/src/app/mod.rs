@@ -155,6 +155,11 @@ pub struct App {
     /// An image queued for the system clipboard (`(w, h, RGBA)`), set by the
     /// viewer's copy action and drained by the main loop.
     pub pending_clipboard_image: Option<(u32, u32, Vec<u8>)>,
+    /// Terminal image ids left behind by a *closed* image viewer (its last shown
+    /// figure), merged into [`take_image_deletes`](Self::take_image_deletes). The
+    /// still-open viewer is drained directly from its overlay each frame; this
+    /// only carries ids across the drop when the overlay is torn down.
+    overlay_image_deletes: Vec<u32>,
     /// Detected terminal image protocol (None if unsupported / headless).
     pub picker: Option<Picker>,
     /// Background builder for inline-image protocols.
@@ -320,6 +325,7 @@ impl App {
             edit_queue: Vec::new(),
             edit_total: 0,
             pending_clipboard_image: None,
+            overlay_image_deletes: Vec::new(),
             picker: None,
             image_builder: None,
             page_deck: PageDeck::default(),
@@ -359,6 +365,7 @@ impl App {
             edit_queue: Vec::new(),
             edit_total: 0,
             pending_clipboard_image: None,
+            overlay_image_deletes: Vec::new(),
             picker: None,
             image_builder: None,
             page_deck: PageDeck::default(),
@@ -449,12 +456,19 @@ impl App {
     }
 
     /// Terminal image ids to delete: covers evicted from the library grid cache,
-    /// plus images evicted from the reader's cache.
+    /// images evicted from the reader's cache, and figures the image viewer has
+    /// finished with (superseded while open, or its last image once closed).
     pub fn take_image_deletes(&mut self) -> Vec<u32> {
         let mut ids = std::mem::take(&mut self.library.grid_deletes);
         if let Some(r) = self.reader.as_mut() {
             ids.extend(r.take_image_deletes());
         }
+        // The open viewer frees each figure it moves off (mode toggle / navigation);
+        // a closed viewer's last image is carried across the drop in this queue.
+        if let Overlay::ImageView(v) = &mut self.overlay {
+            ids.extend(v.take_deletes());
+        }
+        ids.append(&mut self.overlay_image_deletes);
         ids
     }
 

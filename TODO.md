@@ -783,3 +783,16 @@ grow these further.
       three allows are **gone**: the (avail, max_rows, max_px, width_pct, policy)
       geometry is now an `ImageGeom` struct (R-D, commit 9776831). (The two `Store`
       row-writer allows remain documented — compliant.)
+- [ ] **Kitty image-id namespace is unmanaged** (latent, low-probability). Reader
+      inline images, library covers, and the image viewer all mint their Kitty
+      `i=` id from `rand::random::<u32>()` (vendored `ratatui-image`
+      `picker.rs:248/285`) with no allocator/registry, while the direct PDF page
+      deck uses deterministic `0x0F00_0000 + section` (`page_deck.rs:136`) that
+      only *claims* to be "clear of ratatui-image's" — the random draw spans the
+      whole u32 and can land in that range. So a `d=I` delete (or a re-transmit)
+      in one context can, at ~2⁻³² odds, clobber another context's live image.
+      Not the cause of the 2026-07-05 vanish bug (that was the viewer *leak*, fixed
+      on `fix/image-viewer-terminal-image-leak`), but the two id schemes should be
+      made genuinely disjoint (reserve a high range for the deck and mask it out of
+      the random draw, or move to a shared monotonic allocator in the vendored
+      picker).
