@@ -16,7 +16,7 @@
 //! yet reconstructed.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
@@ -231,9 +231,16 @@ impl Headers {
     }
 }
 
+/// Cap the initial text-buffer reservation. `text_length` comes verbatim from the
+/// record-0 header (an untrusted u32, up to ~4 GB), so reserving it directly lets a
+/// tiny crafted MOBI force a multi-gigabyte allocation and abort the process. The
+/// buffer still grows as needed for a legitimately large book — this only bounds
+/// the up-front hint; the loop is bounded by the real record bytes.
+const MAX_TEXT_PREALLOC: usize = 32 * 1024 * 1024;
+
 /// Decompress + decode the text records into one HTML string.
 fn extract_text(pdb: &Pdb, h: &Headers) -> String {
-    let mut text: Vec<u8> = Vec::with_capacity(h.text_length);
+    let mut text: Vec<u8> = Vec::with_capacity(h.text_length.min(MAX_TEXT_PREALLOC));
     for i in 1..=h.record_count {
         let Some(rec) = pdb.record(i) else { break };
         // Strip the trailing multibyte/entry bytes before decompressing.
@@ -367,15 +374,16 @@ fn collect_image_ranges(pdb: &Pdb, first_image: Option<usize>) -> Vec<(usize, us
 /// Rewrite MOBI `<img recindex="N">` to the `src="mobiimg:N"` the block pipeline
 /// (and [`MobiContent::blocks`]) understands.
 fn rewrite_recindex(html: &str) -> String {
-    let re = Regex::new(r#"(?i)recindex=['"]?0*(\d+)['"]?"#).unwrap();
-    re.replace_all(html, r#"src="mobiimg:$1""#).into_owned()
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?i)recindex=['"]?0*(\d+)['"]?"#).unwrap());
+    RE.replace_all(html, r#"src="mobiimg:$1""#).into_owned()
 }
 
 /// Split the concatenated MOBI HTML into sections on `<mbp:pagebreak>` markers
 /// (the whole document as one section when there are none).
 fn split_sections(html: &str) -> Vec<String> {
-    let re = Regex::new(r"(?i)<mbp:pagebreak[^>]*>").unwrap();
-    let parts: Vec<String> = re
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<mbp:pagebreak[^>]*>").unwrap());
+    let parts: Vec<String> = RE
         .split(html)
         .map(str::to_string)
         .filter(|s| !s.trim().is_empty())
@@ -390,8 +398,11 @@ fn split_sections(html: &str) -> Vec<String> {
 /// Build a flat TOC/outline: one entry per section, labelled by its first heading
 /// (falling back to "Section N"). MOBI's `filepos` NCX is not yet reconstructed.
 fn build_navigation(sections: &[String]) -> (Vec<TocEntry>, Vec<OutlineItem>) {
-    let heading = Regex::new(r"(?is)<h[1-6][^>]*>(.*?)</h[1-6]>").unwrap();
-    let tags = Regex::new(r"(?s)<[^>]+>").unwrap();
+    static HEADING: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<h[1-6][^>]*>(.*?)</h[1-6]>").unwrap());
+    static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<[^>]+>").unwrap());
+    let heading = &*HEADING;
+    let tags = &*TAGS;
     let mut toc = Vec::with_capacity(sections.len());
     let mut outline = Vec::with_capacity(sections.len());
     for (i, s) in sections.iter().enumerate() {
@@ -554,6 +565,20 @@ mod tests {
         // First section's first heading drives the outline label.
         assert_eq!(doc.outline()[0].label, "Chapter One");
         assert_eq!(doc.toc()[1].section, Some(1));
+    }
+
+    #[test]
+    fn huge_text_length_does_not_over_allocate() {
+        // A crafted MOBI advertising a ~4 GB text_length must not reserve that
+        // buffer up front — that alloc would abort the process. The real text
+        // still comes from the actual (tiny) record; the prealloc hint is capped
+        // at MAX_TEXT_PREALLOC. Without the cap this test OOM-aborts.
+        let html = "<p>tiny</p>";
+        let compressed = compress_literal(html.as_bytes());
+        let r0 = record0(u32::MAX as usize, 1, 65001, "Evil", "X");
+        let data = build_pdb(&[&r0, &compressed]);
+        let doc = MobiDocument::open_bytes(data).expect("opens without over-allocating");
+        assert!(doc.section_count() >= 1, "still decodes the real text");
     }
 
     #[test]

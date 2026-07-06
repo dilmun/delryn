@@ -848,14 +848,17 @@ scroll/roll `usize` arithmetic all guarded; view draw path borrows lines + mater
 only the visible window; store SQL fully parameterized (no injection). Dedup
 `content_link_candidates` is O(n²) but only on the user-triggered thorough scan (accepted).
 
-**Outstanding (NOT on `main` — fix on the `feat/mobi-azw3` branch before merging it):**
-- [ ] **HIGH — `mobi/mod.rs` `Vec::with_capacity(h.text_length)`** on an
-      attacker-controlled u32 (up to ~4 GB) → OOM abort on `MobiDocument::open` from a
-      ~130-byte crafted MOBI. Cap the hint (`text_length.min(cap)`); the loop grows as
-      needed. (`read_metadata`/library scan is unaffected — crash is on open only.)
-- [ ] **LOW — `mobi/palmdoc.rs:16` `Vec::with_capacity(input.len() * 4)`** — bounded by
-      the real record length (mild); use `saturating_mul` (32-bit overflow edge).
-- [ ] **LOW — mobi/mod.rs regexes** recompiled per open — hoist like the epub ones.
+**MOBI robustness — ✅ fixed on `feat/mobi-azw3` (this branch, after merging main in):**
+- [x] ✅ **HIGH — `mobi/mod.rs` `Vec::with_capacity(h.text_length)`** on an
+      attacker-controlled u32 (~4 GB) → OOM abort on open. Capped the prealloc hint at
+      `MAX_TEXT_PREALLOC` (32 MiB); the buffer still grows for a legit large book, and
+      the loop is bounded by the real record bytes. Regression test
+      `huge_text_length_does_not_over_allocate` (u32::MAX text_length opens fine).
+- [x] ✅ **LOW — `mobi/palmdoc.rs` `Vec::with_capacity(input.len() * 4)`** → `saturating_mul(4)`
+      (32-bit overflow edge). Just a reservation hint.
+- [x] ✅ **LOW — mobi/mod.rs regexes** (recindex / pagebreak / heading / tags) hoisted to
+      `LazyLock<Regex>` — were recompiled on every open. (`mobi/pdb.rs` offset parsing was
+      audited exemplary: `checked_mul`, per-offset bounds checks, `.get(a..b)` — no fix.)
       *(`mobi/pdb.rs` offset-table parsing audited exemplary: `checked_mul`, per-offset
       bounds checks, `.get(start..end)` slicing — no panic path.)*
 
