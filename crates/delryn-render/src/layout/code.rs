@@ -6,6 +6,7 @@ use delryn_model::Inline;
 
 use crate::highlight::highlight_code;
 
+use super::width::display_width;
 use super::{DisplayLine, LineKind, Run, WrapOpts};
 
 /// A code block → gutter-numbered, highlighted display lines, soft-wrapped or
@@ -22,7 +23,7 @@ pub(super) fn emit_code(
     let highlighted = highlight_code(lines, lang, opts.code_theme);
     for (i, runs) in highlighted.into_iter().enumerate() {
         let num = format!("{:>gutter_w$} │ ", i + 1);
-        let avail = width.saturating_sub(num.chars().count()).max(1);
+        let avail = width.saturating_sub(display_width(&num)).max(1);
         if opts.code_wrap {
             emit_wrapped_line(runs, &num, gutter_w, avail, width, code_idx, out);
         } else {
@@ -91,7 +92,7 @@ fn emit_panned_line(
 /// code blocks so their surface panel fills the column as a clean rectangle (the
 /// filler inherits the line's `kind` background at render time).
 fn pad_to_width(runs: &mut Vec<Run>, width: usize) {
-    let len: usize = runs.iter().map(|r| r.text.chars().count()).sum();
+    let len: usize = runs.iter().map(|r| display_width(&r.text)).sum();
     if len < width {
         runs.push(Run {
             text: " ".repeat(width - len),

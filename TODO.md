@@ -78,14 +78,19 @@ is its own branch + green commit (build + `cargo test` + `clippy` + `fmt`).
       `[roles]` overrides — the seam is `role::resolve` (give `Theme` an optional
       leaked role-table), but it would pressure `Copy`, so not until asked.* Docs:
       `docs/theming.md`.
-- [~] **Status bar: segment model, modern + unified.** ✅ (9eb5276)
+- [x] **Status bar: segment model, modern + unified.** ✅ (9eb5276)
       `view/status/{mod,segment,render,producers}` — Left/Center/Right zoned
       segments with drop-priority overflow; one renderer; reader/library/overlay
       producers. **Deleted** `view/reader.rs::render_status`, `view/library/status.rs`,
       and the old `legend` cascade. Selection pill + consistent state-Left/
       hints-Right. ✅ Now painted in `Role::Status*` + `Role::Selection` (the Role
-      system landed above). **Remaining:** the `[status]` config block (reorder/
-      toggle segments per zone). Docs: `docs/status.md`.
+      system landed above). ✅ **`[status]` config block** (branch
+      `feat/status-config`): every segment now carries a `SegmentId`; the
+      `[status]` block reorders segments per zone (`left`/`center`/`right` by id
+      label — reorder-only, unlisted keep built-in order so nothing vanishes),
+      sets the `separator`, and toggles a wall-clock `clock` segment (chrono,
+      already transitive). Visibility toggles + clock also in Settings. Docs:
+      `docs/status.md`.
 
 ### R-D — P2 polish
 
@@ -390,8 +395,17 @@ jump-by-type + a reader cursor.
       `BookRow.tags`, normalised via `delryn_model::tags` (lowercase/trim/dedup),
       edited with `T` (inline prompt; single replaces, multi-selection adds),
       shown in the detail pane + a toggleable sortable Tags column, filterable
-      with `tag:` in the DSL.) Still: highlight colors, selection/page-anchored
-      notes, backlinks.*
+      with `tag:` in the DSL.)*
+      ✅ **Notes** (branch `feat/notes-highlights`): a note = a line anchor (the
+      current `current_quote`) + user commentary, `kind = KIND_NOTE(1)` (reusing
+      the reserved `note` column — no migration). Add with `a` in the reader (drops
+      a commentary prompt); a pen `✎` marks note lines in the gutter (vs the ⚑
+      bookmark flag; note wins when both land on a line). The overlay (`'`) is now a
+      unified **Annotations** list showing bookmarks + notes with their icons and
+      commentary, **searchable** (`/` filters over name/quote/note/folder), with
+      `e` to edit a note's commentary. Store: `add_note`, `set_annotation_note`,
+      `list_annotations`, `Annotation.kind` + `is_note()`. *Still: highlight
+      colors, selection-anchored (sub-line) notes, backlinks.*
 - [x] Statistics: `delryn-library::stats` + overlay (`i`) — totals, status mix,
       ratings, reading hours, top authors.
 - [x] Export: `delryn-library::export` (`X`) — book list → CSV / JSON / Markdown.
@@ -804,6 +818,58 @@ no premature abstraction, no speculative modes).*
       actually expose — adopt the wins, skip GUI-only smooth-scroll + auto-magazine
       reflow. Folio-tuned, not a feature-clone.
 
+## Comprehensive audit — 2026-07-06 (branch `audit/comprehensive-2026-07-06`)
+
+A full correctness / perf / robustness / concurrency pass (self-audit + fanned-out
+subagents). The codebase was already very clean; findings + fixes:
+
+**Fixed (all green — 311 tests, clippy 0, fmt):**
+- [x] ✅ **Kitty image-id namespaces made disjoint** (`673f570`) — random widget ids
+      were drawn full-range and could collide with the PDF deck's reserved block.
+      See the tech-debt item below (now closed).
+- [x] ✅ **Display width measured in cells, not chars** (`e9b5efd`) — the wrap engine
+      used `chars().count()` everywhere, so CJK/wide glyphs overran the column and
+      justification/table alignment drifted. New `layout::width` helper routed
+      through every measurement + `wrap_text`/`table::fit` truncation.
+- [x] ✅ **HTML DOM-walk recursion bounded** (`f416e7c`) — **HIGH: verified stack
+      overflow / SIGABRT** on ~2000 nested elements (reachable from every untrusted
+      EPUB/MOBI chapter). Depth-guarded `walk_children`/`block_element`/`collect_inline`
+      → flatten deep subtrees to text past `MAX_BLOCK_DEPTH`/`MAX_INLINE_DEPTH`.
+- [x] ✅ **MathML / EPUB-nav / PDF-outline recursion bounded** (`9ac0d93`) — same
+      class at the other on-open parsers; depth caps + a sibling-count cap on the PDF
+      outline (guards a cyclic `/Next`).
+- [x] ✅ **content-metadata regexes hoisted to `LazyLock`** (`430306e`) — were
+      recompiled per section per book on the library scan.
+
+**Verified clean (no fix needed):** reader worker threads (loader/rasterizer/themer/
+image-builder) — all exit on drop, dedup + cleanup + failure-tracking balanced, zero
+blocking `recv()` on the UI thread; image eviction issues terminal deletes (no leak);
+scroll/roll `usize` arithmetic all guarded; view draw path borrows lines + materializes
+only the visible window; store SQL fully parameterized (no injection). Dedup
+`content_link_candidates` is O(n²) but only on the user-triggered thorough scan (accepted).
+
+**Outstanding (NOT on `main` — fix on the `feat/mobi-azw3` branch before merging it):**
+- [ ] **HIGH — `mobi/mod.rs` `Vec::with_capacity(h.text_length)`** on an
+      attacker-controlled u32 (up to ~4 GB) → OOM abort on `MobiDocument::open` from a
+      ~130-byte crafted MOBI. Cap the hint (`text_length.min(cap)`); the loop grows as
+      needed. (`read_metadata`/library scan is unaffected — crash is on open only.)
+- [ ] **LOW — `mobi/palmdoc.rs:16` `Vec::with_capacity(input.len() * 4)`** — bounded by
+      the real record length (mild); use `saturating_mul` (32-bit overflow edge).
+- [ ] **LOW — mobi/mod.rs regexes** recompiled per open — hoist like the epub ones.
+      *(`mobi/pdb.rs` offset-table parsing audited exemplary: `checked_mul`, per-offset
+      bounds checks, `.get(start..end)` slicing — no panic path.)*
+
+**Deferred (measure-first, per dev docs — do NOT churn without a profile):**
+- [ ] `recolor::render_for_theme` converts to RGBA for classification then each branch
+      re-converts (~2–4 full-buffer allocs per image build) + a double pixel scan in the
+      transparent branch. Off-thread, cached, dominated by the Lanczos3 resize —
+      independently re-flagged by the audit, matches the existing R-D deferral (would
+      churn 3 public signatures for no measured win).
+- [ ] Layout **grapheme-cluster** awareness: `display_width` fixes measurement, but the
+      wrap/hard-break/`fit` still iterate `chars()`, so a base+combining cluster can be
+      split across a wrap. Needs `unicode-segmentation`; more invasive, low demand
+      (Latin/CJK unaffected — only NFD combining scripts). Log, don't rush.
+
 ## Tech debt — chip away, don't grow (dev docs size guidelines)
 
 Soft "review/refactor triggers," not hard gates. Logged 2026-06-26 against the
@@ -822,6 +888,13 @@ grow these further.
       scroll/chapter+history-nav/reflow-position/element-nav coordinator core).
       Largest reader child is now `page_view.rs` (403, pure geometry). Only three
       methods needed a `pub(super)` bump; the rest moved with their sole callers.
+      ✅ **Re-carve** (`refactor/reader-carve-2`): later feature work had regrown
+      mod.rs to **1011 non-test**, just past the trigger again. Extracted the
+      jump-by-type element navigation cluster (`code_block`/`element_label`/
+      `element_starts`/`jump_element`/`next_element`/`prev_element`/`copy_visible_code`)
+      into `elements.rs` (118) — mirrors `anchors.rs`. **mod.rs → 906 non-test**;
+      only `element_starts` needed a `pub(super)` bump (called by an inline test).
+      Green (305 tests, clippy 0, fmt clean, behaviour-identical).
 - [ ] `delryn-render/src/layout.rs` — **superseded**: R-A (commit 5c6e6ce) already
       split the monolith into `layout/` (`mod` 311, `blocks` 372, `spans` 511,
       `table` 350, `code` 203). `spans.rs` (511) is the largest and sits in the
@@ -839,19 +912,17 @@ grow these further.
       three allows are **gone**: the (avail, max_rows, max_px, width_pct, policy)
       geometry is now an `ImageGeom` struct (R-D, commit 9776831). (The two `Store`
       row-writer allows remain documented — compliant.)
-- [ ] **Kitty image-id namespace is unmanaged** (latent, low-probability). Reader
-      inline images, library covers, and the image viewer all mint their Kitty
-      `i=` id from `rand::random::<u32>()` (vendored `ratatui-image`
-      `picker.rs:248/285`) with no allocator/registry, while the direct PDF page
-      deck uses deterministic `0x0F00_0000 + section` (`page_deck.rs:136`) that
-      only *claims* to be "clear of ratatui-image's" — the random draw spans the
-      whole u32 and can land in that range. So a `d=I` delete (or a re-transmit)
-      in one context can, at ~2⁻³² odds, clobber another context's live image.
-      Not the cause of the 2026-07-05 vanish bug (that was the viewer *leak*, fixed
-      on `fix/image-viewer-terminal-image-leak`), but the two id schemes should be
-      made genuinely disjoint (reserve a high range for the deck and mask it out of
-      the random draw, or move to a shared monotonic allocator in the vendored
-      picker).
+- [x] ✅ **Kitty image-id namespace made disjoint** (`audit/comprehensive-2026-07-06`).
+      Reader inline images, library covers, and the image viewer minted their Kitty
+      `i=` id from a full-range `rand::random::<u32>()` (vendored `ratatui-image`
+      `picker.rs:248/285`), while the direct PDF page deck uses deterministic
+      `0x0F00_0000 + section` — so a random draw could land in the deck's block and a
+      `d=I` delete/re-transmit in one context could (at ~2⁻³² odds) clobber another
+      context's live image. Fix: the vendored picker now draws widget ids via
+      `random_kitty_id()` = `1 + random::<u32>() % (KITTY_ID_MAX - 1)` with
+      `KITTY_ID_MAX = 0x0F00_0000`, strictly below the deck's reserved high block
+      (and never 0). The deck's `id()` doc records the now-enforced reservation.
+      Regression test `random_kitty_id_stays_below_deck_reserved_block`.
 - [x] **Image-dense books blanked their visible figures on scroll**
       (`fix/inline-image-prefetch-eviction`, USER-CONFIRMED "problem solved").
       *Diagnosed with a `FOLIO_IMG_LOG` trace, not by guessing* — earlier guesses

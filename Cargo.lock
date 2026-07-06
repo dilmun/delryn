@@ -998,6 +998,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "chrono",
  "crossterm",
  "delryn-format",
  "delryn-infra",
@@ -1095,6 +1096,7 @@ version = "0.1.0"
 dependencies = [
  "delryn-model",
  "syntect",
+ "unicode-width",
 ]
 
 [[package]]

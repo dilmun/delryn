@@ -15,9 +15,7 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    // One row per shelf + the "new" row, plus border / title / hint chrome.
-    let rows_n = p.shelves.len() as u16 + 1;
-    let area = super::centered(f.area(), 56, rows_n + 4);
+    let area = super::overlay_rect(f.area(), app.overlay_large);
 
     f.render_widget(Clear, area);
 
@@ -83,6 +81,13 @@ pub fn render(f: &mut Frame, app: &App) {
             lines.push(Line::from(Span::styled(label, theme.style(Role::Muted))));
         }
     }
-    f.render_widget(Paragraph::new(lines), rows[1]);
+    // Scroll to keep the selected row visible when there are more shelves than fit.
+    let h = rows[1].height as usize;
+    let offset = p
+        .sel
+        .saturating_sub(h / 2)
+        .min(lines.len().saturating_sub(h));
+    let view: Vec<Line> = lines.into_iter().skip(offset).take(h).collect();
+    f.render_widget(Paragraph::new(view), rows[1]);
     // Shortcuts live in the bottom status bar (see view::status).
 }

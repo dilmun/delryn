@@ -186,9 +186,15 @@ fn legacy_column_backfill(conn: &Connection) {
     );
 }
 
+/// `annotations.kind` for a bookmark (a place) vs a note (a place + commentary).
+pub const KIND_BOOKMARK: i64 = 0;
+pub const KIND_NOTE: i64 = 1;
+
 /// A bookmark or note, anchored to content by a text quote (reflow-stable).
 /// `name` is an optional user label (shown instead of the quote); `folder` is an
-/// optional group (empty = ungrouped).
+/// optional group (empty = ungrouped); `note` is the commentary body (notes only);
+/// `kind` discriminates a bookmark ([`KIND_BOOKMARK`]) from a note ([`KIND_NOTE`]).
+#[derive(Clone)]
 pub struct Annotation {
     pub id: i64,
     pub section: usize,
@@ -196,6 +202,14 @@ pub struct Annotation {
     pub note: String,
     pub name: String,
     pub folder: String,
+    pub kind: i64,
+}
+
+impl Annotation {
+    /// Whether this annotation is a note (carries commentary) vs a bare bookmark.
+    pub fn is_note(&self) -> bool {
+        self.kind == KIND_NOTE
+    }
 }
 
 /// Which slice of the library to show.
@@ -498,6 +512,38 @@ mod tests {
         store.add_read_time("/books/a.epub", 120);
         store.add_read_time("/books/a.epub", 60);
         assert_eq!(store.total_read_seconds(), 180);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn notes_carry_commentary_and_list_with_bookmarks() {
+        let tmp = std::env::temp_dir().join(format!("delryn_notes_{}", std::process::id()));
+        let _env = delryn_infra::test_env_guard();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let store = Store::open_default().unwrap();
+
+        let p = "/books/notes.epub";
+        store.add_bookmark(p, 2, "a place");
+        store.add_note(p, 4, "anchored line", "my thought about this");
+
+        // The unified list has both, kind-tagged; the bookmark list has just the mark.
+        let all = store.list_annotations(p);
+        assert_eq!(all.len(), 2);
+        let note = all.iter().find(|a| a.is_note()).unwrap();
+        assert_eq!(note.section, 4);
+        assert_eq!(note.note, "my thought about this");
+        assert!(!all.iter().find(|a| a.section == 2).unwrap().is_note());
+        assert_eq!(store.list_bookmarks(p).len(), 1);
+
+        // Editing a note's commentary persists.
+        store.set_annotation_note(note.id, "revised thought");
+        let revised = store
+            .list_annotations(p)
+            .into_iter()
+            .find(|a| a.is_note())
+            .unwrap();
+        assert_eq!(revised.note, "revised thought");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

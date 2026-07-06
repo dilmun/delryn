@@ -4,7 +4,8 @@
 //! converted and the configured format keep-order, then metadata richness and size.
 //! The format priority and a "converted: always delete" rule are configurable
 //! (Library Settings → Duplicates, reachable via `o`). The reader adjusts the
-//! checkboxes manually, can toggle full-screen with `f`, then deletes all checked.
+//! checkboxes manually (`f` resizes the window, like every overlay), then deletes
+//! all checked.
 //! `n` *ignores* a group (stop flagging it); the ignored-groups manager (`I`)
 //! lists them to restore or clear.
 
@@ -66,8 +67,6 @@ pub struct DupResolve {
     pub groups: Vec<DupGroup>,
     /// Flat cursor over member rows (group headers aren't selectable).
     pub cursor: usize,
-    /// Expand to fill the whole window instead of the centered box.
-    pub fullscreen: bool,
 }
 
 impl DupResolve {
@@ -168,11 +167,7 @@ impl App {
             self.library.flash = Some("no duplicates found".into());
             return;
         }
-        let mut dr = DupResolve {
-            groups,
-            cursor: 0,
-            fullscreen: false,
-        };
+        let mut dr = DupResolve { groups, cursor: 0 };
         auto_select(&mut dr, &self.config);
         self.overlay = Overlay::DupResolve(dr);
     }
@@ -183,12 +178,7 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
             // Re-run the (config-driven) auto-select.
             KeyCode::Char('a') => self.auto_select_dups(),
-            // Toggle full-window vs. the centered box.
-            KeyCode::Char('f') => {
-                if let Overlay::DupResolve(dr) = &mut self.overlay {
-                    dr.fullscreen = !dr.fullscreen;
-                }
-            }
+            // (`f` resizes the window — handled centrally in `on_key`.)
             // Open this overlay's preferences (Library Settings → Duplicates).
             KeyCode::Char('o') => self.open_dup_settings(),
             // Preview: open the selected copy in the reader; q/Esc returns here.

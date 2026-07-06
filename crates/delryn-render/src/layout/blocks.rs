@@ -5,6 +5,7 @@
 use delryn_model::{Block, CalloutKind, Inline, Span};
 
 use super::spans::{tidy_spacing, wrap_spans};
+use super::width::display_width;
 use super::{DisplayLine, LineKind, Run, WrapOpts, wrap_blocks};
 
 /// A horizontal rule spanning the full column.
@@ -47,7 +48,7 @@ pub(super) fn emit_para(
     let (first_prefix, cont_prefix, kind) = if quote {
         (format!("{ind}▎ "), format!("{ind}▎ "), LineKind::Quote)
     } else if let Some(m) = marker {
-        let pad = " ".repeat(m.chars().count());
+        let pad = " ".repeat(display_width(m));
         (format!("{ind}{m}"), format!("{ind}{pad}"), LineKind::Body)
     } else {
         (ind.clone(), ind.clone(), LineKind::Body)
@@ -128,7 +129,7 @@ pub(super) fn emit_image(
 /// Left-pad a display line so its content is centred within `width` (the wrapper
 /// already kept each line ≤ `width`). Used for figure captions.
 fn center_line(line: &mut DisplayLine, width: usize) {
-    let w: usize = line.runs.iter().map(|r| r.text.chars().count()).sum();
+    let w: usize = line.runs.iter().map(|r| display_width(&r.text)).sum();
     let pad = width.saturating_sub(w) / 2;
     if pad > 0 {
         line.runs.insert(
@@ -148,7 +149,7 @@ fn center_line(line: &mut DisplayLine, width: usize) {
 pub(super) fn emit_math(tex: &str, width: usize, out: &mut Vec<DisplayLine>) {
     for line in tex.lines() {
         let text = line.trim_end();
-        let pad = width.saturating_sub(text.chars().count()) / 2;
+        let pad = width.saturating_sub(display_width(text)) / 2;
         out.push(DisplayLine {
             runs: vec![Run {
                 text: format!("{}{text}", " ".repeat(pad)),
@@ -215,7 +216,7 @@ pub(super) fn emit_footnote(
     out: &mut Vec<DisplayLine>,
 ) {
     let tag = format!("[{label}] ");
-    let pad = " ".repeat(tag.chars().count());
+    let pad = " ".repeat(display_width(&tag));
     let start = out.len();
     wrap_nested(blocks, opts, &pad, LineKind::Footnote(footnote_idx), out);
     let label_run = Run {
@@ -249,7 +250,7 @@ fn wrap_nested(
     out: &mut Vec<DisplayLine>,
 ) {
     let inner = WrapOpts {
-        width: opts.width.saturating_sub(border.chars().count()).max(1),
+        width: opts.width.saturating_sub(display_width(border)).max(1),
         code_theme: opts.code_theme,
         line_spacing: 0,
         para_spacing: opts.para_spacing,

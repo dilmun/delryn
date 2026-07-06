@@ -29,6 +29,34 @@ fn block_text(blocks: &[Block]) -> String {
         .join(" ")
 }
 
+#[test]
+fn deeply_nested_markup_does_not_overflow_the_stack() {
+    // A malicious or broken book with thousands of nested elements must not abort
+    // the process through unbounded recursion. The DOM walk caps its depth and
+    // flattens the remainder to text (MAX_BLOCK_DEPTH / MAX_INLINE_DEPTH), so the
+    // call returns and the innermost content still survives. Without the guard
+    // this input overflows the stack and aborts the test binary.
+    let n = 5000;
+    let mut html = String::from("<html><body>");
+    html.push_str(&"<div>".repeat(n));
+    html.push_str("deep block text");
+    html.push_str(&"</div>".repeat(n));
+    html.push_str(&"<span>".repeat(n));
+    html.push_str("deep inline text");
+    html.push_str(&"</span>".repeat(n));
+    html.push_str("</body></html>");
+
+    let text = block_text(&parse_blocks(&html));
+    assert!(
+        text.contains("deep block text"),
+        "deep block text preserved"
+    );
+    assert!(
+        text.contains("deep inline text"),
+        "deep inline text preserved"
+    );
+}
+
 /// EPUB cover pages commonly wrap the cover in an SVG `<image xlink:href>`
 /// rather than a plain `<img>`; the parser must still emit a `Block::Image`
 /// with the referenced source (scraper exposes `xlink:href` as local `href`).

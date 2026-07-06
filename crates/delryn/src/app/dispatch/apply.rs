@@ -210,26 +210,46 @@ impl App {
                 if let Some(store) = &self.session.store
                     && !self.session.book_path.is_empty()
                 {
-                    store.add_bookmark(
-                        &self.session.book_path,
-                        reader.section,
-                        &reader.current_quote(),
-                    );
-                    reader.flash = Some("bookmark added".into());
-                    // `reader` is borrowed here, so push the refreshed set directly
-                    // rather than via the `&mut self` helper.
-                    let marks = store
-                        .list_bookmarks(&self.session.book_path)
-                        .into_iter()
-                        .map(|a| (a.section, a.quote))
-                        .collect();
-                    reader.set_bookmarks(marks);
+                    let quote = reader.current_quote();
+                    // Guard against duplicates: a repeat `m` at the same anchor is a
+                    // no-op (otherwise a held/double key stacks identical marks).
+                    if reader.has_bookmark(reader.section, &quote) {
+                        reader.flash = Some("already bookmarked".into());
+                    } else {
+                        store.add_bookmark(&self.session.book_path, reader.section, &quote);
+                        reader.flash = Some("bookmark added".into());
+                        // `reader` is borrowed here, so push the refreshed set
+                        // directly rather than via the `&mut self` helper.
+                        let marks = store
+                            .list_annotations(&self.session.book_path)
+                            .into_iter()
+                            .map(|a| {
+                                let is_note = a.is_note();
+                                (a.section, a.quote, is_note)
+                            })
+                            .collect();
+                        reader.set_annotations(marks);
+                    }
+                }
+            }
+            Action::AddNote => {
+                // Capture the current line as the note's anchor, then prompt for
+                // the commentary (stored on commit — see `prompt_commit`).
+                if !self.session.book_path.is_empty() {
+                    let quote = reader.current_quote();
+                    self.overlay = Overlay::Prompt(Prompt {
+                        kind: PromptKind::NewNote {
+                            section: reader.section,
+                            quote,
+                        },
+                        input: crate::ui::TextInput::from(String::new()),
+                    });
                 }
             }
             Action::OpenAnnotations => {
                 if let Some(store) = &self.session.store {
-                    let items = store.list_bookmarks(&self.session.book_path);
-                    self.overlay = Overlay::Annot(AnnotState { items, sel: 0 });
+                    let items = store.list_annotations(&self.session.book_path);
+                    self.overlay = Overlay::Annot(AnnotState::new(items, AnnotTab::Bookmarks));
                 }
             }
             Action::CopyCode => {

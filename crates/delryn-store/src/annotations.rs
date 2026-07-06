@@ -1,11 +1,8 @@
-//! Bookmarks (and, from Phase 4, notes) anchored to content quotes. Rows carry a
-//! `kind`: this module deals only with bookmarks (`kind = 0`); notes are layered
-//! on later. All quotes are reflow-stable text anchors, not byte offsets.
+//! Bookmarks and notes anchored to content quotes. Rows carry a `kind`
+//! ([`KIND_BOOKMARK`] = a place, [`KIND_NOTE`] = a place + commentary). All quotes
+//! are reflow-stable text anchors, not byte offsets.
 
 use super::*;
-
-/// `annotations.kind` value for a bookmark (vs a Phase 4 note).
-const KIND_BOOKMARK: i64 = 0;
 
 impl Store {
     /// Drop a bookmark at a reading position (anchored by its quote).
@@ -17,21 +14,47 @@ impl Store {
         );
     }
 
-    /// Bookmarks for one book, grouped so each folder's entries are contiguous:
-    /// named folders first (alphabetical), then ungrouped, each by reading order.
+    /// Add a note at a reading position: a quote anchor plus the user's commentary.
+    pub fn add_note(&self, path: &str, section: usize, quote: &str, note: &str) {
+        let _ = self.conn.execute(
+            "INSERT INTO annotations (path, section, quote, note, kind, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![path, section as i64, quote, note, KIND_NOTE, now_secs()],
+        );
+    }
+
+    /// Bookmarks for one book (see [`Self::list_annotations`] for the ordering).
     pub fn list_bookmarks(&self, path: &str) -> Vec<Annotation> {
+        self.list_by_kind(path, Some(KIND_BOOKMARK))
+    }
+
+    /// Every annotation (bookmarks and notes) for one book, folder-grouped: named
+    /// folders first (alphabetical), then ungrouped, each in reading order.
+    pub fn list_annotations(&self, path: &str) -> Vec<Annotation> {
+        self.list_by_kind(path, None)
+    }
+
+    /// List one book's annotations, optionally restricted to a single `kind`.
+    fn list_by_kind(&self, path: &str, kind: Option<i64>) -> Vec<Annotation> {
         let mut out = Vec::new();
-        let Ok(mut stmt) = self.conn.prepare(
-            "SELECT id, section, quote, note, name, folder FROM annotations \
-             WHERE path = ?1 AND kind = ?2 \
-             ORDER BY folder = '', folder, section, id",
-        ) else {
+        let sql = "SELECT id, section, quote, note, name, folder, kind FROM annotations \
+             WHERE path = ?1 AND (?2 IS NULL OR kind = ?2) \
+             ORDER BY folder = '', folder, section, id";
+        let Ok(mut stmt) = self.conn.prepare(sql) else {
             return out;
         };
-        if let Ok(rows) = stmt.query_map(params![path, KIND_BOOKMARK], |r| annotation_at(r, 0)) {
+        if let Ok(rows) = stmt.query_map(params![path, kind], |r| annotation_at(r, 0)) {
             out.extend(rows.flatten());
         }
         out
+    }
+
+    /// Set (or clear, with an empty string) a note's commentary body.
+    pub fn set_annotation_note(&self, id: i64, note: &str) {
+        let _ = self.conn.execute(
+            "UPDATE annotations SET note = ?2 WHERE id = ?1",
+            params![id, note],
+        );
     }
 
     pub fn delete_annotation(&self, id: i64) {
@@ -60,7 +83,7 @@ impl Store {
     pub fn all_bookmarks(&self) -> Vec<(String, Annotation)> {
         let mut out = Vec::new();
         let Ok(mut stmt) = self.conn.prepare(
-            "SELECT path, id, section, quote, note, name, folder FROM annotations \
+            "SELECT path, id, section, quote, note, name, folder, kind FROM annotations \
              WHERE kind = ?1 ORDER BY path, folder = '', folder, section, id",
         ) else {
             return out;
@@ -74,8 +97,8 @@ impl Store {
     }
 }
 
-/// Build an `Annotation` from six consecutive columns starting at `base`:
-/// `id, section, quote, note, name, folder`.
+/// Build an `Annotation` from seven consecutive columns starting at `base`:
+/// `id, section, quote, note, name, folder, kind`.
 fn annotation_at(r: &rusqlite::Row, base: usize) -> rusqlite::Result<Annotation> {
     Ok(Annotation {
         id: r.get(base)?,
@@ -84,5 +107,6 @@ fn annotation_at(r: &rusqlite::Row, base: usize) -> rusqlite::Result<Annotation>
         note: r.get(base + 3)?,
         name: r.get(base + 4)?,
         folder: r.get(base + 5)?,
+        kind: r.get(base + 6)?,
     })
 }
