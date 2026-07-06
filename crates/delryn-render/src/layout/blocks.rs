@@ -102,6 +102,14 @@ pub(super) fn emit_image(
             kind: LineKind::Body,
         });
     }
+    // A blank line sets the caption off from the picture instead of letting it
+    // hug the bottom edge (only when there's actually an image above it).
+    if rows > 0 && !caption.is_empty() {
+        out.push(DisplayLine {
+            runs: Vec::new(),
+            kind: LineKind::Body,
+        });
+    }
     // Figure caption (italic), wrapped and centred beneath the image — images
     // are centred in the column (see the reader view), so the caption sits on
     // the same axis rather than hugging the left margin.
