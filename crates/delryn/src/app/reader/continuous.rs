@@ -24,11 +24,13 @@
 //! * [`scroll_down`](Reader::scroll_down) / [`scroll_up`](Reader::scroll_up) roll
 //!   the anchor across boundaries instead of stopping at a per-section edge.
 //!
-//! Following sections' **figures are drawn too** ([`Reader::continuous_following_images`]
-//! + the view's `draw_following_images`): each joined section's images are built,
-//! their rows reserved from their own heights, and they're sliced at their buffer
-//! row like the anchor's — so a figure near a chapter boundary scrolls smoothly
-//! instead of leaving a blank gap until its section becomes the anchor.
+//! Following sections' **figures are drawn too** (via
+//! [`Reader::continuous_following_images`] and the view's `draw_following_images`):
+//! each joined section's images are built, their rows reserved up front from a
+//! stable decode estimate (never re-wrapped when the build lands, so scrolling
+//! never shifts), and sliced at their buffer row like the anchor's — a figure near
+//! a chapter boundary scrolls smoothly rather than leaving a blank gap until its
+//! section becomes the anchor.
 //!
 //! v1 limits (documented, graceful — no crashes): the bookmark gutter and the link
 //! cursor follow the **anchor** section only. Reflow continuous is single-column
@@ -313,14 +315,6 @@ impl Reader {
     /// `height` lines are gathered (or the book ends). Owned so the view can render
     /// it directly. Following sections are wrapped once and cached.
     pub fn continuous_lines(&mut self, height: usize) -> Vec<DisplayLine> {
-        // A following image's built height can refine its reserved rows; drop the
-        // wrap cache when that changes so those sections re-wrap (and the view
-        // draws them where they're reserved).
-        let sig = self.following_rows_sig();
-        if sig != self.cont_img_sig {
-            self.cont_cache.clear();
-            self.cont_img_sig = sig;
-        }
         let scroll = self.scroll.min(self.lines.len());
         let mut out: Vec<DisplayLine> = self.lines[scroll..].to_vec();
         self.cont_spans.clear();
@@ -334,21 +328,6 @@ impl Reader {
             s += 1;
         }
         out
-    }
-
-    /// An order-stable signature (FNV, sections ascending) of the reserved image
-    /// rows across the tracked following sections — a change re-wraps the cache.
-    fn following_rows_sig(&self) -> u64 {
-        let mut secs: Vec<&usize> = self.images.following.keys().collect();
-        secs.sort_unstable();
-        let mut h = 0xcbf29ce484222325u64;
-        for s in secs {
-            h = (h ^ *s as u64).wrapping_mul(0x0000_0100_0000_01b3);
-            for (_, rows) in &self.images.following[s] {
-                h = (h ^ u64::from(*rows)).wrapping_mul(0x0000_0100_0000_01b3);
-            }
-        }
-        h
     }
 
     /// Continuous mode: the *following* sections' images to draw, as `(buffer row,

@@ -118,11 +118,6 @@ impl Reader {
             self.images.images_key = key;
             self.images.policy = geom.policy;
             self.remap_section_images(builder, picker, geom);
-        } else {
-            // No remap, but a build that just landed may have a truer row count
-            // than the pre-build estimate the section was wrapped with. Refresh so
-            // the WrapKey re-wraps and the reserved blanks match the drawn image.
-            self.refresh_row_estimates();
         }
 
         // 4. Pre-build neighbouring sections' images once the current one is ready.
@@ -153,38 +148,13 @@ impl Reader {
         }
     }
 
-    /// Replace each current-section image's estimated reserved rows with the
-    /// exact cell height of its built protocol, once available. The initial reflow
-    /// reserves `target_cells()` estimates (before the images decode); the resize
-    /// can land a row off, which would leave a gap under the image or overlap its
-    /// caption. Called each frame after draining builds — cheap, and a change
-    /// re-keys the [`WrapKey`] (via `image_rows_sig`) so the section re-wraps with
-    /// the true heights.
-    fn refresh_row_estimates(&mut self) {
-        let pairs: Vec<(usize, ImgKey)> = self
-            .images
-            .section_images
-            .iter()
-            .map(|(&i, &k)| (i, k))
-            .collect();
-        for (idx, key) in pairs {
-            let Some(rows) = self.images.cache.peek(&key).map(|p| p.rows) else {
-                continue;
-            };
-            if let Some(slot) = self.images.rows_estimate.get_mut(idx)
-                && *slot != rows
-            {
-                *slot = rows;
-            }
-        }
-    }
-
     /// The images of `section` as `(cache key, reserved rows)` by section-local
-    /// index, from its cached blocks at the current geometry — the built plan's
-    /// exact rows when available, else a decode estimate. Read-only (dispatches no
-    /// builds); used to draw and reflow the *following* sections in continuous
-    /// mode. Empty if the section's blocks aren't loaded. Mirrors the per-image
-    /// keying in [`remap_section_images`].
+    /// index, from its cached blocks at the current geometry. The reserved rows are
+    /// the **decode-time estimate** (`target_cells`), deliberately *not* the built
+    /// plan's height — a stable, up-front reservation so a following section never
+    /// re-wraps (and shifts the scroll) when its images finish building. The drawn
+    /// image is ≤ the estimate, so it fits within the reserved rows. Read-only
+    /// (dispatches no builds). Empty if the section's blocks aren't loaded.
     fn section_image_info(
         &self,
         section: usize,
@@ -228,9 +198,7 @@ impl Reader {
                     eq_scale: geom.eq_scale,
                     fit_mode: geom.fit_mode,
                 };
-                let rows = if let Some(plan) = self.images.cache.peek(&key) {
-                    plan.rows
-                } else if data.is_empty() {
+                let rows = if data.is_empty() {
                     0
                 } else {
                     media::image_dimensions(data)

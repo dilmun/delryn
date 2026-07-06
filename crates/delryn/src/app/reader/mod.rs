@@ -164,10 +164,6 @@ pub struct Reader {
     /// joined into the render buffer this frame, so the view can place that
     /// section's images at the right rows. Anchor images are placed from `lines`.
     cont_spans: Vec<(usize, usize)>,
-    /// Signature of the following sections' reserved image rows the `cont_cache`
-    /// was wrapped under; when a build refines a following image's height this
-    /// changes and the cache is dropped so those sections re-wrap.
-    cont_img_sig: u64,
     /// Inline-image lifecycle (built protocols, row estimates, in-flight builds).
     images: ImageState,
     /// Paged-image (PDF) page theming (themer + themed-PNG cache + active policy).
@@ -289,7 +285,6 @@ impl Reader {
             cont_cache: HashMap::new(),
             cont_key: WrapKey::invalid(),
             cont_spans: Vec::new(),
-            cont_img_sig: 0,
             images: ImageState::default(),
             pages: PageThemeState::default(),
             crisp,
@@ -462,7 +457,6 @@ impl Reader {
             justify: self.justify,
             tidy: self.tidy_spacing,
             images_key: self.images.images_key,
-            image_rows_sig: image_rows_sig(&self.images.rows_estimate),
         };
         if key != self.wrapped {
             self.lines = self.wrap_at(&self.blocks, width);
@@ -865,18 +859,6 @@ impl Reader {
 /// Unlike [`find_line`] (tuned for short TOC headings), it never matches a tiny
 /// early line as a substring of a long locator, and tolerates a locator that
 /// wraps across lines by matching only its first few words.
-/// A cheap order-sensitive signature (FNV-1a) of the per-image reserved row
-/// counts, for the [`WrapKey`]. When a built image refines its estimated rows,
-/// this changes and the section re-wraps so the reserved blanks match the drawn
-/// image height (caption flush beneath — no gap, no overlap).
-fn image_rows_sig(rows: &[u16]) -> u64 {
-    let mut h = 0xcbf29ce484222325u64;
-    for &r in rows {
-        h = (h ^ u64::from(r)).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
-}
-
 fn find_target_line(lines: &[DisplayLine], locator: &str) -> Option<usize> {
     let n = loose_key(locator);
     if n.is_empty() {
@@ -945,15 +927,6 @@ mod tests {
     use super::*;
     use crate::document::{Document, Section, SectionLoader, TocEntry};
     use delryn_model::{Metadata, Span};
-
-    #[test]
-    fn image_rows_sig_detects_reservation_changes() {
-        // A build refining one image's rows must re-key the wrap; the signature is
-        // order-sensitive so a reordering re-wraps too, and stable otherwise.
-        assert_ne!(image_rows_sig(&[10, 20]), image_rows_sig(&[10, 21]));
-        assert_ne!(image_rows_sig(&[10, 20]), image_rows_sig(&[20, 10]));
-        assert_eq!(image_rows_sig(&[10, 20]), image_rows_sig(&[10, 20]));
-    }
 
     /// A minimal in-memory `Document` for reader tests: a list of sections, each
     /// a list of blocks. No TOC/outline/images.
