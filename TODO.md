@@ -395,8 +395,17 @@ jump-by-type + a reader cursor.
       `BookRow.tags`, normalised via `delryn_model::tags` (lowercase/trim/dedup),
       edited with `T` (inline prompt; single replaces, multi-selection adds),
       shown in the detail pane + a toggleable sortable Tags column, filterable
-      with `tag:` in the DSL.) Still: highlight colors, selection/page-anchored
-      notes, backlinks.*
+      with `tag:` in the DSL.)*
+      ✅ **Notes** (branch `feat/notes-highlights`): a note = a line anchor (the
+      current `current_quote`) + user commentary, `kind = KIND_NOTE(1)` (reusing
+      the reserved `note` column — no migration). Add with `a` in the reader (drops
+      a commentary prompt); a pen `✎` marks note lines in the gutter (vs the ⚑
+      bookmark flag; note wins when both land on a line). The overlay (`'`) is now a
+      unified **Annotations** list showing bookmarks + notes with their icons and
+      commentary, **searchable** (`/` filters over name/quote/note/folder), with
+      `e` to edit a note's commentary. Store: `add_note`, `set_annotation_note`,
+      `list_annotations`, `Annotation.kind` + `is_note()`. *Still: highlight
+      colors, selection-anchored (sub-line) notes, backlinks.*
 - [x] Statistics: `delryn-library::stats` + overlay (`i`) — totals, status mix,
       ratings, reading hours, top authors.
 - [x] Export: `delryn-library::export` (`X`) — book list → CSV / JSON / Markdown.

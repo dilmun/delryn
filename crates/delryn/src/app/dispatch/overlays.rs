@@ -176,14 +176,17 @@ impl App {
 
     pub(super) fn prompt_key(&mut self, key: KeyEvent) {
         match key.code {
-            // Cancelling reopens the bookmarks overlay the prompt was raised from
-            // (keeping the cursor on the entry being edited), leaving it unchanged.
+            // Cancelling an edit reopens the annotations overlay it was raised from
+            // (keeping the cursor on the entry); a new-note prompt just returns to
+            // the reader, dropping the un-saved note.
             KeyCode::Esc => {
                 if let Overlay::Prompt(p) = &self.overlay {
-                    let id = match p.kind {
-                        PromptKind::Name(id) | PromptKind::Folder(id) => id,
-                    };
-                    self.refresh_bookmarks(id);
+                    match p.kind {
+                        PromptKind::Name(id)
+                        | PromptKind::Folder(id)
+                        | PromptKind::EditNote(id) => self.refresh_bookmarks(id),
+                        PromptKind::NewNote { .. } => self.overlay = Overlay::None,
+                    }
                 } else {
                     self.overlay = Overlay::None;
                 }
@@ -197,28 +200,48 @@ impl App {
         }
     }
 
-    /// Apply the committed prompt text to its bookmark (rename / file), then
-    /// reopen the bookmarks overlay (the prompt is always raised from it).
+    /// Apply the committed prompt text: rename / file / edit-note reopen the
+    /// annotations overlay; a new note is saved and control returns to the reader.
     fn prompt_commit(&mut self) {
         let Overlay::Prompt(p) = std::mem::replace(&mut self.overlay, Overlay::None) else {
             return;
         };
         let text = p.input.text().trim().to_string();
-        let id = match p.kind {
+        match p.kind {
             PromptKind::Name(id) => {
                 if let Some(store) = &self.session.store {
                     store.set_annotation_name(id, &text);
                 }
-                id
+                self.refresh_bookmarks(id);
             }
             PromptKind::Folder(id) => {
                 if let Some(store) = &self.session.store {
                     store.set_annotation_folder(id, &text);
                 }
-                id
+                self.refresh_bookmarks(id);
             }
-        };
-        self.refresh_bookmarks(id);
+            PromptKind::EditNote(id) => {
+                if let Some(store) = &self.session.store {
+                    store.set_annotation_note(id, &text);
+                }
+                self.refresh_bookmarks(id);
+            }
+            PromptKind::NewNote { section, quote } => {
+                // An empty body cancels — no blank notes.
+                if !text.is_empty() {
+                    if let Some(store) = &self.session.store
+                        && !self.session.book_path.is_empty()
+                    {
+                        store.add_note(&self.session.book_path, section, &quote, &text);
+                    }
+                    self.sync_reader_bookmarks();
+                    if let Some(r) = self.reader.as_mut() {
+                        r.flash = Some("note added".into());
+                    }
+                }
+                self.overlay = Overlay::None;
+            }
+        }
     }
 
     /// (Re)open the bookmarks overlay from the store, keeping the cursor on
@@ -230,12 +253,31 @@ impl App {
             self.overlay = Overlay::None;
             return;
         };
-        let items = store.list_bookmarks(&self.session.book_path);
+        let items = store.list_annotations(&self.session.book_path);
+        // Reopen on the tab the edited annotation lives on, cursor kept on it.
+        let tab = items
+            .iter()
+            .find(|i| i.id == keep_id)
+            .map(|i| {
+                if i.is_note() {
+                    AnnotTab::Notes
+                } else {
+                    AnnotTab::Bookmarks
+                }
+            })
+            .unwrap_or(AnnotTab::Bookmarks);
         let sel = items
             .iter()
+            .filter(|i| i.is_note() == matches!(tab, AnnotTab::Notes))
             .position(|i| i.id == keep_id)
-            .unwrap_or_else(|| items.len().saturating_sub(1));
-        self.overlay = Overlay::Annot(AnnotState { items, sel });
+            .unwrap_or(0);
+        self.overlay = Overlay::Annot(AnnotState {
+            items,
+            tab,
+            sel,
+            filter: String::new(),
+            filtering: false,
+        });
         self.sync_reader_bookmarks();
     }
 
@@ -243,9 +285,54 @@ impl App {
         let Overlay::Annot(a) = &self.overlay else {
             return;
         };
-        let (len, sel) = (a.items.len(), a.sel);
+
+        // While typing a filter, printable keys edit it; arrows still navigate.
+        if a.filtering {
+            if let Overlay::Annot(a) = &mut self.overlay {
+                match key.code {
+                    KeyCode::Esc => {
+                        a.filter.clear();
+                        a.filtering = false;
+                        a.sel = 0;
+                    }
+                    KeyCode::Enter => a.filtering = false,
+                    KeyCode::Backspace => {
+                        a.filter.pop();
+                        a.sel = 0;
+                    }
+                    KeyCode::Char(c) => {
+                        a.filter.push(c);
+                        a.sel = 0;
+                    }
+                    KeyCode::Up => a.sel = a.sel.saturating_sub(1),
+                    KeyCode::Down => {
+                        let n = a.filtered().len();
+                        if n > 0 {
+                            a.sel = (a.sel + 1).min(n - 1);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        let (len, sel) = (a.filtered().len(), a.sel);
         match key.code {
             KeyCode::Esc | KeyCode::Char('\'') | KeyCode::Char('q') => self.overlay = Overlay::None,
+            // Switch between the Bookmarks and Notes tabs (Tab or ← / →).
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                if let Overlay::Annot(a) = &mut self.overlay {
+                    a.tab = a.tab.toggled();
+                    a.sel = 0;
+                    a.filter.clear();
+                }
+            }
+            KeyCode::Char('/') => {
+                if let Overlay::Annot(a) = &mut self.overlay {
+                    a.filtering = true;
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Overlay::Annot(a) = &mut self.overlay
                     && len > 0
@@ -260,7 +347,7 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Char('l') => {
                 let target = if let Overlay::Annot(a) = &self.overlay {
-                    a.items.get(a.sel).map(|i| (i.section, i.quote.clone()))
+                    a.selected().map(|i| (i.section, i.quote))
                 } else {
                     None
                 };
@@ -274,7 +361,7 @@ impl App {
             // Name (or rename) the selected entry; prefilled with its current name.
             KeyCode::Char('r') => {
                 let target = if let Overlay::Annot(a) = &self.overlay {
-                    a.items.get(a.sel).map(|i| (i.id, i.name.clone()))
+                    a.selected().map(|i| (i.id, i.name))
                 } else {
                     None
                 };
@@ -288,7 +375,7 @@ impl App {
             // File the selected entry into a folder; prefilled with its current one.
             KeyCode::Char('f') => {
                 let target = if let Overlay::Annot(a) = &self.overlay {
-                    a.items.get(a.sel).map(|i| (i.id, i.folder.clone()))
+                    a.selected().map(|i| (i.id, i.folder))
                 } else {
                     None
                 };
@@ -299,19 +386,35 @@ impl App {
                     });
                 }
             }
+            // Edit a note's commentary; prefilled with the current body. Bookmarks
+            // carry no commentary, so `e` on one is a no-op.
+            KeyCode::Char('e') => {
+                let target = if let Overlay::Annot(a) = &self.overlay {
+                    a.selected().filter(|i| i.is_note()).map(|i| (i.id, i.note))
+                } else {
+                    None
+                };
+                if let Some((id, note)) = target {
+                    self.overlay = Overlay::Prompt(Prompt {
+                        kind: PromptKind::EditNote(id),
+                        input: TextInput::from(note),
+                    });
+                }
+            }
             KeyCode::Char('d') => {
                 let id = if let Overlay::Annot(a) = &self.overlay {
-                    a.items.get(a.sel).map(|i| i.id)
+                    a.selected().map(|i| i.id)
                 } else {
                     None
                 };
                 if let (Some(id), Some(store)) = (id, &self.session.store) {
                     store.delete_annotation(id);
-                    let items = store.list_bookmarks(&self.session.book_path);
+                    let items = store.list_annotations(&self.session.book_path);
                     if let Overlay::Annot(a) = &mut self.overlay {
                         a.items = items;
-                        if a.sel >= a.items.len() {
-                            a.sel = a.items.len().saturating_sub(1);
+                        let m = a.filtered().len();
+                        if a.sel >= m {
+                            a.sel = m.saturating_sub(1);
                         }
                     }
                     self.sync_reader_bookmarks();
@@ -321,16 +424,19 @@ impl App {
         }
     }
 
-    /// Push the open book's bookmarks down to the reader so it can mark their
+    /// Push the open book's annotations down to the reader so it can mark their
     /// lines in the gutter. Cheap; call after any add/delete/move and on open.
     pub(crate) fn sync_reader_bookmarks(&mut self) {
         if let (Some(store), Some(r)) = (&self.session.store, self.reader.as_mut()) {
             let marks = store
-                .list_bookmarks(&self.session.book_path)
+                .list_annotations(&self.session.book_path)
                 .into_iter()
-                .map(|a| (a.section, a.quote))
+                .map(|a| {
+                    let is_note = a.is_note();
+                    (a.section, a.quote, is_note)
+                })
                 .collect();
-            r.set_bookmarks(marks);
+            r.set_annotations(marks);
         }
     }
 
