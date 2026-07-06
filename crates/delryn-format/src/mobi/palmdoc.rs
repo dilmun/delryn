@@ -13,7 +13,9 @@
 /// Decompress one PalmDOC record. Malformed back-references are skipped rather
 /// than panicking, so a corrupt record degrades gracefully instead of aborting.
 pub fn decompress(input: &[u8]) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::with_capacity(input.len() * 4);
+    // `* 4` is a typical PalmDOC ratio; `saturating_mul` avoids an overflow panic
+    // on a pathologically large record (32-bit builds). Just a reservation hint.
+    let mut out: Vec<u8> = Vec::with_capacity(input.len().saturating_mul(4));
     let mut i = 0;
     while i < input.len() {
         let c = input[i];
