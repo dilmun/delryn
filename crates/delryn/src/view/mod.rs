@@ -65,29 +65,16 @@ pub fn cover_image_rect(area: Rect, font: (u16, u16), dims: (u32, u32)) -> Rect 
     }
 }
 
-/// The exact screen rect an open blocking overlay covers this frame, if any —
-/// matched to each popup's own `centered(...)` geometry (keep in sync with the
-/// corresponding `*::render`). The full-screen image viewer covers everything.
+/// The exact screen rect an open blocking overlay covers this frame, if any, so
+/// the reader can skip inline images the popup would clobber. Every bordered
+/// window shares one geometry ([`overlay_rect`]); the full-screen image viewer
+/// covers everything.
 fn overlay_occlusion(area: Rect, app: &App) -> Option<Rect> {
     if matches!(app.overlay, Overlay::ImageView(_)) {
         return Some(area);
     }
-    if matches!(app.overlay, Overlay::Settings(_)) {
-        return Some(centered(area, 64, 28));
-    }
-    if let Overlay::Palette(p) = &app.overlay {
-        let visible = p.filtered().len().min(10) as u16;
-        return Some(centered(area, 56, visible + 3));
-    }
-    if let Overlay::Stats(s) = &app.overlay {
-        return Some(centered(
-            area,
-            46,
-            (10 + s.top_authors.len() as u16).min(22),
-        ));
-    }
-    if matches!(app.overlay, Overlay::Annot(_)) {
-        return Some(centered(area, 74, 20));
+    if app.overlay.is_resizable_window() {
+        return Some(overlay_rect(area, app.overlay_large));
     }
     None
 }
@@ -301,6 +288,24 @@ pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
         y: area.y + (area.height.saturating_sub(h)) / 2,
         width: w,
         height: h,
+    }
+}
+
+/// The standard **compact** size every bordered overlay window opens at.
+pub const OVERLAY_COMPACT: (u16, u16) = (80, 24);
+
+/// The centered rect for a bordered overlay window: one standard compact size for
+/// all of them, or a single larger size (~94 %×92 % of the screen) when `large`
+/// is set (toggled with `f`). Clamped to the screen by [`centered`], so it stays
+/// valid on a small terminal. All overlay renderers — and [`overlay_occlusion`] —
+/// go through this, so size, centering, and mouse/occlusion never drift apart.
+pub fn overlay_rect(area: Rect, large: bool) -> Rect {
+    if large {
+        let w = (u32::from(area.width) * 94 / 100) as u16;
+        let h = (u32::from(area.height) * 92 / 100) as u16;
+        centered(area, w, h)
+    } else {
+        centered(area, OVERLAY_COMPACT.0, OVERLAY_COMPACT.1)
     }
 }
 
