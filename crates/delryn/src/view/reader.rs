@@ -281,8 +281,48 @@ fn render_content(
         for placement in &plan.placements {
             if let Placement::Text(col) = placement {
                 draw_images_in(f, col.area, reader, col.scroll, scrolling);
+                // Continuous mode joins following sections into the same column;
+                // draw their figures too so a boundary figure scrolls smoothly
+                // instead of leaving a blank gap until its section is the anchor.
+                if reader.continuous_active() {
+                    draw_following_images(f, col.area, reader, scrolling);
+                }
             }
         }
+    }
+}
+
+/// Draw the *following* continuous sections' figures — the anchor's are placed by
+/// [`draw_images_in`] from `reader.lines`; these come from the joined buffer, each
+/// at its reserved row and sliced the same way, so nothing jumps or gaps at a
+/// chapter boundary.
+fn draw_following_images(f: &mut Frame, area: Rect, reader: &Reader, scrolling: bool) {
+    for (row, key) in reader.continuous_following_images() {
+        if row >= area.height as usize {
+            continue; // entirely below the viewport
+        }
+        let Some(plan) = reader.image_plan_by_key(&key) else {
+            continue; // not built yet — the reserved rows stay blank this frame
+        };
+        if scrolling && plan.needs_pretransmit() {
+            continue; // defer a first heavy upload to the settle frame
+        }
+        let x = (area.width.saturating_sub(plan.cols) / 2) as i16;
+        let y = row as i16;
+        if let Some(o) = reader.overlay_occlude {
+            let img_left = area.x.saturating_add(x.max(0) as u16);
+            let img_right = area
+                .x
+                .saturating_add((x + plan.cols as i16).clamp(0, area.width as i16) as u16);
+            let img_top = area.y.saturating_add(y.max(0) as u16);
+            let img_bottom = area
+                .y
+                .saturating_add((y + plan.rows as i16).clamp(0, area.height as i16) as u16);
+            if img_left < o.right() && img_right > o.x && img_top < o.bottom() && img_bottom > o.y {
+                continue;
+            }
+        }
+        f.render_widget(SlicedImage::new(&plan.proto, SignedPosition { x, y }), area);
     }
 }
 
