@@ -20,13 +20,7 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = if dr.fullscreen {
-        f.area()
-    } else {
-        // Wide enough for the full key hint + roomy path column (clamped to the
-        // window on narrow terminals by `centered`).
-        super::centered(f.area(), 100, 30)
-    };
+    let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
     let to_delete = dr.checked_count();
@@ -186,7 +180,7 @@ pub fn render_ignored(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = super::centered(f.area(), 78, 22);
+    let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
     let block = Block::default()

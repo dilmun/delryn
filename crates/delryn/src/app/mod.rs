@@ -227,6 +227,9 @@ pub struct App {
     /// `pending_confirm` (modal above any overlay) and `dup_preview` (the parked
     /// resolver) stay separate fields below.
     pub overlay: Overlay,
+    /// Whether bordered overlay windows open at the larger size (toggled with
+    /// `f`); a single session-wide preference so every popup is sized the same.
+    pub overlay_large: bool,
     /// The duplicate-resolution overlay stashed while previewing a book from it —
     /// kept out of `overlay` so the dispatcher and renderer ignore it during the
     /// preview; restored when the reader returns (`q`/Esc).
@@ -410,6 +413,7 @@ impl App {
             pending: Pending::default(),
             should_quit: false,
             overlay: Overlay::None,
+            overlay_large: false,
             dup_preview: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
@@ -450,6 +454,7 @@ impl App {
             pending: Pending::default(),
             should_quit: false,
             overlay: Overlay::None,
+            overlay_large: false,
             dup_preview: None,
             pending_confirm: None,
             edit_queue: Vec::new(),

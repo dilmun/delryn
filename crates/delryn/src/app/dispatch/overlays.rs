@@ -373,7 +373,8 @@ impl App {
                 }
             }
             // File the selected entry into a folder; prefilled with its current one.
-            KeyCode::Char('f') => {
+            // (`f` is the window-resize key, so folder-filing is `F`.)
+            KeyCode::Char('F') => {
                 let target = if let Overlay::Annot(a) = &self.overlay {
                     a.selected().map(|i| (i.id, i.folder))
                 } else {

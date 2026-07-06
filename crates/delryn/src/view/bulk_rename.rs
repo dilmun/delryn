@@ -15,22 +15,12 @@ pub fn render(f: &mut Frame, app: &App) {
     };
     let theme = app.config.theme;
     let bg = theme.paper();
-    // ^F expands to (near) full screen for a wider, taller before/after view.
-    let area = if br.full {
-        let a = f.area();
-        super::centered(a, a.width.saturating_sub(4), a.height.saturating_sub(2))
-    } else {
-        super::centered(f.area(), 84, 26)
-    };
+    let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
     let n = br.targets.len();
     let books = if n == 1 { "book" } else { "books" };
-    let title = if br.full {
-        format!(" Rename · {n} {books}  (^F exit full screen) ")
-    } else {
-        format!(" Rename · {n} {books} ")
-    };
+    let title = format!(" Rename · {n} {books} ");
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
