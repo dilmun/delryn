@@ -129,6 +129,28 @@ impl Reader {
         if !self.images_pending() {
             self.prefetch_neighbor_images(builder, geom);
         }
+
+        // 5. Continuous mode: track (and build) the images of the *following*
+        //    sections stitched into the scroll buffer, so the view can draw them
+        //    too. A boundary figure then scrolls smoothly rather than showing a
+        //    blank gap until its section becomes the anchor. Uses last frame's span
+        //    list (plus the immediate next section) — one frame's lag is invisible.
+        if self.continuous_active() {
+            let fs = picker.font_size();
+            let mut sections: Vec<usize> = self.cont_spans.iter().map(|(s, _)| *s).collect();
+            let next = self.section + 1;
+            if next < self.doc.section_count() && !sections.contains(&next) {
+                sections.push(next);
+            }
+            self.images.following.clear();
+            for s in sections {
+                self.request_section_image_builds(s, builder, geom);
+                let info = self.section_image_info(s, geom, fs.width, fs.height);
+                self.images.following.insert(s, info);
+            }
+        } else if !self.images.following.is_empty() {
+            self.images.following.clear();
+        }
     }
 
     /// Replace each current-section image's estimated reserved rows with the
@@ -155,6 +177,71 @@ impl Reader {
                 *slot = rows;
             }
         }
+    }
+
+    /// The images of `section` as `(cache key, reserved rows)` by section-local
+    /// index, from its cached blocks at the current geometry — the built plan's
+    /// exact rows when available, else a decode estimate. Read-only (dispatches no
+    /// builds); used to draw and reflow the *following* sections in continuous
+    /// mode. Empty if the section's blocks aren't loaded. Mirrors the per-image
+    /// keying in [`remap_section_images`].
+    fn section_image_info(
+        &self,
+        section: usize,
+        geom: ImageGeom,
+        fw: u16,
+        fh: u16,
+    ) -> Vec<(ImgKey, u16)> {
+        let Some(blocks) = self.sections.sections.get(&section) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut idx = 0;
+        for block in blocks {
+            if let Block::Image {
+                data,
+                math,
+                width,
+                caption,
+                ..
+            } = block
+            {
+                let spec = size_spec(*width, *math, !caption.is_empty());
+                let key = ImgKey {
+                    section,
+                    idx,
+                    avail: geom.avail,
+                    max_rows: geom.max_rows,
+                    max_px: geom.max_px,
+                    target_pct: geom.width_pct,
+                    eq_scale: geom.eq_scale,
+                    fit_mode: geom.fit_mode,
+                    policy: geom.policy,
+                };
+                let fit = media::FitBox {
+                    fw,
+                    fh,
+                    cols: geom.avail,
+                    rows: geom.max_rows,
+                    max_px: geom.max_px,
+                    target_pct: geom.width_pct,
+                    eq_scale: geom.eq_scale,
+                    fit_mode: geom.fit_mode,
+                };
+                let rows = if let Some(plan) = self.images.cache.peek(&key) {
+                    plan.rows
+                } else if data.is_empty() {
+                    0
+                } else {
+                    media::image_dimensions(data)
+                        .map(|(w, h)| media::target_cells(w, h, fit, spec).1)
+                        .unwrap_or(0)
+                };
+                out.push((key, rows));
+                idx += 1;
+            }
+        }
+        out
     }
 
     /// Map the current section's images to cache keys, estimate their rows for
@@ -334,6 +421,13 @@ impl Reader {
     /// Look up a built plan for the current section's image `idx`.
     pub fn image_plan(&self, idx: usize) -> Option<&ImagePlan> {
         let key = self.images.section_images.get(&idx)?;
+        self.images.cache.peek(key)
+    }
+
+    /// The built plan for a specific cache key — a *following* section's image in
+    /// continuous mode (see [`Reader::continuous_following_images`]). Peek (no LRU
+    /// touch); `None` until it's built.
+    pub fn image_plan_by_key(&self, key: &ImgKey) -> Option<&ImagePlan> {
         self.images.cache.peek(key)
     }
 

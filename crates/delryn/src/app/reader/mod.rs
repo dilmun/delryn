@@ -160,6 +160,14 @@ pub struct Reader {
     /// wrap inputs) changes. Empty/unused outside continuous mode.
     cont_cache: HashMap<usize, Vec<DisplayLine>>,
     cont_key: WrapKey,
+    /// Continuous scroll: `(section, buffer-row offset)` of each following section
+    /// joined into the render buffer this frame, so the view can place that
+    /// section's images at the right rows. Anchor images are placed from `lines`.
+    cont_spans: Vec<(usize, usize)>,
+    /// Signature of the following sections' reserved image rows the `cont_cache`
+    /// was wrapped under; when a build refines a following image's height this
+    /// changes and the cache is dropped so those sections re-wrap.
+    cont_img_sig: u64,
     /// Inline-image lifecycle (built protocols, row estimates, in-flight builds).
     images: ImageState,
     /// Paged-image (PDF) page theming (themer + themed-PNG cache + active policy).
@@ -280,6 +288,8 @@ impl Reader {
             wrapped: WrapKey::invalid(),
             cont_cache: HashMap::new(),
             cont_key: WrapKey::invalid(),
+            cont_spans: Vec::new(),
+            cont_img_sig: 0,
             images: ImageState::default(),
             pages: PageThemeState::default(),
             crisp,
@@ -467,6 +477,19 @@ impl Reader {
     /// the one place the [`WrapOpts`] are assembled, shared by the anchor section
     /// ([`ensure_wrapped`](Self::ensure_wrapped)) and the continuous-scroll buffer.
     fn wrap_at(&self, blocks: &[Block], width: usize) -> Vec<DisplayLine> {
+        self.wrap_at_with_rows(blocks, width, &self.images.rows_estimate)
+    }
+
+    /// Wrap `blocks` reserving `image_rows` blank rows per image. The anchor uses
+    /// its own `rows_estimate` (via [`wrap_at`]); a *following* continuous section
+    /// passes its own rows so its figures reserve the right space (and align with
+    /// where the view draws them).
+    fn wrap_at_with_rows(
+        &self,
+        blocks: &[Block],
+        width: usize,
+        image_rows: &[u16],
+    ) -> Vec<DisplayLine> {
         wrap_blocks(
             blocks,
             &WrapOpts {
@@ -480,7 +503,7 @@ impl Reader {
                 justify: self.justify,
                 tidy_spacing: self.tidy_spacing,
             },
-            &self.images.rows_estimate,
+            image_rows,
         )
     }
 

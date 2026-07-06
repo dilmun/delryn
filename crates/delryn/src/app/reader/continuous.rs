@@ -24,10 +24,15 @@
 //! * [`scroll_down`](Reader::scroll_down) / [`scroll_up`](Reader::scroll_up) roll
 //!   the anchor across boundaries instead of stopping at a per-section edge.
 //!
-//! v1 limits (documented, graceful — no crashes): the bookmark gutter, the link
-//! cursor, and inline-image transmit follow the **anchor** section only; a
-//! following section's figures reserve their space (blank rows) until it becomes
-//! the anchor. Reflow continuous is single-column (Center) only; page mode and
+//! Following sections' **figures are drawn too** ([`Reader::continuous_following_images`]
+//! + the view's `draw_following_images`): each joined section's images are built,
+//! their rows reserved from their own heights, and they're sliced at their buffer
+//! row like the anchor's — so a figure near a chapter boundary scrolls smoothly
+//! instead of leaving a blank gap until its section becomes the anchor.
+//!
+//! v1 limits (documented, graceful — no crashes): the bookmark gutter and the link
+//! cursor follow the **anchor** section only. Reflow continuous is single-column
+//! (Center) only; page mode and
 //! chapter-lock fall back to per-section scrolling. The **paged** variant
 //! (`continuous_paged_*`) works in Center (one page per band) and TwoPage (a facing
 //! pair per band), with zoom / centre / horizontal pan; page-snap and chapter-lock
@@ -36,7 +41,7 @@
 use std::sync::atomic::Ordering;
 
 use crate::config::ViewMode;
-use crate::layout::DisplayLine;
+use crate::layout::{DisplayLine, LineKind};
 
 use super::{Reader, page_stack};
 
@@ -308,12 +313,22 @@ impl Reader {
     /// `height` lines are gathered (or the book ends). Owned so the view can render
     /// it directly. Following sections are wrapped once and cached.
     pub fn continuous_lines(&mut self, height: usize) -> Vec<DisplayLine> {
+        // A following image's built height can refine its reserved rows; drop the
+        // wrap cache when that changes so those sections re-wrap (and the view
+        // draws them where they're reserved).
+        let sig = self.following_rows_sig();
+        if sig != self.cont_img_sig {
+            self.cont_cache.clear();
+            self.cont_img_sig = sig;
+        }
         let scroll = self.scroll.min(self.lines.len());
         let mut out: Vec<DisplayLine> = self.lines[scroll..].to_vec();
+        self.cont_spans.clear();
         let count = self.doc.section_count();
         let mut s = self.section + 1;
         // One extra line so a partial last row still has content beneath it.
         while out.len() <= height && s < count {
+            self.cont_spans.push((s, out.len()));
             let lines = self.following_lines(s);
             out.extend(lines);
             s += 1;
@@ -321,8 +336,56 @@ impl Reader {
         out
     }
 
-    /// Wrapped lines of following section `s` for the continuous buffer, cached and
-    /// invalidated wholesale when the wrap inputs change.
+    /// An order-stable signature (FNV, sections ascending) of the reserved image
+    /// rows across the tracked following sections — a change re-wraps the cache.
+    fn following_rows_sig(&self) -> u64 {
+        let mut secs: Vec<&usize> = self.images.following.keys().collect();
+        secs.sort_unstable();
+        let mut h = 0xcbf29ce484222325u64;
+        for s in secs {
+            h = (h ^ *s as u64).wrapping_mul(0x0000_0100_0000_01b3);
+            for (_, rows) in &self.images.following[s] {
+                h = (h ^ u64::from(*rows)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        h
+    }
+
+    /// Continuous mode: the *following* sections' images to draw, as `(buffer row,
+    /// cache key)`. The buffer row is the offset from the top visible line (anchor
+    /// `lines[scroll]`), i.e. the screen row the image reserved — so the view can
+    /// place it exactly where the reflow left the blank rows. The anchor section's
+    /// images are drawn separately from `lines`.
+    pub fn continuous_following_images(&self) -> Vec<(usize, crate::media::ImgKey)> {
+        let mut out = Vec::new();
+        for &(section, off) in &self.cont_spans {
+            let (Some(lines), Some(info)) = (
+                self.cont_cache.get(&section),
+                self.images.following.get(&section),
+            ) else {
+                continue;
+            };
+            let mut i = 0;
+            while i < lines.len() {
+                let LineKind::Image(idx) = lines[i].kind else {
+                    i += 1;
+                    continue;
+                };
+                let start = i;
+                while i < lines.len() && lines[i].kind == LineKind::Image(idx) {
+                    i += 1;
+                }
+                if let Some((key, _)) = info.get(idx) {
+                    out.push((off + start, *key));
+                }
+            }
+        }
+        out
+    }
+
+    /// Wrapped lines of following section `s` for the continuous buffer, reserving
+    /// that section's own image rows. Cached; invalidated wholesale when the wrap
+    /// inputs (`cont_key`) or the following image rows (`cont_img_sig`) change.
     fn following_lines(&mut self, s: usize) -> Vec<DisplayLine> {
         if self.cont_key != self.wrapped {
             self.cont_cache.clear();
@@ -332,7 +395,13 @@ impl Reader {
             return v.clone();
         }
         let blocks = self.fetch_blocks(s);
-        let lines = self.wrap_at(&blocks, self.last_measure.max(1));
+        let rows: Vec<u16> = self
+            .images
+            .following
+            .get(&s)
+            .map(|info| info.iter().map(|(_, r)| *r).collect())
+            .unwrap_or_default();
+        let lines = self.wrap_at_with_rows(&blocks, self.last_measure.max(1), &rows);
         self.cont_cache.insert(s, lines.clone());
         lines
     }
