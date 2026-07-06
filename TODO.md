@@ -849,19 +849,17 @@ grow these further.
       three allows are **gone**: the (avail, max_rows, max_px, width_pct, policy)
       geometry is now an `ImageGeom` struct (R-D, commit 9776831). (The two `Store`
       row-writer allows remain documented — compliant.)
-- [ ] **Kitty image-id namespace is unmanaged** (latent, low-probability). Reader
-      inline images, library covers, and the image viewer all mint their Kitty
-      `i=` id from `rand::random::<u32>()` (vendored `ratatui-image`
-      `picker.rs:248/285`) with no allocator/registry, while the direct PDF page
-      deck uses deterministic `0x0F00_0000 + section` (`page_deck.rs:136`) that
-      only *claims* to be "clear of ratatui-image's" — the random draw spans the
-      whole u32 and can land in that range. So a `d=I` delete (or a re-transmit)
-      in one context can, at ~2⁻³² odds, clobber another context's live image.
-      Not the cause of the 2026-07-05 vanish bug (that was the viewer *leak*, fixed
-      on `fix/image-viewer-terminal-image-leak`), but the two id schemes should be
-      made genuinely disjoint (reserve a high range for the deck and mask it out of
-      the random draw, or move to a shared monotonic allocator in the vendored
-      picker).
+- [x] ✅ **Kitty image-id namespace made disjoint** (`audit/comprehensive-2026-07-06`).
+      Reader inline images, library covers, and the image viewer minted their Kitty
+      `i=` id from a full-range `rand::random::<u32>()` (vendored `ratatui-image`
+      `picker.rs:248/285`), while the direct PDF page deck uses deterministic
+      `0x0F00_0000 + section` — so a random draw could land in the deck's block and a
+      `d=I` delete/re-transmit in one context could (at ~2⁻³² odds) clobber another
+      context's live image. Fix: the vendored picker now draws widget ids via
+      `random_kitty_id()` = `1 + random::<u32>() % (KITTY_ID_MAX - 1)` with
+      `KITTY_ID_MAX = 0x0F00_0000`, strictly below the deck's reserved high block
+      (and never 0). The deck's `id()` doc records the now-enforced reservation.
+      Regression test `random_kitty_id_stays_below_deck_reserved_block`.
 - [x] **Image-dense books blanked their visible figures on scroll**
       (`fix/inline-image-prefetch-eviction`, USER-CONFIRMED "problem solved").
       *Diagnosed with a `FOLIO_IMG_LOG` trace, not by guessing* — earlier guesses
