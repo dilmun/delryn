@@ -388,21 +388,6 @@ fn detect_converted(doc: &EpubDoc<BufReader<File>>) -> bool {
     )
 }
 
-/// Substrings that name a format-conversion / repackaging tool.
-const CONVERTERS: [&str; 11] = [
-    "calibre",
-    "pandoc",
-    "ebook-convert",
-    "aspose",
-    "kindlegen",
-    "mobi",
-    "abbyy",
-    "able2extract",
-    "ghostscript",
-    "wkhtmltopdf",
-    "pdftoepub",
-];
-
 /// The pure decision behind [`detect_converted`], from the few OPF fields that
 /// carry a provenance signal. `calibre_ns` is whether any `calibre:*` metadata
 /// is present.
@@ -415,13 +400,7 @@ fn converted_from(
     if calibre_ns {
         return true;
     }
-    let names_tool = |s: Option<&str>| {
-        s.map(|v| {
-            let v = v.to_lowercase();
-            CONVERTERS.iter().any(|t| v.contains(t))
-        })
-        .unwrap_or(false)
-    };
+    let names_tool = |s: Option<&str>| s.is_some_and(crate::provenance::names_converter_tool);
     if names_tool(generator) || names_tool(contributor) {
         return true;
     }

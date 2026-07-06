@@ -11,6 +11,7 @@ pub mod html;
 pub mod mathml;
 pub mod mobi;
 pub mod pdf;
+mod provenance;
 
 use anyhow::Result;
 
