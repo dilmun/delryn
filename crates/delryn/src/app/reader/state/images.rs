@@ -37,6 +37,11 @@ pub struct ImageState {
     /// until its section becomes the anchor. Rebuilt each frame from the sections
     /// on screen.
     pub following: HashMap<usize, Vec<(ImgKey, u16)>>,
+    /// The image geometry + font cell size (`(fw, fh)`) captured by `sync_images`,
+    /// so `following_lines` can size a newly-shown continuous section's figures on
+    /// demand (no frame lag). `None` until the first `sync_images`.
+    pub geom: Option<crate::app::reader::ImageGeom>,
+    pub fs: (u16, u16),
 }
 
 impl Default for ImageState {
@@ -56,6 +61,8 @@ impl Default for ImageState {
             requested: HashSet::new(),
             failed: HashSet::new(),
             following: HashMap::new(),
+            geom: None,
+            fs: (0, 0),
         }
     }
 }

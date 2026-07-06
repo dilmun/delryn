@@ -318,6 +318,9 @@ impl Reader {
         let scroll = self.scroll.min(self.lines.len());
         let mut out: Vec<DisplayLine> = self.lines[scroll..].to_vec();
         self.cont_spans.clear();
+        // Repopulated per shown section by `following_lines` (below), so stale
+        // sections no longer on screen drop out of the draw set.
+        self.images.following.clear();
         let count = self.doc.section_count();
         let mut s = self.section + 1;
         // One extra line so a partial last row still has content beneath it.
@@ -363,12 +366,20 @@ impl Reader {
     }
 
     /// Wrapped lines of following section `s` for the continuous buffer, reserving
-    /// that section's own image rows. Cached; invalidated wholesale when the wrap
-    /// inputs (`cont_key`) or the following image rows (`cont_img_sig`) change.
+    /// that section's own image rows (its stable decode estimate, computed on demand
+    /// so a newly-shown section is sized right the first frame — no lag, no shift).
+    /// Cached; invalidated wholesale when the wrap inputs (`cont_key`) change.
     fn following_lines(&mut self, s: usize) -> Vec<DisplayLine> {
         if self.cont_key != self.wrapped {
             self.cont_cache.clear();
             self.cont_key = self.wrapped.clone();
+        }
+        // Size this section's figures now (stable estimate) so the view can draw
+        // them — even on a wrap-cache hit, since `following` was cleared this frame.
+        if let Some(geom) = self.images.geom {
+            let (fw, fh) = self.images.fs;
+            let info = self.section_image_info(s, geom, fw, fh);
+            self.images.following.insert(s, info);
         }
         if let Some(v) = self.cont_cache.get(&s) {
             return v.clone();

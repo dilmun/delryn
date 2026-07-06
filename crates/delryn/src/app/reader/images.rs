@@ -125,23 +125,23 @@ impl Reader {
             self.prefetch_neighbor_images(builder, geom);
         }
 
-        // 5. Continuous mode: track (and build) the images of the *following*
-        //    sections stitched into the scroll buffer, so the view can draw them
-        //    too. A boundary figure then scrolls smoothly rather than showing a
-        //    blank gap until its section becomes the anchor. Uses last frame's span
-        //    list (plus the immediate next section) — one frame's lag is invisible.
+        // 5. Continuous mode: build the images of the *following* sections stitched
+        //    into the scroll buffer so the view can draw them too — a boundary
+        //    figure then scrolls smoothly rather than showing a blank gap until its
+        //    section becomes the anchor. Their reserved rows are sized on demand in
+        //    `following_lines` (from `images.geom`/`fs` stored here), so record the
+        //    geometry and dispatch builds for the visible spans plus the next.
         if self.continuous_active() {
             let fs = picker.font_size();
+            self.images.geom = Some(geom);
+            self.images.fs = (fs.width, fs.height);
             let mut sections: Vec<usize> = self.cont_spans.iter().map(|(s, _)| *s).collect();
             let next = self.section + 1;
             if next < self.doc.section_count() && !sections.contains(&next) {
                 sections.push(next);
             }
-            self.images.following.clear();
             for s in sections {
                 self.request_section_image_builds(s, builder, geom);
-                let info = self.section_image_info(s, geom, fs.width, fs.height);
-                self.images.following.insert(s, info);
             }
         } else if !self.images.following.is_empty() {
             self.images.following.clear();
@@ -155,7 +155,7 @@ impl Reader {
     /// re-wraps (and shifts the scroll) when its images finish building. The drawn
     /// image is ≤ the estimate, so it fits within the reserved rows. Read-only
     /// (dispatches no builds). Empty if the section's blocks aren't loaded.
-    fn section_image_info(
+    pub(super) fn section_image_info(
         &self,
         section: usize,
         geom: ImageGeom,
