@@ -18,8 +18,8 @@ use crate::theme::{Role, Theme};
 /// Left column width for field labels.
 const LABEL_W: usize = 14;
 
-// Sub-views; `render` orchestrates them. Shared helpers (`base`, `form_field`,
-// `scaled`, `footer_line`) stay here and are called from the children.
+// Sub-views; `render` orchestrates them. Shared helpers (`form_field`,
+// `footer_line`) stay here and are called from the children.
 mod hits;
 mod online;
 
@@ -29,7 +29,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     let theme = app.config.theme;
     let bg = theme.paper();
-    let area = scaled(f.area());
+    let area = super::overlay_rect(f.area(), app.overlay_large);
 
     f.render_widget(Clear, area);
     let title = {
@@ -346,15 +346,4 @@ fn form_field(
         }
     }
     Line::from(spans)
-}
-
-/// A centered rect scaled to the terminal (≈72% × 70%, clamped).
-fn scaled(area: Rect) -> Rect {
-    let w = (area.width * 72 / 100)
-        .clamp(40, 96)
-        .min(area.width.saturating_sub(2).max(1));
-    let h = (area.height * 70 / 100)
-        .clamp(14, 34)
-        .min(area.height.saturating_sub(2).max(1));
-    super::centered(area, w, h)
 }

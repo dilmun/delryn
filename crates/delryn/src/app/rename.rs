@@ -27,8 +27,6 @@ pub struct BulkTarget {
 pub struct BulkRename {
     pub input: TextInput,
     pub targets: Vec<BulkTarget>,
-    /// Expand the popup to (near) full screen for a wider before/after view.
-    pub full: bool,
 }
 
 /// Outcome of renaming a single book file.
@@ -127,7 +125,6 @@ impl App {
         self.overlay = Overlay::BulkRename(BulkRename {
             input: TextInput::from(DEFAULT_RENAME_TEMPLATE),
             targets,
-            full: false,
         });
     }
 
@@ -175,12 +172,7 @@ impl App {
                     self.ask_confirm(&q, ConfirmAction::Rename);
                 }
             }
-            // Toggle the full-screen before/after view.
-            KeyCode::Char('f') if ctrl => {
-                if let Overlay::BulkRename(b) = &mut self.overlay {
-                    b.full = !b.full;
-                }
-            }
+            // (^F resizes the window — handled centrally in `on_key`.)
             _ => {
                 if let Overlay::BulkRename(b) = &mut self.overlay {
                     b.input.handle_key(key);

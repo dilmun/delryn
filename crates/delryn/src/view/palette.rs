@@ -14,8 +14,7 @@ pub fn render(f: &mut Frame, app: &App) {
     };
     let theme = app.config.theme;
     let matches = p.filtered();
-    let visible = matches.len().min(10) as u16;
-    let area = super::centered(f.area(), 56, visible + 3);
+    let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -39,11 +38,18 @@ pub fn render(f: &mut Frame, app: &App) {
     ));
     f.render_widget(Paragraph::new(Line::from(q)), rows[0]);
 
-    // Filtered command list; the selection gets a rounded accent bar.
+    // Filtered command list; the selection gets a rounded accent bar. Scroll the
+    // window to keep the selection visible when the list is taller than the pane.
+    let h = rows[1].height as usize;
+    let offset = p
+        .sel
+        .saturating_sub(h / 2)
+        .min(matches.len().saturating_sub(h));
     let lines: Vec<Line> = matches
         .iter()
-        .take(rows[1].height as usize)
         .enumerate()
+        .skip(offset)
+        .take(h)
         .map(|(i, it)| {
             if i == p.sel {
                 crate::view::rounded_line(format!(" {}", it.label), rows[1].width, theme)
