@@ -2,7 +2,10 @@
 //! formats) to drive the rich typography engine. Produces headings, styled
 //! paragraphs, lists, blockquotes, and code blocks rather than flat text.
 
+use std::sync::LazyLock;
+
 use ego_tree::NodeRef;
+use regex::Regex;
 use scraper::{Html, Node};
 
 use super::{Anchor, Block, CalloutKind, ImageWidth, Inline, Span, TableCell};
@@ -34,7 +37,51 @@ pub fn parse_blocks(xhtml: &str) -> Vec<Block> {
     let doc = Html::parse_document(&xhtml);
     let mut out = Vec::new();
     walk_children(body_or_root(&doc), &Ctx::default(), &mut out);
+    attach_trailing_captions(&mut out);
     out
+}
+
+/// Whether `text` opens with a figure-label caption (`Figure 5.`, `Table 1.2`,
+/// `Fig. 3`, `Listing 2-1`, …). The trailing digit is required so ordinary prose
+/// ("Figure out how…", "Table of contents") is never mistaken for a caption.
+fn is_figure_caption(text: &str) -> bool {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)^\s*(figure|fig\.?|table|chart|photo|plate|diagram|exhibit|illustration|scheme|listing)\s*\.?\s*\d",
+        )
+        .unwrap()
+    });
+    RE.is_match(text)
+}
+
+/// Attach a figure-label paragraph that immediately follows a bare image as that
+/// image's caption, so it renders centred beneath the picture even when the source
+/// didn't use `<figure>`/`<figcaption>` — the common shape in MOBI and many
+/// EPUBs (`<img>` then a separate `<p>Figure 5. …</p>`). Only fills an *empty*
+/// caption on a non-math image, and only when the paragraph starts with a figure
+/// label, so real captions and ordinary body text are left untouched.
+fn attach_trailing_captions(blocks: &mut Vec<Block>) {
+    let mut i = 0;
+    while i + 1 < blocks.len() {
+        let image_wants_caption = matches!(
+            &blocks[i],
+            Block::Image { caption, math: false, .. } if caption.is_empty()
+        );
+        let next_is_caption = matches!(
+            &blocks[i + 1],
+            Block::Para { spans, marker: None, .. }
+                if is_figure_caption(&spans.iter().map(|s| s.text.as_str()).collect::<String>())
+        );
+        if image_wants_caption && next_is_caption {
+            let Block::Para { spans, .. } = blocks.remove(i + 1) else {
+                unreachable!()
+            };
+            if let Block::Image { caption, .. } = &mut blocks[i] {
+                *caption = spans;
+            }
+        }
+        i += 1;
+    }
 }
 
 /// Every element `id` in a section → a short text locator (its leading visible

@@ -57,6 +57,51 @@ fn deeply_nested_markup_does_not_overflow_the_stack() {
     );
 }
 
+#[test]
+fn trailing_figure_paragraph_becomes_the_image_caption() {
+    // A bare <img> followed by a "Figure N." paragraph (MOBI / plain-EPUB shape,
+    // no <figure>/<figcaption>): the paragraph is attached as the image caption
+    // (so it renders centred beneath) and no longer a left-aligned paragraph.
+    let blocks = parse_blocks(
+        r#"<html><body><img src="chart.png" alt="chart"/><p>Figure 5. Example showing buy trades</p><p>Body text after.</p></body></html>"#,
+    );
+    let cap = blocks.iter().find_map(|b| match b {
+        Block::Image { caption, .. } => {
+            Some(caption.iter().map(|s| s.text.as_str()).collect::<String>())
+        }
+        _ => None,
+    });
+    assert_eq!(cap.as_deref(), Some("Figure 5. Example showing buy trades"));
+    let text = block_text(&blocks);
+    assert!(
+        text.contains("Body text after"),
+        "real body paragraph stays"
+    );
+    assert!(
+        !text.contains("Figure 5"),
+        "caption is not also left as a paragraph"
+    );
+}
+
+#[test]
+fn prose_mentioning_a_figure_is_not_swallowed_as_a_caption() {
+    // "Figure out …" has no figure number, so it stays a normal paragraph and the
+    // image keeps an empty caption — ordinary prose is never mistaken for one.
+    let blocks = parse_blocks(
+        r#"<html><body><img src="x.png" alt="chart"/><p>Figure out how the method works.</p></body></html>"#,
+    );
+    assert!(
+        blocks
+            .iter()
+            .any(|b| matches!(b, Block::Image { caption, .. } if caption.is_empty())),
+        "image keeps an empty caption"
+    );
+    assert!(
+        block_text(&blocks).contains("Figure out how"),
+        "prose stays a paragraph"
+    );
+}
+
 /// EPUB cover pages commonly wrap the cover in an SVG `<image xlink:href>`
 /// rather than a plain `<img>`; the parser must still emit a `Block::Image`
 /// with the referenced source (scraper exposes `xlink:href` as local `href`).
