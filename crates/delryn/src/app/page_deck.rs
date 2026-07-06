@@ -132,7 +132,10 @@ pub struct PageDeck {
 }
 
 impl PageDeck {
-    /// Per-section kitty image id, in a range clear of `ratatui-image`'s.
+    /// Per-section kitty image id, in the high block `0x0F00_0000..` reserved for
+    /// the deck. `ratatui-image`'s widget ids (inline figures, covers, the viewer)
+    /// are drawn strictly below this block (`picker::random_kitty_id`), so the two
+    /// namespaces are disjoint and a delete in one can't clobber the other.
     fn id(section: usize) -> u32 {
         0x0F00_0000 + section as u32
     }
@@ -269,6 +272,15 @@ impl PageDeck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The deck's id block must sit at or above the bound below which
+    /// `ratatui-image` draws its random widget ids, so the two Kitty id
+    /// namespaces are disjoint — a delete/transmit in one can never clobber a
+    /// live image in the other.
+    #[test]
+    fn deck_ids_are_disjoint_from_widget_ids() {
+        assert!(PageDeck::id(0) >= ratatui_image::picker::KITTY_ID_MAX);
+    }
 
     fn rect(x: u16) -> Rect {
         Rect::new(x, 0, 40, 50)

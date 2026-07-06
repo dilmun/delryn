@@ -409,6 +409,13 @@ fn file_title(path: &Path) -> String {
 // Navigation (outline)
 // ---------------------------------------------------------------------------
 
+/// Maximum PDF outline nesting depth walked, and the maximum siblings honoured at
+/// one level. A real outline is shallow with a sane fan-out; these only bound a
+/// malformed / malicious PDF whose deeply nested or (should PDFium ever surface
+/// one) cyclic bookmark chain would otherwise overflow the stack or loop forever.
+const MAX_PDF_OUTLINE_DEPTH: usize = 64;
+const MAX_PDF_OUTLINE_SIBLINGS: usize = 100_000;
+
 /// Build the table of contents + flattened sidebar outline from the PDF
 /// bookmark tree, falling back to a flat "Page N" list when there is no outline
 /// (so the sidebar can still jump to any page).
@@ -417,9 +424,14 @@ fn build_navigation(doc: &PdfiumDoc, page_count: usize) -> (Vec<TocEntry>, Vec<O
     let mut toc = Vec::new();
     // Top-level bookmarks: `root()` is the first; the rest follow via siblings.
     let mut node = bookmarks.root();
+    let mut seen = 0usize;
     while let Some(bm) = node {
+        seen += 1;
+        if seen > MAX_PDF_OUTLINE_SIBLINGS {
+            break; // guard against a pathological / cyclic sibling chain
+        }
         let next = bm.next_sibling();
-        toc.push(bookmark_to_toc(&bm));
+        toc.push(bookmark_to_toc(&bm, 0));
         node = next;
     }
     if toc.is_empty() {
@@ -432,17 +444,25 @@ fn build_navigation(doc: &PdfiumDoc, page_count: usize) -> (Vec<TocEntry>, Vec<O
 
 /// One bookmark (and its descendants) → a [`TocEntry`]. A bookmark with no
 /// resolvable destination keeps `section = None` (it still groups its children).
-fn bookmark_to_toc(bm: &PdfBookmark) -> TocEntry {
+fn bookmark_to_toc(bm: &PdfBookmark, depth: usize) -> TocEntry {
     let section = bm
         .destination()
         .and_then(|d| d.page_index().ok())
         .map(|i| i as usize);
     let mut children = Vec::new();
-    let mut child = bm.first_child();
-    while let Some(c) = child {
-        let next = c.next_sibling();
-        children.push(bookmark_to_toc(&c));
-        child = next;
+    // Past the depth cap, keep the entry but stop descending (bounds the stack).
+    if depth < MAX_PDF_OUTLINE_DEPTH {
+        let mut child = bm.first_child();
+        let mut seen = 0usize;
+        while let Some(c) = child {
+            seen += 1;
+            if seen > MAX_PDF_OUTLINE_SIBLINGS {
+                break;
+            }
+            let next = c.next_sibling();
+            children.push(bookmark_to_toc(&c, depth + 1));
+            child = next;
+        }
     }
     TocEntry {
         label: bm.title().unwrap_or_default(),
@@ -465,6 +485,9 @@ fn flat_page_toc(page_count: usize) -> Vec<TocEntry> {
 /// Flatten a TOC tree into sidebar rows, carrying nesting depth. An entry with
 /// no resolved destination still gets a row (anchored to its first page, or 0).
 fn flatten_toc(entries: &[TocEntry], depth: usize, out: &mut Vec<OutlineItem>) {
+    if depth >= MAX_PDF_OUTLINE_DEPTH {
+        return; // the TOC tree is already depth-bounded; defensive stop
+    }
     for e in entries {
         out.push(OutlineItem {
             label: e.label.clone(),

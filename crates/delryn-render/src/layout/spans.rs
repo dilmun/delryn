@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 
 use delryn_model::{Anchor, Inline, Span};
 
+use super::width::{char_width, display_width};
 use super::{DisplayLine, LineKind, Run};
 
 /// One styled glyph carried through wrapping: char + its inline style + any
@@ -21,6 +22,13 @@ const SOFT_HYPHEN: char = '\u{00AD}';
 struct Piece {
     cells: Vec<Glyph>,
     hyphen: bool,
+}
+
+/// Display width (terminal cells) of a run of glyphs — the fill/justify metric.
+/// A wide CJK glyph is two cells, a combining mark none, so this is *not* the
+/// glyph count.
+fn cells_width(glyphs: &[Glyph]) -> usize {
+    glyphs.iter().map(|(c, _, _)| char_width(*c)).sum()
 }
 
 /// Word-wrap styled spans into display lines, with a prefix on the first line
@@ -51,7 +59,7 @@ fn prefix_for<'a>(first: &'a str, cont: &'a str, line: usize) -> &'a str {
 /// Columns available for content on line `line`, after its prefix.
 fn avail(width: usize, first: &str, cont: &str, line: usize) -> usize {
     width
-        .saturating_sub(prefix_for(first, cont, line).chars().count())
+        .saturating_sub(display_width(prefix_for(first, cont, line)))
         .max(1)
 }
 
@@ -108,7 +116,7 @@ fn fill_lines(
     while let Some(word) = queue.pop_front() {
         let av = avail(width, first, cont, lines.len());
         let gap = usize::from(!cur.is_empty());
-        let wfull: usize = word.iter().map(Vec::len).sum();
+        let wfull: usize = word.iter().map(|seg| cells_width(seg)).sum();
         if cur_w + gap + wfull <= av {
             cur.push(Piece {
                 cells: word.into_iter().flatten().collect(),
@@ -122,7 +130,7 @@ fn fill_lines(
         if word.len() > 1 {
             let (mut acc, mut best_k) = (0usize, 0usize);
             for (k, seg) in word.iter().take(word.len() - 1).enumerate() {
-                acc += seg.len();
+                acc += cells_width(seg);
                 // `+ 1` for the trailing hyphen (folded into `<` per clippy).
                 if cur_w + gap + acc < av {
                     best_k = k + 1;
@@ -181,7 +189,7 @@ fn emit_lines(
         let prefix = prefix_for(first, cont, li);
         let pieces_w: usize = line
             .iter()
-            .map(|p| p.cells.len() + usize::from(p.hyphen))
+            .map(|p| cells_width(&p.cells) + usize::from(p.hyphen))
             .sum();
         let gaps = line.len().saturating_sub(1);
         let justify_line = justify_body && li != last && gaps >= 1;
@@ -340,6 +348,28 @@ mod tests {
             indent: 0,
             quote: false,
             marker: None,
+        }
+    }
+
+    #[test]
+    fn cjk_wide_glyphs_are_packed_by_display_width_not_char_count() {
+        // Each 2-cell CJK word is 2 chars = 4 cells. At width 10 the greedy fill
+        // packs two words per line (4+1+4 = 9 cells); a char-count metric would
+        // wrongly fit a third (7 chars ≤ 10) and overrun to 14 cells. Assert every
+        // line stays within the column measured in *display cells*.
+        let block = para("日本 語の テキ スト です ねこ れは かえ");
+        let opts = WrapOpts {
+            width: 10,
+            ..Default::default()
+        };
+        let lines = texts(&wrap_blocks(&[block], &opts, &[]));
+        assert!(lines.len() >= 2, "wraps to several lines: {lines:?}");
+        for line in &lines {
+            assert!(
+                super::display_width(line) <= 10,
+                "line overruns the 10-cell column: {line:?} = {} cells",
+                super::display_width(line)
+            );
         }
     }
 

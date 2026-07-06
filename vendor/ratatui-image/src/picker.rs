@@ -26,6 +26,22 @@ use serde::{Deserialize, Serialize};
 
 pub mod cap_parser;
 
+/// Upper bound (exclusive) for randomly-drawn Kitty image ids.
+///
+/// delryn drives the Kitty graphics protocol from two places that share the
+/// terminal's image-id namespace: `Image` / `StatefulImage` widgets (inline
+/// figures, library covers, the image viewer) mint an id here, while the direct
+/// PDF page deck uses deterministic ids in the high block `0x0F00_0000..`. Keep
+/// the random draw strictly below that block so a delete/transmit in one
+/// namespace can never clobber a live image owned by the other.
+pub const KITTY_ID_MAX: u32 = 0x0F00_0000;
+
+/// A random Kitty image id in `1..KITTY_ID_MAX` — disjoint from the PDF page
+/// deck's reserved high block, and never 0.
+fn random_kitty_id() -> u32 {
+    1 + random::<u32>() % (KITTY_ID_MAX - 1)
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Capability {
     /// Reports supporting kitty graphics protocol.
@@ -245,7 +261,7 @@ impl Picker {
             ProtocolType::Kitty => Ok(Protocol::Kitty(Kitty::new(
                 image,
                 size,
-                rand::random(),
+                random_kitty_id(),
                 self.is_tmux,
             )?)),
             ProtocolType::Iterm2 => Ok(Protocol::ITerm2(Iterm2::new(image, size, self.is_tmux)?)),
@@ -282,7 +298,7 @@ impl Picker {
                 ..Sixel::default()
             }),
             ProtocolType::Kitty => {
-                StatefulProtocolType::Kitty(StatefulKitty::new(random(), self.is_tmux))
+                StatefulProtocolType::Kitty(StatefulKitty::new(random_kitty_id(), self.is_tmux))
             }
             ProtocolType::Iterm2 => StatefulProtocolType::ITerm2(Iterm2 {
                 is_tmux: self.is_tmux,
