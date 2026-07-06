@@ -3,6 +3,8 @@
 //! Right. This is where the former `reader::render_status`, `library::status`,
 //! and the overlay `legend` cascade now live, as segment producers.
 
+use ratatui::text::Span;
+
 use super::render::{GAUGE_WIDTH, gauge};
 use super::segment::{SegmentId, StatusBar, Zone};
 use crate::app::{App, EditMode, EditTab, LibView, MetaEdit, Overlay, Reader, SortKey};
@@ -108,12 +110,17 @@ pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
         bar.text(SegmentId::Percent, Zone::Right, 5, format!("{pct}%"), plain);
     }
     if sf.gauge {
-        bar.text(
+        // Themed progress bar: the filled part takes the theme accent, the empty
+        // track a muted colour — so it reads against any theme, not flat white.
+        let (fill, track) = gauge(reader.progress(), GAUGE_WIDTH);
+        bar.add(
             SegmentId::Gauge,
             Zone::Right,
             2,
-            gauge(reader.progress(), GAUGE_WIDTH),
-            dim,
+            vec![
+                Span::styled(fill, theme.style(Role::Accent)),
+                Span::styled(track, dim),
+            ],
         );
     }
     if sf.clock {

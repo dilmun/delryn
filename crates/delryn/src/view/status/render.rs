@@ -144,13 +144,12 @@ fn push_zone<'a>(
     }
 }
 
-/// A unicode progress gauge (`██████░░░░`) of `width` cells.
-pub(super) fn gauge(frac: f32, width: usize) -> String {
-    let filled = (frac.clamp(0.0, 1.0) * width as f32).round() as usize;
-    let mut s = String::with_capacity(width * 3);
-    s.extend(std::iter::repeat_n('█', filled));
-    s.extend(std::iter::repeat_n('░', width.saturating_sub(filled)));
-    s
+/// A unicode progress gauge of `width` cells, split into the filled and empty
+/// parts so each can be themed separately (`(██████, ░░░░)`) — the fill takes the
+/// theme accent, the track a muted colour.
+pub(super) fn gauge(frac: f32, width: usize) -> (String, String) {
+    let filled = ((frac.clamp(0.0, 1.0) * width as f32).round() as usize).min(width);
+    ("█".repeat(filled), "░".repeat(width.saturating_sub(filled)))
 }
 
 #[cfg(test)]

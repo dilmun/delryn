@@ -51,7 +51,9 @@ impl Default for StatusFields {
             theme: true,
             view: true,
             position: true,
-            percent: true,
+            // The gauge is the default progress indicator; the numeric percent is
+            // off by default (opt in with `[status] percent = true`).
+            percent: false,
             gauge: true,
             clock: false,
             separator: "·".to_string(),
