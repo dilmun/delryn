@@ -73,6 +73,13 @@ fn leading_text(node: NodeRef<Node>, max: usize) -> String {
         .collect()
 }
 
+/// Maximum block-nesting depth delryn's own DOM walk recurses before it stops and
+/// emits the remaining subtree as flat text. Real books nest a handful of levels
+/// deep; this only trips on pathological / malicious markup (thousands of nested
+/// `<div>`s), where unbounded recursion would overflow the stack and abort the
+/// process. No real content is lost below this bound.
+const MAX_BLOCK_DEPTH: u16 = 256;
+
 #[derive(Default, Clone)]
 struct Ctx {
     indent: u8,
@@ -80,12 +87,23 @@ struct Ctx {
     /// Pack paragraphs tight (no blank line between them) — for list-like
     /// regions: tables of contents and definition lists.
     tight: bool,
+    /// Block-nesting depth, incremented at each descent so a pathologically deep
+    /// document can't overflow the stack (see [`MAX_BLOCK_DEPTH`]).
+    depth: u16,
 }
 
 impl Ctx {
     /// A copy at the same indent with `quote` set (for blockquotes/footnotes).
     fn with_quote(&self, quote: bool) -> Ctx {
         Ctx { quote, ..*self }
+    }
+
+    /// A copy one block-nesting level deeper (the recursion guard).
+    fn deeper(&self) -> Ctx {
+        Ctx {
+            depth: self.depth.saturating_add(1),
+            ..*self
+        }
     }
 
     /// A copy that packs paragraphs tight (ToC / definition-list entries).
@@ -152,6 +170,9 @@ fn is_block(node: NodeRef<Node>) -> bool {
 /// Iterate children, grouping loose inline content into implicit paragraphs and
 /// recursing into block-level elements.
 fn walk_children(parent: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
+    // One level deeper for any block child — the single point that advances the
+    // recursion-depth guard (see `block_element`).
+    let deeper = ctx.deeper();
     let mut inline: Vec<Span> = Vec::new();
     for child in parent.children() {
         // Drop regenerated markers (list item numbers, footnote backrefs).
@@ -160,7 +181,7 @@ fn walk_children(parent: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
         }
         if is_block(child) {
             flush(&mut inline, ctx, out);
-            block_element(child, ctx, out);
+            block_element(child, &deeper, out);
         } else {
             collect_inline(child, Inline::default(), &mut inline);
         }
@@ -189,6 +210,15 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
     let Node::Element(e) = node.value() else {
         return;
     };
+    // Pathologically deep nesting: stop recursing and emit the subtree as flat
+    // text (collected iteratively) so the stack can't overflow. `collect_inline`
+    // has its own depth guard for the inline case.
+    if ctx.depth >= MAX_BLOCK_DEPTH {
+        let mut spans = Vec::new();
+        collect_inline(node, Inline::default(), &mut spans);
+        flush(&mut spans, ctx, out);
+        return;
+    }
     match classify(e, node) {
         ElementRole::Callout(kind) => emit_callout(node, kind, ctx, out),
         ElementRole::Footnote { id, label } => {
@@ -294,6 +324,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 indent: toc_level(e).unwrap_or(ctx.indent),
                 quote: ctx.quote,
                 tight: ctx.tight || toc,
+                depth: ctx.depth,
             };
             walk_children(node, &c, out);
         }
