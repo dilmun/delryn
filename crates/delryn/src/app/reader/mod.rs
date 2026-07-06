@@ -523,6 +523,15 @@ impl Reader {
         self.nav.note_lines.contains(&line)
     }
 
+    /// Whether a bookmark already exists at this anchor (`section` + `quote`), so
+    /// a repeat `m` at the same place doesn't drop a duplicate.
+    pub fn has_bookmark(&self, section: usize, quote: &str) -> bool {
+        self.nav
+            .bookmarks
+            .iter()
+            .any(|(s, q)| *s == section && q == quote)
+    }
+
     /// Recompute each current-section outline entry's line position (for the
     /// TOC scroll-spy). Done once per re-wrap, not per frame.
     fn recompute_heading_lines(&mut self) {

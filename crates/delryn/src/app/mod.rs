@@ -101,45 +101,88 @@ pub enum Focus {
     Sidebar,
 }
 
-/// Open annotations overlay state (the folder-grouped bookmark + note list, a
-/// cursor, and an optional search filter).
+/// The two tabs of the annotations overlay: bookmarks (places) and notes
+/// (commentary) are kept separate, not mixed in one list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AnnotTab {
+    Bookmarks,
+    Notes,
+}
+
+impl AnnotTab {
+    /// The other tab.
+    pub fn toggled(self) -> AnnotTab {
+        match self {
+            AnnotTab::Bookmarks => AnnotTab::Notes,
+            AnnotTab::Notes => AnnotTab::Bookmarks,
+        }
+    }
+
+    /// Whether this tab shows notes (`kind` = note) vs bookmarks.
+    fn wants_note(self) -> bool {
+        matches!(self, AnnotTab::Notes)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AnnotTab::Bookmarks => "Bookmarks",
+            AnnotTab::Notes => "Notes",
+        }
+    }
+}
+
+/// Open annotations overlay state: the full annotation list, the active tab
+/// (bookmarks vs notes), a cursor into the current tab's filtered view, and a
+/// search filter.
 pub struct AnnotState {
     pub items: Vec<Annotation>,
+    /// The active tab.
+    pub tab: AnnotTab,
     /// Cursor index into the *filtered* view (see [`AnnotState::filtered`]).
     pub sel: usize,
-    /// Current search text (`''` = show everything).
+    /// Current search text (`''` = show everything in the tab).
     pub filter: String,
     /// Whether keystrokes are being typed into the filter.
     pub filtering: bool,
 }
 
 impl AnnotState {
-    /// A fresh state showing `items`, no filter.
-    pub fn new(items: Vec<Annotation>) -> AnnotState {
+    /// A fresh state showing `items` on the given tab, no filter.
+    pub fn new(items: Vec<Annotation>, tab: AnnotTab) -> AnnotState {
         AnnotState {
             items,
+            tab,
             sel: 0,
             filter: String::new(),
             filtering: false,
         }
     }
 
-    /// Items matching the current filter — a case-insensitive substring over the
-    /// name, quote, note body, and folder. All items when the filter is empty.
+    /// The active tab's items matching the current filter — a case-insensitive
+    /// substring over the name, quote, note body, and folder.
     pub fn filtered(&self) -> Vec<&Annotation> {
-        if self.filter.is_empty() {
-            return self.items.iter().collect();
-        }
+        let want_note = self.tab.wants_note();
         let needle = self.filter.to_lowercase();
         self.items
             .iter()
+            .filter(|a| a.is_note() == want_note)
             .filter(|a| {
-                a.name.to_lowercase().contains(&needle)
+                self.filter.is_empty()
+                    || a.name.to_lowercase().contains(&needle)
                     || a.quote.to_lowercase().contains(&needle)
                     || a.note.to_lowercase().contains(&needle)
                     || a.folder.to_lowercase().contains(&needle)
             })
             .collect()
+    }
+
+    /// How many annotations belong to `tab` (ignoring the filter) — for the tab
+    /// bar's counts.
+    pub fn count(&self, tab: AnnotTab) -> usize {
+        self.items
+            .iter()
+            .filter(|a| a.is_note() == tab.wants_note())
+            .count()
     }
 
     /// The annotation the cursor is on (within the filtered view).
