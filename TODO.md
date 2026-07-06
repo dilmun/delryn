@@ -807,6 +807,58 @@ no premature abstraction, no speculative modes).*
       actually expose — adopt the wins, skip GUI-only smooth-scroll + auto-magazine
       reflow. Folio-tuned, not a feature-clone.
 
+## Comprehensive audit — 2026-07-06 (branch `audit/comprehensive-2026-07-06`)
+
+A full correctness / perf / robustness / concurrency pass (self-audit + fanned-out
+subagents). The codebase was already very clean; findings + fixes:
+
+**Fixed (all green — 311 tests, clippy 0, fmt):**
+- [x] ✅ **Kitty image-id namespaces made disjoint** (`673f570`) — random widget ids
+      were drawn full-range and could collide with the PDF deck's reserved block.
+      See the tech-debt item below (now closed).
+- [x] ✅ **Display width measured in cells, not chars** (`e9b5efd`) — the wrap engine
+      used `chars().count()` everywhere, so CJK/wide glyphs overran the column and
+      justification/table alignment drifted. New `layout::width` helper routed
+      through every measurement + `wrap_text`/`table::fit` truncation.
+- [x] ✅ **HTML DOM-walk recursion bounded** (`f416e7c`) — **HIGH: verified stack
+      overflow / SIGABRT** on ~2000 nested elements (reachable from every untrusted
+      EPUB/MOBI chapter). Depth-guarded `walk_children`/`block_element`/`collect_inline`
+      → flatten deep subtrees to text past `MAX_BLOCK_DEPTH`/`MAX_INLINE_DEPTH`.
+- [x] ✅ **MathML / EPUB-nav / PDF-outline recursion bounded** (`9ac0d93`) — same
+      class at the other on-open parsers; depth caps + a sibling-count cap on the PDF
+      outline (guards a cyclic `/Next`).
+- [x] ✅ **content-metadata regexes hoisted to `LazyLock`** (`430306e`) — were
+      recompiled per section per book on the library scan.
+
+**Verified clean (no fix needed):** reader worker threads (loader/rasterizer/themer/
+image-builder) — all exit on drop, dedup + cleanup + failure-tracking balanced, zero
+blocking `recv()` on the UI thread; image eviction issues terminal deletes (no leak);
+scroll/roll `usize` arithmetic all guarded; view draw path borrows lines + materializes
+only the visible window; store SQL fully parameterized (no injection). Dedup
+`content_link_candidates` is O(n²) but only on the user-triggered thorough scan (accepted).
+
+**Outstanding (NOT on `main` — fix on the `feat/mobi-azw3` branch before merging it):**
+- [ ] **HIGH — `mobi/mod.rs` `Vec::with_capacity(h.text_length)`** on an
+      attacker-controlled u32 (up to ~4 GB) → OOM abort on `MobiDocument::open` from a
+      ~130-byte crafted MOBI. Cap the hint (`text_length.min(cap)`); the loop grows as
+      needed. (`read_metadata`/library scan is unaffected — crash is on open only.)
+- [ ] **LOW — `mobi/palmdoc.rs:16` `Vec::with_capacity(input.len() * 4)`** — bounded by
+      the real record length (mild); use `saturating_mul` (32-bit overflow edge).
+- [ ] **LOW — mobi/mod.rs regexes** recompiled per open — hoist like the epub ones.
+      *(`mobi/pdb.rs` offset-table parsing audited exemplary: `checked_mul`, per-offset
+      bounds checks, `.get(start..end)` slicing — no panic path.)*
+
+**Deferred (measure-first, per dev docs — do NOT churn without a profile):**
+- [ ] `recolor::render_for_theme` converts to RGBA for classification then each branch
+      re-converts (~2–4 full-buffer allocs per image build) + a double pixel scan in the
+      transparent branch. Off-thread, cached, dominated by the Lanczos3 resize —
+      independently re-flagged by the audit, matches the existing R-D deferral (would
+      churn 3 public signatures for no measured win).
+- [ ] Layout **grapheme-cluster** awareness: `display_width` fixes measurement, but the
+      wrap/hard-break/`fit` still iterate `chars()`, so a base+combining cluster can be
+      split across a wrap. Needs `unicode-segmentation`; more invasive, low demand
+      (Latin/CJK unaffected — only NFD combining scripts). Log, don't rush.
+
 ## Tech debt — chip away, don't grow (dev docs size guidelines)
 
 Soft "review/refactor triggers," not hard gates. Logged 2026-06-26 against the
