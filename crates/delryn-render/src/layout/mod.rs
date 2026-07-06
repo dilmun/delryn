@@ -14,6 +14,7 @@ mod blocks;
 mod code;
 mod spans;
 mod table;
+mod width;
 
 use delryn_model::{Anchor, Block, Inline};
 
@@ -22,6 +23,7 @@ use blocks::{
 };
 use code::emit_code;
 use table::wrap_table;
+use width::{display_width, truncate_to_width};
 
 /// An RGB foreground colour (from syntax highlighting / themes).
 pub type Rgb = (u8, u8, u8);
@@ -260,22 +262,30 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![String::new()];
     }
-    // Split on whitespace, hard-breaking any word wider than the column so the
-    // greedy packer never has to overflow.
+    // Split on whitespace, hard-breaking any word wider than the column (by
+    // display width) so the greedy packer never has to overflow.
     let mut words: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
-        let mut chars: Vec<char> = word.chars().collect();
-        while chars.len() > width {
-            words.push(chars.drain(..width).collect());
+        let mut rest = word;
+        while display_width(rest) > width {
+            let (mut head, _) = truncate_to_width(rest, width);
+            if head.is_empty() {
+                // A single glyph is wider than the whole column (e.g. a 2-cell
+                // CJK char at width 1); emit it alone so we always make progress.
+                head.push(rest.chars().next().unwrap());
+            }
+            let cut = head.len();
+            words.push(head);
+            rest = &rest[cut..];
         }
-        if !chars.is_empty() {
-            words.push(chars.into_iter().collect());
+        if !rest.is_empty() {
+            words.push(rest.to_string());
         }
     }
     if words.is_empty() {
         return vec![String::new()];
     }
-    let widths: Vec<usize> = words.iter().map(|w| w.chars().count()).collect();
+    let widths: Vec<usize> = words.iter().map(display_width).collect();
     let mut lines = Vec::new();
     let mut i = 0;
     for n in pack_words(&widths, |_| width) {
