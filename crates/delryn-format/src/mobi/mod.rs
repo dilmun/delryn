@@ -317,6 +317,13 @@ fn build_metadata(pdb: &Pdb, rec0: &[u8], h: &Headers, size: u64) -> Metadata {
             101 => meta.publisher = Some(decode_bytes(data, h.encoding)),
             104 => meta.identifier = Some(decode_bytes(data, h.encoding)),
             106 => meta.year = parse_year(&decode_bytes(data, h.encoding)),
+            // Contributor: names the producer. Calibre (and other converters)
+            // stamp themselves here, so it marks a repackaged/converted file.
+            108 => {
+                if crate::provenance::names_converter_tool(&decode_bytes(data, h.encoding)) {
+                    meta.converted = true;
+                }
+            }
             503 => meta.title = decode_bytes(data, h.encoding), // "updated title" wins
             201 => {
                 cover_offset = be_u32(data, 0)
@@ -514,7 +521,14 @@ mod tests {
     use pdb::build_pdb;
 
     /// Assemble record 0: PalmDOC header + MOBI header + EXTH, then a title tail.
-    fn record0(text_len: usize, records: u16, encoding: u32, title: &str, author: &str) -> Vec<u8> {
+    fn record0(
+        text_len: usize,
+        records: u16,
+        encoding: u32,
+        title: &str,
+        author: &str,
+        contributor: &str,
+    ) -> Vec<u8> {
         let mobi_header_len = 232usize; // ≥ 0xE4 so extra-flags offset is valid
         let mut r0 = vec![0u8; 16 + mobi_header_len];
         // PalmDOC header.
@@ -532,15 +546,21 @@ mod tests {
         r0[84..88].copy_from_slice(&(name_off as u32).to_be_bytes());
         r0[88..92].copy_from_slice(&(title.len() as u32).to_be_bytes());
         // EXTH header sits right after the MOBI header (before the appended name).
+        // EXTH records: author (100) plus an optional contributor (108).
+        let mut recs: Vec<(u32, &str)> = vec![(100, author)];
+        if !contributor.is_empty() {
+            recs.push((108, contributor));
+        }
+        let body_len: usize = recs.iter().map(|(_, v)| 8 + v.len()).sum();
         let mut exth = Vec::new();
         exth.extend_from_slice(b"EXTH");
-        let author_rec_len = 8 + author.len();
-        let exth_len = 12 + author_rec_len;
-        exth.extend_from_slice(&(exth_len as u32).to_be_bytes());
-        exth.extend_from_slice(&1u32.to_be_bytes()); // one record
-        exth.extend_from_slice(&100u32.to_be_bytes()); // author
-        exth.extend_from_slice(&(author_rec_len as u32).to_be_bytes());
-        exth.extend_from_slice(author.as_bytes());
+        exth.extend_from_slice(&((12 + body_len) as u32).to_be_bytes());
+        exth.extend_from_slice(&(recs.len() as u32).to_be_bytes());
+        for (kind, val) in &recs {
+            exth.extend_from_slice(&kind.to_be_bytes());
+            exth.extend_from_slice(&((8 + val.len()) as u32).to_be_bytes());
+            exth.extend_from_slice(val.as_bytes());
+        }
         // Splice the EXTH in at offset 16 + mobi_header_len (== r0.len() now).
         r0.extend_from_slice(&exth);
         // Fix the full-name offset to sit after the EXTH we just appended.
@@ -555,12 +575,21 @@ mod tests {
         // Two text sections separated by a pagebreak, uncompressed via a literal run.
         let html = "<h1>Chapter One</h1><p>Hello</p><mbp:pagebreak/><p>Second</p>";
         let compressed = compress_literal(html.as_bytes());
-        let r0 = record0(html.len(), 1, 65001, "Test Book", "Ada Lovelace");
+        let r0 = record0(
+            html.len(),
+            1,
+            65001,
+            "Test Book",
+            "Ada Lovelace",
+            "calibre (6.21.0) [https://calibre-ebook.com]",
+        );
         let data = build_pdb(&[&r0, &compressed]);
 
         let doc = MobiDocument::open_bytes(data).unwrap();
         assert_eq!(doc.metadata().title, "Test Book");
         assert_eq!(doc.metadata().authors, vec!["Ada Lovelace".to_string()]);
+        // The calibre contributor EXTH marks the file as a conversion.
+        assert!(doc.metadata().converted, "calibre contributor ⇒ converted");
         assert_eq!(doc.section_count(), 2);
         // First section's first heading drives the outline label.
         assert_eq!(doc.outline()[0].label, "Chapter One");
@@ -575,7 +604,7 @@ mod tests {
         // at MAX_TEXT_PREALLOC. Without the cap this test OOM-aborts.
         let html = "<p>tiny</p>";
         let compressed = compress_literal(html.as_bytes());
-        let r0 = record0(u32::MAX as usize, 1, 65001, "Evil", "X");
+        let r0 = record0(u32::MAX as usize, 1, 65001, "Evil", "X", "");
         let data = build_pdb(&[&r0, &compressed]);
         let doc = MobiDocument::open_bytes(data).expect("opens without over-allocating");
         assert!(doc.section_count() >= 1, "still decodes the real text");
