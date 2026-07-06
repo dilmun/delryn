@@ -4,6 +4,7 @@
 
 use delryn_model::{Inline, Span, TableCell};
 
+use super::width::{display_width, truncate_to_width};
 use super::{DisplayLine, LineKind, Run, wrap_text};
 
 /// Allocate `budget` columns across table columns of the given natural widths,
@@ -50,16 +51,24 @@ fn table_cell_text(cell: &[Span]) -> String {
 
 /// Truncate (with `…`) or right-pad `s` to exactly `w` display columns.
 fn fit(s: &str, w: usize) -> String {
-    let n = s.chars().count();
+    let n = display_width(s);
     if n == w {
         s.to_string()
     } else if n < w {
         format!("{s}{}", " ".repeat(w - n))
-    } else if w <= 1 {
-        "…".repeat(w)
+    } else if w == 0 {
+        String::new()
+    } else if w == 1 {
+        "…".to_string()
     } else {
-        let mut t: String = s.chars().take(w - 1).collect();
+        // Truncate to (w-1) columns + a 1-column ellipsis; if a wide glyph
+        // straddled the cut, pad the shortfall so the cell still fills exactly `w`.
+        let (mut t, tw) = truncate_to_width(s, w - 1);
         t.push('…');
+        let used = tw + 1;
+        if used < w {
+            t.push_str(&" ".repeat(w - used));
+        }
         t
     }
 }
@@ -133,7 +142,7 @@ pub(super) fn wrap_table(
     let mut col_w = vec![0usize; ncols];
     let mut note = |cells: &[TableCell]| {
         for (i, c) in cells.iter().enumerate() {
-            col_w[i] = col_w[i].max(table_cell_text(c).chars().count());
+            col_w[i] = col_w[i].max(display_width(table_cell_text(c)));
         }
     };
     if let Some(h) = header {
