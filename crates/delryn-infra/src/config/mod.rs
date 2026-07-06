@@ -19,14 +19,30 @@ use serde::{Deserialize, Serialize};
 use crate::theme::{self, Theme};
 use enums::ReadingProfile;
 
-/// Which segments the status bar shows (title is always shown).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// The `[status]` config block: which status-bar segments show (context/title is
+/// always shown), plus their per-zone order, the segment separator, and an
+/// optional clock. Segment names for the zone lists are the `SegmentId` labels
+/// ("position", "percent", "gauge", "page", "zoom", "search", "theme", "view",
+/// "continuous", "manga", "clock"); unlisted segments keep their built-in order,
+/// so a zone list only *reorders* — hide a segment with its toggle instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct StatusFields {
     pub theme: bool,
     pub view: bool,
     pub position: bool,
     pub percent: bool,
     pub gauge: bool,
+    /// Show a wall-clock (HH:MM) segment.
+    pub clock: bool,
+    /// Divider drawn between segments in a zone (rendered with a space each side).
+    pub separator: String,
+    /// Explicit segment order for the Left zone (by `SegmentId` label).
+    pub left: Vec<String>,
+    /// Explicit segment order for the Center zone.
+    pub center: Vec<String>,
+    /// Explicit segment order for the Right zone.
+    pub right: Vec<String>,
 }
 
 impl Default for StatusFields {
@@ -35,8 +51,15 @@ impl Default for StatusFields {
             theme: true,
             view: true,
             position: true,
-            percent: true,
+            // The gauge is the default progress indicator; the numeric percent is
+            // off by default (opt in with `[status] percent = true`).
+            percent: false,
             gauge: true,
+            clock: false,
+            separator: "·".to_string(),
+            left: Vec::new(),
+            center: Vec::new(),
+            right: Vec::new(),
         }
     }
 }

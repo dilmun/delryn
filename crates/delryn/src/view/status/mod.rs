@@ -7,6 +7,7 @@
 //! narrow. Replaces the former three split renderers (the reader's
 //! `render_status`, the library status, and the overlay `legend` cascade).
 
+mod clock;
 mod producers;
 mod render;
 mod segment;
@@ -25,18 +26,25 @@ pub fn render_reader(f: &mut Frame, area: Rect, reader: &Reader, config: &Config
         area,
         &producers::reader_bar(reader, config, theme),
         theme,
+        &config.status,
     );
 }
 
 /// Draw the library's status bar (context/selection · key hints).
 pub fn render_library(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    render::render(f, area, &producers::library_bar(app, theme), theme);
+    render::render(
+        f,
+        area,
+        &producers::library_bar(app, theme),
+        theme,
+        &app.config.status,
+    );
 }
 
 /// Draw the active overlay's status (context + key hints) over the bottom row,
 /// when an overlay is open.
 pub fn overlay(f: &mut Frame, area: Rect, app: &App, theme: Theme) {
     if let Some(bar) = producers::overlay_bar(app, theme) {
-        render::render(f, area, &bar, theme);
+        render::render(f, area, &bar, theme, &app.config.status);
     }
 }
