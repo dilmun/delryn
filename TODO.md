@@ -825,6 +825,13 @@ grow these further.
       scroll/chapter+history-nav/reflow-position/element-nav coordinator core).
       Largest reader child is now `page_view.rs` (403, pure geometry). Only three
       methods needed a `pub(super)` bump; the rest moved with their sole callers.
+      ✅ **Re-carve** (`refactor/reader-carve-2`): later feature work had regrown
+      mod.rs to **1011 non-test**, just past the trigger again. Extracted the
+      jump-by-type element navigation cluster (`code_block`/`element_label`/
+      `element_starts`/`jump_element`/`next_element`/`prev_element`/`copy_visible_code`)
+      into `elements.rs` (118) — mirrors `anchors.rs`. **mod.rs → 906 non-test**;
+      only `element_starts` needed a `pub(super)` bump (called by an inline test).
+      Green (305 tests, clippy 0, fmt clean, behaviour-identical).
 - [ ] `delryn-render/src/layout.rs` — **superseded**: R-A (commit 5c6e6ce) already
       split the monolith into `layout/` (`mod` 311, `blocks` 372, `spans` 511,
       `table` 350, `code` 203). `spans.rs` (511) is the largest and sits in the
