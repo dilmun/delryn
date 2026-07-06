@@ -258,9 +258,13 @@ impl Reader {
                     eq_scale: geom.eq_scale,
                     fit_mode: geom.fit_mode,
                 };
-                let rows = if let Some(plan) = self.images.cache.peek(&key) {
-                    plan.rows
-                } else if data.is_empty() {
+                // Reserve the stable decode estimate — deliberately not the built
+                // plan's height — so the reservation never changes when the image
+                // finishes building (no re-wrap, no scroll shift) and matches how a
+                // *following* continuous section reserves the same content, so the
+                // anchor rolling into it doesn't re-flow. The drawn image is ≤ the
+                // estimate, so it fits within the reserved rows.
+                let rows = if data.is_empty() {
                     0
                 } else {
                     media::image_dimensions(data)
