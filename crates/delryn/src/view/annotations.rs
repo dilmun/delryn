@@ -48,7 +48,7 @@ fn render_overlay(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = super::centered(f.area(), 80, 20);
+    let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
     let items = state.filtered();
@@ -60,7 +60,7 @@ fn render_overlay(f: &mut Frame, app: &App) {
         .padding(Padding::horizontal(1))
         .title(Span::styled(" Annotations ", theme.style(Role::Title)))
         .title_bottom(Line::from(Span::styled(
-            " ↑↓ move · ⏎ jump · ⇥ tab · / find · r name · f folder · e note · d del ",
+            " ↑↓ move · ⏎ jump · ⇥ tab · / find · r name · F folder · e note · d del ",
             theme.style(Role::Muted),
         )))
         .style(theme.style(Role::Body).bg(bg));
