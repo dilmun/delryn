@@ -15,7 +15,7 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = super::centered(f.area(), 46, (10 + s.top_authors.len() as u16).min(22));
+    let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
     let kv = |k: &str, v: String| -> Line<'static> {

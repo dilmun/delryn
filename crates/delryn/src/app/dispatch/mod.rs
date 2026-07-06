@@ -8,6 +8,36 @@ mod apply;
 mod overlays;
 
 impl App {
+    /// Handle the overlay resize key: `f` on a bordered window that isn't typing,
+    /// or `Ctrl-f` on any bordered window. Returns whether it consumed the key.
+    fn try_overlay_resize(&mut self, key: KeyEvent) -> bool {
+        if !matches!(key.code, KeyCode::Char('f')) || !self.overlay.is_resizable_window() {
+            return false;
+        }
+        let ctrl = key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL);
+        let bare = key.modifiers.is_empty();
+        if ctrl || (bare && !self.overlay_is_typing()) {
+            self.overlay_large = !self.overlay_large;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether the active overlay is currently capturing typed text (so a bare
+    /// `f` inserts the character instead of resizing the window).
+    fn overlay_is_typing(&self) -> bool {
+        match &self.overlay {
+            Overlay::Palette(_) | Overlay::BulkRename(_) => true,
+            Overlay::ShelfPicker(p) => p.new_name.is_some(),
+            Overlay::Annot(a) => a.filtering,
+            Overlay::MetaEdit(e) => e.is_typing(),
+            _ => false,
+        }
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
         if key.kind != KeyEventKind::Press {
             return;
@@ -15,6 +45,11 @@ impl App {
         // A pending yes/no confirmation is modal: it answers before any popup.
         if self.pending_confirm.is_some() {
             self.confirm_key(key);
+            return;
+        }
+        // Any bordered overlay window: `f` toggles compact ⇄ larger size (Ctrl-f
+        // also works while a text field is being typed into), before its own keys.
+        if self.try_overlay_resize(key) {
             return;
         }
         if matches!(self.overlay, Overlay::Settings(_)) {

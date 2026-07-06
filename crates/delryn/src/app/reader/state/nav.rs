@@ -27,11 +27,16 @@ pub struct NavState {
     /// Footnote id → its definition's first display line (rebuilt on re-wrap).
     pub footnote_def_line: HashMap<String, usize>,
     /// All bookmarks for the open book, as `(section, quote)`. Pushed by the app
-    /// whenever bookmarks change; the source for the gutter markers.
+    /// whenever annotations change; the source for the gutter markers.
     pub bookmarks: Vec<(usize, String)>,
+    /// All notes for the open book, as `(section, quote)` (commentary lives in the
+    /// store); the source for the note gutter markers.
+    pub notes: Vec<(usize, String)>,
     /// Current-section bookmark lines (quotes resolved to display lines on
     /// re-wrap), so the view can mark them in the left gutter cheaply.
     pub bookmark_lines: HashSet<usize>,
+    /// Current-section note lines (resolved like `bookmark_lines`).
+    pub note_lines: HashSet<usize>,
     /// Cross-reference/citation targets for one section: `(section, id→locator)`,
     /// cached so repeated lookups in the current section don't re-parse it.
     pub targets_cache: Option<(usize, Vec<(String, String)>)>,

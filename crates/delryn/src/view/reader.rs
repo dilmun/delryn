@@ -330,7 +330,11 @@ fn draw_gutter(f: &mut Frame, text_area: Rect, reader: &Reader, top: usize, them
     let ribbon = theme.style(Role::AccentStrong);
     let lines: Vec<Line> = (0..text_area.height as usize)
         .map(|row| {
-            if reader.is_bookmark_line(top + row) {
+            let line = top + row;
+            // A note (pen) takes precedence over a bookmark (flag) on the same line.
+            if reader.is_note_line(line) {
+                Line::from(Span::styled("✎", ribbon))
+            } else if reader.is_bookmark_line(line) {
                 Line::from(Span::styled("⚑", ribbon))
             } else {
                 Line::raw("")

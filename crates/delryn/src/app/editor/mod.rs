@@ -257,6 +257,12 @@ pub struct MetaEdit {
 }
 
 impl MetaEdit {
+    /// Whether a text field is currently being typed into (so a bare `f` inserts
+    /// the character rather than resizing the overlay).
+    pub fn is_typing(&self) -> bool {
+        self.mode == EditMode::Edit || self.lookup.editing || self.cover_search.editing
+    }
+
     /// Set the footer status and the tab it belongs to (so it shows only there).
     fn status_on(&mut self, tab: EditTab, msg: impl Into<String>) {
         self.status = Some(msg.into());

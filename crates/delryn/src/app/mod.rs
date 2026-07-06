@@ -101,19 +101,106 @@ pub enum Focus {
     Sidebar,
 }
 
-/// Open bookmarks overlay state (the folder-grouped list + cursor).
-pub struct AnnotState {
-    pub items: Vec<Annotation>,
-    pub sel: usize,
+/// The two tabs of the annotations overlay: bookmarks (places) and notes
+/// (commentary) are kept separate, not mixed in one list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AnnotTab {
+    Bookmarks,
+    Notes,
 }
 
-/// What a one-line text prompt's typed text becomes when committed. Both target
-/// a bookmark; notes are a Phase 4 concern with their own flow.
+impl AnnotTab {
+    /// The other tab.
+    pub fn toggled(self) -> AnnotTab {
+        match self {
+            AnnotTab::Bookmarks => AnnotTab::Notes,
+            AnnotTab::Notes => AnnotTab::Bookmarks,
+        }
+    }
+
+    /// Whether this tab shows notes (`kind` = note) vs bookmarks.
+    fn wants_note(self) -> bool {
+        matches!(self, AnnotTab::Notes)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AnnotTab::Bookmarks => "Bookmarks",
+            AnnotTab::Notes => "Notes",
+        }
+    }
+}
+
+/// Open annotations overlay state: the full annotation list, the active tab
+/// (bookmarks vs notes), a cursor into the current tab's filtered view, and a
+/// search filter.
+pub struct AnnotState {
+    pub items: Vec<Annotation>,
+    /// The active tab.
+    pub tab: AnnotTab,
+    /// Cursor index into the *filtered* view (see [`AnnotState::filtered`]).
+    pub sel: usize,
+    /// Current search text (`''` = show everything in the tab).
+    pub filter: String,
+    /// Whether keystrokes are being typed into the filter.
+    pub filtering: bool,
+}
+
+impl AnnotState {
+    /// A fresh state showing `items` on the given tab, no filter.
+    pub fn new(items: Vec<Annotation>, tab: AnnotTab) -> AnnotState {
+        AnnotState {
+            items,
+            tab,
+            sel: 0,
+            filter: String::new(),
+            filtering: false,
+        }
+    }
+
+    /// The active tab's items matching the current filter — a case-insensitive
+    /// substring over the name, quote, note body, and folder.
+    pub fn filtered(&self) -> Vec<&Annotation> {
+        let want_note = self.tab.wants_note();
+        let needle = self.filter.to_lowercase();
+        self.items
+            .iter()
+            .filter(|a| a.is_note() == want_note)
+            .filter(|a| {
+                self.filter.is_empty()
+                    || a.name.to_lowercase().contains(&needle)
+                    || a.quote.to_lowercase().contains(&needle)
+                    || a.note.to_lowercase().contains(&needle)
+                    || a.folder.to_lowercase().contains(&needle)
+            })
+            .collect()
+    }
+
+    /// How many annotations belong to `tab` (ignoring the filter) — for the tab
+    /// bar's counts.
+    pub fn count(&self, tab: AnnotTab) -> usize {
+        self.items
+            .iter()
+            .filter(|a| a.is_note() == tab.wants_note())
+            .count()
+    }
+
+    /// The annotation the cursor is on (within the filtered view).
+    pub fn selected(&self) -> Option<Annotation> {
+        self.filtered().get(self.sel).map(|a| (*a).clone())
+    }
+}
+
+/// What a one-line text prompt's typed text becomes when committed.
 pub enum PromptKind {
-    /// The custom name of bookmark `id` (empty clears it back to the quote).
+    /// The custom name of annotation `id` (empty clears it back to the quote).
     Name(i64),
-    /// The folder bookmark `id` belongs to (empty = ungrouped).
+    /// The folder annotation `id` belongs to (empty = ungrouped).
     Folder(i64),
+    /// Commentary for a new note being created at `(section, quote)` in the reader.
+    NewNote { section: usize, quote: String },
+    /// New commentary for existing note `id`.
+    EditNote(i64),
 }
 
 /// A one-line text prompt shown at the bottom of the reader (rename a bookmark /
@@ -140,6 +227,9 @@ pub struct App {
     /// `pending_confirm` (modal above any overlay) and `dup_preview` (the parked
     /// resolver) stay separate fields below.
     pub overlay: Overlay,
+    /// Whether bordered overlay windows open at the larger size (toggled with
+    /// `f`); a single session-wide preference so every popup is sized the same.
+    pub overlay_large: bool,
     /// The duplicate-resolution overlay stashed while previewing a book from it —
     /// kept out of `overlay` so the dispatcher and renderer ignore it during the
     /// preview; restored when the reader returns (`q`/Esc).
@@ -294,14 +384,17 @@ fn build_reader(
         reader.load(p.section);
         reader.pending_frac = Some(p.frac);
     }
-    // Seed the gutter with this book's bookmarks (independent of saved progress).
+    // Seed the gutter with this book's annotations (independent of saved progress).
     if let Some(store) = store {
         let marks = store
-            .list_bookmarks(&book_path)
+            .list_annotations(&book_path)
             .into_iter()
-            .map(|a| (a.section, a.quote))
+            .map(|a| {
+                let is_note = a.is_note();
+                (a.section, a.quote, is_note)
+            })
             .collect();
-        reader.set_bookmarks(marks);
+        reader.set_annotations(marks);
     }
     Ok((reader, config, book_path))
 }
@@ -323,6 +416,7 @@ impl App {
             pending: Pending::default(),
             should_quit: false,
             overlay: Overlay::None,
+            overlay_large: false,
             dup_preview: None,
             pending_confirm: None,
             edit_queue: Vec::new(),
@@ -363,6 +457,7 @@ impl App {
             pending: Pending::default(),
             should_quit: false,
             overlay: Overlay::None,
+            overlay_large: false,
             dup_preview: None,
             pending_confirm: None,
             edit_queue: Vec::new(),

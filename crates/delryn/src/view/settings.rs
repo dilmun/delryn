@@ -22,7 +22,7 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = super::centered(f.area(), 64, 26);
+    let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
     let bg = theme.paper();

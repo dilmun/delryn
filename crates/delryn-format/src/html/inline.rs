@@ -25,7 +25,35 @@ pub(super) fn img_src(e: &scraper::node::Element) -> Option<String> {
         .map(|(_, v)| v.to_string())
 }
 
+/// Maximum inline-nesting depth before the walk stops recursing and flattens the
+/// rest to text — guards against a stack overflow on pathological markup (e.g.
+/// thousands of nested `<span>`s). Real inline nesting is a few levels deep.
+const MAX_INLINE_DEPTH: u16 = 256;
+
 pub(super) fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
+    collect_inline_at(node, style, 0, out);
+}
+
+/// Emit all descendant text of `node` as flat spans without recursing — the
+/// escape hatch when inline nesting exceeds [`MAX_INLINE_DEPTH`]. `descendants()`
+/// walks iteratively, so this cannot overflow the stack.
+fn flatten_inline_text(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
+    for d in node.descendants() {
+        if let Node::Text(t) = d.value() {
+            out.push(Span {
+                text: t.text.to_string(),
+                style,
+                anchor: None,
+            });
+        }
+    }
+}
+
+fn collect_inline_at(node: NodeRef<Node>, style: Inline, depth: u16, out: &mut Vec<Span>) {
+    if depth >= MAX_INLINE_DEPTH {
+        flatten_inline_text(node, style, out);
+        return;
+    }
     match node.value() {
         Node::Text(t) => out.push(Span {
             text: t.text.to_string(),
@@ -47,7 +75,7 @@ pub(super) fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<S
                 };
                 let mut inner = Vec::new();
                 for c in node.children() {
-                    collect_inline(c, astyle, &mut inner);
+                    collect_inline_at(c, astyle, depth + 1, &mut inner);
                 }
                 if let Some(anchor) = link_anchor(e) {
                     for s in inner.iter_mut().filter(|s| s.anchor.is_none()) {
@@ -131,7 +159,7 @@ pub(super) fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<S
                 style
             };
             for c in node.children() {
-                collect_inline(c, style, out);
+                collect_inline_at(c, style, depth + 1, out);
             }
         }
         _ => {}

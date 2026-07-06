@@ -56,3 +56,24 @@ pub enum Overlay {
     /// Command palette (was `app.palette`).
     Palette(Palette),
 }
+
+impl Overlay {
+    /// Whether this overlay is a bordered popup *window* that shares the standard
+    /// compact/large geometry (and so can be resized with `f`). Excludes the
+    /// full-screen image viewer and the 1-line inline prompts (`Prompt`, `CollEdit`,
+    /// `TagEdit`).
+    pub fn is_resizable_window(&self) -> bool {
+        matches!(
+            self,
+            Overlay::Settings(_)
+                | Overlay::MetaEdit(_)
+                | Overlay::BulkRename(_)
+                | Overlay::DupResolve(_)
+                | Overlay::IgnoredView(_)
+                | Overlay::ShelfPicker(_)
+                | Overlay::Annot(_)
+                | Overlay::Stats(_)
+                | Overlay::Palette(_)
+        )
+    }
+}
