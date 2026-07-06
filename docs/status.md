@@ -75,21 +75,34 @@ position survive on a tiny terminal while the legend drops.
 
 ## Configurable (`[status]` in config)
 
-A new config block (single-source `Config`, per R-B) controls the bar:
+The `[status]` block (single-source `Config`, per R-B) controls the bar:
 
 ```toml
 [status]
-left    = ["mode", "title"]
-center  = ["chapter"]
-right   = ["position", "progress"]
-progress_bar = true       # slim unicode bar vs plain percentage
-clock        = false
-separator    = "·"
-style        = "pill"     # "pill" (powerline-ish) | "plain"
+# Segment visibility (the always-present context/title and key hints aside):
+theme    = true
+view     = true
+position = true
+percent  = true
+gauge    = true
+clock    = false          # a wall-clock HH:MM segment
+
+separator = "·"           # drawn with a space each side, between segments
+
+# Per-zone segment order, by SegmentId label. A zone list only *reorders* the
+# segments it names; unlisted segments keep their built-in order after them (so
+# a dynamic segment never vanishes because you forgot to list it). To hide a
+# segment, turn off its toggle above.
+left   = []
+center = []
+right  = ["position", "percent", "gauge", "clock"]
 ```
 
-Unknown/omitted keys fall back to defaults (serde `#[serde(default)]`). Users can
-reorder, hide, or add segments per zone.
+Segment labels: `context`, `flash`, `search`, `theme`, `view`, `continuous`,
+`manga`, `page`, `zoom`, `position`, `percent`, `gauge`, `clock`, `keys`.
+Unknown/omitted keys fall back to defaults (serde `#[serde(default)]` on the whole
+block). The visibility toggles and the clock are also in **Settings → Interface**;
+order/separator are config-file only.
 
 ## Theming
 
