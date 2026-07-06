@@ -3,13 +3,13 @@
 //! note-commentary prompt. See `DESIGN.md` §(annotations).
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph,
 };
 
-use crate::app::{App, Overlay, Prompt, PromptKind};
+use crate::app::{AnnotTab, App, Overlay, Prompt, PromptKind};
 use crate::theme::Role;
 
 pub fn render(f: &mut Frame, app: &App) {
@@ -48,44 +48,61 @@ fn render_overlay(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
-    let area = super::centered(f.area(), 74, 20);
+    let area = super::centered(f.area(), 80, 20);
     f.render_widget(Clear, area);
 
     let items = state.filtered();
     let bg = theme.paper();
-    let mut block = Block::default()
+    let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.style(Role::BorderFocus))
         .padding(Padding::horizontal(1))
         .title(Span::styled(" Annotations ", theme.style(Role::Title)))
         .title_bottom(Line::from(Span::styled(
-            " ↑↓ move · ⏎ jump · / find · r name · f folder · e note · d delete ",
+            " ↑↓ move · ⏎ jump · ⇥ tab · / find · r name · f folder · e note · d del ",
             theme.style(Role::Muted),
         )))
         .style(theme.style(Role::Body).bg(bg));
-    // A count badge, right-aligned in the title bar.
-    if !items.is_empty() {
-        let n = items.len();
-        let unit = if n == 1 { "item" } else { "items" };
-        block = block.title(
-            Line::from(Span::styled(
-                format!(" {n} {unit} "),
-                theme.style(Role::Muted),
-            ))
-            .alignment(Alignment::Right),
-        );
-    }
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // A filter row on top when searching (or a filter is active), the list below.
+    // A tab bar on top (Bookmarks | Notes, active one highlighted), an optional
+    // filter row, then the list.
     let show_filter = state.filtering || !state.filter.is_empty();
-    let rows = if show_filter {
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner)
-    } else {
-        Layout::vertical([Constraint::Min(0)]).split(inner)
+    let mut constraints = vec![Constraint::Length(1), Constraint::Length(1)];
+    if show_filter {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Min(0));
+    let rows = Layout::vertical(constraints).split(inner);
+
+    // Tab bar.
+    let tab_span = |tab: AnnotTab, icon: &str| {
+        let label = format!(" {icon} {} ({}) ", tab.label(), state.count(tab));
+        let style = if state.tab == tab {
+            theme.style(Role::Selection)
+        } else {
+            theme.style(Role::Muted)
+        };
+        Span::styled(label, style)
     };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            tab_span(AnnotTab::Bookmarks, "⚑"),
+            Span::raw("  "),
+            tab_span(AnnotTab::Notes, "✎"),
+        ])),
+        rows[0],
+    );
+    // A thin rule under the tabs.
+    f.render_widget(
+        Paragraph::new(Line::styled(
+            "─".repeat(inner.width as usize),
+            theme.style(Role::Muted),
+        )),
+        rows[1],
+    );
     if show_filter {
         let caret = if state.filtering { "▏" } else { "" };
         f.render_widget(
@@ -93,25 +110,29 @@ fn render_overlay(f: &mut Frame, app: &App) {
                 Span::styled("find: ", theme.style(Role::Muted)),
                 Span::styled(format!("{}{caret}", state.filter), theme.style(Role::Body)),
             ])),
-            rows[0],
+            rows[2],
         );
     }
     let list_area = rows[rows.len() - 1];
 
     if items.is_empty() {
-        let msg = if state.filter.is_empty() {
+        let (body, muted) = (theme.style(Role::Body), theme.style(Role::Muted));
+        let msg = if !state.filter.is_empty() {
             vec![
                 Line::raw(""),
-                Line::styled("  No annotations yet.", theme.style(Role::Body)),
-                Line::styled(
-                    "  Press m to bookmark your place, a to write a note.",
-                    theme.style(Role::Muted),
-                ),
+                Line::styled("  Nothing matches your search.", muted),
+            ]
+        } else if state.tab == AnnotTab::Notes {
+            vec![
+                Line::raw(""),
+                Line::styled("  No notes yet.", body),
+                Line::styled("  Press a in the reader to write one.", muted),
             ]
         } else {
             vec![
                 Line::raw(""),
-                Line::styled("  Nothing matches your search.", theme.style(Role::Muted)),
+                Line::styled("  No bookmarks yet.", body),
+                Line::styled("  Press m in the reader to drop one.", muted),
             ]
         };
         f.render_widget(Paragraph::new(msg), list_area);

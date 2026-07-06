@@ -254,12 +254,26 @@ impl App {
             return;
         };
         let items = store.list_annotations(&self.session.book_path);
+        // Reopen on the tab the edited annotation lives on, cursor kept on it.
+        let tab = items
+            .iter()
+            .find(|i| i.id == keep_id)
+            .map(|i| {
+                if i.is_note() {
+                    AnnotTab::Notes
+                } else {
+                    AnnotTab::Bookmarks
+                }
+            })
+            .unwrap_or(AnnotTab::Bookmarks);
         let sel = items
             .iter()
+            .filter(|i| i.is_note() == matches!(tab, AnnotTab::Notes))
             .position(|i| i.id == keep_id)
-            .unwrap_or_else(|| items.len().saturating_sub(1));
+            .unwrap_or(0);
         self.overlay = Overlay::Annot(AnnotState {
             items,
+            tab,
             sel,
             filter: String::new(),
             filtering: false,
@@ -306,6 +320,14 @@ impl App {
         let (len, sel) = (a.filtered().len(), a.sel);
         match key.code {
             KeyCode::Esc | KeyCode::Char('\'') | KeyCode::Char('q') => self.overlay = Overlay::None,
+            // Switch between the Bookmarks and Notes tabs (Tab or ← / →).
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                if let Overlay::Annot(a) = &mut self.overlay {
+                    a.tab = a.tab.toggled();
+                    a.sel = 0;
+                    a.filter.clear();
+                }
+            }
             KeyCode::Char('/') => {
                 if let Overlay::Annot(a) = &mut self.overlay {
                     a.filtering = true;

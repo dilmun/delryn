@@ -210,23 +210,26 @@ impl App {
                 if let Some(store) = &self.session.store
                     && !self.session.book_path.is_empty()
                 {
-                    store.add_bookmark(
-                        &self.session.book_path,
-                        reader.section,
-                        &reader.current_quote(),
-                    );
-                    reader.flash = Some("bookmark added".into());
-                    // `reader` is borrowed here, so push the refreshed set directly
-                    // rather than via the `&mut self` helper.
-                    let marks = store
-                        .list_annotations(&self.session.book_path)
-                        .into_iter()
-                        .map(|a| {
-                            let is_note = a.is_note();
-                            (a.section, a.quote, is_note)
-                        })
-                        .collect();
-                    reader.set_annotations(marks);
+                    let quote = reader.current_quote();
+                    // Guard against duplicates: a repeat `m` at the same anchor is a
+                    // no-op (otherwise a held/double key stacks identical marks).
+                    if reader.has_bookmark(reader.section, &quote) {
+                        reader.flash = Some("already bookmarked".into());
+                    } else {
+                        store.add_bookmark(&self.session.book_path, reader.section, &quote);
+                        reader.flash = Some("bookmark added".into());
+                        // `reader` is borrowed here, so push the refreshed set
+                        // directly rather than via the `&mut self` helper.
+                        let marks = store
+                            .list_annotations(&self.session.book_path)
+                            .into_iter()
+                            .map(|a| {
+                                let is_note = a.is_note();
+                                (a.section, a.quote, is_note)
+                            })
+                            .collect();
+                        reader.set_annotations(marks);
+                    }
                 }
             }
             Action::AddNote => {
@@ -246,7 +249,7 @@ impl App {
             Action::OpenAnnotations => {
                 if let Some(store) = &self.session.store {
                     let items = store.list_annotations(&self.session.book_path);
-                    self.overlay = Overlay::Annot(AnnotState::new(items));
+                    self.overlay = Overlay::Annot(AnnotState::new(items, AnnotTab::Bookmarks));
                 }
             }
             Action::CopyCode => {
