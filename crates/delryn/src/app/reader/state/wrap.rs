@@ -15,6 +15,11 @@ pub struct WrapKey {
     pub justify: bool,
     pub tidy: bool,
     pub images_key: (usize, u16, u16, u16, u16, u16, crate::media::ImageFit),
+    /// A signature of the per-image reserved row counts. Images are first laid out
+    /// with an estimate, then (once built) with the resize's exact cell height; a
+    /// change here re-wraps so the reserved blank rows match the drawn image and
+    /// the caption sits flush beneath it (no gap, no overlap).
+    pub image_rows_sig: u64,
 }
 
 impl WrapKey {
