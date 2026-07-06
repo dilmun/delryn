@@ -3,8 +3,10 @@
 //! OPF metadata is junk. Best-effort; the user reviews before saving.
 
 use std::path::Path;
+use std::sync::LazyLock;
 
 use epub::doc::EpubDoc;
+use regex::Regex;
 
 use super::EXTRACT_WIDTH;
 
@@ -192,8 +194,10 @@ pub(crate) fn title_from_html(xhtml: &str) -> Option<(String, Option<String>)> {
 /// First labelled ISBN in `text`, normalized to a bare ISBN-10/13. Tolerates the
 /// usual clutter between the label and the number (`ISBN-13 (pbk): 978-…`).
 fn find_isbn(text: &str) -> Option<String> {
-    let re = regex::Regex::new(r"(?i)ISBN.{0,30}?([0-9][0-9\- ]{8,18}[0-9Xx])").ok()?;
-    re.captures_iter(text)
+    static ISBN_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)ISBN.{0,30}?([0-9][0-9\- ]{8,18}[0-9Xx])").unwrap());
+    ISBN_RE
+        .captures_iter(text)
         .find_map(|c| delryn_model::naming::normalize_isbn(&c[1]))
 }
 
@@ -201,22 +205,24 @@ fn find_isbn(text: &str) -> Option<String> {
 /// is a distinguished…" → "Shekhar Khandelwal". Takes the words after the heading
 /// up to a biographical verb (is/was/works/holds/…), 1–4 words.
 fn find_author_bio(text: &str) -> Option<String> {
-    let re = regex::Regex::new(
-        r"(?i)about the authors?[\s:]+([^\n,]{2,40}?)\s+(?:is|was|are|has|have|holds|works|serves|received|earned|currently)\b",
-    )
-    .ok()?;
-    let name = re.captures(text)?[1].trim().to_string();
+    static AUTHOR_BIO_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)about the authors?[\s:]+([^\n,]{2,40}?)\s+(?:is|was|are|has|have|holds|works|serves|received|earned|currently)\b",
+        )
+        .unwrap()
+    });
+    let name = AUTHOR_BIO_RE.captures(text)?[1].trim().to_string();
     let words = name.split_whitespace().count();
     (1..=4).contains(&words).then_some(name)
 }
 
 /// A publication year near a copyright / "published" marker.
 fn find_year(text: &str) -> Option<i32> {
-    let re = regex::Regex::new(
-        r"(?i)(?:copyright|©|\(c\)|first published|published)\D{0,24}((?:19|20)\d{2})",
-    )
-    .ok()?;
-    re.captures(text).and_then(|c| c[1].parse().ok())
+    static YEAR_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)(?:copyright|©|\(c\)|first published|published)\D{0,24}((?:19|20)\d{2})")
+            .unwrap()
+    });
+    YEAR_RE.captures(text).and_then(|c| c[1].parse().ok())
 }
 
 /// The publisher named on the imprint page. A well-known publisher mentioned in
@@ -243,13 +249,13 @@ fn find_publisher(text: &str) -> Option<String> {
         return Some(p.to_string());
     }
     // "Published by X", or "Copyright © 2024 by X" — the name after "by".
-    for pat in [
-        r"(?i)published by\s+([^\n\r.,;]{2,50})",
-        r"(?i)(?:copyright|©)[^\n]*?\bby\s+([^\n\r.,;]{2,50})",
-    ] {
-        let Ok(re) = regex::Regex::new(pat) else {
-            continue;
-        };
+    static PUBLISHER_RES: LazyLock<[Regex; 2]> = LazyLock::new(|| {
+        [
+            Regex::new(r"(?i)published by\s+([^\n\r.,;]{2,50})").unwrap(),
+            Regex::new(r"(?i)(?:copyright|©)[^\n]*?\bby\s+([^\n\r.,;]{2,50})").unwrap(),
+        ]
+    });
+    for re in PUBLISHER_RES.iter() {
         let Some(cap) = re.captures(text) else {
             continue;
         };

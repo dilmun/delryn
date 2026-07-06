@@ -17,6 +17,12 @@ use scraper::{Html, Node};
 use super::{OutlineItem, TocEntry};
 use crate::container::{body_or_root, descendant_text, filename_eq, has_token};
 
+/// Maximum TOC nesting depth parsed / flattened. A real table of contents nests a
+/// few levels; this only bounds pathological / malicious nav documents (deeply
+/// nested `<ol>` or NCX `navPoint`s) whose unbounded recursion would overflow the
+/// stack on book open.
+const MAX_NAV_DEPTH: usize = 64;
+
 /// Resolved navigation for a document.
 pub(super) struct Navigation {
     pub toc: Vec<TocEntry>,
@@ -36,6 +42,7 @@ pub(super) fn build(doc: &mut EpubDoc<BufReader<File>>) -> Navigation {
 
     let mut outline = Vec::new();
     build_outline(&toc, 0, 0, &mut outline);
+    // (`toc` depth is already bounded by parse_ol / convert_navpoint below.)
     if outline.is_empty() {
         // No usable TOC: one entry per spine section.
         outline = (0..doc.get_num_chapters())
@@ -89,7 +96,7 @@ fn parse_nav_document(doc: &mut EpubDoc<BufReader<File>>) -> Option<ParsedNav> {
         let etype = e.attr("epub:type").unwrap_or("");
         if has_token(etype, "toc") && toc.is_empty() {
             if let Some(ol) = child_element(nav, "ol") {
-                toc = parse_ol(ol, &nav_dir, doc);
+                toc = parse_ol(ol, &nav_dir, doc, 0);
             }
         } else if has_token(etype, "landmarks") {
             start_section = bodymatter_section(nav, &nav_dir, doc);
@@ -100,7 +107,15 @@ fn parse_nav_document(doc: &mut EpubDoc<BufReader<File>>) -> Option<ParsedNav> {
 
 /// Parse a nav `<ol>` into TOC entries (each `<li>`: an `<a>`/`<span>` label,
 /// then an optional nested `<ol>`).
-fn parse_ol(ol: NodeRef<Node>, nav_dir: &Path, doc: &EpubDoc<BufReader<File>>) -> Vec<TocEntry> {
+fn parse_ol(
+    ol: NodeRef<Node>,
+    nav_dir: &Path,
+    doc: &EpubDoc<BufReader<File>>,
+    depth: usize,
+) -> Vec<TocEntry> {
+    if depth >= MAX_NAV_DEPTH {
+        return Vec::new();
+    }
     let mut entries = Vec::new();
     for li in ol
         .children()
@@ -120,7 +135,7 @@ fn parse_ol(ol: NodeRef<Node>, nav_dir: &Path, doc: &EpubDoc<BufReader<File>>) -
             .and_then(|a| a.value().as_element()?.attr("href"))
             .and_then(|href| resolve_href(href, nav_dir, doc));
         let children = child_element(li, "ol")
-            .map(|ol| parse_ol(ol, nav_dir, doc))
+            .map(|ol| parse_ol(ol, nav_dir, doc, depth + 1))
             .unwrap_or_default();
         entries.push(TocEntry {
             label,
@@ -149,18 +164,26 @@ fn bodymatter_section(
 
 /// TOC from the NCX (the `epub` crate parses `toc.ncx` into `doc.toc`).
 fn ncx_toc(doc: &EpubDoc<BufReader<File>>) -> Vec<TocEntry> {
-    doc.toc.iter().map(|np| convert_navpoint(np, doc)).collect()
+    doc.toc
+        .iter()
+        .map(|np| convert_navpoint(np, doc, 0))
+        .collect()
 }
 
-fn convert_navpoint(np: &NavPoint, doc: &EpubDoc<BufReader<File>>) -> TocEntry {
+fn convert_navpoint(np: &NavPoint, doc: &EpubDoc<BufReader<File>>, depth: usize) -> TocEntry {
+    // Past the depth cap, keep the entry but stop descending into its children.
+    let children = if depth >= MAX_NAV_DEPTH {
+        Vec::new()
+    } else {
+        np.children
+            .iter()
+            .map(|c| convert_navpoint(c, doc, depth + 1))
+            .collect()
+    };
     TocEntry {
         label: np.label.clone(),
         section: resolve_path(&np.content, doc),
-        children: np
-            .children
-            .iter()
-            .map(|c| convert_navpoint(c, doc))
-            .collect(),
+        children,
     }
 }
 
@@ -168,6 +191,9 @@ fn convert_navpoint(np: &NavPoint, doc: &EpubDoc<BufReader<File>>) -> TocEntry {
 /// entry locates by its label text within the (possibly shared) section; entries
 /// with no resolved section inherit their parent's.
 fn build_outline(entries: &[TocEntry], depth: usize, parent: usize, out: &mut Vec<OutlineItem>) {
+    if depth >= MAX_NAV_DEPTH {
+        return; // the TocEntry tree is already depth-bounded; defensive stop
+    }
     for e in entries {
         let section = e.section.unwrap_or(parent);
         out.push(OutlineItem {

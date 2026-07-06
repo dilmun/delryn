@@ -8,3 +8,4 @@ edition.workspace = true
 [dependencies]
 delryn-model = { workspace = true }
 syntect.workspace = true
+unicode-width.workspace = true

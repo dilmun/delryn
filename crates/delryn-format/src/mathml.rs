@@ -9,6 +9,11 @@ use ego_tree::NodeRef;
 use delryn_model::math::{subscript_str, superscript_str};
 use scraper::{Html, Node};
 
+/// Maximum MathML nesting depth walked before the transcoder stops recursing and
+/// emits the remaining subtree as flat text — guards against a stack overflow on
+/// pathologically nested `<mrow>` / script markup. Real math nests shallowly.
+const MAX_MATH_DEPTH: u16 = 128;
+
 /// Render a MathML string to Unicode.
 pub fn to_unicode(src: &str) -> String {
     let frag = Html::parse_fragment(src);
@@ -16,7 +21,7 @@ pub fn to_unicode(src: &str) -> String {
     // `parse_fragment` wraps the content under an <html> root; walking its
     // children descends through any <body>/<math> wrappers into the content.
     for child in frag.root_element().children() {
-        emit(child, &mut out);
+        emit(child, 0, &mut out);
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -33,9 +38,9 @@ fn elem_children(node: NodeRef<Node>) -> Vec<NodeRef<Node>> {
 }
 
 /// Rendered (trimmed) Unicode for one node — used for script/fraction arguments.
-fn part(node: NodeRef<Node>) -> String {
+fn part(node: NodeRef<Node>, depth: u16) -> String {
     let mut s = String::new();
-    emit(node, &mut s);
+    emit(node, depth, &mut s);
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -109,7 +114,17 @@ fn is_spaced_op(op: &str) -> bool {
     )
 }
 
-fn emit(node: NodeRef<Node>, out: &mut String) {
+fn emit(node: NodeRef<Node>, depth: u16, out: &mut String) {
+    // Pathological nesting: stop recursing and append the subtree's flat text
+    // (collected iteratively) so the stack can't overflow.
+    if depth >= MAX_MATH_DEPTH {
+        let t = token_text(node);
+        if !t.is_empty() {
+            out.push_str(&t);
+            out.push(' ');
+        }
+        return;
+    }
     match node.value() {
         Node::Text(t) => {
             let t = t.text.trim();
@@ -139,34 +154,34 @@ fn emit(node: NodeRef<Node>, out: &mut String) {
                     }
                 }
                 "msubsup" | "munderover" if kids.len() >= 3 => {
-                    out.push_str(&part(kids[0]));
-                    out.push_str(&as_sub(&part(kids[1])));
-                    out.push_str(&as_sup(&part(kids[2])));
+                    out.push_str(&part(kids[0], depth + 1));
+                    out.push_str(&as_sub(&part(kids[1], depth + 1)));
+                    out.push_str(&as_sup(&part(kids[2], depth + 1)));
                     out.push(' ');
                 }
                 "msub" | "munder" if kids.len() >= 2 => {
-                    out.push_str(&part(kids[0]));
-                    out.push_str(&as_sub(&part(kids[1])));
+                    out.push_str(&part(kids[0], depth + 1));
+                    out.push_str(&as_sub(&part(kids[1], depth + 1)));
                     out.push(' ');
                 }
                 "msup" | "mover" if kids.len() >= 2 => {
-                    out.push_str(&part(kids[0]));
-                    out.push_str(&as_sup(&part(kids[1])));
+                    out.push_str(&part(kids[0], depth + 1));
+                    out.push_str(&as_sup(&part(kids[1], depth + 1)));
                     out.push(' ');
                 }
                 "mfrac" if kids.len() >= 2 => {
-                    out.push_str(&frac(&part(kids[0]), &part(kids[1])));
+                    out.push_str(&frac(&part(kids[0], depth + 1), &part(kids[1], depth + 1)));
                     out.push(' ');
                 }
                 "msqrt" => {
                     let mut inner = String::new();
                     for c in node.children() {
-                        emit(c, &mut inner);
+                        emit(c, depth + 1, &mut inner);
                     }
                     out.push_str(&format!("√({}) ", part_str(&inner)));
                 }
                 "mroot" if kids.len() >= 2 => {
-                    out.push_str(&format!("√({}) ", part(kids[0])));
+                    out.push_str(&format!("√({}) ", part(kids[0], depth + 1)));
                 }
                 "mfenced" => {
                     let open = e.attr("open").unwrap_or("(");
@@ -175,7 +190,7 @@ fn emit(node: NodeRef<Node>, out: &mut String) {
                         .attr("separators")
                         .and_then(|s| s.chars().next())
                         .unwrap_or(',');
-                    let inner: Vec<String> = kids.iter().map(|&c| part(c)).collect();
+                    let inner: Vec<String> = kids.iter().map(|&c| part(c, depth + 1)).collect();
                     out.push_str(open);
                     out.push_str(&inner.join(&format!("{sep} ")));
                     out.push_str(close);
@@ -184,14 +199,14 @@ fn emit(node: NodeRef<Node>, out: &mut String) {
                 "mspace" => out.push(' '),
                 "semantics" => {
                     if let Some(&first) = kids.first() {
-                        emit(first, out);
+                        emit(first, depth + 1, out);
                     }
                 }
                 "annotation" => {}
                 // mrow / math / mstyle / mpadded / menclose / unknown → recurse.
                 _ => {
                     for c in node.children() {
-                        emit(c, out);
+                        emit(c, depth + 1, out);
                     }
                 }
             }
