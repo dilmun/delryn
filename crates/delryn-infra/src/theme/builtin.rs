@@ -8,7 +8,7 @@ use super::Theme;
 
 /// All built-in themes, in cycle order.
 pub const BUILTINS: &[Theme] = &[
-    TERMINAL,
+    AUTO,
     DARK,
     OLED,
     HIGH_CONTRAST,
@@ -19,9 +19,12 @@ pub const BUILTINS: &[Theme] = &[
     LIGHT,
 ];
 
-/// Uses the terminal's own background and ANSI palette where possible.
-pub const TERMINAL: Theme = Theme {
-    name: "terminal",
+/// Adapts to the terminal: no background of its own (keeps the terminal's own
+/// backdrop for prose), and its overlays/images resolve against the **detected**
+/// terminal background (see [`Theme::paper`]/[`Theme::on_accent`]), so it stays
+/// readable on both light and dark terminals. Was named "terminal".
+pub const AUTO: Theme = Theme {
+    name: "auto",
     bg: None,
     fg: Color::Reset,
     heading: Color::Reset,

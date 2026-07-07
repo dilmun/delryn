@@ -12,9 +12,9 @@ use ratatui::style::{Color, Style};
 use crate::color::luma;
 
 /// The terminal's real background colour, queried once at startup (OSC 11). The
-/// `terminal` theme uses no colours of its own, so without this it would recolour
-/// images against a white-paper fallback; with it, equations and inverted figures
-/// match the actual backdrop.
+/// `auto` theme uses no colours of its own, so without this it would recolour
+/// images (and paint overlays) against a fixed fallback; with it, its page,
+/// equations, and inverted figures match the actual backdrop — light or dark.
 static TERMINAL_BG: OnceLock<[u8; 3]> = OnceLock::new();
 
 /// Record the detected terminal background (best-effort; ignored if already set).
@@ -121,16 +121,32 @@ impl Theme {
     }
 
     /// A concrete, opaque page colour for popups/overlays that must stay readable
-    /// over content. Falls back to black for the `terminal` theme, which has no
-    /// background of its own.
+    /// over content. The `auto` theme (no `bg` of its own) uses the **detected**
+    /// terminal background so overlays match the terminal — light or dark — instead
+    /// of a fixed black that renders muddy on a light terminal; it falls back to
+    /// black only when the real background is unknown (no detection).
     pub fn paper(&self) -> Color {
-        self.bg.unwrap_or(Color::Black)
+        match self.bg {
+            Some(bg) => bg,
+            None => terminal_background()
+                .map(|[r, g, b]| Color::Rgb(r, g, b))
+                .unwrap_or(Color::Black),
+        }
     }
 
     /// The foreground for text drawn *on* the `accent` colour (selections, pills,
-    /// highlighted rows) — i.e. the inverse of the page.
+    /// highlighted rows). For a theme with its own page it's the inverse of the
+    /// page; for the `auto` theme (whose page follows the terminal and so can be
+    /// light or dark) it's picked from the accent's own luminance, so a selection
+    /// stays legible whatever the terminal background is.
     pub fn on_accent(&self) -> Color {
-        self.paper()
+        match self.bg {
+            Some(_) => self.paper(),
+            None => match rgb_of(self.accent) {
+                Some(a) if luma(a) < 128.0 => Color::Rgb(235, 235, 235),
+                _ => Color::Rgb(20, 20, 20),
+            },
+        }
     }
 
     /// A faint panel colour for code blocks — the page nudged ~8% toward the text
@@ -208,13 +224,15 @@ pub fn rgb_of(c: Color) -> Option<[u8; 3]> {
     })
 }
 
-/// Look a theme up by name (for persistence).
+/// Look a theme up by name (for persistence). `"terminal"` is accepted as a
+/// back-compat alias for the renamed `"auto"` theme so older configs still load.
 pub fn by_name(name: &str) -> Option<Theme> {
+    let name = if name == "terminal" { "auto" } else { name };
     registry().iter().copied().find(|t| t.name == name)
 }
 
 pub fn default_theme() -> Theme {
-    builtin::TERMINAL
+    builtin::AUTO
 }
 
 #[cfg(test)]
@@ -224,7 +242,7 @@ mod tests {
     #[test]
     fn paper_is_concrete_even_for_terminal_theme() {
         // The terminal theme has no bg of its own, but popups need a concrete one.
-        assert_eq!(TERMINAL.paper(), Color::Black);
+        assert_eq!(AUTO.paper(), Color::Black);
         assert_eq!(OLED.paper(), Color::Rgb(0, 0, 0));
         assert_eq!(LIGHT.paper(), Color::Rgb(0xff, 0xff, 0xff));
     }
@@ -246,17 +264,14 @@ mod tests {
     fn terminal_theme_inks_black_on_white() {
         // Reset fg + no bg, no detected terminal colour → the publisher's intended
         // dark-on-light page.
-        assert_eq!(
-            TERMINAL.resolve_image_ink(None),
-            ([0, 0, 0], [255, 255, 255])
-        );
+        assert_eq!(AUTO.resolve_image_ink(None), ([0, 0, 0], [255, 255, 255]));
     }
 
     #[test]
     fn terminal_theme_uses_detected_background() {
         // With a detected dark terminal background, the page becomes that colour
         // and the ink is snapped light for contrast.
-        let (ink, paper) = TERMINAL.resolve_image_ink(Some([20, 22, 26]));
+        let (ink, paper) = AUTO.resolve_image_ink(Some([20, 22, 26]));
         assert_eq!(paper, [20, 22, 26], "page = real terminal bg");
         assert!(luma(ink) > 128.0, "ink snapped light on a dark bg: {ink:?}");
         // A concrete theme ignores the terminal fallback.
@@ -274,7 +289,7 @@ mod tests {
         );
         // The terminal theme without a detected background has no surface (code
         // keeps rendering on the terminal's own backdrop).
-        assert_eq!(TERMINAL.code_surface(), None);
+        assert_eq!(AUTO.code_surface(), None);
     }
 
     #[test]
