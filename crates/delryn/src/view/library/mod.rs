@@ -66,7 +66,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.last_layout.lib_detail = detail;
 
     if let Some(sb) = sidebar {
-        sections::render_sections(f, sb, app, theme, app.library.pane == LibPane::Sidebar);
+        let side_focused = app.library.pane == LibPane::Sidebar;
+        sections::render_sections(f, sb, app, theme, side_focused);
     }
     let focused = app.library.pane == LibPane::List;
     if cover_view {

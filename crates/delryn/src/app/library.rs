@@ -523,6 +523,18 @@ impl App {
         self.refresh_library();
     }
 
+    /// Mouse: select the clicked sidebar row (ring index `i`), focusing the
+    /// sidebar. The trailing "＋ New collection" row (index `lib_view_count()`)
+    /// begins a new collection inline, matching Enter on it.
+    pub(crate) fn lib_side_click(&mut self, i: usize) {
+        self.library.pane = LibPane::Sidebar;
+        if i >= self.lib_view_count() {
+            self.lib_coll_begin_new();
+        } else {
+            self.lib_set_view_index(i);
+        }
+    }
+
     /// Move the sidebar cursor by `delta` (clamped), switching the view live.
     /// The cursor ranges over the views plus the trailing "＋ New" row.
     pub(crate) fn lib_side_move(&mut self, delta: isize) {

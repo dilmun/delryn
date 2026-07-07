@@ -387,6 +387,19 @@ jump-by-type + a reader cursor.
       with current vs remote, fields that differ pre-ticked; space toggles, `a`
       all, ⏎ applies the ticked rows into Details (+ fetches the cover), Esc
       cancels. Replaces the old apply-everything-then-review behaviour.
+- [x] **Mouse polish — clickable sidebars & tabs everywhere** (`feat/mouse-polish`).
+      The library **sections sidebar** is now mouse-drivable: click a section /
+      collection to switch to it (focusing the sidebar), click "＋ New collection"
+      to start one; the sidebar became a stateful list that **scrolls the active
+      row into view** (so it survives overflowing its pane), and its per-row hit
+      rects are captured from the settled scroll offset (`view::library::sections`).
+      Clicking the **detail pane** focuses it. The **annotations overlay** (`'`) is
+      fully mouse-drivable too: click the **Bookmarks / Notes tabs** to switch, click
+      a row to select, double-click to jump (shared `annot_jump_selected`), wheel to
+      move the cursor; overlay/confirm wheel handling was centralized in `on_mouse`
+      (open overlays own the wheel, so the view behind never scrolls). New hit-rect
+      channels `MouseHits::{side_rows, annot_tabs, annot_rows}`; regression tests
+      `sidebar_click_selects_section_and_collection` + `annotations_click_switches_tab_and_selects`.
 
 ## Phase 4 — Knowledge & power tools
 

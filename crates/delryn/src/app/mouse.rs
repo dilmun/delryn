@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use super::{App, EditMode, EditTab, Focus, LOOKUP_FIELDS, LibPane, Mode, Overlay, SortKey};
+use super::{
+    AnnotTab, App, EditMode, EditTab, Focus, LOOKUP_FIELDS, LibPane, Mode, Overlay, SortKey,
+};
 
 /// Max gap between two clicks on the same book to count as a double-click (→ open).
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -39,6 +41,10 @@ pub struct LayoutMetrics {
 pub struct MouseHits {
     /// Library: (book index, screen rect) for each visible row / grid cell.
     pub books: Vec<(usize, Rect)>,
+    /// Library sidebar: (ring index, screen rect) for each visible section /
+    /// collection row, plus the trailing "＋ New collection" row at index
+    /// `lib_view_count()`. Indices match `lib_set_view_index`.
+    pub side_rows: Vec<(usize, Rect)>,
     /// Editor tab strip: (tab, rect).
     pub edit_tabs: Vec<(EditTab, Rect)>,
     /// Editor Details/File fields: (row index, value-start column, rect).
@@ -47,15 +53,22 @@ pub struct MouseHits {
     pub edit_results: Vec<(usize, Rect)>,
     /// Editor search bar rect.
     pub edit_search: Option<Rect>,
+    /// Annotations overlay tab bar: (tab, rect).
+    pub annot_tabs: Vec<(AnnotTab, Rect)>,
+    /// Annotations overlay list: (filtered-item index, rect) per visible row.
+    pub annot_rows: Vec<(usize, Rect)>,
 }
 
 impl MouseHits {
     pub fn clear(&mut self) {
         self.books.clear();
+        self.side_rows.clear();
         self.edit_tabs.clear();
         self.edit_fields.clear();
         self.edit_results.clear();
         self.edit_search = None;
+        self.annot_tabs.clear();
+        self.annot_rows.clear();
     }
 }
 
@@ -70,6 +83,18 @@ impl App {
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let up = matches!(m.kind, MouseEventKind::ScrollUp);
                 let d: isize = if up { -3 } else { 3 };
+                // A modal confirm or an open overlay owns the wheel: an overlay with
+                // its own scrollable list scrolls it, anything else swallows the
+                // wheel so the view behind it stays put.
+                if self.pending_confirm.is_some() {
+                    return false;
+                }
+                if !matches!(self.overlay, Overlay::None) {
+                    return match &self.overlay {
+                        Overlay::Annot(_) => self.annot_wheel(d.signum()),
+                        _ => false,
+                    };
+                }
                 match self.mode {
                     Mode::Reader => self.reader_wheel(m.column, m.row, d),
                     Mode::Library => self.library_wheel(m.column, m.row, d),
@@ -116,12 +141,10 @@ impl App {
 
     /// Wheel in the library: scroll only the pane under the cursor — the sections
     /// sidebar, or the book list (extending a live visual range). The detail pane and
-    /// empty areas don't scroll the list. Modal overlays swallow it.
+    /// empty areas don't scroll the list. (Modal confirms and overlays are already
+    /// handled by the caller.)
     fn library_wheel(&mut self, col: u16, row: u16, d: isize) -> bool {
-        if self.pending_confirm.is_some()
-            || !matches!(self.overlay, Overlay::None)
-            || self.library.filtering
-        {
+        if self.library.filtering {
             return false;
         }
         let pt = (col, row).into();
@@ -159,6 +182,12 @@ impl App {
             }
             return true;
         }
+        if matches!(self.overlay, Overlay::Annot(_)) {
+            if button == MouseButton::Left {
+                self.annot_click(col, row);
+            }
+            return true;
+        }
         // Any other overlay is keyboard-driven (no hit rects); swallow the click.
         if !matches!(self.overlay, Overlay::None) {
             return false;
@@ -174,10 +203,9 @@ impl App {
         }
     }
 
-    /// Library click. Left-click moves the cursor to the book (double-click opens
-    /// it); Shift+left-click range-selects to it; right-click toggles it in the
-    /// multi-selection (the mouse counterpart to `Space`). Returns whether a book
-    /// was hit.
+    /// Library click, routed to the pane under the cursor. Sidebar rows switch the
+    /// active section/collection; book rows select/open/range/mark; the detail pane
+    /// takes focus. Returns whether anything was hit.
     fn library_click(
         &mut self,
         col: u16,
@@ -186,39 +214,55 @@ impl App {
         mods: KeyModifiers,
     ) -> bool {
         let pt = (col, row).into();
-        let Some(&(idx, _)) = self.mouse.books.iter().find(|(_, r)| r.contains(pt)) else {
-            return false;
-        };
-        let idx = idx.min(self.library.books.len().saturating_sub(1));
-        self.library.pane = LibPane::List;
-
-        if button == MouseButton::Right {
-            self.lib_mouse_toggle_mark(idx);
-            self.last_click = None;
+        // Sidebar: left-click selects the section/collection (or the "＋ New" row).
+        if let Some(&(ring, _)) = self.mouse.side_rows.iter().find(|(_, r)| r.contains(pt)) {
+            if button == MouseButton::Left {
+                self.last_click = None;
+                self.lib_side_click(ring);
+            }
             return true;
         }
-        if button == MouseButton::Left && mods.contains(KeyModifiers::SHIFT) {
-            self.lib_mouse_range_to(idx);
-            self.last_click = None;
-            return true;
-        }
-        if button != MouseButton::Left {
+        // Book rows: select the book (double-click opens); Shift+left range-selects;
+        // right-click toggles it in the multi-selection (the counterpart to `Space`).
+        if let Some(&(idx, _)) = self.mouse.books.iter().find(|(_, r)| r.contains(pt)) {
+            let idx = idx.min(self.library.books.len().saturating_sub(1));
+            self.library.pane = LibPane::List;
+            if button == MouseButton::Right {
+                self.lib_mouse_toggle_mark(idx);
+                self.last_click = None;
+                return true;
+            }
+            if button == MouseButton::Left && mods.contains(KeyModifiers::SHIFT) {
+                self.lib_mouse_range_to(idx);
+                self.last_click = None;
+                return true;
+            }
+            if button != MouseButton::Left {
+                self.library.sel = idx;
+                return true;
+            }
+            // Plain left-click: a second click on the same book opens it; else select.
+            let now = Instant::now();
+            let double = self
+                .last_click
+                .is_some_and(|(prev, t)| prev == idx && now.duration_since(t) < DOUBLE_CLICK);
             self.library.sel = idx;
+            if double {
+                self.last_click = None;
+                self.open_selected();
+            } else {
+                self.last_click = Some((idx, now));
+            }
             return true;
         }
-        // Plain left-click: a second click on the same book opens it; else select.
-        let now = Instant::now();
-        let double = self
-            .last_click
-            .is_some_and(|(prev, t)| prev == idx && now.duration_since(t) < DOUBLE_CLICK);
-        self.library.sel = idx;
-        if double {
-            self.last_click = None;
-            self.open_selected();
-        } else {
-            self.last_click = Some((idx, now));
+        // Detail pane: a click there just moves the keyboard focus onto it.
+        if button == MouseButton::Left
+            && self.last_layout.lib_detail.is_some_and(|r| r.contains(pt))
+        {
+            self.library.pane = LibPane::Detail;
+            return true;
         }
-        true
+        false
     }
 
     /// Editor click: switch tab, focus + edit a field (caret at the click),
@@ -277,6 +321,51 @@ impl App {
                 e.search_mut().row = idx;
             }
         }
+    }
+
+    /// Click in the annotations overlay: a tab switches lists; a row selects it,
+    /// and a second click on the same row jumps to it (closing the overlay).
+    fn annot_click(&mut self, col: u16, row: u16) {
+        let pt = (col, row).into();
+        if let Some(&(tab, _)) = self.mouse.annot_tabs.iter().find(|(_, r)| r.contains(pt)) {
+            self.last_click = None;
+            if let Overlay::Annot(a) = &mut self.overlay
+                && a.tab != tab
+            {
+                a.tab = tab;
+                a.sel = 0;
+                a.filter.clear();
+            }
+            return;
+        }
+        if let Some(&(idx, _)) = self.mouse.annot_rows.iter().find(|(_, r)| r.contains(pt)) {
+            let now = Instant::now();
+            let double = self
+                .last_click
+                .is_some_and(|(prev, t)| prev == idx && now.duration_since(t) < DOUBLE_CLICK);
+            if let Overlay::Annot(a) = &mut self.overlay {
+                a.sel = idx;
+            }
+            if double {
+                self.last_click = None;
+                self.annot_jump_selected();
+            } else {
+                self.last_click = Some((idx, now));
+            }
+        }
+    }
+
+    /// Wheel in the annotations overlay: step the selection within the active tab.
+    fn annot_wheel(&mut self, d: isize) -> bool {
+        if let Overlay::Annot(a) = &mut self.overlay {
+            let n = a.filtered().len();
+            if n == 0 {
+                return false;
+            }
+            a.sel = (a.sel as isize + d).clamp(0, n as isize - 1) as usize;
+            return true;
+        }
+        false
     }
 
     /// Click on a sidebar row selects and jumps to that TOC entry.

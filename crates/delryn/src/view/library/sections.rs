@@ -1,5 +1,7 @@
 //! Library sidebar: smart sections + user collections (with inline editing).
 
+use ratatui::widgets::ListState;
+
 use super::*;
 
 /// One sidebar row (a fixed section or a collection). The active entry gets a
@@ -64,22 +66,44 @@ fn section_item(
     ]))
 }
 
-pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme, focused: bool) {
+pub(crate) fn render_sections(
+    f: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    theme: Theme,
+    focused: bool,
+) {
     // The "＋ New" row parks the cursor without changing the active view, so a
     // section/collection isn't "here" while it's selected.
     let on_new = app.library.side_new;
     // Usable text width inside the pane (drop the L/R border): the column the
     // per-group counts right-align to.
     let inner_w = area.width.saturating_sub(2) as usize;
-    let mut items: Vec<ListItem> = LibrarySection::ALL
-        .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let here = !on_new && matches!(&app.library.view, LibView::Section(cur) if cur == s);
-            let count = app.library.section_counts.get(i).copied();
-            section_item(s.label(), count, inner_w, here, focused, theme)
-        })
-        .collect();
+    let n = LibrarySection::ALL.len();
+
+    // (ring index, item index) for every clickable row — the map the click handler
+    // reads back. `active_item` is the current row's item index; it drives the
+    // list's scroll-into-view so the selection is always on screen (the sidebar can
+    // outgrow its pane once enough collections exist).
+    let mut row_meta: Vec<(usize, usize)> = Vec::new();
+    let mut active_item: Option<usize> = None;
+    let mut items: Vec<ListItem> = Vec::new();
+    for (i, s) in LibrarySection::ALL.iter().enumerate() {
+        let here = !on_new && matches!(&app.library.view, LibView::Section(cur) if cur == s);
+        let count = app.library.section_counts.get(i).copied();
+        if here {
+            active_item = Some(items.len());
+        }
+        row_meta.push((i, items.len()));
+        items.push(section_item(
+            s.label(),
+            count,
+            inner_w,
+            here,
+            focused,
+            theme,
+        ));
+    }
 
     // Collections, below a clear divider, each with its book count — always shown
     // so "＋ New collection" is reachable even before any collection exists. A
@@ -110,27 +134,37 @@ pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme
     };
     // Value width inside the pane: drop the L/R border (2) and the "▸ " marker (2).
     let field_w = area.width.saturating_sub(4).max(2) as usize;
-    for (name, count) in &app.library.shelves {
+    for (j, (name, count)) in app.library.shelves.iter().enumerate() {
+        // A row being renamed becomes an inline input, not a click target.
         if Some(name.as_str()) == renaming {
             if let Overlay::CollEdit(ci) = &app.overlay {
                 items.push(coll_edit_item(ci, field_w, theme));
             }
-        } else {
-            let here = !on_new && matches!(&app.library.view, LibView::Shelf(cur) if cur == name);
-            items.push(section_item(
-                name,
-                Some(*count),
-                inner_w,
-                here,
-                focused,
-                theme,
-            ));
+            continue;
         }
+        let here = !on_new && matches!(&app.library.view, LibView::Shelf(cur) if cur == name);
+        if here {
+            active_item = Some(items.len());
+        }
+        row_meta.push((n + j, items.len()));
+        items.push(section_item(
+            name,
+            Some(*count),
+            inner_w,
+            here,
+            focused,
+            theme,
+        ));
     }
-    // The trailing "＋ New collection" row — an inline input while creating.
+    // The trailing "＋ New collection" row — an inline input while creating, else a
+    // click target that begins one (ring index `lib_view_count()`).
     if let Some(input) = creating {
         items.push(coll_edit_item(input, field_w, theme));
     } else {
+        if on_new {
+            active_item = Some(items.len());
+        }
+        row_meta.push((n + app.library.shelves.len(), items.len()));
         items.push(section_item(
             "＋ New collection",
             None,
@@ -141,10 +175,36 @@ pub(crate) fn render_sections(f: &mut Frame, area: Rect, app: &App, theme: Theme
         ));
     }
 
-    f.render_widget(
-        List::new(items).block(pane_block("Library", focused, theme)),
-        area,
-    );
+    // Stateful so the active row scrolls into view; the selection carries no visible
+    // highlight (the rows style themselves), it only anchors the scroll offset.
+    let block = pane_block("Library", focused, theme);
+    let inner = block.inner(area);
+    let mut state = ListState::default().with_selected(active_item);
+    f.render_stateful_widget(List::new(items).block(block), area, &mut state);
+
+    // Map each clickable row to its on-screen rect, using the offset the list
+    // settled on (rows scrolled above the fold or past the bottom are dropped).
+    let offset = state.offset();
+    let mut hits: Vec<(usize, Rect)> = Vec::with_capacity(row_meta.len());
+    for (ring, item_idx) in row_meta {
+        if item_idx < offset {
+            continue;
+        }
+        let sy = inner.y + (item_idx - offset) as u16;
+        if sy >= inner.y + inner.height {
+            continue;
+        }
+        hits.push((
+            ring,
+            Rect {
+                x: inner.x,
+                y: sy,
+                width: inner.width,
+                height: 1,
+            },
+        ));
+    }
+    app.mouse.side_rows = hits;
 }
 
 /// A sidebar row rendered as an inline text field (create / rename a
