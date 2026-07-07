@@ -131,7 +131,7 @@ impl Reader {
         //    section becomes the anchor. Their reserved rows are sized on demand in
         //    `following_lines` (from `images.geom`/`fs` stored here), so record the
         //    geometry and dispatch builds for the visible spans plus the next.
-        if self.continuous_active() {
+        if self.reflow_flows() {
             let fs = picker.font_size();
             self.images.geom = Some(geom);
             self.images.fs = (fs.width, fs.height);
