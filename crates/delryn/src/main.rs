@@ -2,6 +2,7 @@
 //! All logic lives in the `delryn` library crate.
 
 use std::io;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -25,9 +26,9 @@ const IDLE: Duration = Duration::from_millis(250);
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // `delryn --add <dir>`: register a library folder, scan it, and exit.
+    // `delryn --add <dir> [dir…]`: register library folder(s), scan, and exit.
     if matches!(args.first().map(String::as_str), Some("--add" | "-a")) {
-        return add_library(args.get(1).map(String::as_str));
+        return add_library(&args[1..]);
     }
 
     // `delryn --rescan`: re-read metadata for every known book (backfills new
@@ -98,6 +99,13 @@ fn main() -> Result<()> {
     }
 
     let mut app = match args.first() {
+        // A folder argument (one or more) registers library sources and opens the
+        // library, scanning any newly added folders. A file argument opens that
+        // book, as before.
+        Some(path) if Path::new(path).is_dir() => {
+            register_library_dirs(&args, true);
+            App::library()
+        }
         Some(path) => App::open_book(path, picker.is_some())?,
         None => {
             // Clean out dead entries (deleted/moved files) so the library has no
@@ -108,6 +116,9 @@ fn main() -> Result<()> {
             App::library()
         }
     };
+    // First run — an empty library — lands on the Sources manager so a new user's
+    // first action is adding a folder. No-op once a folder is configured.
+    app.open_sources_if_empty();
     // Spawn the background image builder from the detected protocol.
     app.image_builder = picker.clone().map(delryn::media::ImageBuilder::new);
     app.picker = picker;
@@ -257,28 +268,47 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
 }
 
 /// Register a directory as a library folder, scan it, and report — no TUI.
-fn add_library(dir: Option<&str>) -> Result<()> {
-    let Some(dir) = dir else {
-        eprintln!("usage: delryn --add <dir>");
+/// `delryn --add <dir> [dir…]`: register the given folder(s) as library sources,
+/// scan, and exit. Unlike the positional form, offline folders are still
+/// registered (the flag is an explicit intent, not a file-vs-folder guess).
+fn add_library(dirs: &[String]) -> Result<()> {
+    if dirs.is_empty() {
+        eprintln!("usage: delryn --add <dir> [dir…]");
         return Ok(());
-    };
-    let path = std::fs::canonicalize(dir)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| dir.to_string());
-
-    let mut config = Config::load();
-    if !config.library_paths.contains(&path) {
-        config.library_paths.push(path.clone());
-        config.save();
     }
+    register_library_dirs(dirs, false);
+    let config = Config::load();
     match Store::open_default() {
         Ok(store) => {
             let n = library::scan(&config.library_paths, &store);
-            println!("Indexed {n} book(s). Library: {path}");
+            println!("Indexed {n} book(s).");
         }
         Err(e) => eprintln!("could not open library database: {e}"),
     }
     Ok(())
+}
+
+/// Add each folder in `args` to the library source list (normalized + deduped),
+/// saving the config only when something changed. With `require_dir`, non-folder
+/// arguments are skipped — used by the positional launch form, where a file
+/// argument means "open this book", not "add this source". The scan is left to
+/// the caller ([`App::library`] or [`add_library`]).
+fn register_library_dirs(args: &[String], require_dir: bool) {
+    let mut config = Config::load();
+    let mut changed = false;
+    for arg in args {
+        if require_dir && !Path::new(arg).is_dir() {
+            continue;
+        }
+        let root = library::normalize_root(arg);
+        if !config.library_paths.contains(&root) {
+            config.library_paths.push(root);
+            changed = true;
+        }
+    }
+    if changed {
+        config.save();
+    }
 }
 
 /// Render one frame, bracketed in synchronized output (DEC mode 2026) so the

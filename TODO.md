@@ -422,6 +422,29 @@ jump-by-type + a reader cursor.
         `settings_click_switches_tab_and_row`.
       - Known gap (minor): the metadata-editor results list has no wheel-scroll yet
         (it's click + keyboard driven).
+- [x] **In-app library sources manager** (`feat/library-sources-tab`). Library
+      folders were previously CLI-only (`delryn --add`); now Library Settings opens
+      on a new **Sources** tab (first): one row per configured folder with
+      `d`/Delete/Backspace to remove it (which also drops that folder's books via
+      `delryn-library::remove_root`), an **Add folder…** row that opens an inline
+      path input (reuses `TextInput`; `~` expanded + canonicalized via
+      `library::normalize_root`, deduped, validated as a real dir), and a
+      **Rescan now** action (incremental `scan` + `prune_missing`). Add/delete/
+      rescan refresh the list live and flash the count. Mouse: double-click the
+      Add/Rescan rows activates them (via the shared `settings_change` path).
+      **First run** — an empty library — opens the Sources manager automatically
+      (`App::open_sources_if_empty`, called from `main`), and the empty-state hint
+      points at it. **CLI**: `delryn <folder> [folder…]` registers + scans folders
+      then lands on the Library (file args still open the book); `delryn --add` now
+      takes multiple dirs. Fixed a latent bug: the overlay `f`-resize shortcut ate
+      `f` characters while typing (added `Overlay::Settings` to `overlay_is_typing`).
+      Tests: `sources_manager_add_scans_and_remove_drops_books`,
+      `empty_library_opens_sources_manager`, `remove_root_drops_only_books_under_it`,
+      `normalize_root_falls_back_when_unresolvable`.
+      *Follow-up (deferred): the manual rescan is synchronous on the UI thread —
+      fine for the incremental common case, but a large first scan briefly blocks;
+      move it off-thread with a progress spinner (mirror the dup-scan/loader
+      threads) if it ever bites.*
 
 ## Phase 4 — Knowledge & power tools
 
