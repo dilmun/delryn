@@ -545,10 +545,21 @@ only framed/matted to sit in the theme.
         text-layer seam left for Phase 6/7). Optional future perf: transmit-once +
         `a=p`-only flips (no temp-file write per turn) — current per-turn temp-file
         transmit is already fast enough.
-- [ ] **MOBI / AZW3**: parse the PalmDB/MOBI header + record stream; KF8 (AZW3)
-      is essentially zipped XHTML — reuse the existing `html` → `Block` pipeline
-      once records are decompressed (PalmDOC/HUFF-CDIC). Evaluate `mobi` crate
-      vs a minimal in-house reader. Same validation discipline as PDF.
+- [~] **MOBI / AZW3** ✅ **v1 shipped** (branch `feat/mobi-azw3`): a minimal
+      in-house reader in `delryn-format/src/mobi/` (no new deps — hand-rolled
+      big-endian parsing + PalmDOC LZ77). `pdb.rs` parses the PalmDB record stream;
+      `palmdoc.rs` decompresses type-2 (LZ77) text (type-1 uncompressed passes
+      through); `mod.rs` reads the PalmDOC+MOBI headers, strips each text record's
+      trailing entries (extra-data-flags), decodes UTF-8 / CP1252, splits on
+      `<mbp:pagebreak>` into sections, and feeds each to the shared
+      `html::parse_blocks` — the same pipeline as EPUB. `MobiDocument: Document`;
+      images resolved from records via `recindex`; EXTH → `Metadata`
+      (title/author/publisher/isbn/year + cover); flat outline from each section's
+      first heading. Library scan indexes MOBI/AZW3 with real metadata
+      (`index_meta`, shared with EPUB). AZW3/KF8 shares the backend (record 0 parsed
+      the same way). *Still: HUFF/CDIC (type 17480) decompression → reported
+      unsupported; DRM → reported; full KF8 skeleton/fragment reconstruction + real
+      `filepos` NCX TOC; MOBI full-text index.* Same validation discipline as PDF.
 
 ## Phase 6 — Graphical math + deep performance
 
@@ -837,14 +848,17 @@ scroll/roll `usize` arithmetic all guarded; view draw path borrows lines + mater
 only the visible window; store SQL fully parameterized (no injection). Dedup
 `content_link_candidates` is O(n²) but only on the user-triggered thorough scan (accepted).
 
-**Outstanding (NOT on `main` — fix on the `feat/mobi-azw3` branch before merging it):**
-- [ ] **HIGH — `mobi/mod.rs` `Vec::with_capacity(h.text_length)`** on an
-      attacker-controlled u32 (up to ~4 GB) → OOM abort on `MobiDocument::open` from a
-      ~130-byte crafted MOBI. Cap the hint (`text_length.min(cap)`); the loop grows as
-      needed. (`read_metadata`/library scan is unaffected — crash is on open only.)
-- [ ] **LOW — `mobi/palmdoc.rs:16` `Vec::with_capacity(input.len() * 4)`** — bounded by
-      the real record length (mild); use `saturating_mul` (32-bit overflow edge).
-- [ ] **LOW — mobi/mod.rs regexes** recompiled per open — hoist like the epub ones.
+**MOBI robustness — ✅ fixed on `feat/mobi-azw3` (this branch, after merging main in):**
+- [x] ✅ **HIGH — `mobi/mod.rs` `Vec::with_capacity(h.text_length)`** on an
+      attacker-controlled u32 (~4 GB) → OOM abort on open. Capped the prealloc hint at
+      `MAX_TEXT_PREALLOC` (32 MiB); the buffer still grows for a legit large book, and
+      the loop is bounded by the real record bytes. Regression test
+      `huge_text_length_does_not_over_allocate` (u32::MAX text_length opens fine).
+- [x] ✅ **LOW — `mobi/palmdoc.rs` `Vec::with_capacity(input.len() * 4)`** → `saturating_mul(4)`
+      (32-bit overflow edge). Just a reservation hint.
+- [x] ✅ **LOW — mobi/mod.rs regexes** (recindex / pagebreak / heading / tags) hoisted to
+      `LazyLock<Regex>` — were recompiled on every open. (`mobi/pdb.rs` offset parsing was
+      audited exemplary: `checked_mul`, per-offset bounds checks, `.get(a..b)` — no fix.)
       *(`mobi/pdb.rs` offset-table parsing audited exemplary: `checked_mul`, per-offset
       bounds checks, `.get(start..end)` slicing — no panic path.)*
 

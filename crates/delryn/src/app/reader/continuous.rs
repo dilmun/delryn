@@ -24,10 +24,17 @@
 //! * [`scroll_down`](Reader::scroll_down) / [`scroll_up`](Reader::scroll_up) roll
 //!   the anchor across boundaries instead of stopping at a per-section edge.
 //!
-//! v1 limits (documented, graceful — no crashes): the bookmark gutter, the link
-//! cursor, and inline-image transmit follow the **anchor** section only; a
-//! following section's figures reserve their space (blank rows) until it becomes
-//! the anchor. Reflow continuous is single-column (Center) only; page mode and
+//! Following sections' **figures are drawn too** (via
+//! [`Reader::continuous_following_images`] and the view's `draw_following_images`):
+//! each joined section's images are built, their rows reserved up front from a
+//! stable decode estimate (never re-wrapped when the build lands, so scrolling
+//! never shifts), and sliced at their buffer row like the anchor's — a figure near
+//! a chapter boundary scrolls smoothly rather than leaving a blank gap until its
+//! section becomes the anchor.
+//!
+//! v1 limits (documented, graceful — no crashes): the bookmark gutter and the link
+//! cursor follow the **anchor** section only. Reflow continuous is single-column
+//! (Center) only; page mode and
 //! chapter-lock fall back to per-section scrolling. The **paged** variant
 //! (`continuous_paged_*`) works in Center (one page per band) and TwoPage (a facing
 //! pair per band), with zoom / centre / horizontal pan; page-snap and chapter-lock
@@ -36,7 +43,7 @@
 use std::sync::atomic::Ordering;
 
 use crate::config::ViewMode;
-use crate::layout::DisplayLine;
+use crate::layout::{DisplayLine, LineKind};
 
 use super::{Reader, page_stack};
 
@@ -61,6 +68,23 @@ impl Reader {
             && self.view_mode == ViewMode::Center
             && !self.paged
             && !self.chapter_lock
+    }
+
+    /// Whether reflowed text **flows across section boundaries** right now — the
+    /// render buffer and scroll pull in following sections to fill the viewport
+    /// (and both two-page columns), so a short chapter never leaves a blank column
+    /// or a gap. Always on for the **two-page spread** (a spread with a half-empty
+    /// column reads wrong); on for single-column **Center** only when the
+    /// `continuous` toggle is set. Excludes paged docs, page-snap, and chapter-lock
+    /// (which page per section by design). This gates the flow machinery;
+    /// [`continuous_active`](Self::continuous_active) still reports the toggle for
+    /// the status line.
+    pub fn reflow_flows(&self) -> bool {
+        !self.is_paged_image()
+            && !self.paged
+            && !self.chapter_lock
+            && (self.view_mode == ViewMode::TwoPage
+                || (self.continuous && self.view_mode == ViewMode::Center))
     }
 
     /// Whether continuous *paged* (PDF page-stacking) scroll is active: the flag is
@@ -310,10 +334,23 @@ impl Reader {
     pub fn continuous_lines(&mut self, height: usize) -> Vec<DisplayLine> {
         let scroll = self.scroll.min(self.lines.len());
         let mut out: Vec<DisplayLine> = self.lines[scroll..].to_vec();
+        self.cont_spans.clear();
+        // Repopulated per shown section by `following_lines` (below), so stale
+        // sections no longer on screen drop out of the draw set.
+        self.images.following.clear();
         let count = self.doc.section_count();
         let mut s = self.section + 1;
         // One extra line so a partial last row still has content beneath it.
         while out.len() <= height && s < count {
+            // A blank line between chapters so a section's leading heading doesn't
+            // butt against the previous chapter's last line (per-section paging
+            // starts each chapter at a fresh page top; the flow needs the gap
+            // drawn in). Record the span *after* it so figures stay aligned.
+            out.push(DisplayLine {
+                runs: Vec::new(),
+                kind: LineKind::Body,
+            });
+            self.cont_spans.push((s, out.len()));
             let lines = self.following_lines(s);
             out.extend(lines);
             s += 1;
@@ -321,18 +358,65 @@ impl Reader {
         out
     }
 
-    /// Wrapped lines of following section `s` for the continuous buffer, cached and
-    /// invalidated wholesale when the wrap inputs change.
+    /// Continuous mode: the *following* sections' images to draw, as `(buffer row,
+    /// cache key)`. The buffer row is the offset from the top visible line (anchor
+    /// `lines[scroll]`), i.e. the screen row the image reserved — so the view can
+    /// place it exactly where the reflow left the blank rows. The anchor section's
+    /// images are drawn separately from `lines`.
+    pub fn continuous_following_images(&self) -> Vec<(usize, crate::media::ImgKey)> {
+        let mut out = Vec::new();
+        for &(section, off) in &self.cont_spans {
+            let (Some(lines), Some(info)) = (
+                self.cont_cache.get(&section),
+                self.images.following.get(&section),
+            ) else {
+                continue;
+            };
+            let mut i = 0;
+            while i < lines.len() {
+                let LineKind::Image(idx) = lines[i].kind else {
+                    i += 1;
+                    continue;
+                };
+                let start = i;
+                while i < lines.len() && lines[i].kind == LineKind::Image(idx) {
+                    i += 1;
+                }
+                if let Some((key, _)) = info.get(idx) {
+                    out.push((off + start, *key));
+                }
+            }
+        }
+        out
+    }
+
+    /// Wrapped lines of following section `s` for the continuous buffer, reserving
+    /// that section's own image rows (its stable decode estimate, computed on demand
+    /// so a newly-shown section is sized right the first frame — no lag, no shift).
+    /// Cached; invalidated wholesale when the wrap inputs (`cont_key`) change.
     fn following_lines(&mut self, s: usize) -> Vec<DisplayLine> {
         if self.cont_key != self.wrapped {
             self.cont_cache.clear();
             self.cont_key = self.wrapped.clone();
         }
+        // Size this section's figures now (stable estimate) so the view can draw
+        // them — even on a wrap-cache hit, since `following` was cleared this frame.
+        if let Some(geom) = self.images.geom {
+            let (fw, fh) = self.images.fs;
+            let info = self.section_image_info(s, geom, fw, fh);
+            self.images.following.insert(s, info);
+        }
         if let Some(v) = self.cont_cache.get(&s) {
             return v.clone();
         }
         let blocks = self.fetch_blocks(s);
-        let lines = self.wrap_at(&blocks, self.last_measure.max(1));
+        let rows: Vec<u16> = self
+            .images
+            .following
+            .get(&s)
+            .map(|info| info.iter().map(|(_, r)| *r).collect())
+            .unwrap_or_default();
+        let lines = self.wrap_at_with_rows(&blocks, self.last_measure.max(1), &rows);
         self.cont_cache.insert(s, lines.clone());
         lines
     }

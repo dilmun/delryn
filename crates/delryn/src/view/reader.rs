@@ -257,8 +257,8 @@ fn render_content(
         let Placement::Text(col) = placement else {
             continue;
         };
-        let lines = if reader.continuous_active() {
-            continuous_visible_lines(reader, col.area.height as usize, theme)
+        let lines = if reader.reflow_flows() {
+            continuous_visible_lines(reader, col.scroll, col.area.height as usize, theme)
         } else {
             visible_lines(reader, col.scroll, col.area.height as usize, theme)
         };
@@ -281,8 +281,61 @@ fn render_content(
         for placement in &plan.placements {
             if let Placement::Text(col) = placement {
                 draw_images_in(f, col.area, reader, col.scroll, scrolling);
+                // Cross-section flow (continuous Center, or any two-page spread)
+                // joins following sections into this column; draw their figures too
+                // so a boundary figure fills the column instead of a blank gap. Each
+                // column shows a slice `col_offset` rows into the shared buffer.
+                if reader.reflow_flows() {
+                    let col_offset = col.scroll.saturating_sub(reader.scroll);
+                    draw_following_images(f, col.area, reader, scrolling, col_offset);
+                }
             }
         }
+    }
+}
+
+/// Draw the *following* sections' figures in this text column — the anchor's are
+/// placed by [`draw_images_in`] from `reader.lines`; these come from the joined
+/// buffer. `col_offset` is how many buffer rows into the buffer this column starts
+/// (0 for the left/only column, one column-height for the two-page right column),
+/// so a figure at buffer row `row` lands at screen row `row - col_offset` here.
+fn draw_following_images(
+    f: &mut Frame,
+    area: Rect,
+    reader: &Reader,
+    scrolling: bool,
+    col_offset: usize,
+) {
+    for (row, key) in reader.continuous_following_images() {
+        if row < col_offset {
+            continue; // in an earlier column / above this one
+        }
+        let screen_row = row - col_offset;
+        if screen_row >= area.height as usize {
+            continue; // entirely below this column
+        }
+        let Some(plan) = reader.image_plan_by_key(&key) else {
+            continue; // not built yet — the reserved rows stay blank this frame
+        };
+        if scrolling && plan.needs_pretransmit() {
+            continue; // defer a first heavy upload to the settle frame
+        }
+        let x = (area.width.saturating_sub(plan.cols) / 2) as i16;
+        let y = screen_row as i16;
+        if let Some(o) = reader.overlay_occlude {
+            let img_left = area.x.saturating_add(x.max(0) as u16);
+            let img_right = area
+                .x
+                .saturating_add((x + plan.cols as i16).clamp(0, area.width as i16) as u16);
+            let img_top = area.y.saturating_add(y.max(0) as u16);
+            let img_bottom = area
+                .y
+                .saturating_add((y + plan.rows as i16).clamp(0, area.height as i16) as u16);
+            if img_left < o.right() && img_right > o.x && img_top < o.bottom() && img_bottom > o.y {
+                continue;
+            }
+        }
+        f.render_widget(SlicedImage::new(&plan.proto, SignedPosition { x, y }), area);
     }
 }
 
@@ -545,16 +598,27 @@ fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize, scroll
 /// following sections' heads) styled like [`visible_lines`]. The link-cursor
 /// highlight and search matches follow the anchor section — matches are re-found by
 /// text so they still light up in following sections, but the cursor is anchor-only.
-fn continuous_visible_lines(reader: &mut Reader, count: usize, theme: Theme) -> Vec<Line<'static>> {
-    let scroll = reader.scroll;
-    let buf = reader.continuous_lines(count);
+fn continuous_visible_lines(
+    reader: &mut Reader,
+    col_scroll: usize,
+    count: usize,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    // The cross-section buffer starts at the reading position (`reader.scroll`);
+    // this column shows a slice `offset` rows into it — 0 for the left/only column,
+    // one column-height for the two-page right column, so the spread flows on.
+    let offset = col_scroll.saturating_sub(reader.scroll);
+    let buf = reader.continuous_lines(offset + count);
+    let start = offset.min(buf.len());
+    let end = (offset + count).min(buf.len());
     let matcher = reader.search.matcher.as_ref().filter(|m| !m.is_empty());
     let sel = reader.selected_anchor();
-    buf.iter()
+    buf[start..end]
+        .iter()
         .enumerate()
         .map(|(off, l)| {
             let cursor = sel
-                .filter(|h| h.line == scroll + off)
+                .filter(|h| h.line == col_scroll + off)
                 .map(|h| (h.start, h.end));
             to_ratatui(l, theme, matcher, cursor)
         })
