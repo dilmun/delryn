@@ -560,6 +560,17 @@ only framed/matted to sit in the theme.
       the same way). *Still: HUFF/CDIC (type 17480) decompression → reported
       unsupported; DRM → reported; full KF8 skeleton/fragment reconstruction + real
       `filepos` NCX TOC; MOBI full-text index.* Same validation discipline as PDF.
+- [ ] **MOBI/AZW3 HUFF/CDIC decompression** — 📌 **POST-v0.1.0** (deferred by user
+      2026-07-07; they have real `.azw` files — SWING TRADING / OPTIONS TRADING — that
+      need it; currently the reader reports "HUFF/CDIC-compressed MOBI is not supported
+      yet" and refuses gracefully). Compression type **17480**: parse the `HUFF` record
+      (Huffman code tables: dict1 256-entry + dict2 64-entry, per-code-length min/max
+      codes) and the `CDIC` dictionary record(s) (byte-sequence entries), then
+      bit-decode each text record into the same byte stream `mobi/mod.rs::extract_text`
+      already assembles. Self-contained (~200 lines, no new deps) — drops in beside
+      `palmdoc.rs` as a third compression path; reference impls: KindleUnpack `mobi_huff`,
+      Calibre `mobihuff`. Covers most Amazon-distributed MOBI/AZW. Needs a real
+      HUFF/CDIC file to validate (can't unit-test blind). DRM stays out of scope.
 
 ## Phase 6 — Graphical math + deep performance
 
