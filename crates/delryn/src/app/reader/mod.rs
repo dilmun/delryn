@@ -1012,6 +1012,48 @@ mod tests {
         r
     }
 
+    // Returning from the image viewer must force the current section's images to
+    // rebuild (fresh terminal ids) — otherwise a same-section figure jump leaves
+    // them blank until an unrelated redraw, because transmit-once never re-sends
+    // an image the viewer's big figure evicted from the terminal.
+    #[test]
+    fn restage_invalidates_the_remap_key_so_images_rebuild() {
+        use crate::media::{ImageFit, ImgKey, Ink, RenderPolicy};
+        let mut r = reader_with(vec![]);
+        let key = ImgKey {
+            section: 0,
+            idx: 0,
+            avail: 40,
+            max_rows: 20,
+            max_px: 0,
+            target_pct: 85,
+            eq_scale: 100,
+            fit_mode: ImageFit::default(),
+            policy: RenderPolicy {
+                tint: Ink {
+                    ink: [0, 0, 0],
+                    paper: [255, 255, 255],
+                },
+                mode: crate::media::ImageMode::default(),
+            },
+        };
+        r.images.section_images.insert(0, key);
+        r.images.requested.insert(key);
+        r.images.images_key.0 = 0; // pretend section 0 is currently mapped
+
+        r.restage_visible_images();
+
+        assert_eq!(
+            r.images.images_key.0,
+            usize::MAX,
+            "remap key invalidated so sync_images re-dispatches the builds"
+        );
+        assert!(
+            !r.images.requested.contains(&key),
+            "the in-flight request is cleared so the rebuild re-dispatches it"
+        );
+    }
+
     /// A multi-section reflow reader with continuous scroll on (anchor = section 0,
     /// wrapped at width 40). Each section has identical multi-paragraph content, so
     /// its wrapped line count is stable across re-wraps.

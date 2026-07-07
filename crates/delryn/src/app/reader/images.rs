@@ -408,6 +408,32 @@ impl Reader {
         std::mem::take(&mut self.pending_deletes)
     }
 
+    /// Returning from the full-screen image viewer: drop the current section's
+    /// cached image protocols (freeing their terminal ids) and invalidate the remap
+    /// key so `sync_images` rebuilds them with **fresh** ids and re-transmits.
+    ///
+    /// The viewer's large figure can push the terminal past its graphics budget and
+    /// evict the reader's inline images from the terminal's own store; transmit-once
+    /// would then never re-send them, leaving them blank until an unrelated redraw
+    /// churned the cache. Rebuilding under a new id is the only recovery that works
+    /// on terminals that ignore a re-transmit of the same id (Ghostty #6711), and
+    /// `images_pending()` keeps the loop drawing until they land — no keypress needed.
+    pub fn restage_visible_images(&mut self) {
+        let keys: Vec<ImgKey> = self.images.section_images.values().copied().collect();
+        for k in keys {
+            if let Some(plan) = self.images.cache.pop(&k)
+                && let Some(id) = plan.image_id()
+            {
+                self.pending_deletes.push(id);
+            }
+            self.images.requested.remove(&k);
+            self.images.failed.remove(&k);
+        }
+        // Force the next `sync_images` to re-remap this section (re-dispatching the
+        // builds that were just dropped) even when nothing else changed.
+        self.images.images_key.0 = usize::MAX;
+    }
+
     /// Are any of the current section's images still building (so the loop
     /// should keep redrawing until they pop in)?
     pub fn images_pending(&self) -> bool {
