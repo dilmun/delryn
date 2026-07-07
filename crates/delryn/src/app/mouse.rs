@@ -53,10 +53,13 @@ pub struct MouseHits {
     pub edit_results: Vec<(usize, Rect)>,
     /// Editor search bar rect.
     pub edit_search: Option<Rect>,
-    /// Annotations overlay tab bar: (tab, rect).
-    pub annot_tabs: Vec<(AnnotTab, Rect)>,
-    /// Annotations overlay list: (filtered-item index, rect) per visible row.
-    pub annot_rows: Vec<(usize, Rect)>,
+    /// Generic hit rects for the simple list/tab overlays (Settings, Palette, the
+    /// collection picker, the duplicate resolver + ignored manager, the image
+    /// viewer, annotations). Only one overlay is open at a time, so a single pair of
+    /// channels is shared; the index's meaning (tab / row / cursor) is interpreted
+    /// per-overlay by `overlay_click`. The richer metadata editor keeps its own.
+    pub overlay_tabs: Vec<(usize, Rect)>,
+    pub overlay_rows: Vec<(usize, Rect)>,
 }
 
 impl MouseHits {
@@ -67,8 +70,8 @@ impl MouseHits {
         self.edit_fields.clear();
         self.edit_results.clear();
         self.edit_search = None;
-        self.annot_tabs.clear();
-        self.annot_rows.clear();
+        self.overlay_tabs.clear();
+        self.overlay_rows.clear();
     }
 }
 
@@ -90,10 +93,7 @@ impl App {
                     return false;
                 }
                 if !matches!(self.overlay, Overlay::None) {
-                    return match &self.overlay {
-                        Overlay::Annot(_) => self.annot_wheel(d.signum()),
-                        _ => false,
-                    };
+                    return self.overlay_wheel(d.signum());
                 }
                 match self.mode {
                     Mode::Reader => self.reader_wheel(m.column, m.row, d),
@@ -182,15 +182,12 @@ impl App {
             }
             return true;
         }
-        if matches!(self.overlay, Overlay::Annot(_)) {
+        // Every other overlay routes through the shared list/tab hit rects.
+        if !matches!(self.overlay, Overlay::None) {
             if button == MouseButton::Left {
-                self.annot_click(col, row);
+                self.overlay_click(col, row);
             }
             return true;
-        }
-        // Any other overlay is keyboard-driven (no hit rects); swallow the click.
-        if !matches!(self.overlay, Overlay::None) {
-            return false;
         }
         match self.mode {
             Mode::Reader => {
@@ -323,49 +320,112 @@ impl App {
         }
     }
 
-    /// Click in the annotations overlay: a tab switches lists; a row selects it,
-    /// and a second click on the same row jumps to it (closing the overlay).
-    fn annot_click(&mut self, col: u16, row: u16) {
+    /// Click inside a simple list/tab overlay (Settings, Palette, the collection
+    /// picker, the duplicate resolver + ignored manager, the image viewer,
+    /// annotations). A tab switches sub-views; a row moves the cursor there, and a
+    /// second click on the same row activates it (jump / run / toggle). A click on
+    /// the read-only stats popup dismisses it.
+    fn overlay_click(&mut self, col: u16, row: u16) {
         let pt = (col, row).into();
-        if let Some(&(tab, _)) = self.mouse.annot_tabs.iter().find(|(_, r)| r.contains(pt)) {
+        if let Some(&(ti, _)) = self.mouse.overlay_tabs.iter().find(|(_, r)| r.contains(pt)) {
             self.last_click = None;
-            if let Overlay::Annot(a) = &mut self.overlay
-                && a.tab != tab
-            {
-                a.tab = tab;
-                a.sel = 0;
-                a.filter.clear();
-            }
+            self.overlay_tab_select(ti);
             return;
         }
-        if let Some(&(idx, _)) = self.mouse.annot_rows.iter().find(|(_, r)| r.contains(pt)) {
+        if let Some(&(idx, _)) = self.mouse.overlay_rows.iter().find(|(_, r)| r.contains(pt)) {
             let now = Instant::now();
             let double = self
                 .last_click
                 .is_some_and(|(prev, t)| prev == idx && now.duration_since(t) < DOUBLE_CLICK);
-            if let Overlay::Annot(a) = &mut self.overlay {
-                a.sel = idx;
-            }
+            self.overlay_row_select(idx);
             if double {
                 self.last_click = None;
-                self.annot_jump_selected();
+                self.overlay_row_activate();
             } else {
                 self.last_click = Some((idx, now));
+            }
+            return;
+        }
+        // A click on empty space dismisses the read-only stats popup.
+        if matches!(self.overlay, Overlay::Stats(_)) {
+            self.overlay = Overlay::None;
+        }
+    }
+
+    /// Switch the clicked tab in the active tabbed overlay.
+    fn overlay_tab_select(&mut self, ti: usize) {
+        if matches!(self.overlay, Overlay::Settings(_)) {
+            self.settings_goto_tab(ti);
+        } else if let Overlay::Annot(a) = &mut self.overlay {
+            let tab = if ti == 0 {
+                AnnotTab::Bookmarks
+            } else {
+                AnnotTab::Notes
+            };
+            if a.tab != tab {
+                a.tab = tab;
+                a.sel = 0;
+                a.filter.clear();
             }
         }
     }
 
-    /// Wheel in the annotations overlay: step the selection within the active tab.
-    fn annot_wheel(&mut self, d: isize) -> bool {
-        if let Overlay::Annot(a) = &mut self.overlay {
-            let n = a.filtered().len();
-            if n == 0 {
-                return false;
-            }
-            a.sel = (a.sel as isize + d).clamp(0, n as isize - 1) as usize;
+    /// Move the active overlay's cursor to row `idx` (its meaning is per-overlay —
+    /// see `MouseHits::overlay_rows`).
+    fn overlay_row_select(&mut self, idx: usize) {
+        match &mut self.overlay {
+            Overlay::Annot(a) => a.sel = idx,
+            Overlay::Settings(s) => s.row = idx,
+            Overlay::Palette(p) => p.sel = idx,
+            Overlay::ShelfPicker(p) => p.sel = idx,
+            Overlay::DupResolve(dr) => dr.cursor = idx,
+            Overlay::IgnoredView(v) => v.cursor = idx,
+            Overlay::ImageView(v) => v.sel = idx,
+            _ => {}
+        }
+    }
+
+    /// Run the primary action for the active overlay's selected row (the mouse
+    /// counterpart to its Enter / Space key).
+    fn overlay_row_activate(&mut self) {
+        match &self.overlay {
+            Overlay::Annot(_) => self.annot_jump_selected(),
+            Overlay::Settings(_) => self.settings_change(1),
+            Overlay::Palette(_) => self.palette_run_selected(),
+            Overlay::ShelfPicker(_) => self.shelf_picker_activate(),
+            Overlay::DupResolve(_) => self.dup_toggle_checked(),
+            Overlay::IgnoredView(_) => self.ignored_restore_selected(),
+            Overlay::ImageView(_) => self.image_go_selected(),
+            _ => {}
+        }
+    }
+
+    /// Wheel inside a list overlay: step its cursor by one row (keeping it in view).
+    fn overlay_wheel(&mut self, d: isize) -> bool {
+        // Overlays whose cursor move updates related state go through their helper.
+        if matches!(self.overlay, Overlay::Settings(_)) {
+            self.settings_move(d);
             return true;
         }
-        false
+        if let Overlay::ImageView(v) = &mut self.overlay {
+            v.move_sel(d);
+            return true;
+        }
+        // Plain cursor-index lists: clamp within the current visible length.
+        let (cur, len): (usize, usize) = match &self.overlay {
+            Overlay::Annot(a) => (a.sel, a.filtered().len()),
+            Overlay::Palette(p) => (p.sel, p.filtered().len()),
+            Overlay::ShelfPicker(p) if p.new_name.is_none() => (p.sel, p.new_row() + 1),
+            Overlay::DupResolve(dr) => (dr.cursor, dr.rows().len()),
+            Overlay::IgnoredView(v) => (v.cursor, v.groups.len()),
+            _ => return false,
+        };
+        if len == 0 {
+            return false;
+        }
+        let next = (cur as isize + d).clamp(0, len as isize - 1) as usize;
+        self.overlay_row_select(next);
+        true
     }
 
     /// Click on a sidebar row selects and jumps to that TOC entry.

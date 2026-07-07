@@ -156,21 +156,25 @@ impl App {
                 self.config.save();
             }
             // Jump to the figure's place in the book, then close the viewer.
-            KeyCode::Enter | KeyCode::Char('l') => {
-                let target = if let Overlay::ImageView(v) = &self.overlay {
-                    v.current().map(|fig| (fig.section, fig.image_index))
-                } else {
-                    None
-                };
-                if let Some((section, image_index)) = target {
-                    if let Some(r) = self.reader.as_mut() {
-                        r.jump_to_image(section, image_index);
-                    }
-                    self.retire_image_viewer();
-                    self.overlay = Overlay::None;
-                }
-            }
+            KeyCode::Enter | KeyCode::Char('l') => self.image_go_selected(),
             _ => {}
+        }
+    }
+
+    /// Jump to the selected figure's place in the book and close the viewer
+    /// (Enter / `l` / double-click).
+    pub(crate) fn image_go_selected(&mut self) {
+        let target = if let Overlay::ImageView(v) = &self.overlay {
+            v.current().map(|fig| (fig.section, fig.image_index))
+        } else {
+            None
+        };
+        if let Some((section, image_index)) = target {
+            if let Some(r) = self.reader.as_mut() {
+                r.jump_to_image(section, image_index);
+            }
+            self.retire_image_viewer();
+            self.overlay = Overlay::None;
         }
     }
 

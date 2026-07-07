@@ -26,6 +26,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         picker,
         overlay,
         reader,
+        mouse,
         ..
     } = app;
     let (Some(picker), Overlay::ImageView(viewer)) = (picker.as_ref(), overlay) else {
@@ -125,10 +126,28 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     .into()
                 })
                 .collect();
+            let count = items.len();
             let list = List::new(items).highlight_style(theme.style(Role::Selection));
             let mut st = ListState::default();
             st.select(Some(viewer.sel));
             crate::view::round_list(f, sidebar, list, &mut st, theme);
+            // Figure rows for click hit-testing: round_list insets one column each
+            // side, and the visible-list index is exactly `viewer.sel`'s space.
+            let off = st.offset();
+            let vis_h = sidebar.height as usize;
+            let mut hits: Vec<(usize, Rect)> = Vec::new();
+            for i in off..(off + vis_h).min(count) {
+                hits.push((
+                    i,
+                    Rect {
+                        x: sidebar.x + 1,
+                        y: sidebar.y + (i - off) as u16,
+                        width: sidebar.width.saturating_sub(2),
+                        height: 1,
+                    },
+                ));
+            }
+            mouse.overlay_rows = hits;
         }
     }
 

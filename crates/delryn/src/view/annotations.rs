@@ -109,7 +109,7 @@ fn render_overlay(f: &mut Frame, app: &mut App) {
     let note_w = note_label.chars().count() as u16;
     let tab_hits = vec![
         (
-            AnnotTab::Bookmarks,
+            0usize,
             Rect {
                 x: rows[0].x,
                 y: rows[0].y,
@@ -118,7 +118,7 @@ fn render_overlay(f: &mut Frame, app: &mut App) {
             },
         ),
         (
-            AnnotTab::Notes,
+            1usize,
             Rect {
                 x: rows[0].x + bm_w + 2,
                 y: rows[0].y,
@@ -148,7 +148,7 @@ fn render_overlay(f: &mut Frame, app: &mut App) {
     let list_area = rows[rows.len() - 1];
 
     if items.is_empty() {
-        app.mouse.annot_tabs = tab_hits;
+        app.mouse.overlay_tabs = tab_hits;
         let (body, muted) = (theme.style(Role::Body), theme.style(Role::Muted));
         let msg = if !filter.is_empty() {
             vec![
@@ -249,8 +249,8 @@ fn render_overlay(f: &mut Frame, app: &mut App) {
             },
         ));
     }
-    app.mouse.annot_tabs = tab_hits;
-    app.mouse.annot_rows = row_hits;
+    app.mouse.overlay_tabs = tab_hits;
+    app.mouse.overlay_rows = row_hits;
 }
 
 /// The first non-empty of three candidate labels.

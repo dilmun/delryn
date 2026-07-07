@@ -319,6 +319,24 @@ impl App {
         }
     }
 
+    /// Switch to tab index `i` (clamped), parking the cursor on its first option —
+    /// the mouse counterpart to Tab / Shift-Tab.
+    pub(crate) fn settings_goto_tab(&mut self, i: usize) {
+        let Overlay::Settings(s) = &self.overlay else {
+            return;
+        };
+        let n = settings_tabs(s.scope).len();
+        if n == 0 {
+            return;
+        }
+        let tab = i.min(n - 1);
+        let row = first_setting_row(s.scope, tab);
+        if let Overlay::Settings(s) = &mut self.overlay {
+            s.tab = tab;
+            s.row = row;
+        }
+    }
+
     /// Switch tab by `delta` (wrapping), parking the cursor on its first option.
     fn settings_tab(&mut self, delta: isize) {
         let Overlay::Settings(s) = &self.overlay else {
@@ -338,7 +356,7 @@ impl App {
 
     /// Move the settings cursor by `delta` items within the active tab, skipping
     /// section headers.
-    fn settings_move(&mut self, delta: isize) {
+    pub(crate) fn settings_move(&mut self, delta: isize) {
         let Overlay::Settings(s) = &self.overlay else {
             return;
         };
@@ -359,7 +377,7 @@ impl App {
         }
     }
 
-    fn settings_change(&mut self, delta: i32) {
+    pub(crate) fn settings_change(&mut self, delta: i32) {
         use crate::config::{MAX_LINE_SPACING, MAX_PAGE_GAP, MAX_SIDE_PADDING};
         let Overlay::Settings(s) = &self.overlay else {
             return;

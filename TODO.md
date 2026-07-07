@@ -387,19 +387,41 @@ jump-by-type + a reader cursor.
       with current vs remote, fields that differ pre-ticked; space toggles, `a`
       all, ⏎ applies the ticked rows into Details (+ fetches the cover), Esc
       cancels. Replaces the old apply-everything-then-review behaviour.
-- [x] **Mouse polish — clickable sidebars & tabs everywhere** (`feat/mouse-polish`).
-      The library **sections sidebar** is now mouse-drivable: click a section /
-      collection to switch to it (focusing the sidebar), click "＋ New collection"
-      to start one; the sidebar became a stateful list that **scrolls the active
-      row into view** (so it survives overflowing its pane), and its per-row hit
-      rects are captured from the settled scroll offset (`view::library::sections`).
-      Clicking the **detail pane** focuses it. The **annotations overlay** (`'`) is
-      fully mouse-drivable too: click the **Bookmarks / Notes tabs** to switch, click
-      a row to select, double-click to jump (shared `annot_jump_selected`), wheel to
-      move the cursor; overlay/confirm wheel handling was centralized in `on_mouse`
-      (open overlays own the wheel, so the view behind never scrolls). New hit-rect
-      channels `MouseHits::{side_rows, annot_tabs, annot_rows}`; regression tests
-      `sidebar_click_selects_section_and_collection` + `annotations_click_switches_tab_and_selects`.
+- [x] **Mouse polish — clickable in every area (sidebars, tabs, all overlays)**
+      (`feat/mouse-polish`).
+      - **Library sidebar** mouse-drivable: click a section / collection to switch
+        (focusing the sidebar), "＋ New collection" to start one; the sidebar became
+        a stateful list that **scrolls the active row into view** (survives
+        overflow), hit rects from the settled offset. Clicking the **detail pane**
+        focuses it. `side_rows` channel.
+      - **Reader TOC click** now moves the highlight on the *first* click (the
+        sidebar cursor is re-asserted after `jump_to`, which had reset focus to
+        Content and let the scroll-spy lag a frame).
+      - **Every modal overlay** is mouse-drivable through **one shared, generic
+        mechanism**: the view captures `MouseHits::{overlay_tabs, overlay_rows}`
+        (index meaning is per-overlay) and `on_mouse` routes a click to
+        `overlay_click` → `overlay_tab_select` / `overlay_row_select` /
+        `overlay_row_activate`, and the wheel to `overlay_wheel`. Uniform gesture:
+        **single-click selects, double-click activates** (jump / run / toggle),
+        tabs switch on click, wheel steps the cursor. Covers the **annotations**
+        overlay (Bookmarks/Notes tabs), **Settings** (tabs + option rows; double-
+        click cycles the value), **command palette** (run a command), **collection
+        picker** (tick a shelf / start a new one), **duplicate resolver** (toggle a
+        copy) + **ignored-groups manager** (restore), the **image viewer** figure
+        sidebar (select / double-click go), and **stats** (click to dismiss). The
+        richer **metadata editor** keeps its bespoke tab/field/result hit model.
+        Activation logic was extracted into shared `pub(crate)` helpers reused by
+        both the key handlers and the mouse (DRY). Open overlays own the wheel, so
+        the view behind never scrolls.
+      - **Terminal theme fix + rename to `auto`**: it now resolves overlays/images
+        against the *detected* terminal background (readable on light & dark), and
+        `on_accent` picks ink from the accent's luminance; `by_name` aliases the old
+        `"terminal"` name.
+      - Regression tests: `sidebar_click_selects_section_and_collection`,
+        `annotations_click_switches_tab_and_selects`, `palette_click_selects_then_runs`,
+        `settings_click_switches_tab_and_row`.
+      - Known gap (minor): the metadata-editor results list has no wheel-scroll yet
+        (it's click + keyboard driven).
 
 ## Phase 4 — Knowledge & power tools
 

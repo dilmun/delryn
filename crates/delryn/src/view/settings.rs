@@ -4,7 +4,7 @@
 //! taller than the window. Edits the live config. See `DESIGN.md` §7.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -12,25 +12,27 @@ use ratatui::widgets::{
 };
 
 use crate::app::{App, Mode, Overlay, SettingRow, settings_tabs, tab_rows};
+use crate::config::Config;
 use crate::theme::Role;
 
 /// Column where each option's value is shown (label left, value right).
 const VALUE_COL: usize = 30;
 
-pub fn render(f: &mut Frame, app: &App) {
+pub fn render(f: &mut Frame, app: &mut App) {
     let Overlay::Settings(state) = &app.overlay else {
         return;
     };
+    let (scope_mode, active_tab, sel_row) = (state.scope, state.tab, state.row);
     let theme = app.config.theme;
     let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
     let bg = theme.paper();
-    let scope = match state.scope {
+    let scope = match scope_mode {
         Mode::Reader => "Reading",
         Mode::Library => "Library",
     };
-    let tabs = settings_tabs(state.scope);
+    let tabs = settings_tabs(scope_mode);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -59,7 +61,7 @@ pub fn render(f: &mut Frame, app: &App) {
     ])
     .split(inner);
 
-    render_tab_bar(f, chunks[0], &tabs, state.tab, theme);
+    let tab_hits = render_tab_bar(f, chunks[0], &tabs, active_tab, theme);
 
     // Divider under the tabs.
     f.render_widget(
@@ -70,51 +72,92 @@ pub fn render(f: &mut Frame, app: &App) {
         chunks[1],
     );
 
-    render_body(f, chunks[3], app, state.scope, state.tab, state.row, theme);
+    let row_hits = render_body(
+        f,
+        chunks[3],
+        &app.config,
+        scope_mode,
+        active_tab,
+        sel_row,
+        theme,
+    );
+    app.mouse.overlay_tabs = tab_hits;
+    app.mouse.overlay_rows = row_hits;
 }
 
-/// The pill-style tab strip, the active tab filled with the accent.
+/// The pill-style tab strip, the active tab filled with the accent. Returns each
+/// tab's on-screen rect (for mouse hit-testing) — the strip is centre-aligned, so
+/// the rects are laid out from the same centred origin ratatui uses.
 fn render_tab_bar(
     f: &mut Frame,
-    area: ratatui::layout::Rect,
+    area: Rect,
     tabs: &[crate::app::SettingTab],
     active: usize,
     theme: crate::theme::Theme,
-) {
+) -> Vec<(usize, Rect)> {
     let mut spans: Vec<Span> = Vec::new();
+    // Cell width of each tab as drawn: an active pill adds two rounded caps + two
+    // inner spaces (title + 4); an inactive tab just pads a space each side (+2).
+    let mut widths: Vec<u16> = Vec::with_capacity(tabs.len());
     for (i, t) in tabs.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw(" "));
         }
+        let w = t.title.chars().count() as u16;
         if i == active {
             spans.extend(super::pill_spans(t.title, theme));
+            widths.push(w + 4);
         } else {
             spans.push(Span::styled(
                 format!(" {} ", t.title),
                 theme.style(Role::Muted),
             ));
+            widths.push(w + 2);
         }
     }
     f.render_widget(
         Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
         area,
     );
+    // Mirror ratatui's centred layout: total width (tabs + 1-cell separators),
+    // centred in the area, then walk the tabs left→right.
+    let total: u16 = widths.iter().sum::<u16>() + tabs.len().saturating_sub(1) as u16;
+    let mut x = area.x + area.width.saturating_sub(total) / 2;
+    let mut hits = Vec::with_capacity(tabs.len());
+    for (i, w) in widths.iter().enumerate() {
+        if i > 0 {
+            x += 1; // separator
+        }
+        hits.push((
+            i,
+            Rect {
+                x,
+                y: area.y,
+                width: *w,
+                height: 1,
+            },
+        ));
+        x += *w;
+    }
+    hits
 }
 
 /// The active tab's options, scrolled to keep the cursor visible, with a
 /// scrollbar when the tab is taller than the body.
 fn render_body(
     f: &mut Frame,
-    area: ratatui::layout::Rect,
-    app: &App,
+    area: Rect,
+    config: &Config,
     scope: Mode,
     tab: usize,
     sel_row: usize,
     theme: crate::theme::Theme,
-) {
+) -> Vec<(usize, Rect)> {
     let rows = tab_rows(scope, tab);
     let mut lines: Vec<Line> = Vec::new();
     let mut sel_line = 0usize;
+    // (row index in `rows`, line index) for each clickable option (headers excluded).
+    let mut item_lines: Vec<(usize, usize)> = Vec::new();
     for (i, row) in rows.iter().enumerate() {
         match row {
             SettingRow::Section(title) => {
@@ -129,8 +172,9 @@ fn render_body(
             SettingRow::Item(item) => {
                 let selected = i == sel_row;
                 let label = item.label();
-                let value = item.value(&app.config);
+                let value = item.value(config);
                 let pad = VALUE_COL.saturating_sub(label.chars().count() + 4);
+                item_lines.push((i, lines.len()));
                 if selected {
                     sel_line = lines.len();
                     // The selected option → a full-width rounded selection bar.
@@ -168,4 +212,26 @@ fn render_body(
             &mut sb,
         );
     }
+
+    // Screen rect for each visible option, for click hit-testing.
+    let mut hits = Vec::with_capacity(item_lines.len());
+    for (ri, li) in item_lines {
+        if li < offset {
+            continue;
+        }
+        let sy = area.y + (li - offset) as u16;
+        if sy >= area.y + area.height {
+            continue;
+        }
+        hits.push((
+            ri,
+            Rect {
+                x: area.x,
+                y: sy,
+                width: area.width,
+                height: 1,
+            },
+        ));
+    }
+    hits
 }

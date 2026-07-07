@@ -2,7 +2,7 @@
 //! selected book's collections, or type a new one. See `DESIGN.md` §5.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use crate::app::{App, Overlay};
 use crate::theme::Role;
 
-pub fn render(f: &mut Frame, app: &App) {
+pub fn render(f: &mut Frame, app: &mut App) {
     let Overlay::ShelfPicker(p) = &app.overlay else {
         return;
     };
@@ -82,12 +82,26 @@ pub fn render(f: &mut Frame, app: &App) {
         }
     }
     // Scroll to keep the selected row visible when there are more shelves than fit.
-    let h = rows[1].height as usize;
-    let offset = p
-        .sel
-        .saturating_sub(h / 2)
-        .min(lines.len().saturating_sub(h));
+    let list_area = rows[1];
+    let h = list_area.height as usize;
+    let total = lines.len();
+    let offset = p.sel.saturating_sub(h / 2).min(total.saturating_sub(h));
     let view: Vec<Line> = lines.into_iter().skip(offset).take(h).collect();
-    f.render_widget(Paragraph::new(view), rows[1]);
+    f.render_widget(Paragraph::new(view), list_area);
+    // Each list line maps 1:1 to a picker row (shelves then the "＋ New" row), so a
+    // line's index is its row index for click hit-testing.
+    let mut hits: Vec<(usize, Rect)> = Vec::new();
+    for j in offset..(offset + h).min(total) {
+        hits.push((
+            j,
+            Rect {
+                x: list_area.x,
+                y: list_area.y + (j - offset) as u16,
+                width: list_area.width,
+                height: 1,
+            },
+        ));
+    }
+    app.mouse.overlay_rows = hits;
     // Shortcuts live in the bottom status bar (see view::status).
 }
