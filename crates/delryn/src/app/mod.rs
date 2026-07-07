@@ -103,7 +103,7 @@ pub enum Focus {
 
 /// The two tabs of the annotations overlay: bookmarks (places) and notes
 /// (commentary) are kept separate, not mixed in one list.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotTab {
     Bookmarks,
     Notes,
@@ -1707,6 +1707,144 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // Clicking a sidebar row switches the active section/collection and focuses
+    // the sidebar — the mouse counterpart to j/k there. The trailing "＋ New" row
+    // begins a collection.
+    #[test]
+    fn sidebar_click_selects_section_and_collection() {
+        use crossterm::event::{MouseButton, MouseEvent};
+
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_sideclick_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book(
+                    "/a.epub", "A", "Auth", None, 1, 1, 1, "", None, "", "", "", "",
+                )
+                .unwrap();
+            store.create_collection("Shelf1");
+            store.add_to_shelf("/a.epub", "Shelf1");
+        }
+
+        let mut app = App::library();
+        let n = LibrarySection::ALL.len();
+        assert_eq!(app.library.shelves.len(), 1, "one collection loaded");
+
+        // Dispatch a left-click routed to a sidebar row at ring index `ring` (the
+        // renderer normally captures these rects; seed one directly).
+        fn click(app: &mut App, ring: usize) {
+            app.mouse.side_rows = vec![(ring, Rect::new(0, 0, 10, 1))];
+            app.on_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 1,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+
+        // A fixed section: ring index is its position in `ALL`.
+        let pdf = LibrarySection::ALL
+            .iter()
+            .position(|s| *s == LibrarySection::Pdf)
+            .unwrap();
+        click(&mut app, pdf);
+        assert_eq!(app.library.view, LibView::Section(LibrarySection::Pdf));
+        assert_eq!(
+            app.library.pane,
+            LibPane::Sidebar,
+            "click focuses the sidebar"
+        );
+
+        // The lone collection sits just past the fixed sections.
+        click(&mut app, n);
+        assert_eq!(app.library.view, LibView::Shelf("Shelf1".into()));
+
+        // The trailing "＋ New collection" row begins a new collection inline.
+        let new_row = n + app.library.shelves.len();
+        click(&mut app, new_row);
+        assert!(
+            matches!(app.overlay, Overlay::CollEdit(_)),
+            "＋ New starts a collection"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // The annotations overlay is fully mouse-drivable: a tab click switches lists,
+    // a row click selects, and a second click on the same row jumps (closing it).
+    #[test]
+    fn annotations_click_switches_tab_and_selects() {
+        use crossterm::event::{MouseButton, MouseEvent};
+
+        let _env = crate::test_env_guard();
+        let mut app = App::library();
+        let bm = |id: i64, name: &str| crate::store::Annotation {
+            id,
+            section: id as usize,
+            quote: format!("q{id}"),
+            note: String::new(),
+            name: name.into(),
+            folder: String::new(),
+            kind: crate::store::KIND_BOOKMARK,
+        };
+        let note = crate::store::Annotation {
+            id: 3,
+            section: 2,
+            quote: "q3".into(),
+            note: "hello".into(),
+            name: String::new(),
+            folder: String::new(),
+            kind: crate::store::KIND_NOTE,
+        };
+        app.overlay = Overlay::Annot(AnnotState::new(
+            vec![bm(1, "B1"), bm(2, "B2"), note],
+            AnnotTab::Bookmarks,
+        ));
+
+        // Hit rects the renderer would capture (two tabs, two bookmark rows).
+        app.mouse.annot_tabs = vec![
+            (AnnotTab::Bookmarks, Rect::new(0, 0, 15, 1)),
+            (AnnotTab::Notes, Rect::new(17, 0, 12, 1)),
+        ];
+        app.mouse.annot_rows = vec![(0, Rect::new(0, 3, 30, 1)), (1, Rect::new(0, 4, 30, 1))];
+
+        let down = |c: u16, r: u16| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: c,
+            row: r,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Click the second bookmark row → the cursor moves to it.
+        app.on_mouse(down(2, 4));
+        let Overlay::Annot(a) = &app.overlay else {
+            panic!("overlay closed")
+        };
+        assert_eq!(a.sel, 1, "row click selects that item");
+
+        // Click the Notes tab → the active tab switches and the cursor resets.
+        app.on_mouse(down(18, 0));
+        let Overlay::Annot(a) = &app.overlay else {
+            panic!("overlay closed")
+        };
+        assert_eq!(a.tab, AnnotTab::Notes, "tab click switches tab");
+        assert_eq!(a.sel, 0, "switching tabs resets the cursor");
+
+        // Back to Bookmarks, then double-click a row → jump + close (no reader here,
+        // so the jump is a no-op but the overlay still closes).
+        app.on_mouse(down(2, 0));
+        app.mouse.annot_rows = vec![(0, Rect::new(0, 3, 30, 1))];
+        app.on_mouse(down(2, 3)); // first click selects
+        app.on_mouse(down(2, 3)); // second, within the window → jump
+        assert!(
+            matches!(app.overlay, Overlay::None),
+            "double-click on a row jumps and closes the overlay"
+        );
     }
 
     // `c` with a multi-selection files every selected book into the collection.
