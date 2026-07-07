@@ -70,6 +70,23 @@ impl Reader {
             && !self.chapter_lock
     }
 
+    /// Whether reflowed text **flows across section boundaries** right now — the
+    /// render buffer and scroll pull in following sections to fill the viewport
+    /// (and both two-page columns), so a short chapter never leaves a blank column
+    /// or a gap. Always on for the **two-page spread** (a spread with a half-empty
+    /// column reads wrong); on for single-column **Center** only when the
+    /// `continuous` toggle is set. Excludes paged docs, page-snap, and chapter-lock
+    /// (which page per section by design). This gates the flow machinery;
+    /// [`continuous_active`](Self::continuous_active) still reports the toggle for
+    /// the status line.
+    pub fn reflow_flows(&self) -> bool {
+        !self.is_paged_image()
+            && !self.paged
+            && !self.chapter_lock
+            && (self.view_mode == ViewMode::TwoPage
+                || (self.continuous && self.view_mode == ViewMode::Center))
+    }
+
     /// Whether continuous *paged* (PDF page-stacking) scroll is active: the flag is
     /// on for a paged-image document, not page-snap and not chapter-locked. Works in
     /// both Center (one page per band) and TwoPage (a facing pair per band, see

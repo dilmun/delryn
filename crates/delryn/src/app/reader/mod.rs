@@ -596,7 +596,7 @@ impl Reader {
         // Continuous mode mid-book: the anchor's offset intentionally runs past the
         // section's last page (the next section fills the tail), so don't clamp it —
         // only the final section has a hard bottom.
-        if self.continuous_active() && self.section + 1 < self.doc.section_count() {
+        if self.reflow_flows() && self.section + 1 < self.doc.section_count() {
             return;
         }
         let m = self.max_scroll();
@@ -655,7 +655,7 @@ impl Reader {
             self.continuous_paged_scroll_down(n);
             return;
         }
-        if self.continuous_active() {
+        if self.reflow_flows() {
             self.continuous_scroll_down(n);
             return;
         }
@@ -674,7 +674,7 @@ impl Reader {
             self.continuous_paged_scroll_up(n);
             return;
         }
-        if self.continuous_active() {
+        if self.reflow_flows() {
             self.continuous_scroll_up(n);
             return;
         }
@@ -1038,6 +1038,21 @@ mod tests {
         r.scroll_down(3);
         assert_eq!(r.section, 1, "rolled into the next section");
         assert_eq!(r.scroll, 2, "kept the leftover offset past the boundary");
+    }
+
+    #[test]
+    fn reflow_flows_for_two_page_always_center_needs_the_toggle() {
+        let mut r = continuous_reader(3); // continuous = true, view_mode = Center
+        assert!(r.reflow_flows(), "center + continuous flows");
+        r.continuous = false;
+        assert!(!r.reflow_flows(), "center without the toggle does not flow");
+        r.view_mode = ViewMode::TwoPage;
+        assert!(
+            r.reflow_flows(),
+            "two-page flows across chapters even off-toggle"
+        );
+        r.chapter_lock = true;
+        assert!(!r.reflow_flows(), "chapter-lock keeps per-section paging");
     }
 
     #[test]
