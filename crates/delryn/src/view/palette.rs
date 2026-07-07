@@ -1,19 +1,20 @@
 //! Command-palette overlay: a query line over a fuzzy-filtered command list.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{App, Overlay};
 use crate::theme::Role;
 
-pub fn render(f: &mut Frame, app: &App) {
+pub fn render(f: &mut Frame, app: &mut App) {
     let Overlay::Palette(p) = &app.overlay else {
         return;
     };
     let theme = app.config.theme;
     let matches = p.filtered();
+    let sel = p.sel;
     let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
@@ -40,26 +41,37 @@ pub fn render(f: &mut Frame, app: &App) {
 
     // Filtered command list; the selection gets a rounded accent bar. Scroll the
     // window to keep the selection visible when the list is taller than the pane.
-    let h = rows[1].height as usize;
-    let offset = p
-        .sel
+    let list_area = rows[1];
+    let h = list_area.height as usize;
+    let offset = sel
         .saturating_sub(h / 2)
         .min(matches.len().saturating_sub(h));
-    let lines: Vec<Line> = matches
-        .iter()
-        .enumerate()
-        .skip(offset)
-        .take(h)
-        .map(|(i, it)| {
-            if i == p.sel {
-                crate::view::rounded_line(format!(" {}", it.label), rows[1].width, theme)
-            } else {
-                Line::from(Span::styled(
-                    format!(" {}", it.label),
-                    theme.style(Role::Body),
-                ))
-            }
-        })
-        .collect();
-    f.render_widget(Paragraph::new(lines), rows[1]);
+    let mut lines: Vec<Line> = Vec::with_capacity(h.min(matches.len()));
+    let mut hits: Vec<(usize, Rect)> = Vec::new();
+    for (i, it) in matches.iter().enumerate().skip(offset).take(h) {
+        let sy = list_area.y + (i - offset) as u16;
+        hits.push((
+            i,
+            Rect {
+                x: list_area.x,
+                y: sy,
+                width: list_area.width,
+                height: 1,
+            },
+        ));
+        if i == sel {
+            lines.push(crate::view::rounded_line(
+                format!(" {}", it.label),
+                list_area.width,
+                theme,
+            ));
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!(" {}", it.label),
+                theme.style(Role::Body),
+            )));
+        }
+    }
+    f.render_widget(Paragraph::new(lines), list_area);
+    app.mouse.overlay_rows = hits;
 }

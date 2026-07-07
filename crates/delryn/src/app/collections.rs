@@ -227,14 +227,23 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') => p.sel = p.sel.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => p.sel = (p.sel + 1).min(p.new_row()),
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                if p.sel == p.new_row() {
-                    p.new_name = Some(String::new());
-                } else {
-                    self.toggle_picked_shelf();
-                }
-            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.shelf_picker_activate(),
             _ => {}
+        }
+    }
+
+    /// Activate the selected picker row: start a new collection on the "＋ New" row,
+    /// else tick/untick the highlighted one (Enter / Space / double-click).
+    pub(crate) fn shelf_picker_activate(&mut self) {
+        let Overlay::ShelfPicker(p) = &self.overlay else {
+            return;
+        };
+        if p.sel == p.new_row() {
+            if let Overlay::ShelfPicker(p) = &mut self.overlay {
+                p.new_name = Some(String::new());
+            }
+        } else {
+            self.toggle_picked_shelf();
         }
     }
 

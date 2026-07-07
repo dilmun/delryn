@@ -108,13 +108,7 @@ impl App {
                 let n = p.filtered().len();
                 p.sel = (p.sel + 1).min(n.saturating_sub(1));
             }
-            KeyCode::Enter => {
-                let cmd = p.filtered().get(p.sel).map(|it| it.cmd.clone());
-                self.overlay = Overlay::None;
-                if let Some(cmd) = cmd {
-                    self.run_command(cmd);
-                }
-            }
+            KeyCode::Enter => self.palette_run_selected(),
             _ => {
                 // Editing the query resets the selection to the top match.
                 let before = p.input.text().len();
@@ -123,6 +117,18 @@ impl App {
                     p.sel = 0;
                 }
             }
+        }
+    }
+
+    /// Run the highlighted command and close the palette (Enter / double-click).
+    pub(crate) fn palette_run_selected(&mut self) {
+        let Overlay::Palette(p) = &self.overlay else {
+            return;
+        };
+        let cmd = p.filtered().get(p.sel).map(|it| it.cmd.clone());
+        self.overlay = Overlay::None;
+        if let Some(cmd) = cmd {
+            self.run_command(cmd);
         }
     }
 

@@ -1806,12 +1806,10 @@ mod tests {
             AnnotTab::Bookmarks,
         ));
 
-        // Hit rects the renderer would capture (two tabs, two bookmark rows).
-        app.mouse.annot_tabs = vec![
-            (AnnotTab::Bookmarks, Rect::new(0, 0, 15, 1)),
-            (AnnotTab::Notes, Rect::new(17, 0, 12, 1)),
-        ];
-        app.mouse.annot_rows = vec![(0, Rect::new(0, 3, 30, 1)), (1, Rect::new(0, 4, 30, 1))];
+        // Hit rects the renderer would capture (two tabs, two bookmark rows). Tabs
+        // are indexed 0 = Bookmarks, 1 = Notes.
+        app.mouse.overlay_tabs = vec![(0, Rect::new(0, 0, 15, 1)), (1, Rect::new(17, 0, 12, 1))];
+        app.mouse.overlay_rows = vec![(0, Rect::new(0, 3, 30, 1)), (1, Rect::new(0, 4, 30, 1))];
 
         let down = |c: u16, r: u16| MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -1838,13 +1836,81 @@ mod tests {
         // Back to Bookmarks, then double-click a row → jump + close (no reader here,
         // so the jump is a no-op but the overlay still closes).
         app.on_mouse(down(2, 0));
-        app.mouse.annot_rows = vec![(0, Rect::new(0, 3, 30, 1))];
+        app.mouse.overlay_rows = vec![(0, Rect::new(0, 3, 30, 1))];
         app.on_mouse(down(2, 3)); // first click selects
         app.on_mouse(down(2, 3)); // second, within the window → jump
         assert!(
             matches!(app.overlay, Overlay::None),
             "double-click on a row jumps and closes the overlay"
         );
+    }
+
+    // The command palette is mouse-drivable through the shared overlay hit rects:
+    // a click selects a command, a second click on it runs it (closing the palette).
+    #[test]
+    fn palette_click_selects_then_runs() {
+        use crossterm::event::{MouseButton, MouseEvent};
+
+        let _env = crate::test_env_guard();
+        let mut app = App::library();
+        app.open_palette();
+        assert!(matches!(app.overlay, Overlay::Palette(_)), "palette open");
+        app.mouse.overlay_rows = vec![(0, Rect::new(0, 2, 40, 1)), (1, Rect::new(0, 3, 40, 1))];
+        let down = |c: u16, r: u16| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: c,
+            row: r,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.on_mouse(down(2, 3)); // first click selects row 1
+        let Overlay::Palette(p) = &app.overlay else {
+            panic!("palette closed early")
+        };
+        assert_eq!(p.sel, 1, "row click moves the selection");
+
+        app.on_mouse(down(2, 3)); // second click within the window runs it
+        assert!(
+            matches!(app.overlay, Overlay::None),
+            "double-click runs the command and closes the palette"
+        );
+    }
+
+    // Settings tabs and option rows route through the same shared hit channels.
+    #[test]
+    fn settings_click_switches_tab_and_row() {
+        use crossterm::event::{MouseButton, MouseEvent};
+
+        let _env = crate::test_env_guard();
+        let mut app = App::library();
+        app.overlay = Overlay::Settings(Settings {
+            scope: Mode::Library,
+            tab: 0,
+            row: first_setting_row(Mode::Library, 0),
+        });
+        // Two tabs + a couple of option rows (real geometry is captured at render).
+        app.mouse.overlay_tabs = vec![(0, Rect::new(0, 0, 12, 1)), (1, Rect::new(13, 0, 12, 1))];
+        app.mouse.overlay_rows = vec![(1, Rect::new(0, 4, 40, 1)), (2, Rect::new(0, 5, 40, 1))];
+        let down = |c: u16, r: u16| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: c,
+            row: r,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Click the second tab.
+        app.on_mouse(down(14, 0));
+        let Overlay::Settings(s) = &app.overlay else {
+            panic!("settings closed")
+        };
+        assert_eq!(s.tab, 1, "tab click switches the active tab");
+
+        // Click an option row (its index is into that tab's rows).
+        app.on_mouse(down(2, 5));
+        let Overlay::Settings(s) = &app.overlay else {
+            panic!("settings closed")
+        };
+        assert_eq!(s.row, 2, "row click moves the option cursor");
     }
 
     // `c` with a multi-selection files every selected book into the collection.
