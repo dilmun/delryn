@@ -385,11 +385,16 @@ impl App {
             let idx = r.sidebar_offset + (row - first) as usize;
             let vis = r.outline_visible();
             if let Some(&oi) = vis.get(idx) {
-                r.sidebar_sel = idx;
-                r.focus = Focus::Sidebar;
                 if let Some(item) = r.outline.get(oi).cloned() {
                     r.jump_to(item.section, item.locator.as_deref());
                 }
+                // `jump_to` resets focus to Content; re-assert the sidebar cursor
+                // *after* it so the click's highlight lands on the clicked entry at
+                // once (otherwise the highlight follows the scroll-spy row, which
+                // lags a frame behind the not-yet-loaded section — the reported
+                // "have to click twice" bug).
+                r.sidebar_sel = idx;
+                r.focus = Focus::Sidebar;
             }
         }
     }
