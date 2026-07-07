@@ -342,6 +342,14 @@ impl Reader {
         let mut s = self.section + 1;
         // One extra line so a partial last row still has content beneath it.
         while out.len() <= height && s < count {
+            // A blank line between chapters so a section's leading heading doesn't
+            // butt against the previous chapter's last line (per-section paging
+            // starts each chapter at a fresh page top; the flow needs the gap
+            // drawn in). Record the span *after* it so figures stay aligned.
+            out.push(DisplayLine {
+                runs: Vec::new(),
+                kind: LineKind::Body,
+            });
             self.cont_spans.push((s, out.len()));
             let lines = self.following_lines(s);
             out.extend(lines);
