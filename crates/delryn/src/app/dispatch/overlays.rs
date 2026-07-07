@@ -55,6 +55,13 @@ impl App {
         }
     }
 
+    /// Close the image viewer and return to the reader (retire its terminal image,
+    /// then drop the overlay).
+    fn close_image_viewer(&mut self) {
+        self.retire_image_viewer();
+        self.overlay = Overlay::None;
+    }
+
     pub(super) fn image_key(&mut self, key: KeyEvent) {
         // Filter-typing mode captures every key.
         if matches!(&self.overlay, Overlay::ImageView(v) if v.filtering) {
@@ -108,10 +115,7 @@ impl App {
             v.flash = None;
         }
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => {
-                self.retire_image_viewer();
-                self.overlay = Overlay::None;
-            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => self.close_image_viewer(),
             KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('n') => {
                 if let Overlay::ImageView(v) = &mut self.overlay {
                     v.move_sel(1);
@@ -172,9 +176,13 @@ impl App {
         if let Some((section, image_index)) = target {
             if let Some(r) = self.reader.as_mut() {
                 r.jump_to_image(section, image_index);
+                // The viewer's full-screen figure can evict the destination section's
+                // inline images from the terminal; force them to rebuild with fresh
+                // ids so they re-transmit on arrival instead of showing blank until a
+                // stray keypress churns the cache.
+                r.restage_visible_images();
             }
-            self.retire_image_viewer();
-            self.overlay = Overlay::None;
+            self.close_image_viewer();
         }
     }
 
