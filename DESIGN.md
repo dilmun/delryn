@@ -222,6 +222,12 @@ Two top-level views behave like **tabs**: bare `delryn` lands on the Library;
 opening a book switches to the Reader; you can toggle back to the Library
 (`q`) with the book still loaded, and reopen instantly. `Q` quits.
 
+**CLI entry:** `delryn <file>` opens a book. `delryn <folder> [folder…]`
+registers each folder as a library source (deduped), scans, and lands on the
+Library — the ergonomic form of `delryn --add`. On **first run** (no source
+folders configured) delryn opens straight on the Sources manager (§7) so a new
+user's first action is adding a folder.
+
 ## 7. Settings — mode-scoped popup (`;`)
 
 `;` opens a settings popup. It is **tabbed** (General · Reading · Library) and
@@ -243,8 +249,11 @@ lands on the tab for the current mode, but all tabs are reachable.
 
 - **Reading**: measure width, center on/off, theme, line spacing,
   sidebar/bar defaults, status fields, PDF text-vs-image default.
-- **Library**: library paths (+ add), recursive scan, default view, thumbnail
-  size, sort, visible columns.
+- **Library**: the **Sources** tab (first) manages scanned folders — one row per
+  folder with `d`/Delete to remove it (which also drops its books), an
+  *Add folder…* row (inline path input), and *Rescan now*; plus default view,
+  thumbnail size, sort, and visible columns. Adding/removing a folder scans /
+  prunes and refreshes the list live.
 - **General** (shared): theme, keybindings, paths, mouse on/off.
 
 ## 8. Persistence

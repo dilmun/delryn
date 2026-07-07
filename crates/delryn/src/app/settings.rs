@@ -6,6 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use super::{App, Mode, Overlay};
 use crate::config::Config;
 use crate::document::BookFormat;
+use crate::ui::TextInput;
 
 /// Open settings popup. Scoped to the mode it was opened from — Reading settings
 /// in the reader, Library settings in the library — so the two never mix. Options
@@ -15,6 +16,10 @@ pub struct Settings {
     pub scope: Mode,
     pub tab: usize,
     pub row: usize,
+    /// When adding a library folder on the Sources tab, the in-progress path the
+    /// user is typing. `None` outside that inline edit. Only the Sources tab uses
+    /// it; the input owns the keyboard while it's `Some`.
+    pub adding: Option<TextInput>,
 }
 
 /// One adjustable setting (identity, not position — so section headers can be
@@ -57,6 +62,13 @@ pub enum SettingItem {
     Mouse,
     LibLayout,
     GridSize,
+    /// A configured library source folder on the Sources tab (carries its index
+    /// into `config.library_paths`). `d`/Delete removes it.
+    Source(usize),
+    /// The "Add folder…" action row on the Sources tab (opens the path input).
+    AddSource,
+    /// The "Rescan now" action row on the Sources tab (re-indexes every source).
+    RescanNow,
     /// Show/hide an optional library column (carries its key from `LIB_COLUMNS`).
     Column(&'static str),
     /// Duplicate resolver: always mark converted copies for deletion.
@@ -102,6 +114,9 @@ impl SettingItem {
             SettingItem::TrimMargins => "Trim PDF margins",
             SettingItem::PdfMargin => "PDF margin crop %",
             SettingItem::Mouse => "Mouse",
+            SettingItem::Source(_) => "Folder",
+            SettingItem::AddSource => "Add folder…",
+            SettingItem::RescanNow => "Rescan now",
             SettingItem::LibLayout => "Layout",
             SettingItem::GridSize => "Cover size",
             SettingItem::Column(key) => crate::config::LIB_COLUMNS
@@ -161,6 +176,11 @@ impl SettingItem {
             SettingItem::TrimMargins => onoff(c.pdf_trim),
             SettingItem::PdfMargin => format!("{}%", c.pdf_margin_pct),
             SettingItem::Mouse => onoff(c.mouse_enabled),
+            // Sources-tab rows render bespoke (see `view::settings`); the generic
+            // label/value path is never taken for them.
+            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow => {
+                String::new()
+            }
             SettingItem::LibLayout => c.library_layout.label().to_string(),
             SettingItem::GridSize => c.library_grid_size.label().to_string(),
             SettingItem::Column(key) => onoff(c.column_on(key)),
@@ -189,7 +209,7 @@ pub struct SettingTab {
 /// only reading settings, the library only library settings (global toggles like
 /// Theme/Mouse appear in both). Within a tab, [`SettingRow::Section`] headers
 /// sub-group related options.
-pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
+pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
     use SettingItem::*;
     use SettingRow::{Item as I, Section as S};
     let tab = |title, rows| SettingTab { title, rows };
@@ -269,7 +289,16 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
                 S("Keep priority — l/h"),
             ];
             dups.extend(BookFormat::ALL.iter().map(|f| I(DupFormat(f.label()))));
+            // The Sources tab manages the library's scanned folders: one row per
+            // configured folder (built from the live path list), an add-folder
+            // action, and a rescan action. It's first so first-run — an empty
+            // library — lands the user straight on it.
+            let mut sources = vec![S("Folders")];
+            sources.extend((0..config.library_paths.len()).map(|i| I(Source(i))));
+            sources.push(I(AddSource));
+            sources.push(I(RescanNow));
             vec![
+                tab("Sources", sources),
                 tab("View", vec![S("Layout"), I(LibLayout), I(GridSize)]),
                 tab("Columns", columns),
                 tab("Duplicates", dups),
@@ -283,8 +312,8 @@ pub fn settings_tabs(scope: Mode) -> Vec<SettingTab> {
 }
 
 /// The rows of one tab (empty if the index is out of range).
-pub fn tab_rows(scope: Mode, tab: usize) -> Vec<SettingRow> {
-    settings_tabs(scope)
+pub fn tab_rows(scope: Mode, tab: usize, config: &Config) -> Vec<SettingRow> {
+    settings_tabs(scope, config)
         .into_iter()
         .nth(tab)
         .map(|t| t.rows)
@@ -292,8 +321,8 @@ pub fn tab_rows(scope: Mode, tab: usize) -> Vec<SettingRow> {
 }
 
 /// Index of the first selectable item in a tab (skips a leading section header).
-pub fn first_setting_row(scope: Mode, tab: usize) -> usize {
-    tab_rows(scope, tab)
+pub fn first_setting_row(scope: Mode, tab: usize, config: &Config) -> usize {
+    tab_rows(scope, tab, config)
         .iter()
         .position(|r| matches!(r, SettingRow::Item(_)))
         .unwrap_or(0)
@@ -302,6 +331,11 @@ pub fn first_setting_row(scope: Mode, tab: usize) -> usize {
 impl App {
     pub(crate) fn settings_key(&mut self, key: KeyEvent) {
         if !matches!(self.overlay, Overlay::Settings(_)) {
+            return;
+        }
+        // While typing a new library folder path, the inline input owns every key.
+        if matches!(&self.overlay, Overlay::Settings(s) if s.adding.is_some()) {
+            self.settings_add_key(key);
             return;
         }
         match key.code {
@@ -315,7 +349,150 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.settings_move(-1),
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.settings_change(1),
             KeyCode::Char('h') | KeyCode::Left => self.settings_change(-1),
+            // Remove the focused library source (no-op on any other row/tab).
+            KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
+                self.settings_delete_source()
+            }
             _ => {}
+        }
+    }
+
+    /// Key handling while the inline "add folder" path input is open: Enter
+    /// commits the path, Esc cancels, everything else edits the text.
+    fn settings_add_key(&mut self, key: KeyEvent) {
+        let committed = {
+            let Overlay::Settings(s) = &mut self.overlay else {
+                return;
+            };
+            let Some(input) = &mut s.adding else {
+                return;
+            };
+            match key.code {
+                KeyCode::Enter => {
+                    let path = input.text().to_string();
+                    s.adding = None;
+                    Some(path)
+                }
+                KeyCode::Esc => {
+                    s.adding = None;
+                    None
+                }
+                _ => {
+                    input.handle_key(key);
+                    None
+                }
+            }
+        };
+        if let Some(path) = committed {
+            self.commit_add_source(&path);
+        }
+    }
+
+    /// Open the inline path input on the Sources tab's "Add folder…" row.
+    fn begin_add_source(&mut self) {
+        if let Overlay::Settings(s) = &mut self.overlay {
+            s.adding = Some(TextInput::new());
+        }
+    }
+
+    /// Commit a typed folder path: validate it's a real directory, register it
+    /// (deduped) as a library source, scan it, and refresh the list — flashing
+    /// the outcome. Invalid or duplicate input flashes a note and changes nothing.
+    fn commit_add_source(&mut self, raw: &str) {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return;
+        }
+        let root = crate::library::normalize_root(raw);
+        if !std::path::Path::new(&root).is_dir() {
+            self.library.flash = Some(format!("Not a folder: {raw}"));
+            return;
+        }
+        let existed = self.config.library_paths.contains(&root);
+        if !existed {
+            self.config.library_paths.push(root.clone());
+            self.config.save();
+        }
+        let indexed = match &self.session.store {
+            Some(store) => crate::library::scan(&self.config.library_paths, store),
+            None => 0,
+        };
+        self.refresh_library();
+        self.library.flash = Some(if existed {
+            format!("Already added · indexed {indexed} book(s)")
+        } else {
+            format!("Added {root} · indexed {indexed} book(s)")
+        });
+        // The row set grew; keep the cursor on a real item.
+        self.settings_move(0);
+    }
+
+    /// Remove the library source under the cursor (Sources tab). Drops its books
+    /// from the index too, then refreshes. No-op when the focused row isn't a
+    /// source folder.
+    fn settings_delete_source(&mut self) {
+        let Overlay::Settings(s) = &self.overlay else {
+            return;
+        };
+        let Some(SettingRow::Item(SettingItem::Source(idx))) =
+            tab_rows(s.scope, s.tab, &self.config)
+                .into_iter()
+                .nth(s.row)
+        else {
+            return;
+        };
+        if idx >= self.config.library_paths.len() {
+            return;
+        }
+        let root = self.config.library_paths.remove(idx);
+        self.config.save();
+        if let Some(store) = &self.session.store {
+            crate::library::remove_root(&root, store);
+        }
+        self.refresh_library();
+        self.library.flash = Some(format!("Removed {root}"));
+        // The row set shrank; keep the cursor on a real item.
+        self.settings_move(0);
+    }
+
+    /// Re-index every configured library source (incremental — unchanged files
+    /// are skipped) and prune vanished ones, then refresh. Flashes the count.
+    fn rescan_sources(&mut self) {
+        let indexed = match &self.session.store {
+            Some(store) => {
+                let n = crate::library::scan(&self.config.library_paths, store);
+                crate::library::prune_missing(&self.config.library_paths, store);
+                n
+            }
+            None => 0,
+        };
+        self.refresh_library();
+        self.library.flash = Some(format!("Rescanned · indexed {indexed} book(s)"));
+    }
+
+    /// Open Library settings on the Sources tab — the folder manager. Used on
+    /// first run / whenever no folders are configured (see [`App::open_sources_if_empty`]).
+    pub(crate) fn open_sources_settings(&mut self) {
+        let scope = Mode::Library;
+        let tab = settings_tabs(scope, &self.config)
+            .iter()
+            .position(|t| t.title == "Sources")
+            .unwrap_or(0);
+        let row = first_setting_row(scope, tab, &self.config);
+        self.overlay = Overlay::Settings(Settings {
+            scope,
+            tab,
+            row,
+            adding: None,
+        });
+    }
+
+    /// If we're in the library with no source folders configured, open the
+    /// Sources manager so the first thing a new user sees is where to add one.
+    /// A no-op in the reader or once at least one folder exists.
+    pub fn open_sources_if_empty(&mut self) {
+        if self.mode == Mode::Library && self.config.library_paths.is_empty() {
+            self.open_sources_settings();
         }
     }
 
@@ -325,12 +502,12 @@ impl App {
         let Overlay::Settings(s) = &self.overlay else {
             return;
         };
-        let n = settings_tabs(s.scope).len();
+        let n = settings_tabs(s.scope, &self.config).len();
         if n == 0 {
             return;
         }
         let tab = i.min(n - 1);
-        let row = first_setting_row(s.scope, tab);
+        let row = first_setting_row(s.scope, tab, &self.config);
         if let Overlay::Settings(s) = &mut self.overlay {
             s.tab = tab;
             s.row = row;
@@ -342,12 +519,12 @@ impl App {
         let Overlay::Settings(s) = &self.overlay else {
             return;
         };
-        let n = settings_tabs(s.scope).len();
+        let n = settings_tabs(s.scope, &self.config).len();
         if n == 0 {
             return;
         }
         let tab = (s.tab as isize + delta).rem_euclid(n as isize) as usize;
-        let row = first_setting_row(s.scope, tab);
+        let row = first_setting_row(s.scope, tab, &self.config);
         if let Overlay::Settings(s) = &mut self.overlay {
             s.tab = tab;
             s.row = row;
@@ -360,7 +537,7 @@ impl App {
         let Overlay::Settings(s) = &self.overlay else {
             return;
         };
-        let rows = tab_rows(s.scope, s.tab);
+        let rows = tab_rows(s.scope, s.tab, &self.config);
         let items: Vec<usize> = rows
             .iter()
             .enumerate()
@@ -383,9 +560,20 @@ impl App {
             return;
         };
         // Resolve the focused row (in the active tab) to a setting identity.
-        let Some(SettingRow::Item(item)) = tab_rows(s.scope, s.tab).into_iter().nth(s.row) else {
+        let Some(SettingRow::Item(item)) = tab_rows(s.scope, s.tab, &self.config)
+            .into_iter()
+            .nth(s.row)
+        else {
             return;
         };
+        // Sources-tab action rows run a command rather than stepping a value —
+        // dispatch them before borrowing `config` mutably below.
+        match item {
+            SettingItem::AddSource => return self.begin_add_source(),
+            SettingItem::RescanNow => return self.rescan_sources(),
+            SettingItem::Source(_) => return, // delete via `d`/Delete, not change
+            _ => {}
+        }
         let c = &mut self.config;
         match item {
             SettingItem::ReadingMode => {
@@ -510,6 +698,8 @@ impl App {
                     c.library_grid_size.prev()
                 }
             }
+            // Handled (and returned) above; listed so the match stays exhaustive.
+            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow => {}
             SettingItem::Column(key) => c.toggle_column(key),
             SettingItem::DupConvertedDelete => c.dup_converted_delete = !c.dup_converted_delete,
             // l/right/Enter (delta > 0) promotes the format toward "keep #1".
@@ -522,11 +712,16 @@ impl App {
     pub(crate) fn open_dup_settings(&mut self) {
         self.overlay = Overlay::None;
         let scope = Mode::Library;
-        let tab = settings_tabs(scope)
+        let tab = settings_tabs(scope, &self.config)
             .iter()
             .position(|t| t.title == "Duplicates")
             .unwrap_or(0);
-        let row = first_setting_row(scope, tab);
-        self.overlay = Overlay::Settings(Settings { scope, tab, row });
+        let row = first_setting_row(scope, tab, &self.config);
+        self.overlay = Overlay::Settings(Settings {
+            scope,
+            tab,
+            row,
+            adding: None,
+        });
     }
 }
