@@ -156,21 +156,25 @@ impl App {
                 self.config.save();
             }
             // Jump to the figure's place in the book, then close the viewer.
-            KeyCode::Enter | KeyCode::Char('l') => {
-                let target = if let Overlay::ImageView(v) = &self.overlay {
-                    v.current().map(|fig| (fig.section, fig.image_index))
-                } else {
-                    None
-                };
-                if let Some((section, image_index)) = target {
-                    if let Some(r) = self.reader.as_mut() {
-                        r.jump_to_image(section, image_index);
-                    }
-                    self.retire_image_viewer();
-                    self.overlay = Overlay::None;
-                }
-            }
+            KeyCode::Enter | KeyCode::Char('l') => self.image_go_selected(),
             _ => {}
+        }
+    }
+
+    /// Jump to the selected figure's place in the book and close the viewer
+    /// (Enter / `l` / double-click).
+    pub(crate) fn image_go_selected(&mut self) {
+        let target = if let Overlay::ImageView(v) = &self.overlay {
+            v.current().map(|fig| (fig.section, fig.image_index))
+        } else {
+            None
+        };
+        if let Some((section, image_index)) = target {
+            if let Some(r) = self.reader.as_mut() {
+                r.jump_to_image(section, image_index);
+            }
+            self.retire_image_viewer();
+            self.overlay = Overlay::None;
         }
     }
 
@@ -281,6 +285,22 @@ impl App {
         self.sync_reader_bookmarks();
     }
 
+    /// Jump to the currently selected annotation and close the overlay — shared by
+    /// the Enter/`l` key and a mouse double-click on a row.
+    pub(crate) fn annot_jump_selected(&mut self) {
+        let target = if let Overlay::Annot(a) = &self.overlay {
+            a.selected().map(|i| (i.section, i.quote))
+        } else {
+            None
+        };
+        if let Some((section, quote)) = target {
+            if let Some(r) = self.reader.as_mut() {
+                r.jump_to(section, Some(&quote));
+            }
+            self.overlay = Overlay::None;
+        }
+    }
+
     pub(super) fn annot_key(&mut self, key: KeyEvent) {
         let Overlay::Annot(a) = &self.overlay else {
             return;
@@ -345,19 +365,7 @@ impl App {
                     a.sel = sel.saturating_sub(1);
                 }
             }
-            KeyCode::Enter | KeyCode::Char('l') => {
-                let target = if let Overlay::Annot(a) = &self.overlay {
-                    a.selected().map(|i| (i.section, i.quote))
-                } else {
-                    None
-                };
-                if let Some((section, quote)) = target {
-                    if let Some(r) = self.reader.as_mut() {
-                        r.jump_to(section, Some(&quote));
-                    }
-                    self.overlay = Overlay::None;
-                }
-            }
+            KeyCode::Enter | KeyCode::Char('l') => self.annot_jump_selected(),
             // Name (or rename) the selected entry; prefilled with its current name.
             KeyCode::Char('r') => {
                 let target = if let Overlay::Annot(a) = &self.overlay {

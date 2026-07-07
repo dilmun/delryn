@@ -4,7 +4,7 @@
 //! them, previews/reveals a copy, then deletes all checked at once.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -15,7 +15,7 @@ use crate::app::{App, Overlay};
 use crate::theme::Role;
 use crate::view::library::fmt_size;
 
-pub fn render(f: &mut Frame, app: &App) {
+pub fn render(f: &mut Frame, app: &mut App) {
     let Overlay::DupResolve(dr) = &app.overlay else {
         return;
     };
@@ -58,6 +58,9 @@ pub fn render(f: &mut Frame, app: &App) {
     let cursor_row = rows.get(dr.cursor).copied();
     let mut lines: Vec<Line> = Vec::new();
     let mut sel_line = 0usize;
+    // (cursor index into `rows`, line index) for each copy row, for hit-testing.
+    let mut member_lines: Vec<(usize, usize)> = Vec::new();
+    let mut ci = 0usize;
     for (gi, g) in dr.groups.iter().enumerate() {
         // A blank line separates one duplicate group's rows from the next — no
         // per-group title, so the table stays clean.
@@ -68,6 +71,8 @@ pub fn render(f: &mut Frame, app: &App) {
             if cursor_row == Some((gi, mi)) {
                 sel_line = lines.len();
             }
+            member_lines.push((ci, lines.len()));
+            ci += 1;
             lines.push(member_line(
                 m,
                 cursor_row == Some((gi, mi)),
@@ -95,6 +100,28 @@ pub fn render(f: &mut Frame, app: &App) {
             &mut sb,
         );
     }
+
+    // Screen rect per visible copy row (the scrollbar column is left clickable too).
+    let mut hits: Vec<(usize, Rect)> = Vec::with_capacity(member_lines.len());
+    for (idx, li) in member_lines {
+        if li < offset {
+            continue;
+        }
+        let sy = body.y + (li - offset) as u16;
+        if sy >= body.y + body.height {
+            continue;
+        }
+        hits.push((
+            idx,
+            Rect {
+                x: body.x,
+                y: sy,
+                width: body.width,
+                height: 1,
+            },
+        ));
+    }
+    app.mouse.overlay_rows = hits;
 }
 
 // Fixed column widths (chars) for the member table — shared by the rows and the
@@ -175,7 +202,7 @@ fn member_line(
 
 /// The ignored-groups manager: one ignored duplicate group per row (its member
 /// filenames), with keys to restore one or all.
-pub fn render_ignored(f: &mut Frame, app: &App) {
+pub fn render_ignored(f: &mut Frame, app: &mut App) {
     let Overlay::IgnoredView(v) = &app.overlay else {
         return;
     };
@@ -236,12 +263,24 @@ pub fn render_ignored(f: &mut Frame, app: &App) {
         })
         .collect();
 
-    let offset = v
-        .cursor
-        .saturating_sub(h / 2)
-        .min(lines.len().saturating_sub(h));
+    let total = lines.len();
+    let offset = v.cursor.saturating_sub(h / 2).min(total.saturating_sub(h));
     let visible: Vec<Line> = lines.into_iter().skip(offset).take(h).collect();
     f.render_widget(Paragraph::new(visible), inner);
+    // Each line is one group, so a line's index is its cursor index.
+    let mut hits: Vec<(usize, Rect)> = Vec::new();
+    for j in offset..(offset + h).min(total) {
+        hits.push((
+            j,
+            Rect {
+                x: inner.x,
+                y: inner.y + (j - offset) as u16,
+                width: inner.width,
+                height: 1,
+            },
+        ));
+    }
+    app.mouse.overlay_rows = hits;
 }
 
 /// Basename of a path.

@@ -202,14 +202,7 @@ impl App {
                     dr.cursor = dr.cursor.saturating_sub(1);
                 }
             }
-            KeyCode::Char(' ') => {
-                if let Overlay::DupResolve(dr) = &mut self.overlay
-                    && let Some(&(gi, mi)) = dr.rows().get(dr.cursor)
-                {
-                    let m = &mut dr.groups[gi].members[mi];
-                    m.checked = !m.checked;
-                }
-            }
+            KeyCode::Char(' ') => self.dup_toggle_checked(),
             KeyCode::Char('u') => {
                 if let Overlay::DupResolve(dr) = &mut self.overlay {
                     for m in dr.groups.iter_mut().flat_map(|g| &mut g.members) {
@@ -262,6 +255,17 @@ impl App {
                 self.ask_confirm(&q, ConfirmAction::ResolveDuplicates(paths));
             }
             _ => {}
+        }
+    }
+
+    /// Toggle the keep/delete check on the copy under the cursor (Space / double-
+    /// click).
+    pub(crate) fn dup_toggle_checked(&mut self) {
+        if let Overlay::DupResolve(dr) = &mut self.overlay
+            && let Some(&(gi, mi)) = dr.rows().get(dr.cursor)
+        {
+            let m = &mut dr.groups[gi].members[mi];
+            m.checked = !m.checked;
         }
     }
 
@@ -319,47 +323,54 @@ impl App {
                 }
             }
             // Restore (un-ignore) the selected group.
-            KeyCode::Char('u') | KeyCode::Enter => {
-                let sig = if let Overlay::IgnoredView(v) = &self.overlay {
-                    v.signatures.get(v.cursor).cloned()
-                } else {
-                    None
-                };
-                if let Some(sig) = sig {
-                    if let Some(store) = &self.session.store {
-                        store.restore_duplicate_group(&sig);
-                    }
-                    self.refresh_library();
-                    // Rebuild the list (keeping the cursor near where it was); close
-                    // and flash when nothing's left.
-                    let cursor = if let Overlay::IgnoredView(v) = &self.overlay {
-                        v.cursor
-                    } else {
-                        0
-                    };
-                    match self.build_ignored_view() {
-                        Some(mut v) => {
-                            v.cursor = cursor.min(v.signatures.len() - 1);
-                            self.overlay = Overlay::IgnoredView(v);
-                        }
-                        None => {
-                            self.overlay = Overlay::None;
-                            self.library.flash = Some("restored — no ignored groups left".into());
-                        }
-                    }
-                }
-            }
+            KeyCode::Char('u') | KeyCode::Enter => self.ignored_restore_selected(),
             // Restore all.
-            KeyCode::Char('C') => {
-                if let Some(store) = &self.session.store {
-                    store.clear_dismissed_duplicates();
-                }
-                self.overlay = Overlay::None;
-                self.library.flash = Some("restored all ignored groups".into());
-                self.refresh_library();
-            }
+            KeyCode::Char('C') => self.ignored_restore_all(),
             _ => {}
         }
+    }
+
+    /// Restore (un-ignore) the group under the cursor, rebuild the list keeping the
+    /// cursor near where it was, and close + flash when nothing's left (u / Enter /
+    /// double-click).
+    pub(crate) fn ignored_restore_selected(&mut self) {
+        let sig = if let Overlay::IgnoredView(v) = &self.overlay {
+            v.signatures.get(v.cursor).cloned()
+        } else {
+            None
+        };
+        let Some(sig) = sig else {
+            return;
+        };
+        if let Some(store) = &self.session.store {
+            store.restore_duplicate_group(&sig);
+        }
+        self.refresh_library();
+        let cursor = if let Overlay::IgnoredView(v) = &self.overlay {
+            v.cursor
+        } else {
+            0
+        };
+        match self.build_ignored_view() {
+            Some(mut v) => {
+                v.cursor = cursor.min(v.signatures.len() - 1);
+                self.overlay = Overlay::IgnoredView(v);
+            }
+            None => {
+                self.overlay = Overlay::None;
+                self.library.flash = Some("restored — no ignored groups left".into());
+            }
+        }
+    }
+
+    /// Restore every ignored group and close the manager (`C`).
+    fn ignored_restore_all(&mut self) {
+        if let Some(store) = &self.session.store {
+            store.clear_dismissed_duplicates();
+        }
+        self.overlay = Overlay::None;
+        self.library.flash = Some("restored all ignored groups".into());
+        self.refresh_library();
     }
 
     /// Open the copy under the cursor in the reader for a quick look, stashing the

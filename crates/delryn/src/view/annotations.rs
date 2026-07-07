@@ -12,7 +12,7 @@ use ratatui::widgets::{
 use crate::app::{AnnotTab, App, Overlay, Prompt, PromptKind};
 use crate::theme::Role;
 
-pub fn render(f: &mut Frame, app: &App) {
+pub fn render(f: &mut Frame, app: &mut App) {
     if let Overlay::Prompt(prompt) = &app.overlay {
         render_prompt(f, app, prompt);
     }
@@ -43,15 +43,23 @@ fn render_prompt(f: &mut Frame, app: &App, prompt: &Prompt) {
     );
 }
 
-fn render_overlay(f: &mut Frame, app: &App) {
-    let Overlay::Annot(state) = &app.overlay else {
-        return;
-    };
+fn render_overlay(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
     let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
+    let Overlay::Annot(state) = &app.overlay else {
+        return;
+    };
     let items = state.filtered();
+    let active_tab = state.tab;
+    let sel = state.sel;
+    let filtering = state.filtering;
+    let filter = state.filter.clone();
+    let (bm_count, note_count) = (
+        state.count(AnnotTab::Bookmarks),
+        state.count(AnnotTab::Notes),
+    );
     let bg = theme.paper();
     let block = Block::default()
         .borders(Borders::ALL)
@@ -69,7 +77,7 @@ fn render_overlay(f: &mut Frame, app: &App) {
 
     // A tab bar on top (Bookmarks | Notes, active one highlighted), an optional
     // filter row, then the list.
-    let show_filter = state.filtering || !state.filter.is_empty();
+    let show_filter = filtering || !filter.is_empty();
     let mut constraints = vec![Constraint::Length(1), Constraint::Length(1)];
     if show_filter {
         constraints.push(Constraint::Length(1));
@@ -77,24 +85,48 @@ fn render_overlay(f: &mut Frame, app: &App) {
     constraints.push(Constraint::Min(0));
     let rows = Layout::vertical(constraints).split(inner);
 
-    // Tab bar.
-    let tab_span = |tab: AnnotTab, icon: &str| {
-        let label = format!(" {icon} {} ({}) ", tab.label(), state.count(tab));
-        let style = if state.tab == tab {
+    // Tab bar — build the two labels once so the click rects match what's drawn.
+    let bm_label = format!(" ⚑ {} ({bm_count}) ", AnnotTab::Bookmarks.label());
+    let note_label = format!(" ✎ {} ({note_count}) ", AnnotTab::Notes.label());
+    let tab_style = |t: AnnotTab| {
+        if active_tab == t {
             theme.style(Role::Selection)
         } else {
             theme.style(Role::Muted)
-        };
-        Span::styled(label, style)
+        }
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            tab_span(AnnotTab::Bookmarks, "⚑"),
+            Span::styled(bm_label.clone(), tab_style(AnnotTab::Bookmarks)),
             Span::raw("  "),
-            tab_span(AnnotTab::Notes, "✎"),
+            Span::styled(note_label.clone(), tab_style(AnnotTab::Notes)),
         ])),
         rows[0],
     );
+    // Click targets for the two tabs (a 2-cell gap separates them). Labels use only
+    // width-1 glyphs, so the char count is the cell width.
+    let bm_w = bm_label.chars().count() as u16;
+    let note_w = note_label.chars().count() as u16;
+    let tab_hits = vec![
+        (
+            0usize,
+            Rect {
+                x: rows[0].x,
+                y: rows[0].y,
+                width: bm_w,
+                height: 1,
+            },
+        ),
+        (
+            1usize,
+            Rect {
+                x: rows[0].x + bm_w + 2,
+                y: rows[0].y,
+                width: note_w,
+                height: 1,
+            },
+        ),
+    ];
     // A thin rule under the tabs.
     f.render_widget(
         Paragraph::new(Line::styled(
@@ -104,11 +136,11 @@ fn render_overlay(f: &mut Frame, app: &App) {
         rows[1],
     );
     if show_filter {
-        let caret = if state.filtering { "▏" } else { "" };
+        let caret = if filtering { "▏" } else { "" };
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("find: ", theme.style(Role::Muted)),
-                Span::styled(format!("{}{caret}", state.filter), theme.style(Role::Body)),
+                Span::styled(format!("{filter}{caret}"), theme.style(Role::Body)),
             ])),
             rows[2],
         );
@@ -116,13 +148,14 @@ fn render_overlay(f: &mut Frame, app: &App) {
     let list_area = rows[rows.len() - 1];
 
     if items.is_empty() {
+        app.mouse.overlay_tabs = tab_hits;
         let (body, muted) = (theme.style(Role::Body), theme.style(Role::Muted));
-        let msg = if !state.filter.is_empty() {
+        let msg = if !filter.is_empty() {
             vec![
                 Line::raw(""),
                 Line::styled("  Nothing matches your search.", muted),
             ]
-        } else if state.tab == AnnotTab::Notes {
+        } else if active_tab == AnnotTab::Notes {
             vec![
                 Line::raw(""),
                 Line::styled("  No notes yet.", body),
@@ -186,9 +219,38 @@ fn render_overlay(f: &mut Frame, app: &App) {
     }
     let list = List::new(list_items).highlight_style(theme.style(Role::Selection));
     let mut st = ListState::default();
-    let sel = state.sel.min(items.len() - 1);
+    let sel = sel.min(items.len() - 1);
     st.select(Some(row_of[sel]));
     crate::view::round_list(f, list_area, list, &mut st, theme);
+
+    // Map each item to its on-screen rect for click hit-testing, using the offset
+    // `round_list` settled on — it insets the list one column each side (rounded
+    // caps), so mirror that inset here. Folder-header rows carry no item and so
+    // aren't recorded.
+    let off = st.offset();
+    let inset_x = list_area.x + 1;
+    let inset_w = list_area.width.saturating_sub(2);
+    let mut row_hits: Vec<(usize, Rect)> = Vec::with_capacity(row_of.len());
+    for (i, &rrow) in row_of.iter().enumerate() {
+        if rrow < off {
+            continue;
+        }
+        let sy = list_area.y + (rrow - off) as u16;
+        if sy >= list_area.y + list_area.height {
+            continue;
+        }
+        row_hits.push((
+            i,
+            Rect {
+                x: inset_x,
+                y: sy,
+                width: inset_w,
+                height: 1,
+            },
+        ));
+    }
+    app.mouse.overlay_tabs = tab_hits;
+    app.mouse.overlay_rows = row_hits;
 }
 
 /// The first non-empty of three candidate labels.
