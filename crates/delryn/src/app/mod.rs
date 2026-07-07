@@ -352,7 +352,7 @@ fn build_reader(
     let fmt = crate::document::BookFormat::from_path(path);
     if !fmt.is_readable() {
         anyhow::bail!(
-            "{} files aren't readable yet — EPUB and PDF open for now",
+            "{} files aren't supported — EPUB, PDF, and MOBI/AZW3 open",
             fmt.label()
         );
     }
@@ -364,6 +364,9 @@ fn build_reader(
     let doc: Box<dyn crate::document::Document> = match fmt {
         crate::document::BookFormat::Pdf => {
             Box::new(crate::document::pdf::PdfDocument::open(path)?)
+        }
+        crate::document::BookFormat::Mobi | crate::document::BookFormat::Azw3 => {
+            Box::new(crate::document::mobi::MobiDocument::open(path)?)
         }
         _ => Box::new(EpubDocument::open(path)?),
     };

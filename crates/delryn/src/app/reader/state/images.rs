@@ -30,6 +30,18 @@ pub struct ImageState {
     pub requested: HashSet<ImgKey>,
     /// Image builds that failed (so we stop waiting / re-requesting).
     pub failed: HashSet<ImgKey>,
+    /// Continuous mode only: for each *following* section joined into the scroll
+    /// buffer, its images as `(cache key, reserved rows)` by section-local index.
+    /// Lets the view draw those images (not just the anchor section's) so a figure
+    /// near a section boundary scrolls smoothly instead of leaving a blank gap
+    /// until its section becomes the anchor. Rebuilt each frame from the sections
+    /// on screen.
+    pub following: HashMap<usize, Vec<(ImgKey, u16)>>,
+    /// The image geometry + font cell size (`(fw, fh)`) captured by `sync_images`,
+    /// so `following_lines` can size a newly-shown continuous section's figures on
+    /// demand (no frame lag). `None` until the first `sync_images`.
+    pub geom: Option<crate::app::reader::ImageGeom>,
+    pub fs: (u16, u16),
 }
 
 impl Default for ImageState {
@@ -48,6 +60,9 @@ impl Default for ImageState {
             },
             requested: HashSet::new(),
             failed: HashSet::new(),
+            following: HashMap::new(),
+            geom: None,
+            fs: (0, 0),
         }
     }
 }

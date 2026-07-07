@@ -229,28 +229,56 @@ impl Col {
 }
 
 /// The columns to show at pane `width`. Compact mode is fixed (star · title · %);
-/// the rich list keeps star + title and adds each optional column only when the
-/// user has it enabled *and* it still fits — so columns drop one-by-one as the
-/// window narrows (widest thresholds go first).
+/// the rich list keeps star + title, then adds each *enabled* optional column —
+/// most important first — while it still fits alongside a readable title. The fit
+/// is **cumulative**: reserving space only for the columns actually enabled, so
+/// hiding some frees room for the rest (e.g. Source alone shows on a medium pane),
+/// and the set sheds the least-important column first as the window narrows.
 fn columns(compact: bool, width: u16, config: &Config) -> Vec<Col> {
     if compact {
         return vec![Col::Star, Col::Title, Col::Pct];
     }
-    let mut cols = vec![Col::Star, Col::Title];
-    for (col, min) in [
-        (Col::Author, 58u16),
-        (Col::Year, 44),
-        (Col::Type, 64),
-        (Col::Source, 94),
-        (Col::Pct, 36),
-        (Col::Size, 78),
-        (Col::Status, 60),
-        (Col::Tags, 100),
+    const TITLE_MIN: u16 = 24; // keep the title readable before adding columns
+    const SPACING: u16 = 1; // matches the table's `.column_spacing(1)`
+    let star = 1u16; // Col::Star width
+    let mut budget = width.saturating_sub(star + SPACING + TITLE_MIN);
+    // Add in keep-priority order (most important first): the last entries —
+    // Source, Tags — are the first to shed when the pane is tight.
+    let mut keep = Vec::new();
+    for col in [
+        Col::Pct,
+        Col::Year,
+        Col::Author,
+        Col::Status,
+        Col::Type,
+        Col::Size,
+        Col::Source,
+        Col::Tags,
     ] {
-        if col.key().is_some_and(|k| config.column_on(k)) && width >= min {
-            cols.push(col);
+        let Constraint::Length(w) = col.width() else {
+            continue;
+        };
+        if col.key().is_some_and(|k| config.column_on(k)) && budget >= w + SPACING {
+            budget -= w + SPACING;
+            keep.push(col);
         }
     }
+    // Emit star + title, then the kept columns in fixed display order.
+    let mut cols = vec![Col::Star, Col::Title];
+    cols.extend(
+        [
+            Col::Author,
+            Col::Year,
+            Col::Type,
+            Col::Source,
+            Col::Pct,
+            Col::Size,
+            Col::Status,
+            Col::Tags,
+        ]
+        .into_iter()
+        .filter(|c| keep.contains(c)),
+    );
     cols
 }
 
@@ -475,5 +503,25 @@ mod tests {
         // Compact layout is fixed to title + progress.
         let compact = sort_cycle(&cfg, true, u16::MAX);
         assert_eq!(compact, vec![SortKey::Title, SortKey::Progress]);
+    }
+
+    #[test]
+    fn a_single_enabled_column_fits_on_a_medium_pane() {
+        // Regression: hiding every optional column except Source must let Source
+        // appear on a medium pane. The old fixed per-column width thresholds made
+        // Source need a ≥94-wide pane regardless of what else was enabled, so
+        // turning the others off did nothing. The cumulative fit reserves space
+        // only for the enabled set.
+        let mut cfg = Config::default();
+        for key in [
+            "author", "year", "type", "progress", "size", "status", "tags",
+        ] {
+            cfg.toggle_column(key); // leave only Source enabled
+        }
+        let cycle = sort_cycle(&cfg, false, 60); // < the old Source threshold (94)
+        assert!(
+            cycle.contains(&SortKey::Source),
+            "Source shows when it is the only enabled column: {cycle:?}"
+        );
     }
 }

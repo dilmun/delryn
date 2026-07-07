@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use delryn_format::{BookFormat, epub};
+use delryn_format::{BookFormat, epub, mobi};
 use delryn_store::Store;
 
 pub mod dedup;
@@ -113,12 +113,13 @@ fn index_book(path: &Path, store: &Store, force: bool) -> bool {
     }
 
     match BookFormat::from_path(path) {
-        BookFormat::Epub => index_epub(path, path_str, size, mtime, store),
-        // Recognized but not yet readable: index by filename so the book is
-        // visible/organizable in the library now and opens with a clear
-        // "coming soon" message. Backfilled with real metadata once a reader
-        // backend lands and a rescan re-reads it.
-        BookFormat::Pdf | BookFormat::Mobi | BookFormat::Azw3 => {
+        BookFormat::Epub => index_meta(epub::read_metadata(path), path_str, size, mtime, store),
+        BookFormat::Mobi | BookFormat::Azw3 => {
+            index_meta(mobi::read_metadata(path), path_str, size, mtime, store)
+        }
+        // PDF is page-image only (no embedded text metadata to read): index by
+        // filename so the book is visible/organizable in the library.
+        BookFormat::Pdf => {
             let title = title_from_filename(path);
             let _ = store.upsert_book(
                 path_str, &title, "", None, size, 0, mtime, "", None, "", "", "", "",
@@ -130,9 +131,16 @@ fn index_book(path: &Path, store: &Store, force: bool) -> bool {
     }
 }
 
-/// Read an EPUB's embedded metadata and index it (the rich path).
-fn index_epub(path: &Path, path_str: &str, size: u64, mtime: i64, store: &Store) -> bool {
-    let Ok((book, sections)) = epub::read_metadata(path) else {
+/// Index a book from its parsed metadata (shared by EPUB and MOBI/AZW3). A parse
+/// failure leaves the book un-indexed (a later rescan retries).
+fn index_meta(
+    parsed: anyhow::Result<(delryn_format::Metadata, usize)>,
+    path_str: &str,
+    size: u64,
+    mtime: i64,
+    store: &Store,
+) -> bool {
+    let Ok((book, sections)) = parsed else {
         return false;
     };
     let author = book.author_line();

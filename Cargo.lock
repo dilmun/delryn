@@ -1046,6 +1046,7 @@ dependencies = [
 name = "delryn-library"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "delryn-format",
  "delryn-infra",
  "delryn-model",
