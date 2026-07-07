@@ -160,6 +160,10 @@ pub struct Reader {
     /// wrap inputs) changes. Empty/unused outside continuous mode.
     cont_cache: HashMap<usize, Vec<DisplayLine>>,
     cont_key: WrapKey,
+    /// Continuous scroll: `(section, buffer-row offset)` of each following section
+    /// joined into the render buffer this frame, so the view can place that
+    /// section's images at the right rows. Anchor images are placed from `lines`.
+    cont_spans: Vec<(usize, usize)>,
     /// Inline-image lifecycle (built protocols, row estimates, in-flight builds).
     images: ImageState,
     /// Paged-image (PDF) page theming (themer + themed-PNG cache + active policy).
@@ -280,6 +284,7 @@ impl Reader {
             wrapped: WrapKey::invalid(),
             cont_cache: HashMap::new(),
             cont_key: WrapKey::invalid(),
+            cont_spans: Vec::new(),
             images: ImageState::default(),
             pages: PageThemeState::default(),
             crisp,
@@ -452,7 +457,6 @@ impl Reader {
             justify: self.justify,
             tidy: self.tidy_spacing,
             images_key: self.images.images_key,
-            image_rows_sig: image_rows_sig(&self.images.rows_estimate),
         };
         if key != self.wrapped {
             self.lines = self.wrap_at(&self.blocks, width);
@@ -467,6 +471,19 @@ impl Reader {
     /// the one place the [`WrapOpts`] are assembled, shared by the anchor section
     /// ([`ensure_wrapped`](Self::ensure_wrapped)) and the continuous-scroll buffer.
     fn wrap_at(&self, blocks: &[Block], width: usize) -> Vec<DisplayLine> {
+        self.wrap_at_with_rows(blocks, width, &self.images.rows_estimate)
+    }
+
+    /// Wrap `blocks` reserving `image_rows` blank rows per image. The anchor uses
+    /// its own `rows_estimate` (via [`wrap_at`]); a *following* continuous section
+    /// passes its own rows so its figures reserve the right space (and align with
+    /// where the view draws them).
+    fn wrap_at_with_rows(
+        &self,
+        blocks: &[Block],
+        width: usize,
+        image_rows: &[u16],
+    ) -> Vec<DisplayLine> {
         wrap_blocks(
             blocks,
             &WrapOpts {
@@ -480,7 +497,7 @@ impl Reader {
                 justify: self.justify,
                 tidy_spacing: self.tidy_spacing,
             },
-            &self.images.rows_estimate,
+            image_rows,
         )
     }
 
@@ -579,7 +596,7 @@ impl Reader {
         // Continuous mode mid-book: the anchor's offset intentionally runs past the
         // section's last page (the next section fills the tail), so don't clamp it —
         // only the final section has a hard bottom.
-        if self.continuous_active() && self.section + 1 < self.doc.section_count() {
+        if self.reflow_flows() && self.section + 1 < self.doc.section_count() {
             return;
         }
         let m = self.max_scroll();
@@ -638,7 +655,7 @@ impl Reader {
             self.continuous_paged_scroll_down(n);
             return;
         }
-        if self.continuous_active() {
+        if self.reflow_flows() {
             self.continuous_scroll_down(n);
             return;
         }
@@ -657,7 +674,7 @@ impl Reader {
             self.continuous_paged_scroll_up(n);
             return;
         }
-        if self.continuous_active() {
+        if self.reflow_flows() {
             self.continuous_scroll_up(n);
             return;
         }
@@ -842,18 +859,6 @@ impl Reader {
 /// Unlike [`find_line`] (tuned for short TOC headings), it never matches a tiny
 /// early line as a substring of a long locator, and tolerates a locator that
 /// wraps across lines by matching only its first few words.
-/// A cheap order-sensitive signature (FNV-1a) of the per-image reserved row
-/// counts, for the [`WrapKey`]. When a built image refines its estimated rows,
-/// this changes and the section re-wraps so the reserved blanks match the drawn
-/// image height (caption flush beneath — no gap, no overlap).
-fn image_rows_sig(rows: &[u16]) -> u64 {
-    let mut h = 0xcbf29ce484222325u64;
-    for &r in rows {
-        h = (h ^ u64::from(r)).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
-}
-
 fn find_target_line(lines: &[DisplayLine], locator: &str) -> Option<usize> {
     let n = loose_key(locator);
     if n.is_empty() {
@@ -922,15 +927,6 @@ mod tests {
     use super::*;
     use crate::document::{Document, Section, SectionLoader, TocEntry};
     use delryn_model::{Metadata, Span};
-
-    #[test]
-    fn image_rows_sig_detects_reservation_changes() {
-        // A build refining one image's rows must re-key the wrap; the signature is
-        // order-sensitive so a reordering re-wraps too, and stable otherwise.
-        assert_ne!(image_rows_sig(&[10, 20]), image_rows_sig(&[10, 21]));
-        assert_ne!(image_rows_sig(&[10, 20]), image_rows_sig(&[20, 10]));
-        assert_eq!(image_rows_sig(&[10, 20]), image_rows_sig(&[10, 20]));
-    }
 
     /// A minimal in-memory `Document` for reader tests: a list of sections, each
     /// a list of blocks. No TOC/outline/images.
@@ -1042,6 +1038,21 @@ mod tests {
         r.scroll_down(3);
         assert_eq!(r.section, 1, "rolled into the next section");
         assert_eq!(r.scroll, 2, "kept the leftover offset past the boundary");
+    }
+
+    #[test]
+    fn reflow_flows_for_two_page_always_center_needs_the_toggle() {
+        let mut r = continuous_reader(3); // continuous = true, view_mode = Center
+        assert!(r.reflow_flows(), "center + continuous flows");
+        r.continuous = false;
+        assert!(!r.reflow_flows(), "center without the toggle does not flow");
+        r.view_mode = ViewMode::TwoPage;
+        assert!(
+            r.reflow_flows(),
+            "two-page flows across chapters even off-toggle"
+        );
+        r.chapter_lock = true;
+        assert!(!r.reflow_flows(), "chapter-lock keeps per-section paging");
     }
 
     #[test]
