@@ -254,11 +254,12 @@ lands on the tab for the current mode, but all tabs are reachable.
 
 - **Reading**: measure width, center on/off, theme, line spacing,
   sidebar/bar defaults, status fields, PDF text-vs-image default.
-- **Library**: the **Sources** tab (first) manages scanned folders — one row per
-  folder with `d`/Delete to remove it (which also drops its books), an
-  *Add folder…* row (inline path input), and *Rescan now*; plus default view,
-  thumbnail size, sort, and visible columns. Adding/removing a folder scans /
-  prunes and refreshes the list live.
+- **Library** (tabs ordered by frequency: View · Columns · General · Sources ·
+  Duplicates): the **Sources** tab manages scanned folders — one row per folder
+  with `d`/Delete to remove it (which also drops its books), an *Add folder…* row
+  (inline path input), and *Rescan now*; plus default view, thumbnail size, sort,
+  and visible columns. Adding/removing a folder scans / prunes **in the
+  background** (off the UI thread) and refreshes the list live.
 - **General** (shared): theme, keybindings, paths, mouse on/off.
 
 ## 8. Persistence

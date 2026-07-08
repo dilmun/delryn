@@ -419,18 +419,15 @@ impl App {
             self.config.library_paths.push(root.clone());
             self.config.save();
         }
-        let indexed = match &self.session.store {
-            Some(store) => crate::library::scan(&self.config.library_paths, store),
-            None => 0,
-        };
-        self.refresh_library();
-        self.library.flash = Some(if existed {
-            format!("Already added · indexed {indexed} book(s)")
+        // The new Source row shows at once (the tab reads config live); scanning
+        // the folder happens in the background so a big folder doesn't block.
+        self.settings_move(0); // keep the cursor on a real item after the row grew
+        let label = if existed {
+            format!("Already added {root}")
         } else {
-            format!("Added {root} · indexed {indexed} book(s)")
-        });
-        // The row set grew; keep the cursor on a real item.
-        self.settings_move(0);
+            format!("Added {root}")
+        };
+        self.start_scan(false, false, label);
     }
 
     /// Remove the library source under the cursor (Sources tab). Drops its books
@@ -464,21 +461,12 @@ impl App {
         self.settings_move(0);
     }
 
-    /// Re-index every configured library source (incremental — unchanged files
-    /// are skipped), prune vanished files, and sweep any books no longer inside a
-    /// configured folder (orphans), then refresh. Flashes the count.
+    /// Re-index every configured library source in the background (incremental —
+    /// unchanged files skipped), pruning vanished files and orphaned rows. Runs off
+    /// the UI thread so a large library stays responsive; the completion flash
+    /// reports the count (see [`App::poll_scan`]).
     fn rescan_sources(&mut self) {
-        let indexed = match &self.session.store {
-            Some(store) => {
-                let n = crate::library::scan(&self.config.library_paths, store);
-                crate::library::prune_missing(&self.config.library_paths, store);
-                crate::library::prune_outside_roots(&self.config.library_paths, store);
-                n
-            }
-            None => 0,
-        };
-        self.refresh_library();
-        self.library.flash = Some(format!("Rescanned · indexed {indexed} book(s)"));
+        self.start_scan(false, true, "Rescanning".to_string());
     }
 
     /// Open Library settings on the Sources tab — the folder manager. Used on
