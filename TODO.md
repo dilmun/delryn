@@ -438,13 +438,35 @@ jump-by-type + a reader cursor.
       then lands on the Library (file args still open the book); `delryn --add` now
       takes multiple dirs. Fixed a latent bug: the overlay `f`-resize shortcut ate
       `f` characters while typing (added `Overlay::Settings` to `overlay_is_typing`).
+      Post-review follow-ups (same branch):
+      - **Orphan sweep** (was: a "ghost" 0 K/no-title row survived removing its
+        source). Root cause: opening a one-off file via `delryn <file>` inserts a
+        bare `books` row (`mark_opened`) that lives under no source; the old
+        `remove_root` only dropped books *under the removed folder*. Replaced it
+        with `delryn-library::prune_outside_roots` (drop every book under *none* of
+        the configured roots, keeping offline-root books) — called on delete-source
+        **and** rescan, so removing the last source empties the library and
+        *Rescan now* cleans older orphans.
+      - **Delete to Trash**: `Delete` in the library list trashes the selected /
+        marked book file(s) (recoverable, via the new `trash` crate) after the
+        shared yes/no confirmation (`ConfirmAction::TrashBooks`). Missing-file rows
+        are cleared without touching the OS trash.
+      - **Tab order by frequency** (Sources-first was wrong): Library =
+        View · Columns · General · Sources · Duplicates; Reader =
+        Reading · Content · Chrome · Input. First-run still lands on Sources (found
+        by title, not position).
+      - **Stable tab strip**: active/inactive tabs now share one width (inactive
+        pads to match the active pill), so switching no longer nudges the centred
+        strip left/right.
       Tests: `sources_manager_add_scans_and_remove_drops_books`,
-      `empty_library_opens_sources_manager`, `remove_root_drops_only_books_under_it`,
+      `empty_library_opens_sources_manager`, `trash_selected_confirms_then_clears_row`,
+      `prune_outside_roots_removes_orphans_keeps_configured`,
       `normalize_root_falls_back_when_unresolvable`.
       *Follow-up (deferred): the manual rescan is synchronous on the UI thread —
       fine for the incremental common case, but a large first scan briefly blocks;
       move it off-thread with a progress spinner (mirror the dup-scan/loader
-      threads) if it ever bites.*
+      threads) if it ever bites. Also: the duplicate resolver still `remove_file`s
+      permanently — could route through Trash too for consistency.*
 
 ## Phase 4 — Knowledge & power tools
 

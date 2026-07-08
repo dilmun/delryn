@@ -28,6 +28,8 @@ pub(crate) enum ConfirmAction {
     /// Resolve a duplicate group: delete these files and drop their library rows
     /// (the kept copy isn't in the list).
     ResolveDuplicates(Vec<String>),
+    /// Move these book files to the OS trash and drop their library rows.
+    TrashBooks(Vec<String>),
 }
 
 /// Open `url` in the OS default browser (best-effort, non-blocking). `url` is a
@@ -86,6 +88,7 @@ impl App {
                 }
             }
             ConfirmAction::ResolveDuplicates(paths) => self.remove_duplicate_files(&paths),
+            ConfirmAction::TrashBooks(paths) => self.trash_books(&paths),
         }
     }
 }

@@ -214,6 +214,9 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
     use SettingRow::{Item as I, Section as S};
     let tab = |title, rows| SettingTab { title, rows };
     match scope {
+        // Tabs are ordered most-frequently-used first (the popup opens on the
+        // first tab): typography tweaks are constant, content/pagination
+        // occasional, chrome rarer, mouse rarely.
         Mode::Reader => vec![
             tab(
                 "Reading",
@@ -230,21 +233,6 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(LineSpacing),
                     I(ParagraphSpacing),
                     I(Justify),
-                ],
-            ),
-            tab(
-                "Chrome",
-                vec![
-                    S("Panes"),
-                    I(ShowSidebar),
-                    I(ShowStatus),
-                    S("Status bar segments"),
-                    I(StatusTheme),
-                    I(StatusView),
-                    I(StatusPosition),
-                    I(StatusPercent),
-                    I(StatusGauge),
-                    I(StatusClock),
                 ],
             ),
             tab(
@@ -271,6 +259,21 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(PdfMargin),
                 ],
             ),
+            tab(
+                "Chrome",
+                vec![
+                    S("Panes"),
+                    I(ShowSidebar),
+                    I(ShowStatus),
+                    S("Status bar segments"),
+                    I(StatusTheme),
+                    I(StatusView),
+                    I(StatusPosition),
+                    I(StatusPercent),
+                    I(StatusGauge),
+                    I(StatusClock),
+                ],
+            ),
             tab("Input", vec![S("Mouse"), I(Mouse)]),
         ],
         Mode::Library => {
@@ -291,21 +294,24 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
             dups.extend(BookFormat::ALL.iter().map(|f| I(DupFormat(f.label()))));
             // The Sources tab manages the library's scanned folders: one row per
             // configured folder (built from the live path list), an add-folder
-            // action, and a rescan action. It's first so first-run — an empty
-            // library — lands the user straight on it.
+            // action, and a rescan action. First-run (empty library) still lands
+            // here — not because it's first, but via `open_sources_if_empty`, which
+            // finds the tab by title.
             let mut sources = vec![S("Folders")];
             sources.extend((0..config.library_paths.len()).map(|i| I(Source(i))));
             sources.push(I(AddSource));
             sources.push(I(RescanNow));
+            // Ordered most-frequently-used first: view/columns are constant tweaks,
+            // appearance occasional, sources set-and-forget, dup-prefs rare.
             vec![
-                tab("Sources", sources),
                 tab("View", vec![S("Layout"), I(LibLayout), I(GridSize)]),
                 tab("Columns", columns),
-                tab("Duplicates", dups),
                 tab(
                     "General",
                     vec![S("Appearance"), I(Theme), S("Input"), I(Mouse)],
                 ),
+                tab("Sources", sources),
+                tab("Duplicates", dups),
             ]
         }
     }
@@ -446,22 +452,27 @@ impl App {
         }
         let root = self.config.library_paths.remove(idx);
         self.config.save();
-        if let Some(store) = &self.session.store {
-            crate::library::remove_root(&root, store);
-        }
+        // Drop everything no longer inside a configured folder — this root's books
+        // plus any pre-existing orphans (e.g. a one-off opened file's bare row).
+        let dropped = match &self.session.store {
+            Some(store) => crate::library::prune_outside_roots(&self.config.library_paths, store),
+            None => 0,
+        };
         self.refresh_library();
-        self.library.flash = Some(format!("Removed {root}"));
+        self.library.flash = Some(format!("Removed {root} · dropped {dropped} book(s)"));
         // The row set shrank; keep the cursor on a real item.
         self.settings_move(0);
     }
 
     /// Re-index every configured library source (incremental — unchanged files
-    /// are skipped) and prune vanished ones, then refresh. Flashes the count.
+    /// are skipped), prune vanished files, and sweep any books no longer inside a
+    /// configured folder (orphans), then refresh. Flashes the count.
     fn rescan_sources(&mut self) {
         let indexed = match &self.session.store {
             Some(store) => {
                 let n = crate::library::scan(&self.config.library_paths, store);
                 crate::library::prune_missing(&self.config.library_paths, store);
+                crate::library::prune_outside_roots(&self.config.library_paths, store);
                 n
             }
             None => 0,

@@ -23,3 +23,7 @@ ratatui.workspace = true
 ratatui-image.workspace = true
 regex.workspace = true
 syntect.workspace = true
+# Move deleted book files to the OS trash (recoverable) instead of unlinking —
+# platform-specific (macOS Finder trash / Windows recycle bin / freedesktop XDG
+# trash), which this crate abstracts.
+trash = "5"

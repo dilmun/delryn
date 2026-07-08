@@ -2048,6 +2048,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    // Delete raises a confirmation naming the book; only on `y` is the row cleared
+    // (a missing file is used, so the test never touches the real OS trash).
+    #[test]
+    fn trash_selected_confirms_then_clears_row() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_trash_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        std::fs::create_dir_all(&tmp).unwrap();
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book(
+                    "/gone/dead.epub",
+                    "Dead Book",
+                    "A",
+                    None,
+                    0,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
+                .unwrap();
+        }
+        let mut app = App::library();
+        assert_eq!(app.library.books.len(), 1);
+        app.library.sel = 0;
+
+        // Delete raises the confirmation, removing nothing yet.
+        app.on_key(code(KeyCode::Delete));
+        let confirm = app.pending_confirm.as_ref().expect("confirmation raised");
+        assert!(confirm.question.contains("Dead Book"), "names the book");
+        assert_eq!(
+            app.library.books.len(),
+            1,
+            "nothing removed before confirming"
+        );
+
+        // Confirm: the missing file's dead row is cleared.
+        app.on_key(key('y'));
+        assert!(app.pending_confirm.is_none());
+        assert!(app.library.books.is_empty(), "row cleared on confirm");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     // First run — an empty library — opens the Sources manager; once a folder is
     // configured it's a no-op.
     #[test]

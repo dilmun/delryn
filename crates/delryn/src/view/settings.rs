@@ -102,8 +102,10 @@ fn render_tab_bar(
     theme: crate::theme::Theme,
 ) -> Vec<(usize, Rect)> {
     let mut spans: Vec<Span> = Vec::new();
-    // Cell width of each tab as drawn: an active pill adds two rounded caps + two
-    // inner spaces (title + 4); an inactive tab just pads a space each side (+2).
+    // Every tab occupies the same width whether active or not — the active pill is
+    // two rounded caps + two inner spaces (title + 4), so an inactive tab pads two
+    // spaces each side to match. Equal widths keep the centred strip from shifting
+    // left/right as the active tab changes.
     let mut widths: Vec<u16> = Vec::with_capacity(tabs.len());
     for (i, t) in tabs.iter().enumerate() {
         if i > 0 {
@@ -112,14 +114,13 @@ fn render_tab_bar(
         let w = t.title.chars().count() as u16;
         if i == active {
             spans.extend(super::pill_spans(t.title, theme));
-            widths.push(w + 4);
         } else {
             spans.push(Span::styled(
-                format!(" {} ", t.title),
+                format!("  {}  ", t.title),
                 theme.style(Role::Muted),
             ));
-            widths.push(w + 2);
         }
+        widths.push(w + 4);
     }
     f.render_widget(
         Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
