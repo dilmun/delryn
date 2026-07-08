@@ -357,11 +357,10 @@ impl App {
         if matches!(self.overlay, Overlay::Settings(_)) {
             self.settings_goto_tab(ti);
         } else if let Overlay::Annot(a) = &mut self.overlay {
-            let tab = if ti == 0 {
-                AnnotTab::Bookmarks
-            } else {
-                AnnotTab::Notes
-            };
+            let tab = AnnotTab::ALL
+                .get(ti)
+                .copied()
+                .unwrap_or(AnnotTab::Bookmarks);
             if a.tab != tab {
                 a.tab = tab;
                 a.sel = 0;

@@ -29,7 +29,14 @@ impl Store {
         let _ = self.conn.execute(
             "INSERT INTO annotations (path, section, quote, kind, color, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![path, section as i64, quote, KIND_HIGHLIGHT, color, now_secs()],
+            params![
+                path,
+                section as i64,
+                quote,
+                KIND_HIGHLIGHT,
+                color,
+                now_secs()
+            ],
         );
     }
 

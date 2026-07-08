@@ -4,6 +4,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::HighlightColor;
+
 use super::super::AnchorHit;
 
 /// A reading position, for the navigation (back/forward) history.
@@ -32,11 +34,17 @@ pub struct NavState {
     /// All notes for the open book, as `(section, quote)` (commentary lives in the
     /// store); the source for the note gutter markers.
     pub notes: Vec<(usize, String)>,
+    /// All highlights for the open book, as `(section, quote, colour)`; the source
+    /// for the highlight line wash and gutter chip.
+    pub highlights: Vec<(usize, String, HighlightColor)>,
     /// Current-section bookmark lines (quotes resolved to display lines on
     /// re-wrap), so the view can mark them in the left gutter cheaply.
     pub bookmark_lines: HashSet<usize>,
     /// Current-section note lines (resolved like `bookmark_lines`).
     pub note_lines: HashSet<usize>,
+    /// Current-section highlight lines → their colour (resolved like
+    /// `bookmark_lines`), so the view can wash the line and mark the gutter.
+    pub highlight_lines: HashMap<usize, HighlightColor>,
     /// Cross-reference/citation targets for one section: `(section, id→locator)`,
     /// cached so repeated lookups in the current section don't re-parse it.
     pub targets_cache: Option<(usize, Vec<(String, String)>)>,

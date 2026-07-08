@@ -8,10 +8,12 @@ use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 
+use crate::HighlightColor;
 use crate::config::ViewMode;
 use crate::document::{Block, Document, OutlineItem};
 use crate::layout::{DisplayLine, LineKind, WrapOpts, wrap_blocks};
 use crate::media;
+use crate::store::Annotation;
 use crate::theme;
 use delryn_model::{Anchor, find_footnote};
 
@@ -501,35 +503,47 @@ impl Reader {
         )
     }
 
-    /// Set the open book's annotations as `(section, quote, is_note)`, splitting
-    /// them into bookmarks and notes, then resolve the current section's into
-    /// gutter lines. Called by the app on any change.
-    pub fn set_annotations(&mut self, items: Vec<(usize, String, bool)>) {
-        let (mut bookmarks, mut notes) = (Vec::new(), Vec::new());
-        for (section, quote, is_note) in items {
-            if is_note {
-                notes.push((section, quote));
+    /// Set the open book's annotations, splitting them by kind into bookmark,
+    /// note, and highlight streams, then resolve the current section's into gutter
+    /// lines. Called by the app on any change (and on open). Takes the raw store
+    /// rows so the kind/colour split lives in one place.
+    pub fn set_annotations(&mut self, items: Vec<Annotation>) {
+        let (mut bookmarks, mut notes, mut highlights) = (Vec::new(), Vec::new(), Vec::new());
+        for a in items {
+            if a.is_highlight() {
+                highlights.push((a.section, a.quote, HighlightColor::from_index(a.color)));
+            } else if a.is_note() {
+                notes.push((a.section, a.quote));
             } else {
-                bookmarks.push((section, quote));
+                bookmarks.push((a.section, a.quote));
             }
         }
         self.nav.bookmarks = bookmarks;
         self.nav.notes = notes;
+        self.nav.highlights = highlights;
         self.recompute_annotation_lines();
     }
 
-    /// Resolve this section's bookmark + note quotes to display lines (once per
-    /// re-wrap), so the gutter can mark them cheaply.
+    /// Resolve this section's bookmark / note / highlight quotes to display lines
+    /// (once per re-wrap), so the gutter and line wash can be applied cheaply.
     fn recompute_annotation_lines(&mut self) {
-        let resolve = |marks: &[(usize, String)], section: usize, lines: &[DisplayLine]| {
+        let (section, lines) = (self.section, &self.lines);
+        let resolve = |marks: &[(usize, String)]| {
             marks
                 .iter()
                 .filter(|(s, _)| *s == section)
                 .filter_map(|(_, quote)| find_line(lines, quote))
-                .collect::<std::collections::HashSet<usize>>()
+                .collect::<HashSet<usize>>()
         };
-        self.nav.bookmark_lines = resolve(&self.nav.bookmarks, self.section, &self.lines);
-        self.nav.note_lines = resolve(&self.nav.notes, self.section, &self.lines);
+        self.nav.bookmark_lines = resolve(&self.nav.bookmarks);
+        self.nav.note_lines = resolve(&self.nav.notes);
+        self.nav.highlight_lines = self
+            .nav
+            .highlights
+            .iter()
+            .filter(|(s, _, _)| *s == section)
+            .filter_map(|(_, quote, color)| find_line(lines, quote).map(|l| (l, *color)))
+            .collect();
     }
 
     /// Whether a display line carries a bookmark (for the left-gutter marker).
@@ -540,6 +554,12 @@ impl Reader {
     /// Whether a display line carries a note (drawn with a pen glyph in the gutter).
     pub fn is_note_line(&self, line: usize) -> bool {
         self.nav.note_lines.contains(&line)
+    }
+
+    /// The highlight colour on a display line, if any — for washing the line and
+    /// marking the gutter.
+    pub fn highlight_line(&self, line: usize) -> Option<HighlightColor> {
+        self.nav.highlight_lines.get(&line).copied()
     }
 
     /// Whether a bookmark already exists at this anchor (`section` + `quote`), so

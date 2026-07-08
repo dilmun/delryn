@@ -14,6 +14,7 @@ pub mod view;
 // Extracted layers, re-exported so existing `crate::{store, online, config, …}`
 // paths keep resolving.
 pub use delryn_format as document;
+pub use delryn_infra::highlight::HighlightColor;
 pub use delryn_infra::{config, paths, test_env_guard, theme};
 pub use delryn_library as library;
 pub use delryn_media as media;

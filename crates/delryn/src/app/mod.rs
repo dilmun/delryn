@@ -102,32 +102,53 @@ pub enum Focus {
     Sidebar,
 }
 
-/// The two tabs of the annotations overlay: bookmarks (places) and notes
-/// (commentary) are kept separate, not mixed in one list.
+/// The three tabs of the annotations overlay: bookmarks (places), notes
+/// (commentary), and highlights (coloured marks) are kept in separate lists, not
+/// mixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotTab {
     Bookmarks,
     Notes,
+    Highlights,
 }
 
 impl AnnotTab {
-    /// The other tab.
-    pub fn toggled(self) -> AnnotTab {
-        match self {
-            AnnotTab::Bookmarks => AnnotTab::Notes,
-            AnnotTab::Notes => AnnotTab::Bookmarks,
+    /// The tabs in display / cycle order.
+    pub const ALL: [AnnotTab; 3] = [AnnotTab::Bookmarks, AnnotTab::Notes, AnnotTab::Highlights];
+
+    /// The next tab (wraps) — `⇥` / `→` in the overlay.
+    pub fn next(self) -> AnnotTab {
+        let i = Self::ALL.iter().position(|&t| t == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    /// The previous tab (wraps) — `⇤` / `←` in the overlay.
+    pub fn prev(self) -> AnnotTab {
+        let i = Self::ALL.iter().position(|&t| t == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    /// The tab an annotation belongs on (its `kind`).
+    pub fn of(a: &Annotation) -> AnnotTab {
+        if a.is_highlight() {
+            AnnotTab::Highlights
+        } else if a.is_note() {
+            AnnotTab::Notes
+        } else {
+            AnnotTab::Bookmarks
         }
     }
 
-    /// Whether this tab shows notes (`kind` = note) vs bookmarks.
-    fn wants_note(self) -> bool {
-        matches!(self, AnnotTab::Notes)
+    /// Whether an annotation belongs on this tab.
+    fn accepts(self, a: &Annotation) -> bool {
+        AnnotTab::of(a) == self
     }
 
     pub fn label(self) -> &'static str {
         match self {
             AnnotTab::Bookmarks => "Bookmarks",
             AnnotTab::Notes => "Notes",
+            AnnotTab::Highlights => "Highlights",
         }
     }
 }
@@ -162,11 +183,11 @@ impl AnnotState {
     /// The active tab's items matching the current filter — a case-insensitive
     /// substring over the name, quote, note body, and folder.
     pub fn filtered(&self) -> Vec<&Annotation> {
-        let want_note = self.tab.wants_note();
+        let tab = self.tab;
         let needle = self.filter.to_lowercase();
         self.items
             .iter()
-            .filter(|a| a.is_note() == want_note)
+            .filter(|a| tab.accepts(a))
             .filter(|a| {
                 self.filter.is_empty()
                     || a.name.to_lowercase().contains(&needle)
@@ -180,10 +201,7 @@ impl AnnotState {
     /// How many annotations belong to `tab` (ignoring the filter) — for the tab
     /// bar's counts.
     pub fn count(&self, tab: AnnotTab) -> usize {
-        self.items
-            .iter()
-            .filter(|a| a.is_note() == tab.wants_note())
-            .count()
+        self.items.iter().filter(|a| tab.accepts(a)).count()
     }
 
     /// The annotation the cursor is on (within the filtered view).
@@ -390,15 +408,7 @@ fn build_reader(
     }
     // Seed the gutter with this book's annotations (independent of saved progress).
     if let Some(store) = store {
-        let marks = store
-            .list_annotations(&book_path)
-            .into_iter()
-            .map(|a| {
-                let is_note = a.is_note();
-                (a.section, a.quote, is_note)
-            })
-            .collect();
-        reader.set_annotations(marks);
+        reader.set_annotations(store.list_annotations(&book_path));
     }
     Ok((reader, config, book_path))
 }
@@ -1783,6 +1793,45 @@ mod tests {
 
     // The annotations overlay is fully mouse-drivable: a tab click switches lists,
     // a row click selects, and a second click on the same row jumps (closing it).
+    #[test]
+    fn annot_tabs_split_by_kind_and_cycle() {
+        let annot = |id: i64, kind: i64, color: i64| crate::store::Annotation {
+            id,
+            section: 0,
+            quote: format!("q{id}"),
+            note: String::new(),
+            name: String::new(),
+            folder: String::new(),
+            kind,
+            color,
+        };
+        let items = vec![
+            annot(1, crate::store::KIND_BOOKMARK, 0),
+            annot(2, crate::store::KIND_NOTE, 0),
+            annot(3, crate::store::KIND_HIGHLIGHT, 2),
+            annot(4, crate::store::KIND_HIGHLIGHT, 4),
+        ];
+
+        // Each kind lands on its own tab (and nowhere else).
+        assert_eq!(AnnotTab::of(&items[0]), AnnotTab::Bookmarks);
+        assert_eq!(AnnotTab::of(&items[1]), AnnotTab::Notes);
+        assert_eq!(AnnotTab::of(&items[2]), AnnotTab::Highlights);
+
+        let state = AnnotState::new(items, AnnotTab::Highlights);
+        assert_eq!(state.count(AnnotTab::Bookmarks), 1);
+        assert_eq!(state.count(AnnotTab::Notes), 1);
+        assert_eq!(state.count(AnnotTab::Highlights), 2);
+        // The active (Highlights) tab's filtered view shows only its two rows.
+        let shown: Vec<i64> = state.filtered().iter().map(|a| a.id).collect();
+        assert_eq!(shown, vec![3, 4]);
+
+        // Tabs cycle forward and back through all three, wrapping.
+        assert_eq!(AnnotTab::Bookmarks.next(), AnnotTab::Notes);
+        assert_eq!(AnnotTab::Notes.next(), AnnotTab::Highlights);
+        assert_eq!(AnnotTab::Highlights.next(), AnnotTab::Bookmarks);
+        assert_eq!(AnnotTab::Bookmarks.prev(), AnnotTab::Highlights);
+    }
+
     #[test]
     fn annotations_click_switches_tab_and_selects() {
         use crossterm::event::{MouseButton, MouseEvent};
