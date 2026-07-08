@@ -466,10 +466,18 @@ jump-by-type + a reader cursor.
       `empty_library_opens_sources_manager`, `trash_selected_confirms_then_clears_row`,
       `prune_outside_roots_removes_orphans_keeps_configured`,
       `normalize_root_falls_back_when_unresolvable`.
-      *Follow-up (deferred): the manual rescan is synchronous on the UI thread —
-      fine for the incremental common case, but a large first scan briefly blocks;
-      move it off-thread with a progress spinner (mirror the dup-scan/loader
-      threads) if it ever bites.*
+- [x] **Background library scan** (`feat/background-scan`). All folder (re)indexing
+      — startup, *Rescan now*, *Add folder* — moved off the UI thread to a worker
+      (`app/scan.rs` `ScanJob`, mirrors `dup_scan`): opens its own store connection,
+      scans + prunes, reports the count; `poll_scan` refreshes on completion,
+      `scan_pending` keeps the loop awake. `Store::open_default` enables **WAL + a
+      busy_timeout** so the worker writes while the UI reads without `SQLITE_BUSY`.
+      Startup is deferred — `App::library()` no longer scans synchronously (the list
+      shows instantly from the store); `main` kicks off `start_scan_startup`. Tests:
+      `startup_scan_runs_in_background`, `await_scan` helper. *(An in-app
+      restore-from-trash manager was prototyped alongside this but cancelled — it
+      forced a delryn-managed trash because the OS trash can't be enumerated/restored
+      on macOS; deletion stays OS-trash, no restore.)*
 
 ## Phase 4 — Knowledge & power tools
 

@@ -43,6 +43,7 @@ pub use tags::TagInput;
 
 mod dup_resolve;
 mod dup_scan;
+mod scan;
 pub use dup_resolve::{DupGroup, DupMember, DupResolve, IgnoredView};
 
 mod editor;
@@ -266,6 +267,9 @@ pub struct App {
     /// In-flight thorough duplicate scan (cover hashing on a worker thread), if
     /// the reader triggered one from the Duplicates view.
     pub dup_scan: Option<dup_scan::DupScan>,
+    /// In-flight background library scan (folder (re)indexing on a worker thread),
+    /// so a large scan never blocks the UI. See `app/scan.rs`.
+    pub scan: Option<scan::ScanJob>,
     /// Cover-tab preview image protocol + the URL it was built for, plus the
     /// debounce target/timer for fetching the highlighted result's cover.
     pub edit_cover: Option<media::CoverImage>,
@@ -434,6 +438,7 @@ impl App {
             library: LibraryState::default(),
             online_rx: None,
             dup_scan: None,
+            scan: None,
             edit_cover: None,
             edit_cover_url: String::new(),
             edit_cover_target: String::new(),
@@ -443,10 +448,10 @@ impl App {
 
     pub fn library() -> Self {
         let config = Config::load();
+        // The library shows immediately from the already-indexed store; the folder
+        // (re)scan runs in the background (`start_scan_startup`, kicked off by the
+        // caller) so a large scan never delays the first frame.
         let store = Store::open_default().ok();
-        if let Some(s) = &store {
-            crate::library::scan(&config.library_paths, s);
-        }
         let mut app = Self {
             mode: Mode::Library,
             config,
@@ -475,6 +480,7 @@ impl App {
             library: LibraryState::default(),
             online_rx: None,
             dup_scan: None,
+            scan: None,
             edit_cover: None,
             edit_cover_url: String::new(),
             edit_cover_target: String::new(),
@@ -2023,6 +2029,8 @@ mod tests {
 
         let root = crate::library::normalize_root(&books.to_string_lossy());
         assert_eq!(app.config.library_paths, vec![root], "folder registered");
+        // Scanning is now off-thread; wait for the worker before checking the list.
+        app.await_scan();
         assert!(
             app.library
                 .books
@@ -2044,6 +2052,46 @@ mod tests {
         app.on_key(key('d'));
         assert!(app.config.library_paths.is_empty(), "folder removed");
         assert!(app.library.books.is_empty(), "its books left the index");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // The launch scan is off the UI thread: construction indexes nothing, and the
+    // background scan populates the list once awaited.
+    #[test]
+    fn startup_scan_runs_in_background() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_bgscan_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let books = tmp.join("books");
+        std::fs::create_dir_all(&books).unwrap();
+        std::fs::write(books.join("deferred.pdf"), b"x").unwrap();
+        {
+            let mut config = Config::load();
+            config
+                .library_paths
+                .push(books.to_string_lossy().into_owned());
+            config.save();
+        }
+
+        let mut app = App::library();
+        // The list shows immediately from the (empty) store — no synchronous scan.
+        assert!(
+            app.library.books.is_empty(),
+            "construction does not scan on the UI thread"
+        );
+
+        app.start_scan_startup();
+        assert!(app.scan_pending(), "a background scan is in flight");
+        app.await_scan();
+        assert!(
+            app.library
+                .books
+                .iter()
+                .any(|b| b.path.ends_with("deferred.pdf")),
+            "the background scan indexed the folder"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
