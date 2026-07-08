@@ -101,7 +101,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         f.render_widget(Paragraph::new(Line::raw(prompt)).style(style), status);
     } else if reader.selection_active() {
         let style = theme.style(Role::StatusBar);
-        let hint = " VISUAL · h/l/w/b/j/k move · 0/$ ends · y copy · 1-5/H highlight · a note · Esc cancel ";
+        let hint = if reader.selection_selecting() {
+            " SELECT · h/l/w/b/j/k extend · y copy · 1-5/H highlight · a note · v unset · Esc exit "
+        } else {
+            " CURSOR · h/l/w/b/j/k move · v select · m bookmark · H highlight · a note · Esc exit "
+        };
         f.render_widget(Paragraph::new(Line::raw(hint)).style(style), status);
     } else if show_status {
         crate::view::status::render_reader(f, status, reader, config, theme);
@@ -215,6 +219,15 @@ fn render_content(
     reader.last_measure = plan.measure as usize;
     reader.viewport_lines = plan.page_lines;
     reader.page_lines = plan.page_lines;
+    // Total visible lines across the text columns (two in a spread), so the visual
+    // caret can roam both pages before the follow scrolls.
+    let text_cols = plan
+        .placements
+        .iter()
+        .filter(|p| matches!(p, Placement::Text(_)))
+        .count()
+        .max(1);
+    reader.visible_span = plan.page_lines * text_cols;
 
     if paged {
         // PDF: hand the page placements to the deck and leave the cells empty so
