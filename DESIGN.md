@@ -215,6 +215,11 @@ Favorites · Authors · Tags · Collections.
 - **Pages caveat**: EPUB is reflowable and has no real page count. The Pages
   column shows an **estimate** (chars→pages, fixed ratio); **% read** is always
   available regardless.
+- **Delete to Trash**: `Delete` on the selected book (or the whole marked
+  selection) moves the file(s) to the OS trash after a yes/no confirmation —
+  recoverable, never an unlink. The library only holds books inside a configured
+  source folder, so removing a source (or *Rescan now*) also sweeps orphans —
+  including the bare row a one-off `delryn <file>` open leaves behind.
 
 ## 6. Library ↔ Reader
 

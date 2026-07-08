@@ -58,18 +58,24 @@ pub fn normalize_root(input: &str) -> String {
         .unwrap_or(expanded)
 }
 
-/// Drop every indexed book that lives under `root` — used when a library source
-/// folder is removed so its books leave the library instead of lingering as
-/// dead entries. Returns how many were removed. (Files on disk are untouched;
-/// this only forgets them.)
-pub fn remove_root(root: &str, store: &Store) -> usize {
-    let root = Path::new(root);
+/// Drop every indexed book that lives under *none* of `paths` — the library only
+/// holds books inside a configured source folder, so this both clears a removed
+/// folder's books and sweeps older orphans: a source deleted earlier, or a bare
+/// row left by opening a one-off file from outside any library (`mark_opened`
+/// with no metadata → the "0 K, no title" ghost). A book under a configured but
+/// currently *offline* root is kept — its root string is still in `paths`, so it
+/// matches — mirroring [`prune_missing`]'s offline handling. Files on disk are
+/// untouched; this only forgets them. Returns how many were removed.
+pub fn prune_outside_roots(paths: &[String], store: &Store) -> usize {
+    let roots: Vec<&Path> = paths.iter().map(Path::new).collect();
     let mut removed = 0;
     for path in store.all_book_paths() {
-        if Path::new(&path).starts_with(root) {
-            store.remove_book(&path);
-            removed += 1;
+        let p = Path::new(&path);
+        if roots.iter().any(|r| p.starts_with(r)) {
+            continue;
         }
+        store.remove_book(&path);
+        removed += 1;
     }
     removed
 }
@@ -219,7 +225,7 @@ fn title_from_filename(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_root, prune_missing, remove_root, scan, title_from_filename};
+    use super::{normalize_root, prune_missing, prune_outside_roots, scan, title_from_filename};
     use delryn_store::Store;
     use std::path::Path;
 
@@ -283,9 +289,9 @@ mod tests {
     }
 
     #[test]
-    fn remove_root_drops_only_books_under_it() {
+    fn prune_outside_roots_removes_orphans_keeps_configured() {
         let _env = delryn_infra::test_env_guard();
-        let tmp = std::env::temp_dir().join(format!("delryn_rmroot_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("delryn_orphan_{}", std::process::id()));
         // SAFETY: serialized by `_env`; scopes the config dir to this process.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
         std::fs::create_dir_all(&tmp).unwrap();
@@ -293,15 +299,29 @@ mod tests {
         let store = Store::open_default().unwrap();
         upsert(&store, "/lib_a/one.epub");
         upsert(&store, "/lib_a/sub/two.epub");
-        upsert(&store, "/lib_b/three.epub");
+        upsert(&store, "/elsewhere/ghost.epub"); // orphan: under no configured root
 
+        // Only /lib_a is configured: its books stay, the orphan is swept.
         assert_eq!(
-            remove_root("/lib_a", &store),
-            2,
-            "both under /lib_a removed"
+            prune_outside_roots(&["/lib_a".to_string()], &store),
+            1,
+            "the one orphan removed"
         );
-        let paths = store.all_book_paths();
-        assert_eq!(paths, vec!["/lib_b/three.epub".to_string()], "sibling kept");
+        let mut paths = store.all_book_paths();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                "/lib_a/one.epub".to_string(),
+                "/lib_a/sub/two.epub".to_string()
+            ],
+            "configured-root books kept"
+        );
+
+        // With no roots at all, everything is an orphan — removing the last source
+        // empties the library (the reported ghost case).
+        assert_eq!(prune_outside_roots(&[], &store), 2);
+        assert!(store.all_book_paths().is_empty());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
