@@ -450,7 +450,11 @@ jump-by-type + a reader cursor.
       - **Delete to Trash**: `Delete` in the library list trashes the selected /
         marked book file(s) (recoverable, via the new `trash` crate) after the
         shared yes/no confirmation (`ConfirmAction::TrashBooks`). Missing-file rows
-        are cleared without touching the OS trash.
+        are cleared without touching the OS trash. **Every** book removal now goes
+        through one `trash_paths` helper (Delete action + duplicate resolver), so
+        no user file is ever permanently unlinked — only internal churn
+        (page-render temp PNGs, a failed atomic-write temp EPUB) is still
+        `remove_file`d, deliberately (it shouldn't clutter the trash).
       - **Tab order by frequency** (Sources-first was wrong): Library =
         View · Columns · General · Sources · Duplicates; Reader =
         Reading · Content · Chrome · Input. First-run still lands on Sources (found
@@ -465,8 +469,7 @@ jump-by-type + a reader cursor.
       *Follow-up (deferred): the manual rescan is synchronous on the UI thread —
       fine for the incremental common case, but a large first scan briefly blocks;
       move it off-thread with a progress spinner (mirror the dup-scan/loader
-      threads) if it ever bites. Also: the duplicate resolver still `remove_file`s
-      permanently — could route through Trash too for consistency.*
+      threads) if it ever bites.*
 
 ## Phase 4 — Knowledge & power tools
 
