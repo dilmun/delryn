@@ -73,7 +73,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
         f.render_widget(Block::default().style(theme.text_style()), area);
     }
 
-    let status_h = u16::from(show_status || reader.search.searching);
+    // Visual mode always shows its command hint, even with the status bar hidden.
+    let status_h = u16::from(show_status || reader.search.searching || reader.selection_active());
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(area);
     let body = rows[0];
     let status = rows[1];
@@ -98,6 +99,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let style = theme.style(Role::StatusBar);
         let prompt = format!("[{}] /{}", reader.search.mode.label(), reader.search.input);
         f.render_widget(Paragraph::new(Line::raw(prompt)).style(style), status);
+    } else if reader.selection_active() {
+        let style = theme.style(Role::StatusBar);
+        let hint = " VISUAL · h/l/w/b/j/k move · 0/$ ends · y copy · 1-5/H highlight · a note · Esc cancel ";
+        f.render_widget(Paragraph::new(Line::raw(hint)).style(style), status);
     } else if show_status {
         crate::view::status::render_reader(f, status, reader, config, theme);
     }
@@ -623,8 +628,7 @@ fn continuous_visible_lines(
         .enumerate()
         .map(|(off, l)| {
             let idx = col_scroll + off;
-            let cursor = sel.filter(|h| h.line == idx).map(|h| (h.start, h.end));
-            to_ratatui(l, theme, matcher, cursor, reader.highlight_line(idx))
+            to_ratatui(l, theme, &line_decor(reader, idx, matcher, sel))
         })
         .collect()
 }
@@ -639,48 +643,70 @@ fn visible_lines(reader: &Reader, start: usize, count: usize, theme: Theme) -> V
         .enumerate()
         .map(|(off, l)| {
             let idx = start + off;
-            // The link cursor's highlight range, if it falls on this line.
-            let cursor = sel.filter(|h| h.line == idx).map(|h| (h.start, h.end));
-            to_ratatui(l, theme, matcher, cursor, reader.highlight_line(idx))
+            to_ratatui(l, theme, &line_decor(reader, idx, matcher, sel))
         })
         .collect()
 }
 
-fn to_ratatui(
-    line: &DisplayLine,
-    theme: Theme,
-    matcher: Option<&Matcher>,
+/// Per-line decoration inputs for [`to_ratatui`]: search matches, the link cursor,
+/// committed highlight spans, and the live visual selection + caret.
+struct LineDecor<'a> {
+    matcher: Option<&'a Matcher>,
+    /// The link-cursor character range on this line, if any.
     cursor: Option<(usize, usize)>,
-    highlight: Option<HighlightColor>,
-) -> Line<'static> {
-    // A highlighted line is washed with its marker colour — a bright pastel
-    // background and dark ink laid over each run's own style, so the words read
-    // like a physical highlighter regardless of the theme.
-    let wash = highlight.map(|c| c.wash());
-    let paint = |style: Style| match wash {
-        Some((bg, fg)) => style.bg(bg).fg(fg),
-        None => style,
-    };
+    /// Committed highlight spans (`[start, end)` + colour) on this line.
+    highlights: &'a [(usize, usize, HighlightColor)],
+    /// The visual selection's character range on this line, if any.
+    selection: Option<(usize, usize)>,
+    /// The visual caret's column on this line, if the caret is here.
+    caret: Option<usize>,
+}
 
-    if matcher.is_none() && cursor.is_none() {
+/// Gather the decorations for display line `idx` from the reader's live state.
+fn line_decor<'a>(
+    reader: &'a Reader,
+    idx: usize,
+    matcher: Option<&'a Matcher>,
+    sel: Option<&'a crate::app::AnchorHit>,
+) -> LineDecor<'a> {
+    LineDecor {
+        matcher,
+        cursor: sel.filter(|h| h.line == idx).map(|h| (h.start, h.end)),
+        highlights: reader.highlight_spans(idx),
+        selection: reader.selection_span_on(idx),
+        caret: reader
+            .selection_caret()
+            .filter(|(l, _)| *l == idx)
+            .map(|(_, c)| c),
+    }
+}
+
+fn to_ratatui(line: &DisplayLine, theme: Theme, decor: &LineDecor) -> Line<'static> {
+    // The common case — no decorations — keeps each run as one span.
+    if decor.matcher.is_none()
+        && decor.cursor.is_none()
+        && decor.highlights.is_empty()
+        && decor.selection.is_none()
+        && decor.caret.is_none()
+    {
         let spans: Vec<Span> = line
             .runs
             .iter()
-            .map(|r| Span::styled(r.text.clone(), paint(run_style(r, line.kind, theme))))
+            .map(|r| Span::styled(r.text.clone(), run_style(r, line.kind, theme)))
             .collect();
         return Line::from(spans);
     }
 
-    // Expand to per-char styles, mark search-match + link-cursor ranges, regroup.
+    // Expand to per-char base styles so ranges can override individual cells.
     let mut chars: Vec<(char, Style)> = Vec::new();
     for run in &line.runs {
-        let style = paint(run_style(run, line.kind, theme));
+        let style = run_style(run, line.kind, theme);
         for c in run.text.chars() {
             chars.push((c, style));
         }
     }
     let mut matched = vec![false; chars.len()];
-    if let Some(m) = matcher {
+    if let Some(m) = decor.matcher {
         let text: String = chars.iter().map(|(c, _)| *c).collect();
         for (s, e) in m.highlight_ranges(&text) {
             for flag in matched.iter_mut().take(e.min(chars.len())).skip(s) {
@@ -690,21 +716,41 @@ fn to_ratatui(
     }
 
     let hilite = theme.style(Role::Match);
-    // The link cursor stands out from search via reverse video (theme-agnostic).
+    // The link cursor and the visual caret both stand out via reverse video; the
+    // visual *selection* uses the accent selection style.
     let cursor_style = theme.style(Role::Cursor);
-    let (cs, ce) = cursor.unwrap_or((usize::MAX, usize::MAX));
+    let selection_style = theme.style(Role::Selection);
+    let (cs, ce) = decor.cursor.unwrap_or((usize::MAX, usize::MAX));
+    let (ss, se) = decor.selection.unwrap_or((usize::MAX, usize::MAX));
+
+    // Per-cell style, most-specific first: caret → selection → link cursor →
+    // search match → committed highlight wash → the run's own style.
+    let cell_style = |idx: usize, base: Style| -> Style {
+        if decor.caret == Some(idx) {
+            cursor_style
+        } else if idx >= ss && idx < se {
+            selection_style
+        } else if idx >= cs && idx < ce {
+            cursor_style
+        } else if matched[idx] {
+            hilite
+        } else if let Some((_, _, color)) = decor
+            .highlights
+            .iter()
+            .find(|(s, e, _)| idx >= *s && idx < *e)
+        {
+            let (bg, fg) = color.wash();
+            base.bg(bg).fg(fg)
+        } else {
+            base
+        }
+    };
 
     let mut spans: Vec<Span> = Vec::new();
     let mut buf = String::new();
     let mut buf_style: Option<Style> = None;
-    for (idx, (c, st)) in chars.iter().enumerate() {
-        let style = if idx >= cs && idx < ce {
-            cursor_style
-        } else if matched[idx] {
-            hilite
-        } else {
-            *st
-        };
+    for (idx, (c, base)) in chars.iter().enumerate() {
+        let style = cell_style(idx, *base);
         if buf_style == Some(style) {
             buf.push(*c);
         } else {
@@ -717,6 +763,10 @@ fn to_ratatui(
     }
     if let Some(s) = buf_style {
         spans.push(Span::styled(buf, s));
+    }
+    // A caret past the last character (empty or end-of-line) still needs a cell.
+    if decor.caret.is_some_and(|c| c >= chars.len()) {
+        spans.push(Span::styled(" ".to_string(), cursor_style));
     }
     Line::from(spans)
 }

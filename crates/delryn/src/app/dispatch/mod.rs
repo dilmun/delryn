@@ -114,6 +114,12 @@ impl App {
             self.search_key(key);
             return;
         }
+        // Visual (vim-style) selection captures every key as a motion/command until
+        // it's committed or cancelled, so global shortcuts don't fire mid-select.
+        if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.selection_active()) {
+            self.visual_key(key);
+            return;
+        }
         // ':' opens the command palette in the library.
         if self.mode == Mode::Library && key.code == KeyCode::Char(':') {
             self.open_palette();

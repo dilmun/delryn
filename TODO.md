@@ -514,7 +514,27 @@ jump-by-type + a reader cursor.
       `highlights_carry_a_colour_and_are_kind_filtered` (store),
       `index_round_trips_and_clamps` + `cycle_walks_every_colour_then_clears`
       (palette), `annot_tabs_split_by_kind_and_cycle` (overlay).
-      *Still: selection-anchored (sub-line) highlights/notes, backlinks.*
+      ✅ **Visual (vim-style) text selection** (branch `feat/text-selection`): `V`
+      enters a visual mode with a moving caret over the section's display lines —
+      `h`/`l` (crossing wraps), `w`/`b` word, `j`/`k` line, `0`/`$` line ends — and
+      the selected span renders live (accent range + reverse caret). Commit the
+      selection with `y` (copy to clipboard), `1`-`5`/`H` (highlight in that colour),
+      or `a` (note anchored to the selected text); `Esc`/`V` cancels. Sub-line
+      highlights persist and re-render exactly: the selection's normalized text is
+      the anchor, re-found after reflow by `selection::resolve_spans` over a
+      whitespace-normalized flat of the section (reflow-stable — same words flatten
+      identically at any width) → per-line `(start,end)` cell spans. Highlight
+      rendering unified to spans (`nav.highlight_spans`): a whole-line `H` highlight
+      now stores its full line text (`current_line_text`) and washes the line; a
+      `V` highlight washes just its characters. `to_ratatui` gained a `LineDecor`
+      (matcher/link-cursor/highlight-spans/selection/caret) for per-cell styling.
+      Keys captured before global shortcuts (like search mode). Paged (PDF) docs
+      have no character grid, so `V` is a no-op there. Tests: selection.rs
+      (`resolve_spans` sub-line + cross-wrap-survives-rewrap, `selection_text`,
+      motions), reader (`visual_selection_extends_and_copies`,
+      `stored_highlight_resolves_to_a_span`).
+      *Still: backlinks; multi-section selection (v1 is within one section);
+      continuous-mode selection alignment (mirrors the existing highlight caveat).*
 - [x] Statistics: `delryn-library::stats` + overlay (`i`) — totals, status mix,
       ratings, reading hours, top authors.
 - [x] Export: `delryn-library::export` (`X`) — book list → CSV / JSON / Markdown.
