@@ -307,6 +307,13 @@ impl Store {
         let dir = delryn_infra::paths::config_dir();
         std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join("delryn.db"))?;
+        // A background library scan opens its own connection and writes while the
+        // UI reads. WAL lets those overlap without `SQLITE_BUSY` (readers never
+        // block the writer); the busy_timeout covers the rarer two-writer overlap
+        // (a UI edit landing mid-scan). Both are best-effort — a filesystem that
+        // rejects WAL simply keeps the default journal.
+        let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
+        let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
         migrate(&conn)?;
         Ok(Store { conn })
     }
