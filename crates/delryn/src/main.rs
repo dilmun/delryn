@@ -107,18 +107,14 @@ fn main() -> Result<()> {
             App::library()
         }
         Some(path) => App::open_book(path, picker.is_some())?,
-        None => {
-            // Clean out dead entries (deleted/moved files) so the library has no
-            // un-openable duplicates. Cheap stat per book; skips offline roots.
-            if let Ok(store) = Store::open_default() {
-                library::prune_missing(&Config::load().library_paths, &store);
-            }
-            App::library()
-        }
+        None => App::library(),
     };
     // First run — an empty library — lands on the Sources manager so a new user's
     // first action is adding a folder. No-op once a folder is configured.
     app.open_sources_if_empty();
+    // Index the configured folders in the background (incremental + dead-entry
+    // prune) so the library appears instantly and refreshes as the scan lands.
+    app.start_scan_startup();
     // Spawn the background image builder from the detected protocol.
     app.image_builder = picker.clone().map(delryn::media::ImageBuilder::new);
     app.picker = picker;
@@ -157,7 +153,8 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
             || app.lib_grid_pending()
             || app.cover_pending()
             || app.preview_pending()
-            || app.dup_scan_pending();
+            || app.dup_scan_pending()
+            || app.scan_pending();
         let timeout = if dirty || busy {
             FRAME.saturating_sub(last_draw.elapsed())
         } else {
@@ -194,6 +191,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         }
         // Advance the thorough duplicate scan (cover hashing on a worker thread).
         if app.poll_dup_scan() {
+            dirty = true;
+        }
+        // Pick up a finished background library scan (folder (re)indexing).
+        if app.poll_scan() {
             dirty = true;
         }
         // Keep redrawing while the grid is still building visible covers.
