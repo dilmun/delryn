@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS annotations (
     name       TEXT NOT NULL DEFAULT '',
     folder     TEXT NOT NULL DEFAULT '',
     kind       INTEGER NOT NULL DEFAULT 0,
+    color      INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS shelves (
@@ -81,7 +82,7 @@ CREATE TABLE IF NOT EXISTS dup_links (
 ";
 
 /// Current schema version. Bump when you append a migration step in [`migrate`].
-const USER_VERSION: i64 = 2;
+const USER_VERSION: i64 = 3;
 
 /// Bring the database up to [`USER_VERSION`], guarded by SQLite's `user_version`
 /// pragma so each step runs **once** — not on every open as the old inline block
@@ -102,6 +103,15 @@ fn migrate(conn: &Connection) -> Result<()> {
     // before they existed. Idempotent (see [`legacy_column_backfill`]).
     if version < 2 {
         legacy_column_backfill(conn);
+    }
+    // Step 3 — highlight colour (palette index) on annotations, for databases
+    // created before highlights existed. Best-effort: the `ADD COLUMN` errors (and
+    // is ignored) when the column is already present from `SCHEMA` on a fresh DB.
+    if version < 3 {
+        let _ = conn.execute(
+            "ALTER TABLE annotations ADD COLUMN color INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
     }
     conn.pragma_update(None, "user_version", USER_VERSION)?;
     Ok(())
@@ -186,14 +196,17 @@ fn legacy_column_backfill(conn: &Connection) {
     );
 }
 
-/// `annotations.kind` for a bookmark (a place) vs a note (a place + commentary).
+/// `annotations.kind`: a bookmark (a place), a note (a place + commentary), or a
+/// highlight (a place marked in a colour — see `color`).
 pub const KIND_BOOKMARK: i64 = 0;
 pub const KIND_NOTE: i64 = 1;
+pub const KIND_HIGHLIGHT: i64 = 2;
 
-/// A bookmark or note, anchored to content by a text quote (reflow-stable).
-/// `name` is an optional user label (shown instead of the quote); `folder` is an
-/// optional group (empty = ungrouped); `note` is the commentary body (notes only);
-/// `kind` discriminates a bookmark ([`KIND_BOOKMARK`]) from a note ([`KIND_NOTE`]).
+/// A bookmark, note, or highlight, anchored to content by a text quote
+/// (reflow-stable). `name` is an optional user label (shown instead of the quote);
+/// `folder` is an optional group (empty = ungrouped); `note` is the commentary body
+/// (notes only); `kind` discriminates the three; `color` is the highlight's palette
+/// index (0 and unused for bookmarks/notes).
 #[derive(Clone)]
 pub struct Annotation {
     pub id: i64,
@@ -203,12 +216,18 @@ pub struct Annotation {
     pub name: String,
     pub folder: String,
     pub kind: i64,
+    pub color: i64,
 }
 
 impl Annotation {
     /// Whether this annotation is a note (carries commentary) vs a bare bookmark.
     pub fn is_note(&self) -> bool {
         self.kind == KIND_NOTE
+    }
+
+    /// Whether this annotation is a colour highlight.
+    pub fn is_highlight(&self) -> bool {
+        self.kind == KIND_HIGHLIGHT
     }
 }
 
@@ -551,6 +570,37 @@ mod tests {
             .find(|a| a.is_note())
             .unwrap();
         assert_eq!(revised.note, "revised thought");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn highlights_carry_a_colour_and_are_kind_filtered() {
+        let tmp = std::env::temp_dir().join(format!("delryn_hl_{}", std::process::id()));
+        let _env = delryn_infra::test_env_guard();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let store = Store::open_default().unwrap();
+
+        let p = "/books/hl.epub";
+        store.add_bookmark(p, 1, "a place");
+        store.add_highlight(p, 3, "marked line", 2);
+
+        // The unified list carries the highlight with its colour; the bookmark list
+        // excludes it (kind-filtered).
+        let all = store.list_annotations(p);
+        assert_eq!(all.len(), 2);
+        let hl = all.iter().find(|a| a.is_highlight()).unwrap();
+        assert_eq!((hl.section, hl.color), (3, 2));
+        assert_eq!(store.list_bookmarks(p).len(), 1, "highlights aren't bookmarks");
+
+        // Recolouring persists.
+        store.set_annotation_color(hl.id, 4);
+        let recoloured = store
+            .list_annotations(p)
+            .into_iter()
+            .find(|a| a.is_highlight())
+            .unwrap();
+        assert_eq!(recoloured.color, 4);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

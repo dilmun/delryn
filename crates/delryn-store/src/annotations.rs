@@ -1,6 +1,7 @@
-//! Bookmarks and notes anchored to content quotes. Rows carry a `kind`
-//! ([`KIND_BOOKMARK`] = a place, [`KIND_NOTE`] = a place + commentary). All quotes
-//! are reflow-stable text anchors, not byte offsets.
+//! Bookmarks, notes, and highlights anchored to content quotes. Rows carry a
+//! `kind` ([`KIND_BOOKMARK`] = a place, [`KIND_NOTE`] = a place + commentary,
+//! [`KIND_HIGHLIGHT`] = a place marked in a `color`). All quotes are reflow-stable
+//! text anchors, not byte offsets.
 
 use super::*;
 
@@ -23,6 +24,15 @@ impl Store {
         );
     }
 
+    /// Highlight a reading position in a palette `color` (anchored by its quote).
+    pub fn add_highlight(&self, path: &str, section: usize, quote: &str, color: i64) {
+        let _ = self.conn.execute(
+            "INSERT INTO annotations (path, section, quote, kind, color, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![path, section as i64, quote, KIND_HIGHLIGHT, color, now_secs()],
+        );
+    }
+
     /// Bookmarks for one book (see [`Self::list_annotations`] for the ordering).
     pub fn list_bookmarks(&self, path: &str) -> Vec<Annotation> {
         self.list_by_kind(path, Some(KIND_BOOKMARK))
@@ -37,7 +47,7 @@ impl Store {
     /// List one book's annotations, optionally restricted to a single `kind`.
     fn list_by_kind(&self, path: &str, kind: Option<i64>) -> Vec<Annotation> {
         let mut out = Vec::new();
-        let sql = "SELECT id, section, quote, note, name, folder, kind FROM annotations \
+        let sql = "SELECT id, section, quote, note, name, folder, kind, color FROM annotations \
              WHERE path = ?1 AND (?2 IS NULL OR kind = ?2) \
              ORDER BY folder = '', folder, section, id";
         let Ok(mut stmt) = self.conn.prepare(sql) else {
@@ -54,6 +64,14 @@ impl Store {
         let _ = self.conn.execute(
             "UPDATE annotations SET note = ?2 WHERE id = ?1",
             params![id, note],
+        );
+    }
+
+    /// Change a highlight's palette colour.
+    pub fn set_annotation_color(&self, id: i64, color: i64) {
+        let _ = self.conn.execute(
+            "UPDATE annotations SET color = ?2 WHERE id = ?1",
+            params![id, color],
         );
     }
 
@@ -83,7 +101,7 @@ impl Store {
     pub fn all_bookmarks(&self) -> Vec<(String, Annotation)> {
         let mut out = Vec::new();
         let Ok(mut stmt) = self.conn.prepare(
-            "SELECT path, id, section, quote, note, name, folder, kind FROM annotations \
+            "SELECT path, id, section, quote, note, name, folder, kind, color FROM annotations \
              WHERE kind = ?1 ORDER BY path, folder = '', folder, section, id",
         ) else {
             return out;
@@ -97,8 +115,8 @@ impl Store {
     }
 }
 
-/// Build an `Annotation` from seven consecutive columns starting at `base`:
-/// `id, section, quote, note, name, folder, kind`.
+/// Build an `Annotation` from eight consecutive columns starting at `base`:
+/// `id, section, quote, note, name, folder, kind, color`.
 fn annotation_at(r: &rusqlite::Row, base: usize) -> rusqlite::Result<Annotation> {
     Ok(Annotation {
         id: r.get(base)?,
@@ -108,5 +126,6 @@ fn annotation_at(r: &rusqlite::Row, base: usize) -> rusqlite::Result<Annotation>
         name: r.get(base + 4)?,
         folder: r.get(base + 5)?,
         kind: r.get(base + 6)?,
+        color: r.get(base + 7)?,
     })
 }

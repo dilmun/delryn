@@ -1797,6 +1797,7 @@ mod tests {
             name: name.into(),
             folder: String::new(),
             kind: crate::store::KIND_BOOKMARK,
+            color: 0,
         };
         let note = crate::store::Annotation {
             id: 3,
@@ -1806,6 +1807,7 @@ mod tests {
             name: String::new(),
             folder: String::new(),
             kind: crate::store::KIND_NOTE,
+            color: 0,
         };
         app.overlay = Overlay::Annot(AnnotState::new(
             vec![bm(1, "B1"), bm(2, "B2"), note],
