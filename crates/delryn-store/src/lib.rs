@@ -591,7 +591,11 @@ mod tests {
         assert_eq!(all.len(), 2);
         let hl = all.iter().find(|a| a.is_highlight()).unwrap();
         assert_eq!((hl.section, hl.color), (3, 2));
-        assert_eq!(store.list_bookmarks(p).len(), 1, "highlights aren't bookmarks");
+        assert_eq!(
+            store.list_bookmarks(p).len(),
+            1,
+            "highlights aren't bookmarks"
+        );
 
         // Recolouring persists.
         store.set_annotation_color(hl.id, 4);

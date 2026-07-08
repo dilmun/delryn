@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
+use crate::HighlightColor;
 use crate::app::{
     App, Focus, ImageGeom, PageTarget, PageView, PanRoom, Reader, Viewport, place_page,
     raster_width_for_crispness,
@@ -384,11 +385,15 @@ fn draw_gutter(f: &mut Frame, text_area: Rect, reader: &Reader, top: usize, them
     let lines: Vec<Line> = (0..text_area.height as usize)
         .map(|row| {
             let line = top + row;
-            // A note (pen) takes precedence over a bookmark (flag) on the same line.
+            // A note (pen) takes precedence over a bookmark (flag); a highlight
+            // (a colour bar in its own hue) marks a line neither claims — its wash
+            // already stands out, so the chip is just a margin cue and colour key.
             if reader.is_note_line(line) {
                 Line::from(Span::styled("✎", ribbon))
             } else if reader.is_bookmark_line(line) {
                 Line::from(Span::styled("⚑", ribbon))
+            } else if let Some(color) = reader.highlight_line(line) {
+                Line::from(Span::styled("▌", Style::default().fg(color.bg())))
             } else {
                 Line::raw("")
             }
@@ -617,10 +622,9 @@ fn continuous_visible_lines(
         .iter()
         .enumerate()
         .map(|(off, l)| {
-            let cursor = sel
-                .filter(|h| h.line == col_scroll + off)
-                .map(|h| (h.start, h.end));
-            to_ratatui(l, theme, matcher, cursor)
+            let idx = col_scroll + off;
+            let cursor = sel.filter(|h| h.line == idx).map(|h| (h.start, h.end));
+            to_ratatui(l, theme, matcher, cursor, reader.highlight_line(idx))
         })
         .collect()
 }
@@ -634,11 +638,10 @@ fn visible_lines(reader: &Reader, start: usize, count: usize, theme: Theme) -> V
         .iter()
         .enumerate()
         .map(|(off, l)| {
+            let idx = start + off;
             // The link cursor's highlight range, if it falls on this line.
-            let cursor = sel
-                .filter(|h| h.line == start + off)
-                .map(|h| (h.start, h.end));
-            to_ratatui(l, theme, matcher, cursor)
+            let cursor = sel.filter(|h| h.line == idx).map(|h| (h.start, h.end));
+            to_ratatui(l, theme, matcher, cursor, reader.highlight_line(idx))
         })
         .collect()
 }
@@ -648,12 +651,22 @@ fn to_ratatui(
     theme: Theme,
     matcher: Option<&Matcher>,
     cursor: Option<(usize, usize)>,
+    highlight: Option<HighlightColor>,
 ) -> Line<'static> {
+    // A highlighted line is washed with its marker colour — a bright pastel
+    // background and dark ink laid over each run's own style, so the words read
+    // like a physical highlighter regardless of the theme.
+    let wash = highlight.map(|c| c.wash());
+    let paint = |style: Style| match wash {
+        Some((bg, fg)) => style.bg(bg).fg(fg),
+        None => style,
+    };
+
     if matcher.is_none() && cursor.is_none() {
         let spans: Vec<Span> = line
             .runs
             .iter()
-            .map(|r| Span::styled(r.text.clone(), run_style(r, line.kind, theme)))
+            .map(|r| Span::styled(r.text.clone(), paint(run_style(r, line.kind, theme))))
             .collect();
         return Line::from(spans);
     }
@@ -661,7 +674,7 @@ fn to_ratatui(
     // Expand to per-char styles, mark search-match + link-cursor ranges, regroup.
     let mut chars: Vec<(char, Style)> = Vec::new();
     for run in &line.runs {
-        let style = run_style(run, line.kind, theme);
+        let style = paint(run_style(run, line.kind, theme));
         for c in run.text.chars() {
             chars.push((c, style));
         }

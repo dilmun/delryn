@@ -495,8 +495,26 @@ jump-by-type + a reader cursor.
       unified **Annotations** list showing bookmarks + notes with their icons and
       commentary, **searchable** (`/` filters over name/quote/note/folder), with
       `e` to edit a note's commentary. Store: `add_note`, `set_annotation_note`,
-      `list_annotations`, `Annotation.kind` + `is_note()`. *Still: highlight
-      colors, selection-anchored (sub-line) notes, backlinks.*
+      `list_annotations`, `Annotation.kind` + `is_note()`.
+      ✅ **Highlight colours** (branch `feat/highlight-colors`): a highlight = a
+      line anchor marked in one of five palette colours (`HighlightColor` in
+      `delryn-infra`; yellow/green/blue/pink/orange), `kind = KIND_HIGHLIGHT(2)` +
+      a new `annotations.color` index column (store migration `user_version` 3).
+      `H` in the reader highlights the current line and, on repeat at the same
+      anchor, **cycles the colour then removes it** (`HighlightColor::cycle`); the
+      whole line is washed in the marker colour (dark ink on the pastel, theme-
+      independent) and a colour bar `▌` marks the gutter (below the ⚑ flag / ✎
+      pen). The Annotations overlay (`'`) gains a third **Highlights** tab (the
+      tab bar + `AnnotTab` are now N-way via `AnnotTab::ALL`/`of`/`next`/`prev`,
+      not a 2-way toggle); highlight rows show a colour chip and are name/folder/
+      delete/jump-able like bookmarks. Store: `add_highlight`,
+      `set_annotation_color`, `is_highlight()`. The three `set_annotations`
+      callers now pass raw store rows (the kind/colour split lives once in
+      `Reader::set_annotations`), removing the duplicated mapping. Tests:
+      `highlights_carry_a_colour_and_are_kind_filtered` (store),
+      `index_round_trips_and_clamps` + `cycle_walks_every_colour_then_clears`
+      (palette), `annot_tabs_split_by_kind_and_cycle` (overlay).
+      *Still: selection-anchored (sub-line) highlights/notes, backlinks.*
 - [x] Statistics: `delryn-library::stats` + overlay (`i`) — totals, status mix,
       ratings, reading hours, top authors.
 - [x] Export: `delryn-library::export` (`X`) — book list → CSV / JSON / Markdown.
