@@ -296,7 +296,8 @@ rebindable in General settings. Defaults:
 `Ctrl-d`/`Ctrl-u` half-page · `Ctrl-f`/`Space` page · `{count}` prefix.
 
 **Reader:** `/` search, `n`/`N` next/prev · `Tab` toggle+focus sidebar ·
-`z` immersive · `Enter`/`l` jump TOC, `h` collapse · `m`/`'` set/jump bookmark ·
+`z` immersive · `Enter`/`l` jump TOC, `h` collapse · `m` bookmark · `a` note ·
+`H` highlight (repeat cycles the colour, then clears) · `'` annotations overlay ·
 `;` settings · `q` back to library · `Q` quit.
 
 **Library:** `j k` rows, `h l` columns (grid) · `Enter`/`o` open ·

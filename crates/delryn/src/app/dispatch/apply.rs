@@ -5,6 +5,7 @@
 //! preserves its reading position across the re-wrap.
 
 use super::super::*;
+use crate::HighlightColor;
 use crate::config::{Config, ViewMode};
 
 /// The config knobs that change how a section wraps or how wide the reading
@@ -220,15 +221,7 @@ impl App {
                         reader.flash = Some("bookmark added".into());
                         // `reader` is borrowed here, so push the refreshed set
                         // directly rather than via the `&mut self` helper.
-                        let marks = store
-                            .list_annotations(&self.session.book_path)
-                            .into_iter()
-                            .map(|a| {
-                                let is_note = a.is_note();
-                                (a.section, a.quote, is_note)
-                            })
-                            .collect();
-                        reader.set_annotations(marks);
+                        reader.set_annotations(store.list_annotations(&self.session.book_path));
                     }
                 }
             }
@@ -244,6 +237,46 @@ impl App {
                         },
                         input: crate::ui::TextInput::from(String::new()),
                     });
+                }
+            }
+            Action::AddHighlight => {
+                if let Some(store) = &self.session.store
+                    && !self.session.book_path.is_empty()
+                {
+                    let (section, quote) = (reader.section, reader.current_quote());
+                    // A repeat `H` at the same anchor advances the colour, then
+                    // clears it — so find any existing highlight there first.
+                    let existing = store
+                        .list_annotations(&self.session.book_path)
+                        .into_iter()
+                        .find(|a| a.is_highlight() && a.section == section && a.quote == quote);
+                    let current = existing
+                        .as_ref()
+                        .map(|a| HighlightColor::from_index(a.color));
+                    match (HighlightColor::cycle(current), existing) {
+                        // Advance an existing highlight to the next colour.
+                        (Some(next), Some(a)) => {
+                            store.set_annotation_color(a.id, next.index());
+                            reader.flash = Some(format!("highlight: {}", next.label()));
+                        }
+                        // Add a new highlight in the first colour.
+                        (Some(next), None) => {
+                            store.add_highlight(
+                                &self.session.book_path,
+                                section,
+                                &quote,
+                                next.index(),
+                            );
+                            reader.flash = Some(format!("highlight: {}", next.label()));
+                        }
+                        // Past the last colour: remove the highlight.
+                        (None, Some(a)) => {
+                            store.delete_annotation(a.id);
+                            reader.flash = Some("highlight removed".into());
+                        }
+                        (None, None) => {}
+                    }
+                    reader.set_annotations(store.list_annotations(&self.session.book_path));
                 }
             }
             Action::OpenAnnotations => {

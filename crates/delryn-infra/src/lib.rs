@@ -6,6 +6,7 @@
 
 pub mod color;
 pub mod config;
+pub mod highlight;
 pub mod paths;
 pub mod theme;
 
