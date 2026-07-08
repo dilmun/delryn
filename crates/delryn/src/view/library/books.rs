@@ -9,7 +9,7 @@ pub(crate) fn render_books(f: &mut Frame, area: Rect, app: &mut App, theme: Them
     let area = inner;
     if app.library.books.is_empty() {
         let msg = if app.config.library_paths.is_empty() {
-            "No library configured.\n\nAdd a folder:  delryn --add <dir>\nthen run:      delryn"
+            "No folders yet.\n\nPress ;  →  Sources  →  Add folder…\nor run:  delryn <folder>"
         } else {
             "No books in this section."
         };

@@ -1886,7 +1886,8 @@ mod tests {
         app.overlay = Overlay::Settings(Settings {
             scope: Mode::Library,
             tab: 0,
-            row: first_setting_row(Mode::Library, 0),
+            row: first_setting_row(Mode::Library, 0, &app.config),
+            adding: None,
         });
         // Two tabs + a couple of option rows (real geometry is captured at render).
         app.mouse.overlay_tabs = vec![(0, Rect::new(0, 0, 12, 1)), (1, Rect::new(13, 0, 12, 1))];
@@ -1969,9 +1970,9 @@ mod tests {
 
         // Walk every tab: the cursor only ever rests on items, and Tab advances
         // to the next group (parking on its first option).
-        for t in 0..settings_tabs(Mode::Library).len() {
+        for t in 0..settings_tabs(Mode::Library, &app.config).len() {
             assert_eq!(settings_state(&app).tab, t);
-            let rows = tab_rows(Mode::Library, t);
+            let rows = tab_rows(Mode::Library, t, &app.config);
             assert!(
                 matches!(rows[0], SettingRow::Section(_)),
                 "tab {t} starts with a header"
@@ -1989,6 +1990,145 @@ mod tests {
         }
         // Tab wraps back to the first group.
         assert_eq!(settings_state(&app).tab, 0, "Tab wraps around");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // The Sources tab: adding a folder registers + scans it; deleting drops it and
+    // its books from the index.
+    #[test]
+    fn sources_manager_add_scans_and_remove_drops_books() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_srcmgr_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        let books = tmp.join("books");
+        std::fs::create_dir_all(&books).unwrap();
+        // A non-EPUB is indexed by filename, so no valid container is needed.
+        std::fs::write(books.join("novel.pdf"), b"x").unwrap();
+
+        let mut app = App::library();
+        assert!(app.config.library_paths.is_empty());
+        app.open_sources_settings();
+        assert_eq!(settings_state(&app).scope, Mode::Library);
+
+        // The empty Sources tab parks the cursor on "Add folder…"; Enter opens the
+        // inline input, then the typed path commits on the next Enter.
+        app.on_key(code(KeyCode::Enter));
+        assert!(settings_state(&app).adding.is_some(), "add input opened");
+        for ch in books.to_string_lossy().chars() {
+            app.on_key(key(ch));
+        }
+        app.on_key(code(KeyCode::Enter)); // commit
+
+        let root = crate::library::normalize_root(&books.to_string_lossy());
+        assert_eq!(app.config.library_paths, vec![root], "folder registered");
+        assert!(
+            app.library
+                .books
+                .iter()
+                .any(|b| b.path.ends_with("novel.pdf")),
+            "the added folder was scanned"
+        );
+
+        // Committing parks the cursor on the new folder row; `d` removes it.
+        assert!(
+            matches!(
+                tab_rows(Mode::Library, settings_state(&app).tab, &app.config)
+                    .into_iter()
+                    .nth(settings_state(&app).row),
+                Some(SettingRow::Item(SettingItem::Source(_)))
+            ),
+            "cursor rests on the folder row after adding"
+        );
+        app.on_key(key('d'));
+        assert!(app.config.library_paths.is_empty(), "folder removed");
+        assert!(app.library.books.is_empty(), "its books left the index");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // Delete raises a confirmation naming the book; only on `y` is the row cleared
+    // (a missing file is used, so the test never touches the real OS trash).
+    #[test]
+    fn trash_selected_confirms_then_clears_row() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_trash_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        std::fs::create_dir_all(&tmp).unwrap();
+        {
+            let store = Store::open_default().unwrap();
+            store
+                .upsert_book(
+                    "/gone/dead.epub",
+                    "Dead Book",
+                    "A",
+                    None,
+                    0,
+                    1,
+                    1,
+                    "",
+                    None,
+                    "",
+                    "",
+                    "",
+                    "",
+                )
+                .unwrap();
+        }
+        let mut app = App::library();
+        assert_eq!(app.library.books.len(), 1);
+        app.library.sel = 0;
+
+        // Delete raises the confirmation, removing nothing yet.
+        app.on_key(code(KeyCode::Delete));
+        let confirm = app.pending_confirm.as_ref().expect("confirmation raised");
+        assert!(confirm.question.contains("Dead Book"), "names the book");
+        assert_eq!(
+            app.library.books.len(),
+            1,
+            "nothing removed before confirming"
+        );
+
+        // Confirm: the missing file's dead row is cleared.
+        app.on_key(key('y'));
+        assert!(app.pending_confirm.is_none());
+        assert!(app.library.books.is_empty(), "row cleared on confirm");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // First run — an empty library — opens the Sources manager; once a folder is
+    // configured it's a no-op.
+    #[test]
+    fn empty_library_opens_sources_manager() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_firstrun_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let mut app = App::library();
+        assert!(matches!(app.overlay, Overlay::None));
+        app.open_sources_if_empty();
+        let Overlay::Settings(s) = &app.overlay else {
+            panic!("first run should open the Sources manager");
+        };
+        assert_eq!(
+            settings_tabs(Mode::Library, &app.config)[s.tab].title,
+            "Sources",
+            "lands on the Sources tab"
+        );
+
+        // Once a folder exists it must not hijack the library view.
+        app.overlay = Overlay::None;
+        app.config.library_paths.push("/some/lib".into());
+        app.open_sources_if_empty();
+        assert!(
+            matches!(app.overlay, Overlay::None),
+            "no-op once a folder is configured"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

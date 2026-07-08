@@ -34,6 +34,8 @@ impl App {
             Overlay::ShelfPicker(p) => p.new_name.is_some(),
             Overlay::Annot(a) => a.filtering,
             Overlay::MetaEdit(e) => e.is_typing(),
+            // The Sources tab's inline "add folder" path input.
+            Overlay::Settings(s) => s.adding.is_some(),
             _ => false,
         }
     }
@@ -126,7 +128,8 @@ impl App {
             self.overlay = Overlay::Settings(Settings {
                 scope,
                 tab: 0,
-                row: first_setting_row(scope, 0),
+                row: first_setting_row(scope, 0, &self.config),
+                adding: None,
             });
             return;
         }

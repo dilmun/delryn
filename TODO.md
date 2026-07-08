@@ -422,6 +422,54 @@ jump-by-type + a reader cursor.
         `settings_click_switches_tab_and_row`.
       - Known gap (minor): the metadata-editor results list has no wheel-scroll yet
         (it's click + keyboard driven).
+- [x] **In-app library sources manager** (`feat/library-sources-tab`). Library
+      folders were previously CLI-only (`delryn --add`); now Library Settings opens
+      on a new **Sources** tab (first): one row per configured folder with
+      `d`/Delete/Backspace to remove it (which also drops that folder's books via
+      `delryn-library::remove_root`), an **Add folder…** row that opens an inline
+      path input (reuses `TextInput`; `~` expanded + canonicalized via
+      `library::normalize_root`, deduped, validated as a real dir), and a
+      **Rescan now** action (incremental `scan` + `prune_missing`). Add/delete/
+      rescan refresh the list live and flash the count. Mouse: double-click the
+      Add/Rescan rows activates them (via the shared `settings_change` path).
+      **First run** — an empty library — opens the Sources manager automatically
+      (`App::open_sources_if_empty`, called from `main`), and the empty-state hint
+      points at it. **CLI**: `delryn <folder> [folder…]` registers + scans folders
+      then lands on the Library (file args still open the book); `delryn --add` now
+      takes multiple dirs. Fixed a latent bug: the overlay `f`-resize shortcut ate
+      `f` characters while typing (added `Overlay::Settings` to `overlay_is_typing`).
+      Post-review follow-ups (same branch):
+      - **Orphan sweep** (was: a "ghost" 0 K/no-title row survived removing its
+        source). Root cause: opening a one-off file via `delryn <file>` inserts a
+        bare `books` row (`mark_opened`) that lives under no source; the old
+        `remove_root` only dropped books *under the removed folder*. Replaced it
+        with `delryn-library::prune_outside_roots` (drop every book under *none* of
+        the configured roots, keeping offline-root books) — called on delete-source
+        **and** rescan, so removing the last source empties the library and
+        *Rescan now* cleans older orphans.
+      - **Delete to Trash**: `Delete` in the library list trashes the selected /
+        marked book file(s) (recoverable, via the new `trash` crate) after the
+        shared yes/no confirmation (`ConfirmAction::TrashBooks`). Missing-file rows
+        are cleared without touching the OS trash. **Every** book removal now goes
+        through one `trash_paths` helper (Delete action + duplicate resolver), so
+        no user file is ever permanently unlinked — only internal churn
+        (page-render temp PNGs, a failed atomic-write temp EPUB) is still
+        `remove_file`d, deliberately (it shouldn't clutter the trash).
+      - **Tab order by frequency** (Sources-first was wrong): Library =
+        View · Columns · General · Sources · Duplicates; Reader =
+        Reading · Content · Chrome · Input. First-run still lands on Sources (found
+        by title, not position).
+      - **Stable tab strip**: active/inactive tabs now share one width (inactive
+        pads to match the active pill), so switching no longer nudges the centred
+        strip left/right.
+      Tests: `sources_manager_add_scans_and_remove_drops_books`,
+      `empty_library_opens_sources_manager`, `trash_selected_confirms_then_clears_row`,
+      `prune_outside_roots_removes_orphans_keeps_configured`,
+      `normalize_root_falls_back_when_unresolvable`.
+      *Follow-up (deferred): the manual rescan is synchronous on the UI thread —
+      fine for the incremental common case, but a large first scan briefly blocks;
+      move it off-thread with a progress spinner (mirror the dup-scan/loader
+      threads) if it ever bites.*
 
 ## Phase 4 — Knowledge & power tools
 
