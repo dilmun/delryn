@@ -305,20 +305,33 @@ impl App {
 
     /// Delete each duplicate's file (best-effort) and drop its library row, then
     /// refresh the list and the resolution overlay. Called from the confirmation
-    /// handler after the user confirms the checked deletions.
+    /// handler after the user confirms the checked deletions. Like every book
+    /// removal in delryn, the files go to the OS trash (recoverable), not unlinked.
     pub(crate) fn remove_duplicate_files(&mut self, paths: &[String]) {
-        let mut removed = 0;
-        for p in paths {
-            let gone = std::fs::remove_file(p).is_ok();
-            if let Some(store) = &self.session.store {
-                store.remove_book(p);
-            }
-            removed += usize::from(gone);
-        }
-        self.library.flash = Some(format!("removed {removed} duplicate(s)"));
+        let trashed = self.trash_paths(paths);
+        self.library.flash = Some(format!("moved {trashed} duplicate(s) to Trash"));
         self.library.sel = 0;
         self.refresh_library();
         self.refresh_dup_resolve();
+    }
+
+    /// The one place a book leaves the library: move each file to the OS trash
+    /// (recoverable) and drop its row. A file already gone still has its dead row
+    /// cleared; a genuine move failure (permission) leaves both file and row. Used
+    /// by the Delete action and the duplicate resolver so every removal behaves
+    /// the same. Returns how many files were trashed.
+    fn trash_paths(&self, paths: &[String]) -> usize {
+        let mut trashed = 0;
+        for p in paths {
+            let moved = trash::delete(p).is_ok();
+            if (moved || !std::path::Path::new(p).exists())
+                && let Some(store) = &self.session.store
+            {
+                store.remove_book(p);
+            }
+            trashed += usize::from(moved);
+        }
+        trashed
     }
 
     /// Ask to move the selected book — or the whole marked selection — to the OS
@@ -360,23 +373,10 @@ impl App {
         self.ask_confirm(&question, ConfirmAction::TrashBooks(targets));
     }
 
-    /// Move each path to the OS trash (recoverable) and drop its library row. A
-    /// file that fails to move but is already gone still has its dead row cleared;
-    /// a genuine failure (permission) leaves both file and row untouched. Called
-    /// from the confirmation handler.
+    /// Trash the confirmed book selection (from the library Delete action), then
+    /// clear the selection and refresh.
     pub(crate) fn trash_books(&mut self, paths: &[String]) {
-        let mut trashed = 0;
-        for p in paths {
-            let moved = trash::delete(p).is_ok();
-            // Drop the library row when the file left the disk (trashed, or it was
-            // already missing — a dead entry the user is clearing).
-            if (moved || !std::path::Path::new(p).exists())
-                && let Some(store) = &self.session.store
-            {
-                store.remove_book(p);
-            }
-            trashed += usize::from(moved);
-        }
+        let trashed = self.trash_paths(paths);
         self.lib_exit_visual(); // clear individual + range selection
         self.library.sel = 0;
         self.refresh_library();
