@@ -110,6 +110,14 @@ impl Reader {
     pub fn selection_down(&mut self) {
         self.move_caret(Selection::down);
     }
+    pub fn selection_half_down(&mut self) {
+        let n = (self.visible_span / 2).max(1);
+        self.move_caret(move |s, lines| s.down_by(n, lines));
+    }
+    pub fn selection_half_up(&mut self) {
+        let n = (self.visible_span / 2).max(1);
+        self.move_caret(move |s, lines| s.up_by(n, lines));
+    }
     pub fn selection_word_forward(&mut self) {
         self.move_caret(Selection::word_forward);
     }
@@ -276,6 +284,18 @@ impl Selection {
             self.caret.line += 1;
             self.caret.col = self.caret.col.min(max_col(lines, self.caret.line));
         }
+    }
+
+    /// Jump `n` lines down / up (clamped), keeping the column — for half-page
+    /// navigation (`Ctrl-d`/`Ctrl-u`).
+    pub fn down_by(&mut self, n: usize, lines: &[DisplayLine]) {
+        let last = lines.len().saturating_sub(1);
+        self.caret.line = (self.caret.line + n).min(last);
+        self.caret.col = self.caret.col.min(max_col(lines, self.caret.line));
+    }
+    pub fn up_by(&mut self, n: usize, lines: &[DisplayLine]) {
+        self.caret.line = self.caret.line.saturating_sub(n);
+        self.caret.col = self.caret.col.min(max_col(lines, self.caret.line));
     }
 
     /// To the first / last character of the current line.
