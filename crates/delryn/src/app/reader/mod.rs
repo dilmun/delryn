@@ -36,9 +36,11 @@ mod paged;
 mod pages;
 mod raster;
 mod search;
+mod selection;
 mod sidebar;
 mod state;
 
+use selection::Selection;
 use state::{
     ImageState, NavState, PageRasterState, PageThemeState, Pos, SearchState, SectionCache, WrapKey,
 };
@@ -222,6 +224,8 @@ pub struct Reader {
     pending_image: Option<usize>,
     /// Collapsed parent rows (outline indices) in the sidebar tree.
     collapsed: HashSet<usize>,
+    /// The active visual text selection (vim `V`), or `None` in normal reading.
+    select: Option<Selection>,
 }
 
 impl Reader {
@@ -310,6 +314,7 @@ impl Reader {
             pending_image: None,
             overlay_occlude: None,
             collapsed: HashSet::new(),
+            select: None,
         };
         reader.prefetch_neighbors();
         Ok(reader)
@@ -537,13 +542,16 @@ impl Reader {
         };
         self.nav.bookmark_lines = resolve(&self.nav.bookmarks);
         self.nav.note_lines = resolve(&self.nav.notes);
-        self.nav.highlight_lines = self
-            .nav
-            .highlights
-            .iter()
-            .filter(|(s, _, _)| *s == section)
-            .filter_map(|(_, quote, color)| find_line(lines, quote).map(|l| (l, *color)))
-            .collect();
+        // Highlights resolve to exact character spans (a whole-line `H` highlight
+        // covers its line; a `V` selection highlight covers just its characters),
+        // grouped per display line so the view can wash them.
+        let mut spans: HashMap<usize, Vec<(usize, usize, HighlightColor)>> = HashMap::new();
+        for (_, quote, color) in self.nav.highlights.iter().filter(|(s, _, _)| *s == section) {
+            for (line, (start, end)) in selection::resolve_spans(quote, &self.lines) {
+                spans.entry(line).or_default().push((start, end, *color));
+            }
+        }
+        self.nav.highlight_spans = spans;
     }
 
     /// Whether a display line carries a bookmark (for the left-gutter marker).
@@ -556,10 +564,22 @@ impl Reader {
         self.nav.note_lines.contains(&line)
     }
 
-    /// The highlight colour on a display line, if any — for washing the line and
-    /// marking the gutter.
+    /// The highlight colour on a display line, if any — for the gutter chip.
     pub fn highlight_line(&self, line: usize) -> Option<HighlightColor> {
-        self.nav.highlight_lines.get(&line).copied()
+        self.nav
+            .highlight_spans
+            .get(&line)
+            .and_then(|v| v.first())
+            .map(|(_, _, c)| *c)
+    }
+
+    /// The highlight spans on a display line (`(start, end, colour)`), for washing.
+    pub fn highlight_spans(&self, line: usize) -> &[(usize, usize, HighlightColor)] {
+        self.nav
+            .highlight_spans
+            .get(&line)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Whether a bookmark already exists at this anchor (`section` + `quote`), so
@@ -842,8 +862,15 @@ impl Reader {
     }
 
     /// A short text quote of the first non-blank visible line, used to anchor
-    /// annotations so they survive reflow.
+    /// bookmarks/notes so they survive reflow.
     pub fn current_quote(&self) -> String {
+        self.current_line_text().chars().take(80).collect()
+    }
+
+    /// The full (whitespace-normalized) text of the first non-blank visible line —
+    /// the anchor a whole-line `H` highlight stores, so it re-washes the entire
+    /// line via [`selection::resolve_spans`] at any width.
+    pub fn current_line_text(&self) -> String {
         if self.lines.is_empty() {
             return String::new();
         }
@@ -856,9 +883,6 @@ impl Reader {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
-            .chars()
-            .take(80)
-            .collect()
     }
 
     pub fn chapter_title(&self) -> String {
@@ -1030,6 +1054,46 @@ mod tests {
         r.last_measure = 40;
         r.ensure_wrapped(40);
         r
+    }
+
+    // Visual mode: `V` starts a selection at the first line; extending it right
+    // grows the selected text, and copying stages it for the clipboard.
+    #[test]
+    fn visual_selection_extends_and_copies() {
+        let mut r = reader_with(vec![para()]);
+        r.viewport_lines = 10;
+        r.page_lines = 10;
+        r.start_selection();
+        assert!(r.selection_active());
+        // Extend right over "lorem " (6 cells, cols 0..=5); normalized → "lorem".
+        for _ in 0..5 {
+            r.selection_right();
+        }
+        assert_eq!(r.selection_text(), "lorem");
+        assert!(r.copy_selection(), "non-empty selection copies");
+        assert!(!r.selection_active(), "copying leaves visual mode");
+        assert_eq!(r.take_clipboard().as_deref(), Some("lorem"));
+    }
+
+    // A stored highlight resolves its quote back to a character span on its line,
+    // so it re-washes after reflow (the render path behind the gutter/wash).
+    #[test]
+    fn stored_highlight_resolves_to_a_span() {
+        let mut r = reader_with(vec![para()]);
+        let quote = r.current_line_text();
+        assert!(!quote.is_empty());
+        r.set_annotations(vec![Annotation {
+            id: 1,
+            section: 0,
+            quote,
+            note: String::new(),
+            name: String::new(),
+            folder: String::new(),
+            kind: crate::store::KIND_HIGHLIGHT,
+            color: 2,
+        }]);
+        assert!(r.highlight_line(0).is_some(), "line 0 is highlighted");
+        assert!(!r.highlight_spans(0).is_empty(), "with a concrete span");
     }
 
     // Returning from the image viewer must force the current section's images to
