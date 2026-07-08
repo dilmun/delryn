@@ -42,9 +42,11 @@ pub struct NavState {
     pub bookmark_lines: HashSet<usize>,
     /// Current-section note lines (resolved like `bookmark_lines`).
     pub note_lines: HashSet<usize>,
-    /// Current-section highlight lines → their colour (resolved like
-    /// `bookmark_lines`), so the view can wash the line and mark the gutter.
-    pub highlight_lines: HashMap<usize, HighlightColor>,
+    /// Current-section highlight spans, per display line: each entry is a
+    /// `(start_col, end_col, colour)` run to wash. A whole-line highlight (`H`) is
+    /// one full-width span; a selection highlight (`V`) is the exact character
+    /// range. Resolved from the stored quotes on re-wrap.
+    pub highlight_spans: HashMap<usize, Vec<(usize, usize, HighlightColor)>>,
     /// Cross-reference/citation targets for one section: `(section, id→locator)`,
     /// cached so repeated lookups in the current section don't re-parse it.
     pub targets_cache: Option<(usize, Vec<(String, String)>)>,

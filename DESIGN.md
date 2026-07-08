@@ -297,8 +297,11 @@ rebindable in General settings. Defaults:
 
 **Reader:** `/` search, `n`/`N` next/prev · `Tab` toggle+focus sidebar ·
 `z` immersive · `Enter`/`l` jump TOC, `h` collapse · `m` bookmark · `a` note ·
-`H` highlight (repeat cycles the colour, then clears) · `'` annotations overlay ·
-`;` settings · `q` back to library · `Q` quit.
+`H` highlight line (repeat cycles the colour, then clears) · `V` cursor mode
+(a movable caret — `h/l/w/b/j/k/0/$`, reaches either page of a spread — then `m`
+bookmark · `H` highlight · `a` note at the caret, or `v`/Space to start a range
+selection: `y` copy · `1`-`5`/`H` highlight · `a` note; `Esc` exits) ·
+`'` annotations overlay · `;` settings · `q` back to library · `Q` quit.
 
 **Library:** `j k` rows, `h l` columns (grid) · `Enter`/`o` open ·
 `v` cycle list/grid · `+`/`-` thumbnail size · `f` favorite · `/` filter ·

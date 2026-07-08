@@ -514,7 +514,38 @@ jump-by-type + a reader cursor.
       `highlights_carry_a_colour_and_are_kind_filtered` (store),
       `index_round_trips_and_clamps` + `cycle_walks_every_colour_then_clears`
       (palette), `annot_tabs_split_by_kind_and_cycle` (overlay).
-      *Still: selection-anchored (sub-line) highlights/notes, backlinks.*
+      ✅ **Cursor mode + visual (vim-style) selection** (branch `feat/text-selection`):
+      `V` enters a **cursor mode** — a movable caret over the section's display
+      lines (`h`/`l` crossing wraps, `w`/`b` word, `j`/`k` line, `0`/`$` line ends);
+      `v`/Space drops the anchor to begin **selecting** (motions then extend), the
+      caret + range render live (reverse caret + accent range). The caret is the
+      shared anchor for **all** annotations, so they work on either page of a
+      two-page spread (previously everything anchored to the first line of the left
+      page): `m` bookmark / `H` highlight-line / `a` note act at the caret when no
+      range is selected, and on the range once selecting (`y` copy, `1`-`5`/`H`
+      highlight, `a` note). `Esc`/`V` exit. This is wired by making
+      `current_line_text`/`current_quote` **cursor-aware** (caret line when active,
+      else first visible line) so cursor-mode `m`/`H`/`a` just delegate to the
+      existing `apply(Action::…)` paths — no duplicated annotation logic.
+      Sub-line highlights persist and re-render exactly: the selection's normalized
+      text is the anchor, re-found after reflow by `selection::resolve_spans` over a
+      whitespace-normalized flat of the section (reflow-stable — same words flatten
+      identically at any width) → per-line `(start,end)` cell spans. Highlight
+      rendering unified to spans (`nav.highlight_spans`): a whole-line `H` highlight
+      stores its full line text and washes the line; a range highlight washes just
+      its characters. `to_ratatui` gained a `LineDecor`
+      (matcher/link-cursor/highlight-spans/selection/caret) for per-cell styling.
+      **Two-page fix**: the view writes `reader.visible_span` (page_lines × text
+      columns) and the caret follow uses it, so moving onto the second page
+      positions the caret there instead of scrolling — was a runaway "can't stop"
+      scroll because `follow` used one column's `page_lines`. Keys captured before
+      global shortcuts (like search). Paged (PDF) docs have no character grid, so
+      `V` is a no-op there. Tests: selection.rs (`resolve_spans` sub-line +
+      survives-rewrap, `cursor_mode_has_no_selection_until_anchored`, motions),
+      reader (`visual_selection_extends_and_copies`,
+      `caret_reaches_second_page_without_scrolling`, `stored_highlight_resolves_to_a_span`).
+      *Still: backlinks; multi-section selection (v1 is within one section);
+      continuous-mode selection alignment (mirrors the existing highlight caveat).*
 - [x] Statistics: `delryn-library::stats` + overlay (`i`) — totals, status mix,
       ratings, reading hours, top authors.
 - [x] Export: `delryn-library::export` (`X`) — book list → CSV / JSON / Markdown.

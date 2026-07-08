@@ -55,7 +55,8 @@ pub use editor::{
 mod reader;
 pub use page_deck::PageTarget;
 pub use reader::{
-    ImageGeom, PageView, PanRoom, Reader, Viewport, place_page, raster_width_for_crispness,
+    AnchorHit, ImageGeom, PageView, PanRoom, Reader, Viewport, place_page,
+    raster_width_for_crispness,
 };
 
 mod image_view;

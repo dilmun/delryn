@@ -3,6 +3,7 @@
 //! open; routing only — the heavy lifting lives in the concern modules.
 
 use super::super::*;
+use crate::HighlightColor;
 use crate::ui::TextInput;
 use crossterm::event::KeyModifiers;
 
@@ -449,6 +450,130 @@ impl App {
         if let (Some(store), Some(r)) = (&self.session.store, self.reader.as_mut()) {
             r.set_annotations(store.list_annotations(&self.session.book_path));
         }
+    }
+
+    /// Handle a key in cursor/selection mode. Motions move the caret (either page
+    /// of a spread); `v`/Space drops or lifts the selection anchor. Annotations act
+    /// at the caret — `m` bookmark, `H` highlight the caret line — and, once
+    /// selecting, on the range: `y` copy, `1`-`5`/`H` highlight, `a` note.
+    /// `Esc`/`V` leave the mode.
+    pub(super) fn visual_key(&mut self, key: KeyEvent) {
+        let selecting = self
+            .reader
+            .as_ref()
+            .is_some_and(Reader::selection_selecting);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('V') => {
+                if let Some(r) = self.reader.as_mut() {
+                    r.cancel_selection();
+                }
+            }
+            // Half-page caret navigation (extends the range while selecting).
+            KeyCode::Char('d') if ctrl => self.selection_motion(Reader::selection_half_down),
+            KeyCode::Char('u') if ctrl => self.selection_motion(Reader::selection_half_up),
+            // Start selecting from the caret (or lift the anchor to move freely).
+            KeyCode::Char('v') | KeyCode::Char(' ') => {
+                if let Some(r) = self.reader.as_mut() {
+                    r.toggle_selection_anchor();
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left => self.selection_motion(Reader::selection_left),
+            KeyCode::Char('l') | KeyCode::Right => self.selection_motion(Reader::selection_right),
+            KeyCode::Char('j') | KeyCode::Down => self.selection_motion(Reader::selection_down),
+            KeyCode::Char('k') | KeyCode::Up => self.selection_motion(Reader::selection_up),
+            KeyCode::Char('w') => self.selection_motion(Reader::selection_word_forward),
+            KeyCode::Char('b') => self.selection_motion(Reader::selection_word_back),
+            KeyCode::Char('0') | KeyCode::Home => {
+                self.selection_motion(Reader::selection_line_start)
+            }
+            KeyCode::Char('$') | KeyCode::End => self.selection_motion(Reader::selection_line_end),
+            // Bookmark the caret's line (the cursor-aware `current_quote` anchors
+            // there, so it works on either page of a spread). Stays in cursor mode.
+            KeyCode::Char('m') => self.apply(Action::AddBookmark),
+            KeyCode::Char('y') if selecting => {
+                if let Some(r) = self.reader.as_mut() {
+                    r.copy_selection();
+                }
+            }
+            // Highlight the selected range, else cycle the caret line's highlight.
+            KeyCode::Char('H') => {
+                if selecting {
+                    self.highlight_selection(HighlightColor::ALL[0]);
+                } else {
+                    self.apply(Action::AddHighlight);
+                }
+            }
+            KeyCode::Char(c) if selecting && ('1'..='5').contains(&c) => {
+                self.highlight_selection(HighlightColor::ALL[c as usize - '1' as usize]);
+            }
+            // Note on the selection, else on the caret's line (then leave the mode,
+            // handing over to the commentary prompt).
+            KeyCode::Char('a') => {
+                if selecting {
+                    self.note_on_selection();
+                } else {
+                    self.apply(Action::AddNote);
+                    if let Some(r) = self.reader.as_mut() {
+                        r.cancel_selection();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Run a caret motion on the open reader (no-op if none is open).
+    fn selection_motion(&mut self, motion: fn(&mut Reader)) {
+        if let Some(r) = self.reader.as_mut() {
+            motion(r);
+        }
+    }
+
+    /// Highlight the current selection in `color`, then leave visual mode.
+    fn highlight_selection(&mut self, color: HighlightColor) {
+        let Some((section, quote)) = self
+            .reader
+            .as_ref()
+            .map(|r| (r.section, r.selection_text()))
+        else {
+            return;
+        };
+        if let Some(r) = self.reader.as_mut() {
+            r.cancel_selection();
+        }
+        if quote.is_empty() || self.session.book_path.is_empty() {
+            return;
+        }
+        if let Some(store) = &self.session.store {
+            store.add_highlight(&self.session.book_path, section, &quote, color.index());
+        }
+        if let Some(r) = self.reader.as_mut() {
+            r.flash = Some(format!("highlight: {}", color.label()));
+        }
+        self.sync_reader_bookmarks();
+    }
+
+    /// Open the note prompt anchored to the current selection, then leave visual
+    /// mode (the note is saved on commit — see [`Self::prompt_commit`]).
+    fn note_on_selection(&mut self) {
+        let Some((section, quote)) = self
+            .reader
+            .as_ref()
+            .map(|r| (r.section, r.selection_text()))
+        else {
+            return;
+        };
+        if let Some(r) = self.reader.as_mut() {
+            r.cancel_selection();
+        }
+        if quote.is_empty() || self.session.book_path.is_empty() {
+            return;
+        }
+        self.overlay = Overlay::Prompt(Prompt {
+            kind: PromptKind::NewNote { section, quote },
+            input: TextInput::from(String::new()),
+        });
     }
 
     pub(super) fn search_key(&mut self, key: KeyEvent) {
