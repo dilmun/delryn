@@ -1,9 +1,10 @@
 //! Visual (vim-style) text selection and the shared section-text resolver.
 //!
 //! Two jobs live here:
-//! - [`Selection`] — a caret + anchor over the current section's display lines,
-//!   driven by vim motions (`h`/`l`/`w`/`b`/`0`/`$`/`j`/`k`), yielding the selected
-//!   text (to copy or to anchor a highlight/note).
+//! - [`Selection`] — a free-moving caret over the current section's display lines,
+//!   plus an optional anchor. `V` enters **cursor mode** (caret only); `v`/Space
+//!   drops the anchor to begin **selecting**; motions then extend the range. The
+//!   selected text can be copied or used to anchor a highlight/note.
 //! - [`flat_index`] / [`resolve_spans`] — flatten a section's wrapped lines into a
 //!   whitespace-normalized string and re-find a stored quote's exact cells after a
 //!   reflow, so a sub-line highlight re-washes the same characters at any width.
@@ -16,13 +17,19 @@ use super::Reader;
 /// [`Selection`] they drive; they read/write the reader's private `select`,
 /// `lines`, and `scroll`, so they live in this child module.
 impl Reader {
-    /// Whether a visual selection is active (keys are then motions, not commands).
+    /// Whether the cursor/selection mode is active (keys are motions/commands).
     pub fn selection_active(&self) -> bool {
         self.select.is_some()
     }
 
-    /// Enter visual mode with a collapsed selection at the first non-blank visible
-    /// line. No-op for paged (image) documents, which have no character grid.
+    /// Whether a selection anchor is dropped (as opposed to just moving the cursor).
+    pub fn selection_selecting(&self) -> bool {
+        self.select.is_some_and(|s| s.anchor.is_some())
+    }
+
+    /// Enter cursor mode with the caret at the first non-blank visible line — no
+    /// anchor yet, so the user can position it (across both pages of a spread)
+    /// before pressing `v` to start selecting. No-op for paged (image) documents.
     pub fn start_selection(&mut self) {
         if self.is_paged_image() || self.lines.is_empty() {
             return;
@@ -33,28 +40,40 @@ impl Reader {
         self.select = Some(Selection::at(line, 0));
     }
 
-    /// Leave visual mode, discarding the selection.
+    /// Toggle the selection anchor: drop it at the caret to begin selecting, or
+    /// lift it to go back to just moving the cursor.
+    pub fn toggle_selection_anchor(&mut self) {
+        if let Some(sel) = self.select.as_mut() {
+            sel.anchor = match sel.anchor {
+                Some(_) => None,
+                None => Some(sel.caret),
+            };
+        }
+    }
+
+    /// Leave cursor/selection mode.
     pub fn cancel_selection(&mut self) {
         self.select = None;
     }
 
-    /// The selected text (whitespace-normalized), or empty if none.
+    /// The selected text (whitespace-normalized), or empty if nothing is anchored.
     pub fn selection_text(&self) -> String {
         self.select.map(|s| s.text(&self.lines)).unwrap_or_default()
     }
 
-    /// The selection's `[start, end)` column span on a display line, for washing.
+    /// The selection's `[start, end)` column span on a display line, for washing —
+    /// `None` in cursor mode (nothing anchored yet).
     pub fn selection_span_on(&self, line: usize) -> Option<(usize, usize)> {
         self.select.and_then(|s| s.span_on(line, &self.lines))
     }
 
     /// The caret cell `(line, col)`, drawn as a block so the user sees the head.
     pub fn selection_caret(&self) -> Option<(usize, usize)> {
-        self.select.map(|s| (s.head.line, s.head.col))
+        self.select.map(|s| (s.caret.line, s.caret.col))
     }
 
-    /// Copy the selection to the clipboard and leave visual mode. Returns whether
-    /// anything was copied.
+    /// Copy the selection to the clipboard and leave the mode. Returns whether
+    /// anything was copied (nothing is, in cursor mode).
     pub fn copy_selection(&mut self) -> bool {
         let text = self.selection_text();
         self.select = None;
@@ -71,7 +90,7 @@ impl Reader {
     }
 
     /// Apply a caret motion, then scroll so the caret stays on screen.
-    fn move_head(&mut self, motion: impl FnOnce(&mut Selection, &[DisplayLine])) {
+    fn move_caret(&mut self, motion: impl FnOnce(&mut Selection, &[DisplayLine])) {
         if let Some(sel) = self.select.as_mut() {
             sel.clamp(&self.lines);
             motion(sel, &self.lines);
@@ -80,41 +99,43 @@ impl Reader {
     }
 
     pub fn selection_left(&mut self) {
-        self.move_head(Selection::left);
+        self.move_caret(Selection::left);
     }
     pub fn selection_right(&mut self) {
-        self.move_head(Selection::right);
+        self.move_caret(Selection::right);
     }
     pub fn selection_up(&mut self) {
-        self.move_head(Selection::up);
+        self.move_caret(Selection::up);
     }
     pub fn selection_down(&mut self) {
-        self.move_head(Selection::down);
+        self.move_caret(Selection::down);
     }
     pub fn selection_word_forward(&mut self) {
-        self.move_head(Selection::word_forward);
+        self.move_caret(Selection::word_forward);
     }
     pub fn selection_word_back(&mut self) {
-        self.move_head(Selection::word_back);
+        self.move_caret(Selection::word_back);
     }
     pub fn selection_line_start(&mut self) {
-        self.move_head(|s, _| s.line_start());
+        self.move_caret(|s, _| s.line_start());
     }
     pub fn selection_line_end(&mut self) {
-        self.move_head(Selection::line_end);
+        self.move_caret(Selection::line_end);
     }
 
-    /// Scroll the minimum needed to keep the caret's line within the viewport.
+    /// Scroll the minimum needed to keep the caret's line within the viewport. Uses
+    /// the *full* visible span (both pages of a two-page spread), so moving the
+    /// caret onto the second page positions it there instead of scrolling.
     fn follow_caret(&mut self) {
         let Some(sel) = self.select else { return };
-        let head = sel.head.line;
-        let page = self.page_lines.max(1);
+        let head = sel.caret.line;
+        let span = self.visible_span.max(1);
         if head < self.scroll {
             self.scroll = head;
-        } else if head >= self.scroll + page {
-            self.scroll = head + 1 - page;
+        } else if head >= self.scroll + span {
+            self.scroll = head + 1 - span;
         }
-        let max = self.lines.len().saturating_sub(page);
+        let max = self.lines.len().saturating_sub(self.page_lines.max(1));
         self.scroll = self.scroll.min(max);
     }
 }
@@ -133,12 +154,13 @@ impl Caret {
     }
 }
 
-/// A live visual selection: `anchor` is fixed where the user pressed `V`, `head`
-/// moves with the motions. The selected range is the inclusive span between them.
+/// The cursor/selection state: a free-moving `caret`, and an `anchor` that is
+/// `Some` once the user has started selecting (`v`/Space). The selected range is
+/// the inclusive span between the anchor and the caret.
 #[derive(Clone, Copy)]
 pub struct Selection {
-    pub anchor: Caret,
-    pub head: Caret,
+    pub caret: Caret,
+    pub anchor: Option<Caret>,
 }
 
 /// Character count of display line `li` (0 if out of range).
@@ -152,24 +174,30 @@ fn max_col(lines: &[DisplayLine], li: usize) -> usize {
 }
 
 impl Selection {
-    /// Start a collapsed selection at `(line, col)`.
+    /// Start in cursor mode with the caret at `(line, col)` and no anchor.
     pub fn at(line: usize, col: usize) -> Selection {
-        let c = Caret { line, col };
-        Selection { anchor: c, head: c }
-    }
-
-    /// The selection normalized to `(start, end)` in reading order.
-    pub fn ordered(self) -> (Caret, Caret) {
-        if self.anchor.key() <= self.head.key() {
-            (self.anchor, self.head)
-        } else {
-            (self.head, self.anchor)
+        Selection {
+            caret: Caret { line, col },
+            anchor: None,
         }
     }
 
-    /// The `[start, end)` column span this selection covers on display line `line`,
-    /// or `None` if the line is outside it. The head character is included.
+    /// The anchored range normalized to `(start, end)` in reading order (the caret
+    /// alone when nothing is anchored).
+    fn ordered(self) -> (Caret, Caret) {
+        let anchor = self.anchor.unwrap_or(self.caret);
+        if anchor.key() <= self.caret.key() {
+            (anchor, self.caret)
+        } else {
+            (self.caret, anchor)
+        }
+    }
+
+    /// The `[start, end)` column span the selection covers on display line `line`,
+    /// or `None` if nothing is anchored or the line is outside it. The caret
+    /// character is included.
     pub fn span_on(self, line: usize, lines: &[DisplayLine]) -> Option<(usize, usize)> {
+        self.anchor?;
         let (a, b) = self.ordered();
         if line < a.line || line > b.line {
             return None;
@@ -180,9 +208,12 @@ impl Selection {
         (start < end).then_some((start, end))
     }
 
-    /// The selected text, whitespace-normalized (lines joined by single spaces) —
-    /// used to copy, and to anchor a highlight/note so it survives reflow.
+    /// The selected text, whitespace-normalized (lines joined by single spaces), or
+    /// empty when nothing is anchored — used to copy and to anchor a highlight/note.
     pub fn text(self, lines: &[DisplayLine]) -> String {
+        if self.anchor.is_none() {
+            return String::new();
+        }
         let (a, b) = self.ordered();
         let end_line = b.line.min(lines.len().saturating_sub(1));
         if lines.is_empty() || a.line > end_line {
@@ -209,56 +240,56 @@ impl Selection {
             .join(" ")
     }
 
-    // --- motions (move the head; the anchor stays put) ---
+    // --- motions (move the caret; the anchor, if any, stays put) ---
 
     /// One character left, crossing to the previous line's end at column 0.
     pub fn left(&mut self, lines: &[DisplayLine]) {
-        if self.head.col > 0 {
-            self.head.col -= 1;
-        } else if self.head.line > 0 {
-            self.head.line -= 1;
-            self.head.col = max_col(lines, self.head.line);
+        if self.caret.col > 0 {
+            self.caret.col -= 1;
+        } else if self.caret.line > 0 {
+            self.caret.line -= 1;
+            self.caret.col = max_col(lines, self.caret.line);
         }
     }
 
     /// One character right, crossing to the next line's start.
     pub fn right(&mut self, lines: &[DisplayLine]) {
-        if self.head.col < max_col(lines, self.head.line) {
-            self.head.col += 1;
-        } else if self.head.line + 1 < lines.len() {
-            self.head.line += 1;
-            self.head.col = 0;
+        if self.caret.col < max_col(lines, self.caret.line) {
+            self.caret.col += 1;
+        } else if self.caret.line + 1 < lines.len() {
+            self.caret.line += 1;
+            self.caret.col = 0;
         }
     }
 
     /// Up a line, keeping the column (clamped to the shorter line).
     pub fn up(&mut self, lines: &[DisplayLine]) {
-        if self.head.line > 0 {
-            self.head.line -= 1;
-            self.head.col = self.head.col.min(max_col(lines, self.head.line));
+        if self.caret.line > 0 {
+            self.caret.line -= 1;
+            self.caret.col = self.caret.col.min(max_col(lines, self.caret.line));
         }
     }
 
     /// Down a line, keeping the column (clamped to the shorter line).
     pub fn down(&mut self, lines: &[DisplayLine]) {
-        if self.head.line + 1 < lines.len() {
-            self.head.line += 1;
-            self.head.col = self.head.col.min(max_col(lines, self.head.line));
+        if self.caret.line + 1 < lines.len() {
+            self.caret.line += 1;
+            self.caret.col = self.caret.col.min(max_col(lines, self.caret.line));
         }
     }
 
     /// To the first / last character of the current line.
     pub fn line_start(&mut self) {
-        self.head.col = 0;
+        self.caret.col = 0;
     }
     pub fn line_end(&mut self, lines: &[DisplayLine]) {
-        self.head.col = max_col(lines, self.head.line);
+        self.caret.col = max_col(lines, self.caret.line);
     }
 
     /// Forward to the start of the next word (crossing lines).
     pub fn word_forward(&mut self, lines: &[DisplayLine]) {
-        let chars: Vec<char> = current_chars(lines, self.head.line);
-        let mut col = self.head.col;
+        let chars: Vec<char> = current_chars(lines, self.caret.line);
+        let mut col = self.caret.col;
         // Skip the rest of the current word, then any spaces.
         while col < chars.len() && !chars[col].is_whitespace() {
             col += 1;
@@ -267,44 +298,47 @@ impl Selection {
             col += 1;
         }
         if col < chars.len() {
-            self.head.col = col;
-        } else if self.head.line + 1 < lines.len() {
-            self.head.line += 1;
-            self.head.col = 0;
+            self.caret.col = col;
+        } else if self.caret.line + 1 < lines.len() {
+            self.caret.line += 1;
+            self.caret.col = 0;
         } else {
-            self.head.col = max_col(lines, self.head.line);
+            self.caret.col = max_col(lines, self.caret.line);
         }
     }
 
     /// Back to the start of the current or previous word (crossing lines).
     pub fn word_back(&mut self, lines: &[DisplayLine]) {
-        if self.head.col == 0 {
-            if self.head.line > 0 {
-                self.head.line -= 1;
-                self.head.col = max_col(lines, self.head.line);
+        if self.caret.col == 0 {
+            if self.caret.line > 0 {
+                self.caret.line -= 1;
+                self.caret.col = max_col(lines, self.caret.line);
             }
             return;
         }
-        let chars: Vec<char> = current_chars(lines, self.head.line);
-        let mut col = self.head.col;
+        let chars: Vec<char> = current_chars(lines, self.caret.line);
+        let mut col = self.caret.col.saturating_sub(1);
         // Step back over spaces, then to the start of the word.
-        col = col.saturating_sub(1);
         while col > 0 && chars.get(col).is_some_and(|c| c.is_whitespace()) {
             col -= 1;
         }
         while col > 0 && chars.get(col - 1).is_some_and(|c| !c.is_whitespace()) {
             col -= 1;
         }
-        self.head.col = col;
+        self.caret.col = col;
     }
 
-    /// Clamp the caret/anchor to a (possibly re-wrapped) `lines`, so an image load
-    /// that re-flows mid-selection can't leave the caret out of bounds.
+    /// Clamp the caret + anchor to a (possibly re-wrapped) `lines`, so an image
+    /// load that re-flows mid-selection can't leave the caret out of bounds.
     pub fn clamp(&mut self, lines: &[DisplayLine]) {
         let last = lines.len().saturating_sub(1);
-        for c in [&mut self.anchor, &mut self.head] {
+        let clamp = |c: &mut Caret| {
             c.line = c.line.min(last);
             c.col = c.col.min(max_col(lines, c.line));
+        };
+        clamp(&mut self.caret);
+        if let Some(a) = self.anchor.as_mut() {
+            clamp(a);
         }
     }
 }
@@ -414,31 +448,34 @@ mod tests {
     #[test]
     fn resolve_spans_finds_a_sub_line_phrase() {
         let lines = vec![line("the quick brown fox"), line("jumps over the dog")];
-        // "quick brown" is on line 0, cols 4..15.
         let spans = resolve_spans("quick brown", &lines);
         assert_eq!(spans, vec![(0, (4, 15))]);
     }
 
     #[test]
     fn resolve_spans_crosses_a_wrap_and_survives_rewrap() {
-        // A phrase split across two display lines by the wrap.
         let narrow = vec![line("the quick brown"), line("fox jumps")];
         let spans = resolve_spans("brown fox", &narrow);
-        // "brown" on line 0 (cols 10..15), "fox" on line 1 (cols 0..3).
         assert_eq!(spans, vec![(0, (10, 15)), (1, (0, 3))]);
 
-        // Same words wrapped differently → still found (reflow-stable), now one line.
         let wide = vec![line("the quick brown fox jumps")];
         let spans = resolve_spans("brown fox", &wide);
         assert_eq!(spans, vec![(0, (10, 19))]);
     }
 
     #[test]
-    fn selection_text_is_normalized_across_lines() {
+    fn cursor_mode_has_no_selection_until_anchored() {
         let lines = vec![line("the quick brown"), line("fox jumps")];
-        let mut sel = Selection::at(0, 4); // 'q' of quick
-        sel.head = Caret { line: 1, col: 2 }; // 'x' of fox
+        let mut sel = Selection::at(0, 4); // caret at 'q', no anchor
+        assert_eq!(sel.text(&lines), "", "no anchor → no selection");
+        assert_eq!(sel.span_on(0, &lines), None);
+
+        // Drop the anchor at the caret, then extend to 'x' of fox.
+        sel.anchor = Some(sel.caret);
+        sel.caret = Caret { line: 1, col: 2 };
         assert_eq!(sel.text(&lines), "quick brown fox");
+        assert_eq!(sel.span_on(0, &lines), Some((4, 15)));
+        assert_eq!(sel.span_on(1, &lines), Some((0, 3)));
     }
 
     #[test]
@@ -447,15 +484,15 @@ mod tests {
         let mut sel = Selection::at(0, 0);
         sel.right(&lines);
         sel.right(&lines);
-        assert_eq!((sel.head.line, sel.head.col), (0, 2)); // 'c'
+        assert_eq!((sel.caret.line, sel.caret.col), (0, 2)); // 'c'
         sel.right(&lines); // past line 0 end → line 1 col 0
-        assert_eq!((sel.head.line, sel.head.col), (1, 0));
+        assert_eq!((sel.caret.line, sel.caret.col), (1, 0));
         sel.down(&lines); // already last line — no move
-        assert_eq!((sel.head.line, sel.head.col), (1, 0));
+        assert_eq!((sel.caret.line, sel.caret.col), (1, 0));
         sel.line_end(&lines);
-        assert_eq!(sel.head.col, 1); // 'e'
+        assert_eq!(sel.caret.col, 1); // 'e'
         sel.left(&lines);
         sel.left(&lines); // col0 → cross up to end of line 0
-        assert_eq!((sel.head.line, sel.head.col), (0, 2));
+        assert_eq!((sel.caret.line, sel.caret.col), (0, 2));
     }
 }

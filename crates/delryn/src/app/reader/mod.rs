@@ -209,6 +209,10 @@ pub struct Reader {
     /// count). One column's height — in a two-page spread, paging advances one
     /// column at a time. Currently equal to `viewport_lines`.
     pub page_lines: usize,
+    /// Total display lines visible across all text columns this frame (one column
+    /// in Center, two in a spread). Drives the visual-selection caret follow so
+    /// moving onto the second page doesn't scroll. Written by the view each draw.
+    pub visible_span: usize,
     /// Wrap width used by the last render; used to locate jump targets.
     pub last_measure: usize,
     /// Region an open overlay/popup covers this frame, if any. An inline image
@@ -309,6 +313,7 @@ impl Reader {
             sidebar_h: 1,
             viewport_lines: 1,
             page_lines: 1,
+            visible_span: 1,
             last_measure: 72,
             pending_frac: None,
             pending_image: None,
@@ -861,21 +866,27 @@ impl Reader {
         ((self.section as f32) + within) / n
     }
 
-    /// A short text quote of the first non-blank visible line, used to anchor
-    /// bookmarks/notes so they survive reflow.
+    /// A short text quote of the anchor line ([`current_line_text`]), used to
+    /// anchor bookmarks/notes so they survive reflow.
     pub fn current_quote(&self) -> String {
         self.current_line_text().chars().take(80).collect()
     }
 
-    /// The full (whitespace-normalized) text of the first non-blank visible line —
-    /// the anchor a whole-line `H` highlight stores, so it re-washes the entire
-    /// line via [`selection::resolve_spans`] at any width.
+    /// The full (whitespace-normalized) text of the *anchor line* — the caret's
+    /// line when the cursor is active (so an annotation lands where the cursor is,
+    /// including on the second page of a spread), otherwise the first non-blank
+    /// visible line. A whole-line `H` highlight stores this, so it re-washes the
+    /// entire line via [`selection::resolve_spans`] at any width.
     pub fn current_line_text(&self) -> String {
         if self.lines.is_empty() {
             return String::new();
         }
-        let start = self.scroll.min(self.lines.len() - 1);
-        self.lines[start..]
+        let from = self
+            .select
+            .map(|s| s.caret.line)
+            .unwrap_or(self.scroll)
+            .min(self.lines.len() - 1);
+        self.lines[from..]
             .iter()
             .map(|l| l.text())
             .find(|t| !t.trim().is_empty())
@@ -1056,23 +1067,62 @@ mod tests {
         r
     }
 
-    // Visual mode: `V` starts a selection at the first line; extending it right
-    // grows the selected text, and copying stages it for the clipboard.
+    // Cursor mode: `V` starts a movable caret with no anchor (nothing selected);
+    // `v`/Space drops the anchor, then extending right grows the selected text, and
+    // copying stages it for the clipboard.
     #[test]
     fn visual_selection_extends_and_copies() {
         let mut r = reader_with(vec![para()]);
         r.viewport_lines = 10;
         r.page_lines = 10;
+        r.visible_span = 10;
         r.start_selection();
         assert!(r.selection_active());
+        assert!(!r.selection_selecting(), "cursor mode has no selection yet");
+        assert_eq!(r.selection_text(), "", "nothing anchored → no text");
+
+        r.toggle_selection_anchor(); // begin selecting at the caret
+        assert!(r.selection_selecting());
         // Extend right over "lorem " (6 cells, cols 0..=5); normalized → "lorem".
         for _ in 0..5 {
             r.selection_right();
         }
         assert_eq!(r.selection_text(), "lorem");
         assert!(r.copy_selection(), "non-empty selection copies");
-        assert!(!r.selection_active(), "copying leaves visual mode");
+        assert!(!r.selection_active(), "copying leaves the mode");
         assert_eq!(r.take_clipboard().as_deref(), Some("lorem"));
+    }
+
+    // The caret follow uses the full visible span (both pages of a spread), so
+    // moving onto the second page positions the caret there instead of scrolling —
+    // the two-page runaway-scroll bug.
+    #[test]
+    fn caret_reaches_second_page_without_scrolling() {
+        let big = Block::Para {
+            spans: vec![Span::plain("lorem ipsum dolor sit amet ".repeat(40))],
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let mut r = reader_with(vec![big]);
+        r.page_lines = 8;
+        r.visible_span = 16; // a two-page spread: two 8-line columns
+        assert!(r.lines.len() > 20, "enough lines to fill two pages");
+        r.start_selection();
+        // Move the caret down onto the second page (line 12) — still within the
+        // visible span, so the spread must not scroll.
+        for _ in 0..12 {
+            r.selection_down();
+        }
+        assert_eq!(
+            r.scroll, 0,
+            "caret on the 2nd page doesn't scroll the spread"
+        );
+        // Past the full span, the follow finally scrolls to keep the caret visible.
+        for _ in 0..8 {
+            r.selection_down();
+        }
+        assert!(r.scroll > 0, "past the visible span the follow scrolls");
     }
 
     // A stored highlight resolves its quote back to a character span on its line,

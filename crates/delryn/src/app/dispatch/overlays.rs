@@ -452,13 +452,26 @@ impl App {
         }
     }
 
-    /// Handle a key while a visual text selection is active: vim motions move the
-    /// caret; `y` copies; `1`-`5` / `H` highlight; `a` notes; `Esc` / `V` cancel.
+    /// Handle a key in cursor/selection mode. Motions move the caret (either page
+    /// of a spread); `v`/Space drops or lifts the selection anchor. Annotations act
+    /// at the caret — `m` bookmark, `H` highlight the caret line — and, once
+    /// selecting, on the range: `y` copy, `1`-`5`/`H` highlight, `a` note.
+    /// `Esc`/`V` leave the mode.
     pub(super) fn visual_key(&mut self, key: KeyEvent) {
+        let selecting = self
+            .reader
+            .as_ref()
+            .is_some_and(Reader::selection_selecting);
         match key.code {
             KeyCode::Esc | KeyCode::Char('V') => {
                 if let Some(r) = self.reader.as_mut() {
                     r.cancel_selection();
+                }
+            }
+            // Start selecting from the caret (or lift the anchor to move freely).
+            KeyCode::Char('v') | KeyCode::Char(' ') => {
+                if let Some(r) = self.reader.as_mut() {
+                    r.toggle_selection_anchor();
                 }
             }
             KeyCode::Char('h') | KeyCode::Left => self.selection_motion(Reader::selection_left),
@@ -471,15 +484,36 @@ impl App {
                 self.selection_motion(Reader::selection_line_start)
             }
             KeyCode::Char('$') | KeyCode::End => self.selection_motion(Reader::selection_line_end),
-            KeyCode::Char('y') => {
+            // Bookmark the caret's line (the cursor-aware `current_quote` anchors
+            // there, so it works on either page of a spread). Stays in cursor mode.
+            KeyCode::Char('m') => self.apply(Action::AddBookmark),
+            KeyCode::Char('y') if selecting => {
                 if let Some(r) = self.reader.as_mut() {
                     r.copy_selection();
                 }
             }
-            KeyCode::Char('a') => self.note_on_selection(),
-            KeyCode::Char('H') => self.highlight_selection(HighlightColor::ALL[0]),
-            KeyCode::Char(c) if ('1'..='5').contains(&c) => {
+            // Highlight the selected range, else cycle the caret line's highlight.
+            KeyCode::Char('H') => {
+                if selecting {
+                    self.highlight_selection(HighlightColor::ALL[0]);
+                } else {
+                    self.apply(Action::AddHighlight);
+                }
+            }
+            KeyCode::Char(c) if selecting && ('1'..='5').contains(&c) => {
                 self.highlight_selection(HighlightColor::ALL[c as usize - '1' as usize]);
+            }
+            // Note on the selection, else on the caret's line (then leave the mode,
+            // handing over to the commentary prompt).
+            KeyCode::Char('a') => {
+                if selecting {
+                    self.note_on_selection();
+                } else {
+                    self.apply(Action::AddNote);
+                    if let Some(r) = self.reader.as_mut() {
+                        r.cancel_selection();
+                    }
+                }
             }
             _ => {}
         }
