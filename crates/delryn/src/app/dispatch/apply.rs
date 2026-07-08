@@ -243,7 +243,7 @@ impl App {
                 if let Some(store) = &self.session.store
                     && !self.session.book_path.is_empty()
                 {
-                    let (section, quote) = (reader.section, reader.current_quote());
+                    let (section, quote) = (reader.section, reader.current_line_text());
                     // A repeat `H` at the same anchor advances the colour, then
                     // clears it — so find any existing highlight there first.
                     let existing = store
@@ -279,6 +279,7 @@ impl App {
                     reader.set_annotations(store.list_annotations(&self.session.book_path));
                 }
             }
+            Action::StartSelection => reader.start_selection(),
             Action::OpenAnnotations => {
                 if let Some(store) = &self.session.store {
                     let items = store.list_annotations(&self.session.book_path);

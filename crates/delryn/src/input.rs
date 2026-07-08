@@ -50,6 +50,8 @@ pub enum Action {
     AddNote,
     /// Highlight the current line, cycling its colour (and off) on repeat.
     AddHighlight,
+    /// Enter visual (vim-style) text selection.
+    StartSelection,
     OpenAnnotations,
     CopyCode,
     ToggleCodeWrap,
@@ -146,6 +148,7 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('m') => Action::AddBookmark,
         KeyCode::Char('a') => Action::AddNote,
         KeyCode::Char('H') => Action::AddHighlight,
+        KeyCode::Char('V') => Action::StartSelection,
         KeyCode::Char('M') => Action::CycleReadingMode,
         KeyCode::Char('\'') => Action::OpenAnnotations,
         KeyCode::Char('y') => Action::CopyCode,
