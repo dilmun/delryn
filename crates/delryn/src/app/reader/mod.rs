@@ -1125,6 +1125,26 @@ mod tests {
         assert!(r.scroll > 0, "past the visible span the follow scrolls");
     }
 
+    // Ctrl-d / Ctrl-u jump the caret by half the visible span.
+    #[test]
+    fn half_page_caret_jump() {
+        let big = Block::Para {
+            spans: vec![Span::plain("lorem ipsum dolor sit amet ".repeat(40))],
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let mut r = reader_with(vec![big]);
+        r.page_lines = 8;
+        r.visible_span = 16; // half = 8
+        r.start_selection();
+        assert_eq!(r.selection_caret().map(|(l, _)| l), Some(0));
+        r.selection_half_down();
+        assert_eq!(r.selection_caret().map(|(l, _)| l), Some(8));
+        r.selection_half_up();
+        assert_eq!(r.selection_caret().map(|(l, _)| l), Some(0));
+    }
+
     // A stored highlight resolves its quote back to a character span on its line,
     // so it re-washes after reflow (the render path behind the gutter/wash).
     #[test]

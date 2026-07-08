@@ -462,12 +462,16 @@ impl App {
             .reader
             .as_ref()
             .is_some_and(Reader::selection_selecting);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc | KeyCode::Char('V') => {
                 if let Some(r) = self.reader.as_mut() {
                     r.cancel_selection();
                 }
             }
+            // Half-page caret navigation (extends the range while selecting).
+            KeyCode::Char('d') if ctrl => self.selection_motion(Reader::selection_half_down),
+            KeyCode::Char('u') if ctrl => self.selection_motion(Reader::selection_half_up),
             // Start selecting from the caret (or lift the anchor to move freely).
             KeyCode::Char('v') | KeyCode::Char(' ') => {
                 if let Some(r) = self.reader.as_mut() {
