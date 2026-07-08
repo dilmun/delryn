@@ -215,12 +215,23 @@ Favorites · Authors · Tags · Collections.
 - **Pages caveat**: EPUB is reflowable and has no real page count. The Pages
   column shows an **estimate** (chars→pages, fixed ratio); **% read** is always
   available regardless.
+- **Delete to Trash**: `Delete` on the selected book (or the whole marked
+  selection) moves the file(s) to the OS trash after a yes/no confirmation —
+  recoverable, never an unlink. The library only holds books inside a configured
+  source folder, so removing a source (or *Rescan now*) also sweeps orphans —
+  including the bare row a one-off `delryn <file>` open leaves behind.
 
 ## 6. Library ↔ Reader
 
 Two top-level views behave like **tabs**: bare `delryn` lands on the Library;
 opening a book switches to the Reader; you can toggle back to the Library
 (`q`) with the book still loaded, and reopen instantly. `Q` quits.
+
+**CLI entry:** `delryn <file>` opens a book. `delryn <folder> [folder…]`
+registers each folder as a library source (deduped), scans, and lands on the
+Library — the ergonomic form of `delryn --add`. On **first run** (no source
+folders configured) delryn opens straight on the Sources manager (§7) so a new
+user's first action is adding a folder.
 
 ## 7. Settings — mode-scoped popup (`;`)
 
@@ -243,8 +254,11 @@ lands on the tab for the current mode, but all tabs are reachable.
 
 - **Reading**: measure width, center on/off, theme, line spacing,
   sidebar/bar defaults, status fields, PDF text-vs-image default.
-- **Library**: library paths (+ add), recursive scan, default view, thumbnail
-  size, sort, visible columns.
+- **Library**: the **Sources** tab (first) manages scanned folders — one row per
+  folder with `d`/Delete to remove it (which also drops its books), an
+  *Add folder…* row (inline path input), and *Rescan now*; plus default view,
+  thumbnail size, sort, and visible columns. Adding/removing a folder scans /
+  prunes and refreshes the list live.
 - **General** (shared): theme, keybindings, paths, mouse on/off.
 
 ## 8. Persistence

@@ -12,6 +12,7 @@ use crate::config::LibLayout;
 use crate::media;
 use crate::store::LibrarySection;
 
+use super::confirm::ConfirmAction;
 use super::{App, COVER_DEBOUNCE, Mode, Overlay, load_cover_bytes};
 
 /// The active library view: one of the fixed smart sections, or a user
@@ -304,20 +305,82 @@ impl App {
 
     /// Delete each duplicate's file (best-effort) and drop its library row, then
     /// refresh the list and the resolution overlay. Called from the confirmation
-    /// handler after the user confirms the checked deletions.
+    /// handler after the user confirms the checked deletions. Like every book
+    /// removal in delryn, the files go to the OS trash (recoverable), not unlinked.
     pub(crate) fn remove_duplicate_files(&mut self, paths: &[String]) {
-        let mut removed = 0;
-        for p in paths {
-            let gone = std::fs::remove_file(p).is_ok();
-            if let Some(store) = &self.session.store {
-                store.remove_book(p);
-            }
-            removed += usize::from(gone);
-        }
-        self.library.flash = Some(format!("removed {removed} duplicate(s)"));
+        let trashed = self.trash_paths(paths);
+        self.library.flash = Some(format!("moved {trashed} duplicate(s) to Trash"));
         self.library.sel = 0;
         self.refresh_library();
         self.refresh_dup_resolve();
+    }
+
+    /// The one place a book leaves the library: move each file to the OS trash
+    /// (recoverable) and drop its row. A file already gone still has its dead row
+    /// cleared; a genuine move failure (permission) leaves both file and row. Used
+    /// by the Delete action and the duplicate resolver so every removal behaves
+    /// the same. Returns how many files were trashed.
+    fn trash_paths(&self, paths: &[String]) -> usize {
+        let mut trashed = 0;
+        for p in paths {
+            let moved = trash::delete(p).is_ok();
+            if (moved || !std::path::Path::new(p).exists())
+                && let Some(store) = &self.session.store
+            {
+                store.remove_book(p);
+            }
+            trashed += usize::from(moved);
+        }
+        trashed
+    }
+
+    /// Ask to move the selected book — or the whole marked selection — to the OS
+    /// trash. The move (recoverable) runs only after the user confirms.
+    pub(crate) fn trash_selected(&mut self) {
+        // A marked set wins; otherwise the single book under the cursor. Preserve
+        // list order so the confirmation count matches what's highlighted.
+        let targets: Vec<String> = if self.library.marked.is_empty() {
+            self.library
+                .books
+                .get(self.library.sel)
+                .map(|b| b.path.clone())
+                .into_iter()
+                .collect()
+        } else {
+            self.library
+                .books
+                .iter()
+                .filter(|b| self.library.marked.contains(&b.path))
+                .map(|b| b.path.clone())
+                .collect()
+        };
+        if targets.is_empty() {
+            return;
+        }
+        let question = if targets.len() == 1 {
+            let title = self
+                .library
+                .books
+                .iter()
+                .find(|b| b.path == targets[0])
+                .map(|b| b.title.as_str())
+                .filter(|t| !t.is_empty())
+                .unwrap_or("this book");
+            format!("Move \"{title}\" to Trash?")
+        } else {
+            format!("Move {} books to Trash?", targets.len())
+        };
+        self.ask_confirm(&question, ConfirmAction::TrashBooks(targets));
+    }
+
+    /// Trash the confirmed book selection (from the library Delete action), then
+    /// clear the selection and refresh.
+    pub(crate) fn trash_books(&mut self, paths: &[String]) {
+        let trashed = self.trash_paths(paths);
+        self.lib_exit_visual(); // clear individual + range selection
+        self.library.sel = 0;
+        self.refresh_library();
+        self.library.flash = Some(format!("Moved {trashed} book(s) to Trash"));
     }
 
     /// Set the selected book's rating (0 clears), flashing the result.
@@ -729,6 +792,9 @@ impl App {
             KeyCode::Char(c @ '0'..='5') if pane != LibPane::Sidebar => {
                 self.lib_set_rating(c as u8 - b'0');
             }
+            // Delete moves the selected/marked book file(s) to the OS trash after a
+            // confirmation. Not from the sidebar (that pane has no book target).
+            KeyCode::Delete if pane != LibPane::Sidebar => self.trash_selected(),
             // `i` opens the library statistics overlay.
             KeyCode::Char('i') => self.open_stats(),
             // `X` exports the current (filtered) view to CSV.

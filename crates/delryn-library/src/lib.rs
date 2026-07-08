@@ -37,6 +37,49 @@ pub fn rescan(paths: &[String], store: &Store) -> usize {
     indexed
 }
 
+/// Normalize a user-supplied library folder path into the canonical form stored
+/// in `library_paths`: expand a leading `~` (the in-app input has no shell to do
+/// it), then canonicalize to an absolute path — falling back to the expanded
+/// input when the folder can't be resolved (e.g. an offline drive). Keeping this
+/// in one place means the CLI and the in-app Sources manager store paths
+/// identically, so dedupe (`contains`) works.
+pub fn normalize_root(input: &str) -> String {
+    let expanded = if input == "~" {
+        std::env::var("HOME").unwrap_or_else(|_| input.to_string())
+    } else if let Some(rest) = input.strip_prefix("~/") {
+        std::env::var("HOME")
+            .map(|home| format!("{home}/{rest}"))
+            .unwrap_or_else(|_| input.to_string())
+    } else {
+        input.to_string()
+    };
+    std::fs::canonicalize(&expanded)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or(expanded)
+}
+
+/// Drop every indexed book that lives under *none* of `paths` — the library only
+/// holds books inside a configured source folder, so this both clears a removed
+/// folder's books and sweeps older orphans: a source deleted earlier, or a bare
+/// row left by opening a one-off file from outside any library (`mark_opened`
+/// with no metadata → the "0 K, no title" ghost). A book under a configured but
+/// currently *offline* root is kept — its root string is still in `paths`, so it
+/// matches — mirroring [`prune_missing`]'s offline handling. Files on disk are
+/// untouched; this only forgets them. Returns how many were removed.
+pub fn prune_outside_roots(paths: &[String], store: &Store) -> usize {
+    let roots: Vec<&Path> = paths.iter().map(Path::new).collect();
+    let mut removed = 0;
+    for path in store.all_book_paths() {
+        let p = Path::new(&path);
+        if roots.iter().any(|r| p.starts_with(r)) {
+            continue;
+        }
+        store.remove_book(&path);
+        removed += 1;
+    }
+    removed
+}
+
 /// Drop DB entries whose file no longer exists, so deleted/moved books don't
 /// linger as dead, un-openable duplicates. A book is kept (not pruned) when it
 /// lives under a configured root that's currently unreadable — e.g. an unmounted
@@ -182,7 +225,7 @@ fn title_from_filename(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{prune_missing, scan, title_from_filename};
+    use super::{normalize_root, prune_missing, prune_outside_roots, scan, title_from_filename};
     use delryn_store::Store;
     use std::path::Path;
 
@@ -243,6 +286,54 @@ mod tests {
         assert!(store.all_book_paths().iter().any(|p| p == offline));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn prune_outside_roots_removes_orphans_keeps_configured() {
+        let _env = delryn_infra::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_orphan_{}", std::process::id()));
+        // SAFETY: serialized by `_env`; scopes the config dir to this process.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let store = Store::open_default().unwrap();
+        upsert(&store, "/lib_a/one.epub");
+        upsert(&store, "/lib_a/sub/two.epub");
+        upsert(&store, "/elsewhere/ghost.epub"); // orphan: under no configured root
+
+        // Only /lib_a is configured: its books stay, the orphan is swept.
+        assert_eq!(
+            prune_outside_roots(&["/lib_a".to_string()], &store),
+            1,
+            "the one orphan removed"
+        );
+        let mut paths = store.all_book_paths();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                "/lib_a/one.epub".to_string(),
+                "/lib_a/sub/two.epub".to_string()
+            ],
+            "configured-root books kept"
+        );
+
+        // With no roots at all, everything is an orphan — removing the last source
+        // empties the library (the reported ghost case).
+        assert_eq!(prune_outside_roots(&[], &store), 2);
+        assert!(store.all_book_paths().is_empty());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn normalize_root_falls_back_when_unresolvable() {
+        // A path that can't be canonicalized (doesn't exist) is returned as-is,
+        // so `--add`ing an offline drive still registers it.
+        assert_eq!(
+            normalize_root("/delryn_nonexistent_mount/books"),
+            "/delryn_nonexistent_mount/books"
+        );
     }
 
     #[test]
