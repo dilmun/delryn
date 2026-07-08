@@ -1,14 +1,16 @@
 //! The annotations overlay — a folder-grouped, searchable, jump-able list of
-//! bookmarks (⚑) and notes (✎) — plus the bottom-row rename / move-to-folder /
-//! note-commentary prompt. See `DESIGN.md` §(annotations).
+//! bookmarks (⚑), notes (✎), and highlights (a coloured ▌) — plus the bottom-row
+//! rename / move-to-folder / note-commentary prompt. See `DESIGN.md` §(annotations).
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph,
 };
 
+use crate::HighlightColor;
 use crate::app::{AnnotTab, App, Overlay, Prompt, PromptKind};
 use crate::theme::Role;
 
@@ -56,10 +58,6 @@ fn render_overlay(f: &mut Frame, app: &mut App) {
     let sel = state.sel;
     let filtering = state.filtering;
     let filter = state.filter.clone();
-    let (bm_count, note_count) = (
-        state.count(AnnotTab::Bookmarks),
-        state.count(AnnotTab::Notes),
-    );
     let bg = theme.paper();
     let block = Block::default()
         .borders(Borders::ALL)
@@ -85,48 +83,37 @@ fn render_overlay(f: &mut Frame, app: &mut App) {
     constraints.push(Constraint::Min(0));
     let rows = Layout::vertical(constraints).split(inner);
 
-    // Tab bar — build the two labels once so the click rects match what's drawn.
-    let bm_label = format!(" ⚑ {} ({bm_count}) ", AnnotTab::Bookmarks.label());
-    let note_label = format!(" ✎ {} ({note_count}) ", AnnotTab::Notes.label());
-    let tab_style = |t: AnnotTab| {
-        if active_tab == t {
+    // Tab bar — one labelled pill per tab, built in a loop so the click rects line
+    // up exactly with what's drawn (a 2-cell gap between pills). Labels use only
+    // width-1 glyphs, so the char count is the cell width.
+    let mut tab_spans: Vec<Span> = Vec::new();
+    let mut tab_hits: Vec<(usize, Rect)> = Vec::new();
+    let mut tx = rows[0].x;
+    for (i, &t) in AnnotTab::ALL.iter().enumerate() {
+        if i > 0 {
+            tab_spans.push(Span::raw("  "));
+            tx += 2;
+        }
+        let label = format!(" {} {} ({}) ", tab_icon(t), t.label(), state.count(t));
+        let w = label.chars().count() as u16;
+        let style = if active_tab == t {
             theme.style(Role::Selection)
         } else {
             theme.style(Role::Muted)
-        }
-    };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(bm_label.clone(), tab_style(AnnotTab::Bookmarks)),
-            Span::raw("  "),
-            Span::styled(note_label.clone(), tab_style(AnnotTab::Notes)),
-        ])),
-        rows[0],
-    );
-    // Click targets for the two tabs (a 2-cell gap separates them). Labels use only
-    // width-1 glyphs, so the char count is the cell width.
-    let bm_w = bm_label.chars().count() as u16;
-    let note_w = note_label.chars().count() as u16;
-    let tab_hits = vec![
-        (
-            0usize,
+        };
+        tab_spans.push(Span::styled(label, style));
+        tab_hits.push((
+            i,
             Rect {
-                x: rows[0].x,
+                x: tx,
                 y: rows[0].y,
-                width: bm_w,
+                width: w,
                 height: 1,
             },
-        ),
-        (
-            1usize,
-            Rect {
-                x: rows[0].x + bm_w + 2,
-                y: rows[0].y,
-                width: note_w,
-                height: 1,
-            },
-        ),
-    ];
+        ));
+        tx += w;
+    }
+    f.render_widget(Paragraph::new(Line::from(tab_spans)), rows[0]);
     // A thin rule under the tabs.
     f.render_widget(
         Paragraph::new(Line::styled(
@@ -160,6 +147,12 @@ fn render_overlay(f: &mut Frame, app: &mut App) {
                 Line::raw(""),
                 Line::styled("  No notes yet.", body),
                 Line::styled("  Press a in the reader to write one.", muted),
+            ]
+        } else if active_tab == AnnotTab::Highlights {
+            vec![
+                Line::raw(""),
+                Line::styled("  No highlights yet.", body),
+                Line::styled("  Press H in the reader to mark a line.", muted),
             ]
         } else {
             vec![
@@ -196,15 +189,27 @@ fn render_overlay(f: &mut Frame, app: &mut App) {
             );
         }
         row_of.push(list_items.len());
-        // A note shows its commentary (falling back to the quote); a bookmark its
-        // name or quote. A pen marks a note, a flag a bookmark — matching the gutter.
-        let (icon, primary): (&str, &str) = if a.is_note() {
-            ("✎", pick(&a.name, &a.note, &a.quote))
+        // A note shows its commentary (falling back to the quote); a bookmark or
+        // highlight its name or quote. The icon matches the gutter: a pen for a
+        // note, a flag for a bookmark, a coloured bar (in its own hue) for a
+        // highlight.
+        let icon_span = if a.is_highlight() {
+            Span::styled(
+                " ▌ ",
+                Style::default().fg(HighlightColor::from_index(a.color).bg()),
+            )
+        } else if a.is_note() {
+            Span::styled(" ✎ ", theme.style(Role::AccentStrong))
         } else {
-            ("⚑", pick(&a.name, &a.quote, &a.quote))
+            Span::styled(" ⚑ ", theme.style(Role::AccentStrong))
+        };
+        let primary = if a.is_note() {
+            pick(&a.name, &a.note, &a.quote)
+        } else {
+            pick(&a.name, &a.quote, &a.quote)
         };
         let mut spans = vec![
-            Span::styled(format!(" {icon} "), theme.style(Role::AccentStrong)),
+            icon_span,
             Span::styled(format!("§{} ", a.section + 1), theme.style(Role::Muted)),
             Span::styled(primary.to_string(), theme.style(Role::Body)),
         ];
@@ -251,6 +256,15 @@ fn render_overlay(f: &mut Frame, app: &mut App) {
     }
     app.mouse.overlay_tabs = tab_hits;
     app.mouse.overlay_rows = row_hits;
+}
+
+/// The tab-bar glyph for each annotation kind (matches the list-row icons).
+fn tab_icon(t: AnnotTab) -> &'static str {
+    match t {
+        AnnotTab::Bookmarks => "⚑",
+        AnnotTab::Notes => "✎",
+        AnnotTab::Highlights => "▌",
+    }
 }
 
 /// The first non-empty of three candidate labels.

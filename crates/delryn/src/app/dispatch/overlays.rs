@@ -270,17 +270,11 @@ impl App {
         let tab = items
             .iter()
             .find(|i| i.id == keep_id)
-            .map(|i| {
-                if i.is_note() {
-                    AnnotTab::Notes
-                } else {
-                    AnnotTab::Bookmarks
-                }
-            })
+            .map(AnnotTab::of)
             .unwrap_or(AnnotTab::Bookmarks);
         let sel = items
             .iter()
-            .filter(|i| i.is_note() == matches!(tab, AnnotTab::Notes))
+            .filter(|i| AnnotTab::of(i) == tab)
             .position(|i| i.id == keep_id)
             .unwrap_or(0);
         self.overlay = Overlay::Annot(AnnotState {
@@ -348,10 +342,18 @@ impl App {
         let (len, sel) = (a.filtered().len(), a.sel);
         match key.code {
             KeyCode::Esc | KeyCode::Char('\'') | KeyCode::Char('q') => self.overlay = Overlay::None,
-            // Switch between the Bookmarks and Notes tabs (Tab or ← / →).
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+            // Cycle the Bookmarks / Notes / Highlights tabs (⇥ / → forward, ⇤ / ←
+            // back).
+            KeyCode::Tab | KeyCode::Right => {
                 if let Overlay::Annot(a) = &mut self.overlay {
-                    a.tab = a.tab.toggled();
+                    a.tab = a.tab.next();
+                    a.sel = 0;
+                    a.filter.clear();
+                }
+            }
+            KeyCode::BackTab | KeyCode::Left => {
+                if let Overlay::Annot(a) = &mut self.overlay {
+                    a.tab = a.tab.prev();
                     a.sel = 0;
                     a.filter.clear();
                 }
@@ -445,15 +447,7 @@ impl App {
     /// lines in the gutter. Cheap; call after any add/delete/move and on open.
     pub(crate) fn sync_reader_bookmarks(&mut self) {
         if let (Some(store), Some(r)) = (&self.session.store, self.reader.as_mut()) {
-            let marks = store
-                .list_annotations(&self.session.book_path)
-                .into_iter()
-                .map(|a| {
-                    let is_note = a.is_note();
-                    (a.section, a.quote, is_note)
-                })
-                .collect();
-            r.set_annotations(marks);
+            r.set_annotations(store.list_annotations(&self.session.book_path));
         }
     }
 
