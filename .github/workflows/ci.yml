@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref (a new push to a PR aborts the old run).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A "clean build" means errors AND warnings clean. Dependencies (incl. the
+  # vendored ratatui-image) are lint-capped by cargo, so this only denies warnings
+  # in delryn's own crates.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # No system packages needed: TLS is rustls, clipboard is x11rb (pure Rust),
+      # SQLite is bundled, and libpdfium is bound at runtime — a C compiler (present
+      # on every runner) is the only build requirement.
+      - run: cargo build --workspace --locked
+      # The one network test (delryn-online::live_search_dune) is #[ignore]d, so the
+      # default run is fully headless/offline.
+      - run: cargo test --workspace --locked
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      # `-D warnings` after `--` denies clippy's own lints (RUSTFLAGS only covers rustc lints).
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings

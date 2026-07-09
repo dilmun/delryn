@@ -1,0 +1,89 @@
+name: release-build
+
+# Reusable build matrix, shared by both release paths (release-plz.yml and the manual
+# release.yml) so the target list lives in exactly one place. Builds the `delryn` binary
+# per target, bundles a matching libpdfium beside it, and uploads a tarball + .sha256.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Existing release tag to build for and upload assets to (e.g. v0.1.0)."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  # PDFium API level pdfium-render 0.9.2 targets (its `pdfium_latest` == `pdfium_7763`).
+  # PINNED on purpose — do not float to `latest`. Bump this in lockstep with any
+  # pdfium-render upgrade and re-verify by opening a real PDF from a built tarball.
+  PDFIUM_RELEASE: chromium/7763
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            pdfium_asset: pdfium-linux-x64.tgz
+            libname: libpdfium.so
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            pdfium_asset: pdfium-mac-arm64.tgz
+            libname: libpdfium.dylib
+          - target: x86_64-apple-darwin
+            runner: macos-latest # Apple toolchain cross-compiles x86_64 natively
+            pdfium_asset: pdfium-mac-x64.tgz
+            libname: libpdfium.dylib
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build delryn
+        run: cargo build --release --locked --target ${{ matrix.target }} -p delryn
+
+      - name: Stage binary + bundled libpdfium
+        run: |
+          set -euo pipefail
+          staging="delryn-${{ inputs.tag }}-${{ matrix.target }}"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/delryn" "$staging/"
+          # Bundle libpdfium so PDFs work on download (delryn loads it from beside the binary).
+          curl -sSfL -o pdfium.tgz \
+            "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/${{ matrix.pdfium_asset }}"
+          tar -xzf pdfium.tgz "lib/${{ matrix.libname }}"
+          cp "lib/${{ matrix.libname }}" "$staging/"
+          # Include docs/licence when present (don't fail if they're absent).
+          [ -f README.md ] && cp README.md "$staging/" || true
+          for f in LICENSE LICENSE-MIT LICENSE-APACHE COPYING; do
+            [ -f "$f" ] && cp "$f" "$staging/" || true
+          done
+          echo "STAGING=$staging" >> "$GITHUB_ENV"
+
+      - name: Archive + checksum
+        run: |
+          set -euo pipefail
+          tar -czf "${STAGING}.tar.gz" "$STAGING"
+          # shasum is available on both ubuntu and macOS runners.
+          shasum -a 256 "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ inputs.tag }}" \
+            "${STAGING}.tar.gz" "${STAGING}.tar.gz.sha256" \
+            --clobber --repo "${{ github.repository }}"

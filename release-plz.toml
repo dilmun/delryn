@@ -1,0 +1,41 @@
+# release-plz — the release engine for delryn.
+#
+# delryn ships as a BINARY (no crates.io publish) and is a virtual Cargo workspace
+# where every crate inherits one version from [workspace.package].version. We want a
+# single version bump, a single aggregated CHANGELOG, and a single tag/release for the
+# whole workspace — not one per crate. release-plz handles the inherited-version bump
+# natively (its edge over release-please here).
+#
+# See docs/RELEASING.md for the full flow.
+
+[workspace]
+# Binary, not a library — never run `cargo publish`.
+publish = false
+# Library crates are NOT released individually; only the `delryn` binary is (below).
+release = false
+# One tag / one release for the workspace, no per-crate prefix.
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+git_release_body = "{{ changelog }}"
+# git_tag_enable / git_release_enable default to true.
+
+[[package]]
+name = "delryn"
+release = true
+# Repo-root changelog. NOTE: confirm the base dir on the first `release-plz update
+# --dry-run` — if release-plz writes to crates/delryn/CHANGELOG.md, change this to
+# "../../CHANGELOG.md".
+changelog_path = "CHANGELOG.md"
+# Fold commits that touched the library crates into delryn's single changelog, so a
+# change under crates/delryn-render (etc.) still shows up in the release notes.
+changelog_include = [
+  "delryn-model",
+  "delryn-infra",
+  "delryn-store",
+  "delryn-online",
+  "delryn-media",
+  "delryn-format",
+  "delryn-render",
+  "delryn-library",
+  "delryn-math",
+]
