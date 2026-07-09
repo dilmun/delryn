@@ -41,7 +41,7 @@ jobs:
             pdfium_asset: pdfium-mac-x64.tgz
             libname: libpdfium.dylib
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
