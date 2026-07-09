@@ -23,9 +23,11 @@ use regex::Regex;
 
 use super::{Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry};
 
+mod huffcdic;
 mod palmdoc;
 mod pdb;
 
+use huffcdic::HuffCdic;
 use pdb::{Pdb, be_u16, be_u32};
 
 const COMPRESSION_NONE: u16 = 1;
@@ -89,11 +91,21 @@ impl MobiDocument {
                 .record(0)
                 .ok_or_else(|| anyhow!("MOBI has no record 0"))?;
             let h = Headers::read(rec0)?;
-            if h.compression == COMPRESSION_HUFF {
-                bail!("HUFF/CDIC-compressed MOBI is not supported yet");
-            }
+            // HUFF/CDIC (type 17480): build the Huffman decoder from the HUFF + CDIC
+            // records up front; a malformed table surfaces as a clear open error.
+            let huff = if h.compression == COMPRESSION_HUFF {
+                let idx = h
+                    .huff_record
+                    .context("HUFF/CDIC MOBI is missing its HUFF record index")?;
+                Some(
+                    HuffCdic::from_records(&pdb, idx, h.huff_count)
+                        .context("decoding HUFF/CDIC-compressed MOBI")?,
+                )
+            } else {
+                None
+            };
             let metadata = build_metadata(&pdb, rec0, &h, size);
-            let html = rewrite_recindex(&extract_text(&pdb, &h));
+            let html = rewrite_recindex(&extract_text(&pdb, &h, huff.as_ref()));
             let sections = split_sections(&html);
             let image_ranges = collect_image_ranges(&pdb, h.first_image);
             let (toc, outline) = build_navigation(&sections);
@@ -187,6 +199,9 @@ struct Headers {
     full_name: (usize, usize),
     first_image: Option<usize>,
     extra_flags: u16,
+    /// HUFF record index + total HUFF/CDIC record count (only set for type 17480).
+    huff_record: Option<usize>,
+    huff_count: usize,
 }
 
 impl Headers {
@@ -199,7 +214,7 @@ impl Headers {
         let record_count = be_u16(rec0, 8).unwrap_or(0) as usize;
         // Encryption type is a u16 at offset 12 (0 = none).
         if be_u16(rec0, 12).unwrap_or(0) != 0 {
-            bail!("this MOBI is DRM-encrypted");
+            bail!("This book is DRM-protected and can't be opened");
         }
         let mobi_header_len = be_u32(rec0, 20).unwrap_or(0) as usize;
         let encoding = be_u32(rec0, 28).unwrap_or(1252);
@@ -218,6 +233,16 @@ impl Headers {
         } else {
             0
         };
+        // HUFF record index (offset 0x70) + total HUFF/CDIC record count (0x74).
+        // Only meaningful for compression type 17480; skip the reads otherwise.
+        let (huff_record, huff_count) = if compression == COMPRESSION_HUFF {
+            (
+                be_u32(rec0, 112).map(|n| n as usize),
+                be_u32(rec0, 116).unwrap_or(0) as usize,
+            )
+        } else {
+            (None, 0)
+        };
         Ok(Headers {
             compression,
             text_length,
@@ -227,6 +252,8 @@ impl Headers {
             full_name,
             first_image,
             extra_flags,
+            huff_record,
+            huff_count,
         })
     }
 }
@@ -239,7 +266,7 @@ impl Headers {
 const MAX_TEXT_PREALLOC: usize = 32 * 1024 * 1024;
 
 /// Decompress + decode the text records into one HTML string.
-fn extract_text(pdb: &Pdb, h: &Headers) -> String {
+fn extract_text(pdb: &Pdb, h: &Headers, huff: Option<&HuffCdic>) -> String {
     let mut text: Vec<u8> = Vec::with_capacity(h.text_length.min(MAX_TEXT_PREALLOC));
     for i in 1..=h.record_count {
         let Some(rec) = pdb.record(i) else { break };
@@ -248,6 +275,11 @@ fn extract_text(pdb: &Pdb, h: &Headers) -> String {
         let body = &rec[..keep];
         match h.compression {
             COMPRESSION_PALMDOC => text.extend_from_slice(&palmdoc::decompress(body)),
+            COMPRESSION_HUFF => {
+                if let Some(d) = huff {
+                    text.extend_from_slice(&d.decompress(body));
+                }
+            }
             _ => text.extend_from_slice(body), // uncompressed (type 1) or best-effort
         }
         if text.len() >= h.text_length {
@@ -646,7 +678,7 @@ mod tests {
                     .ok_or_else(|| anyhow!("MOBI has no record 0"))?;
                 let h = Headers::read(rec0)?;
                 let metadata = build_metadata(&pdb, rec0, &h, 0);
-                let html = rewrite_recindex(&extract_text(&pdb, &h));
+                let html = rewrite_recindex(&extract_text(&pdb, &h, None));
                 let sections = split_sections(&html);
                 let image_ranges = collect_image_ranges(&pdb, h.first_image);
                 let (toc, outline) = build_navigation(&sections);
