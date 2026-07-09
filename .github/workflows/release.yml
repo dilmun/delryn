@@ -1,0 +1,82 @@
+name: release (manual)
+
+# Manual / hotfix fallback. The primary path is release-plz.yml (merge the release PR).
+# This runs only when a human pushes a v* tag by hand. It refuses to publish unless CI
+# is already green on that exact commit, then creates the GitHub Release and builds the
+# binaries via the shared build workflow.
+#
+# (release-plz's own tag is created with GITHUB_TOKEN and therefore does NOT trigger
+# this workflow — so the two paths never double-build.)
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  create-release:
+    name: require-green-ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Require CI success on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="${{ github.sha }}"
+          echo "Waiting for CI to conclude on $sha ..."
+          for i in $(seq 1 30); do
+            run=$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=$sha&per_page=1" \
+              --jq '.workflow_runs[0] | {status: (.status // "missing"), conclusion: (.conclusion // "")}')
+            status=$(echo "$run" | jq -r '.status')
+            conclusion=$(echo "$run" | jq -r '.conclusion')
+            echo "attempt $i: status=$status conclusion=$conclusion"
+            if [ "$status" = "completed" ]; then
+              [ "$conclusion" = "success" ] && { echo "CI green — proceeding."; exit 0; }
+              echo "::error::CI concluded '$conclusion' (not success) on $sha — refusing to release."
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "::error::CI did not complete for $sha within the polling window — refusing to release."
+          exit 1
+
+      - name: Create GitHub Release from CHANGELOG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          ver="${tag#v}"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $tag already exists — skipping creation."
+            exit 0
+          fi
+          # Extract this version's section from CHANGELOG.md (stop at the next '## ' heading).
+          notes="$(awk -v ver="$ver" '
+            /^## / { if (found) exit;
+                     if (index($0, "[" ver "]") || index($0, "[v" ver "]")) { found=1; next } }
+            found { print }
+          ' CHANGELOG.md || true)"
+          if [ -n "$(printf "%s" "$notes" | tr -d '[:space:]')" ]; then
+            printf "%s\n" "$notes" > /tmp/notes.md
+            gh release create "$tag" --verify-tag --title "$tag" --notes-file /tmp/notes.md
+          else
+            echo "No CHANGELOG section for $ver — generating notes from commits."
+            gh release create "$tag" --verify-tag --title "$tag" --generate-notes
+          fi
+
+  build:
+    name: build
+    needs: create-release
+    uses: ./.github/workflows/release-build.yml
+    with:
+      tag: ${{ github.ref_name }}
+    permissions:
+      contents: write
