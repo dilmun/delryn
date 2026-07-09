@@ -324,7 +324,7 @@ The `release-pr` job mints an installation token with
 [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token)
 and hands it to release-plz. Two repo secrets drive it (set once):
 
-- `RELEASE_PLZ_APP_ID` — the App's numeric ID.
+- `RELEASE_PLZ_CLIENT_ID` — the App's Client ID (shown on the App page).
 - `RELEASE_PLZ_PRIVATE_KEY` — the App's private-key `.pem` contents.
 
 **One-time App setup:** create a GitHub App (no webhook) with Repository permissions
@@ -333,7 +333,7 @@ versions from git tags (not PR labels), so it never touches the Issues/labels AP
 a private key, install the App on this repo, then set the secrets below.
 
 ```sh
-gh secret set RELEASE_PLZ_APP_ID     --repo dilmun/delryn --body "<app-id>"
+gh secret set RELEASE_PLZ_CLIENT_ID   --repo dilmun/delryn --body "<client-id>"
 gh secret set RELEASE_PLZ_PRIVATE_KEY --repo dilmun/delryn < app-private-key.pem
 ```
 
@@ -362,4 +362,4 @@ with any `pdfium-render` upgrade.
   `test (macos-latest)`, `lint`, `Validate PR title`; `enforce_admins: true`; force-push
   and deletion blocked. (Add the `Validate PR title` context only *after* its first green
   run, or it wedges every PR waiting on a check that never reported.)
-- **Secrets:** `RELEASE_PLZ_APP_ID` + `RELEASE_PLZ_PRIVATE_KEY` (the release-bot App; see above).
+- **Secrets:** `RELEASE_PLZ_CLIENT_ID` + `RELEASE_PLZ_PRIVATE_KEY` (the release-bot App; see above).
