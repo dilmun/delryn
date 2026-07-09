@@ -37,12 +37,17 @@ cover art, collections, ratings, and duplicate detection.
 ## Requirements
 
 delryn's text UI runs in any terminal, but **images, PDF pages, and graphical math need a
-terminal that speaks the Kitty (or iTerm2) graphics protocol** — e.g. **Kitty**, **Ghostty**,
-or **iTerm2**. Without one, EPUB / MOBI text still reads fine; figures fall back to
+terminal that speaks the Kitty graphics protocol**. delryn is currently **developed and tested
+on [Ghostty](https://ghostty.org)** — other Kitty-protocol terminals (Kitty, iTerm2, WezTerm)
+should work but **aren't verified yet; broader terminal support is planned**. Without a
+graphics-capable terminal, EPUB / MOBI text still reads fine, but figures fall back to
 placeholders, graphical math to a Unicode approximation, and **PDF won't open** (it renders as
 page images).
 
-- A graphics-capable terminal (Kitty / Ghostty / iTerm2) — for images, PDF, and math.
+> **tmux / screen:** multiplexers intercept the graphics protocol, so images and PDF render
+> blank inside them — **run delryn outside tmux/screen** for now (passthrough support is planned).
+
+- **Terminal:** Ghostty (tested); other Kitty-graphics terminals should work.
 - **PDF** also needs **libpdfium** — bundled in the release tarballs; for source builds, see below.
 
 ## Install

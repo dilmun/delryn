@@ -50,8 +50,8 @@ finished `[x]` entries). Invariant: `main` stays green — build + `cargo test` 
   Public repo, squash-only, branch protection (required checks + `enforce_admins`). Release PR
   opened by a **GitHub App** (`client-id`; secrets `RELEASE_PLZ_CLIENT_ID` +
   `RELEASE_PLZ_PRIVATE_KEY`) so its checks actually run. All actions on current majors. Docs:
-  `docs/RELEASING.md`. **Not released yet** — `v0.1.0` is a baseline tag; the first real
-  release is a deliberate release-PR merge.
+  `docs/RELEASING.md`. **v0.1.0 released 2026-07-09** — delryn's first public release: 3 tarballs
+  (linux-x64, macOS arm64 + x64), each bundling `libpdfium`, checksum-verified.
 
 ## Remaining work
 
@@ -122,6 +122,21 @@ once a PDFium text layer exists.
 - **Research spike** (informs presets): what KOReader / SumatraPDF / Okular / Calibre
   / Apple Books / comic readers expose — adopt wins, skip GUI-only smooth-scroll +
   auto-magazine reflow.
+
+### Terminal — tmux graphics passthrough  (feature)
+delryn emits raw Kitty graphics escapes (`delryn-media/kitty.rs`); inside tmux/screen they're
+swallowed, so images/PDF/math render blank. Fix: detect `$TMUX`, wrap escapes in tmux's DCS
+passthrough (`\ePtmux;…\e\\`, inner ESCs doubled), and document `set -g allow-passthrough on`.
+tmux's image support is imperfect (placements not tracked across panes/scrollback). Workaround
+today: run delryn outside a multiplexer. (README notes the caveat.)
+
+### Release pipeline — optional polish  (shipped + working; low priority)
+- **Broaden terminal testing** beyond Ghostty — verify Kitty / iTerm2 / WezTerm (README currently
+  claims Ghostty-tested only).
+- **Docs-only CI skip** — path-filter so markdown/docs-only PRs skip the Rust build/test matrix
+  (change-detection job that still reports the required checks green).
+- **macOS code-signing / notarization** so release binaries run without the Gatekeeper
+  `xattr -dr com.apple.quarantine` step.
 
 ## Deferred — measure first (don't churn without a profile)
 - `recolor::render_for_theme` re-converts to RGBA per branch (~2–4 full-buffer allocs
