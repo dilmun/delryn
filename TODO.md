@@ -55,19 +55,23 @@ finished `[x]` entries). Invariant: `main` stays green — build + `cargo test` 
 
 ## Remaining work
 
-### Phase 5 — MOBI/AZW3 HUFF/CDIC decompression  📌 recommended next
-The user has real `.azw` files (SWING TRADING / OPTIONS TRADING) that currently
-refuse with "HUFF/CDIC-compressed MOBI is not supported yet." Compression type
-**17480**: parse the `HUFF` record (Huffman tables: dict1 256-entry + dict2 64-entry,
-per-code-length min/max codes) and the `CDIC` dictionary record(s) (byte-sequence
-entries), then bit-decode each text record into the byte stream
-`delryn-format/src/mobi/mod.rs::extract_text` already assembles. Self-contained
-(~200 lines, no new deps) — drops in beside `palmdoc.rs` as a third compression path.
-Reference impls: KindleUnpack `mobi_huff`, Calibre `mobihuff`. Covers most
-Amazon-distributed MOBI/AZW. **Needs a real HUFF/CDIC file to validate (can't
-unit-test blind) — the user HAS them.** DRM stays out of scope.
-*(Other MOBI v1 gaps, lower priority: full KF8 skeleton/fragment reconstruction +
-real `filepos` NCX TOC; MOBI full-text index.)*
+### Phase 5 — MOBI/AZW3 reading quality (KF8 / NCX)
+**HUFF/CDIC decompression (type 17480) SHIPPED** — `mobi/huffcdic.rs`; Amazon `.azw` books now
+open with full text (validated on 3 real HUFF/CDIC books: *How To Stop Worrying*, *ICT Inner
+Circle Trader*, *The habit handbook*). Opening them exposed delryn's MOBI backend as
+MOBI6-oriented — KF8/AZW3 books read poorly. Three follow-ups (found 2026-07-09), most
+impactful first:
+1. **Real TOC titles** — `build_navigation` numbers pagebreak chunks "Section N" for *all* MOBI
+   (PalmDOC + KF8, not chapter-aligned); parse the MOBI **NCX / `<guide>` TOC** for real chapter
+   titles + targets. Highest priority (affects every MOBI book).
+2. **`kindle:embed:` images** — KF8 references inline images as `kindle:embed:NNNN?mime=…`;
+   delryn only rewrites the old MOBI6 `recindex` (`rewrite_recindex`), so diagrams/figures drop to
+   placeholders. Resolve the KF8 scheme → image record. (Renders inline diagrams + image-only
+   books like SWING TRADING.)
+3. **KF8 skeleton/fragment sectioning** — KF8 splits via a skeleton+fragment structure, not
+   `<mbp:pagebreak>`, so every KF8 book collapses to one section. Reconstruct real sections.
+Out of scope / noted: OPTIONS TRADING is DRM (correctly refused, now with a clear message);
+SWING TRADING is image-only (needs #2); MOBI full-text index still open.
 
 ### Phase 6 — Inline graphical math  (hard; build on demand)
 Display math ships; inline math (`Span` with `Inline.math`) is still flattened to a
