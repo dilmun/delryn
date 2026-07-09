@@ -42,20 +42,18 @@ finished `[x]` entries). Invariant: `main` stays green — build + `cargo test` 
 - **2026-07-06 audit fixes:** disjoint Kitty id namespaces; cell-based display width;
   DOM/MathML/nav/outline recursion bounded (fixed a real stack-overflow on untrusted
   input); MOBI prealloc caps; regexes → `LazyLock`.
+- **Release/CI pipeline (2026-07-09):** automated release via **release-plz** — a standing
+  release PR; merging it = release (tag + GitHub Release + binaries). CI matrix
+  (ubuntu+macOS: build/test/`fmt`/`clippy -D warnings`, no system deps); Conventional-Commit
+  PR-title gate; reusable release-build matrix (linux-x64, macOS arm64+x64) bundling a pinned
+  `libpdfium` (`chromium/7763`) + `.sha256`; manual `v*`-tag fallback gated on green CI.
+  Public repo, squash-only, branch protection (required checks + `enforce_admins`). Release PR
+  opened by a **GitHub App** (`client-id`; secrets `RELEASE_PLZ_CLIENT_ID` +
+  `RELEASE_PLZ_PRIVATE_KEY`) so its checks actually run. All actions on current majors. Docs:
+  `docs/RELEASING.md`. **Not released yet** — `v0.1.0` is a baseline tag; the first real
+  release is a deliberate release-PR merge.
 
 ## Remaining work
-
-### Release/CI pipeline (release-plz + GitHub Actions)  🚧 in progress
-Automated pipeline where the one decision is "merge the standing release PR". Engine is
-**release-plz** (not release-please — delryn's virtual workspace + inherited
-`[workspace.package].version` is release-please's weak spot). Files: `release-plz.toml`,
-`.github/workflows/{ci,pr-title,release-plz,release-build,release}.yml`, `CHANGELOG.md`,
-`docs/RELEASING.md`. CI = matrix build/test (ubuntu+macOS) + fmt + clippy `-D warnings`
-(no system deps needed). Release binaries bundle a pinned `libpdfium` (`chromium/7763`)
-per platform + `.sha256`. **Remaining to finish:** create public GitHub repo + push;
-maintainer creates a release-bot GitHub App (Contents+PR RW) → `RELEASE_PLZ_APP_ID` +
-`RELEASE_PLZ_PRIVATE_KEY` secrets; apply squash-only merge settings
-+ branch protection (required checks + `enforce_admins`) via `gh`. See `docs/RELEASING.md`.
 
 ### Phase 5 — MOBI/AZW3 HUFF/CDIC decompression  📌 recommended next
 The user has real `.azw` files (SWING TRADING / OPTIONS TRADING) that currently
