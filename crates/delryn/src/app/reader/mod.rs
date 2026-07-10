@@ -605,7 +605,7 @@ impl Reader {
                 continue;
             }
             let line = match &e.locator {
-                Some(loc) => find_line(&self.lines, loc).unwrap_or(0),
+                Some(loc) => find_heading_line(&self.lines, loc).unwrap_or(0),
                 None => 0,
             };
             hl.push((oi, line));
@@ -755,7 +755,7 @@ impl Reader {
         }
         if let Some(text) = locator {
             self.ensure_wrapped(self.last_measure.max(1));
-            if let Some(line) = find_line(&self.lines, text) {
+            if let Some(line) = find_heading_line(&self.lines, text) {
                 self.scroll = line;
             }
         }
@@ -944,17 +944,48 @@ fn anchor_kind_label(a: &Anchor) -> &'static str {
 
 /// heading like "Linux" lands on the header rather than an earlier mention.
 fn find_line(lines: &[DisplayLine], needle: &str) -> Option<usize> {
+    find_line_matching(lines, needle, false)
+}
+
+/// Like [`find_line`] but, for a TOC entry, matches an actual **heading** line in
+/// preference to body text — so a chapter whose title also appears in an on-page
+/// "Table of Contents" listing resolves to the real chapter heading, not the
+/// listing. Falls back to any line when no heading matches.
+fn find_heading_line(lines: &[DisplayLine], needle: &str) -> Option<usize> {
+    find_line_matching(lines, needle, true)
+}
+
+fn find_line_matching(lines: &[DisplayLine], needle: &str, headings_only: bool) -> Option<usize> {
     let n = loose_key(needle);
     if n.is_empty() {
         return None;
     }
+    let matches = |l: &DisplayLine| {
+        let line = loose_key(&l.text());
+        !line.is_empty() && (line == n || line.contains(&n) || (n.len() >= 8 && n.contains(&line)))
+    };
+    // A TOC locator prefers the heading line (exact first, then loose); only if no
+    // heading matches does it fall through to the any-line search below.
+    if headings_only {
+        let is_heading = |l: &&DisplayLine| matches!(l.kind, LineKind::Heading(_));
+        if let Some(i) = lines
+            .iter()
+            .position(|l| matches!(l.kind, LineKind::Heading(_)) && loose_key(&l.text()) == n)
+        {
+            return Some(i);
+        }
+        if let Some((i, _)) = lines
+            .iter()
+            .enumerate()
+            .find(|(_, l)| is_heading(l) && matches(l))
+        {
+            return Some(i);
+        }
+    }
     if let Some(i) = lines.iter().position(|l| loose_key(&l.text()) == n) {
         return Some(i);
     }
-    lines.iter().position(|l| {
-        let line = loose_key(&l.text());
-        !line.is_empty() && (line.contains(&n) || (n.len() >= 8 && n.contains(&line)))
-    })
+    lines.iter().position(matches)
 }
 
 /// Lowercase, drop punctuation, collapse whitespace — a tolerant key so TOC
@@ -1065,6 +1096,89 @@ mod tests {
         r.last_measure = 40;
         r.ensure_wrapped(40);
         r
+    }
+
+    #[test]
+    fn toc_locator_prefers_heading_over_listing() {
+        // A single-section book with an on-page "Table of Contents" lists chapter
+        // titles as body text before the real chapter headings. A TOC locator must
+        // resolve to the actual heading, not its earlier listing occurrence.
+        let title = "Chapter 6: The Relational Level";
+        let heading = |t: &str| Block::Heading {
+            level: 1,
+            spans: vec![Span::plain(t)],
+        };
+        let listing = |t: &str| Block::Para {
+            spans: vec![Span::plain(t)],
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let r = reader_with(vec![
+            heading("Table of Contents"),
+            listing(title), // the on-page ToC listing (body text)
+            listing("some intervening body text to separate the two"),
+            heading(title), // the real chapter heading
+            listing("actual chapter body"),
+        ]);
+
+        let listing_line = find_line(&r.lines, title).unwrap();
+        let heading_line = find_heading_line(&r.lines, title).unwrap();
+        assert!(
+            heading_line > listing_line,
+            "heading ({heading_line}) should resolve after the listing ({listing_line})"
+        );
+        assert!(matches!(r.lines[heading_line].kind, LineKind::Heading(_)));
+        assert!(matches!(r.lines[listing_line].kind, LineKind::Body));
+    }
+
+    #[test]
+    fn continuation_section_maps_to_containing_chapter() {
+        // Chapters start at sections 0 and 1; section 2 is a continuation of
+        // chapter 2 with no TOC entry of its own. The scroll-spy / chapter title
+        // must still report "Chapter 2", not a bare "Section 3".
+        let heading = |t: &str| Block::Heading {
+            level: 1,
+            spans: vec![Span::plain(t)],
+        };
+        let doc = MockDoc {
+            sections: vec![
+                vec![heading("Chapter 1")],
+                vec![heading("Chapter 2")],
+                vec![para()],
+            ],
+            meta: Metadata::default(),
+            toc: Vec::new(),
+            outline: vec![
+                OutlineItem {
+                    label: "Chapter 1".into(),
+                    depth: 0,
+                    section: 0,
+                    locator: Some("Chapter 1".into()),
+                },
+                OutlineItem {
+                    label: "Chapter 2".into(),
+                    depth: 0,
+                    section: 1,
+                    locator: Some("Chapter 2".into()),
+                },
+            ],
+            paged: false,
+        };
+        let mut r = Reader::new(Box::new(doc)).unwrap();
+        r.last_measure = 40;
+        r.jump_to(2, None); // read into the continuation section
+        r.ensure_wrapped(40);
+
+        assert!(
+            r.active_outline().is_some(),
+            "highlight should not disappear"
+        );
+        assert_eq!(
+            r.active_outline().map(|oi| r.outline[oi].label.as_str()),
+            Some("Chapter 2")
+        );
+        assert_eq!(r.chapter_title(), "Chapter 2");
     }
 
     // Cursor mode: `V` starts a movable caret with no anchor (nothing selected);
