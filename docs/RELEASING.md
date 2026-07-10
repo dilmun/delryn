@@ -8,15 +8,25 @@ Everything else — the version bump, `CHANGELOG.md`, the `vX.Y.Z` tag, the GitH
 Release, and the per-platform binaries — is automatic. You never choose a version
 number, write release notes, or push a tag by hand.
 
-The engine is [**release-please**](https://github.com/googleapis/release-please). It is
-purely Conventional-Commit-based — it never runs cargo and never touches a registry — which
-fits delryn: a GitHub-only binary that is **never published to crates.io**.
+The engine is [**release-please**](https://github.com/googleapis/release-please), configured as
+a **single "simple" release for the whole repo** (one package at path `.`). It is purely
+Conventional-Commit-based — it never runs cargo and never touches a registry or `Cargo.lock` —
+which fits delryn: a GitHub-only binary, **never published to crates.io**, built from ~10
+internal path-dependency crates.
 
-> **Why release-please, not release-plz?** release-plz reads the last released version from
-> crates.io; delryn isn't published, and it scoped version bumps to the binary crate's *own*
-> directory — so a `feat` in a library crate (where most work happens) produced **no
-> release**. release-please is commit-based: any releasable commit, in any crate, bumps the
-> version. See ["How the wiring works"](#how-the-wiring-works) for delryn's workspace shape.
+> **Why this shape (not release-plz, not per-crate release-please)?** delryn is one app in a
+> virtual workspace, so it's released as **one unit**, not ten. Tools that version each crate
+> from that crate's own history don't fit:
+> - **release-plz** diffs each crate against its **crates.io-published** copy; delryn publishes
+>   nothing, and its `git_only` fallback then runs `cargo package`, which can't diff an
+>   unpublished path-dependency workspace — a
+>   [tracked, still-open release-plz bug](https://github.com/release-plz/release-plz/issues/2595).
+> - **per-crate release-please** (`rust` type + `cargo-workspace`/`linked-versions`) emits one
+>   tag + one GitHub Release **per crate** (10 of each); collapsing them to one is itself an
+>   [open, unmerged release-please bug](https://github.com/googleapis/release-please/pull/1749).
+>
+> `simple`-at-`.` sidesteps all of it: **any** releasable commit in **any** crate bumps **one**
+> version and cuts **one** tag `vX.Y.Z`. See ["How the wiring works"](#how-the-wiring-works).
 
 ---
 
@@ -242,13 +252,15 @@ treated as unstable, so bumps shift down one level (via `bump-minor-pre-major: t
 Reaching **1.0.0 is a deliberate act** — release-please never auto-promotes; you cut it when
 you decide delryn's interface is stable. After 1.0, breaking changes bump major as usual.
 
-**One delryn version drives releases.** delryn is a virtual Cargo workspace, but the `delryn`
-binary carries a **literal** `version` in `crates/delryn/Cargo.toml` (not
-`version.workspace = true`). release-please bumps *that* on any releasable commit — in any
-crate — and cuts one tag `vX.Y.Z`. The library crates keep inheriting
-`[workspace.package].version` and are **not** bumped; they're internal and never published,
-so their version is irrelevant. (This is the delryn-specific adaptation of release-please's
-`release-type: rust`, which can't update a virtual manifest's inherited version.)
+**One version drives releases — and it lives in git, not `Cargo.toml`.** delryn is released as a
+single unit, so there is exactly one release version. release-please tracks it in
+`.release-please-manifest.json` and stamps it into the `vX.Y.Z` tag, the GitHub Release, and
+`CHANGELOG.md`. It does **not** touch any `Cargo.toml` or `Cargo.lock` — that's the whole point
+of the `simple` release-type, and it's why `cargo build --locked` CI can never be broken by a
+release. The crate `version` fields all inherit `[workspace.package].version` and are
+**cosmetic**: delryn is never published and has no `--version` flag, so nothing reads them. (If
+delryn ever grows a `--version`, stamp the release version in at build time from the tag rather
+than committing crate-version churn.)
 
 **Source of truth.** The open **release PR always shows the exact next version** release-please
 picked — check it there. If it ever disagrees with this table, the fix is in
@@ -298,13 +310,17 @@ via the shared build workflow.
 
 ## How the wiring works
 
-delryn is a **virtual Cargo workspace** (root `Cargo.toml` has `[workspace]`, no `[package]`;
-the binary is `crates/delryn`). release-please's `rust` release-type can't update a virtual
-manifest's inherited version, so release-please targets the **`crates/delryn`** package, which
-carries a literal `version` — it bumps that crate's `Cargo.toml` + `Cargo.lock` natively.
-Config: `release-please-config.json` (package `crates/delryn`, `release-type: rust`,
+delryn is a **virtual Cargo workspace** (root `Cargo.toml` has `[workspace]`, no `[package]`)
+that builds **one binary** from ~10 internal path-dependency crates, none published to
+crates.io — so it's released as **one unit**. release-please is configured with a single package
+at path **`.`** (the repo root) using **`release-type: simple`**. Because the package path is
+the repo root, release-please attributes **every** commit in **every** crate to it (release-please
+path-splits commits by package directory, and `.` is the whole tree), so any `feat`/`fix`
+anywhere bumps the one version. `simple` only rewrites `CHANGELOG.md` +
+`.release-please-manifest.json` and cuts the tag/Release — it never runs cargo or touches
+`Cargo.lock`. Config: `release-please-config.json` (package `.`, `release-type: simple`,
 `include-component-in-tag: false`, `bump-minor-pre-major: true`,
-`bump-patch-for-minor-pre-major: false`) + `.release-please-manifest.json` (`{"crates/delryn": "…"}`).
+`bump-patch-for-minor-pre-major: false`) + `.release-please-manifest.json` (`{".": "…"}`).
 
 All workflows live in `.github/workflows/`:
 

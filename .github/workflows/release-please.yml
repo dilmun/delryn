@@ -1,8 +1,8 @@
 name: release-please
 
 # The release engine. On every push to main, release-please maintains a standing "release PR"
-# that bumps the version (crates/delryn/Cargo.toml + Cargo.lock) and rewrites CHANGELOG.md from
-# Conventional Commits. Merging that PR IS the release: release-please tags vX.Y.Z and creates
+# that bumps the release version (tracked in .release-please-manifest.json) and rewrites
+# CHANGELOG.md from Conventional Commits. Merging that PR IS the release: release-please tags vX.Y.Z and creates
 # the GitHub Release — and because the tag is created via a GitHub App token (NOT the default
 # GITHUB_TOKEN), that tag *triggers* release.yml, which builds + attaches the binaries. A
 # GITHUB_TOKEN-created tag would not trigger any workflow, which is why the App token matters.
