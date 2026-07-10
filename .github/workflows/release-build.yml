@@ -1,8 +1,8 @@
 name: release-build
 
-# Reusable build matrix, shared by both release paths (release-plz.yml and the manual
-# release.yml) so the target list lives in exactly one place. Builds the `delryn` binary
-# per target, bundles a matching libpdfium beside it, and uploads a tarball + .sha256.
+# Reusable build matrix, called by release.yml (which fires on both the automated
+# release-please tag and manual hotfix tags) so the target list lives in one place. Builds
+# the `delryn` binary per target, bundles a matching libpdfium beside it, uploads tarball + .sha256.
 on:
   workflow_call:
     inputs:
