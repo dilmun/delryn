@@ -29,9 +29,24 @@ pub(crate) fn names_converter_tool(s: &str) -> bool {
     CONVERTERS.iter().any(|t| s.contains(t))
 }
 
+/// Foreign document / e-book formats a file may declare as its *source* — the
+/// Amazon MOBI/AZW `Source` record (EXTH 112) names the format the book was built
+/// from (e.g. `docx` for a Kindle Create / Word conversion, `epub` for a
+/// kindlegen conversion). A native Kindle file declares none of these.
+const SOURCE_FORMATS: [&str; 11] = [
+    "docx", "doc", "epub", "xhtml", "html", "htm", "odt", "rtf", "fb2", "txt", "pdf",
+];
+
+/// Whether `s` names a foreign source format the file was converted from — a
+/// per-format provenance signal (currently the MOBI/AZW EXTH `Source` record).
+pub(crate) fn names_converted_source(s: &str) -> bool {
+    let s = s.trim().to_lowercase();
+    SOURCE_FORMATS.iter().any(|f| s == *f)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::names_converter_tool;
+    use super::{names_converted_source, names_converter_tool};
 
     #[test]
     fn detects_conversion_tools_and_ignores_clean_metadata() {
@@ -41,5 +56,17 @@ mod tests {
         assert!(names_converter_tool("Converted with Pandoc"));
         assert!(!names_converter_tool("O'Reilly Media, Inc."));
         assert!(!names_converter_tool(""));
+    }
+
+    #[test]
+    fn detects_foreign_source_formats() {
+        // Amazon EXTH "Source" naming the format the file was built from.
+        assert!(names_converted_source("docx"));
+        assert!(names_converted_source("EPUB"));
+        assert!(names_converted_source(" html "));
+        // A native / unknown source is not a conversion signal.
+        assert!(!names_converted_source("EBOK"));
+        assert!(!names_converted_source(""));
+        assert!(!names_converted_source("mobi7"));
     }
 }

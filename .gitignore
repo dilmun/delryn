@@ -1,1 +1,7 @@
 /target
+
+# Local-only planning / instruction docs — kept on disk, never pushed.
+
+/TODO.md
+/DESIGN.md
+/ARCHITECTURE.md
