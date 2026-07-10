@@ -1,6 +1,9 @@
 [package]
 name = "delryn"
-version.workspace = true
+# Literal (not `version.workspace = true`) so release-please's rust release-type can bump it.
+# The library crates keep inheriting `[workspace.package].version`; delryn's own version is the
+# one that drives releases (the vX.Y.Z tag). See docs/RELEASING.md.
+version = "0.1.0"
 edition.workspace = true
 description = "A fast terminal reader for EPUB, PDF, and MOBI/AZW3 with real graphics"
 license.workspace = true

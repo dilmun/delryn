@@ -1,12 +1,12 @@
-name: release (manual)
+name: release
 
-# Manual / hotfix fallback. The primary path is release-plz.yml (merge the release PR).
-# This runs only when a human pushes a v* tag by hand. It refuses to publish unless CI
-# is already green on that exact commit, then creates the GitHub Release and builds the
-# binaries via the shared build workflow.
-#
-# (release-plz's own tag is created with GITHUB_TOKEN and therefore does NOT trigger
-# this workflow — so the two paths never double-build.)
+# Builds + publishes the binaries for a release tag. Fires on any v* tag push, from either path:
+#   - AUTOMATED: release-please (via the GitHub App token, not GITHUB_TOKEN) creates the tag +
+#     GitHub Release when its release PR merges; the App-token tag triggers THIS workflow.
+#   - MANUAL / hotfix: a human pushes a v* tag by hand.
+# Either way it refuses to publish unless CI is already green on that exact commit, creates the
+# GitHub Release only if one doesn't exist yet (release-please already makes it on the automated
+# path), then builds + uploads via the shared release-build.yml.
 on:
   push:
     tags: ["v*"]

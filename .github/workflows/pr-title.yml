@@ -1,6 +1,6 @@
 name: PR Title
 
-# The PR title is the single Conventional Commit release-plz reads (squash-merge uses
+# The PR title is the single Conventional Commit release-please reads (squash-merge uses
 # the PR title as the commit subject), so it must be a valid Conventional Commit.
 on:
   pull_request:

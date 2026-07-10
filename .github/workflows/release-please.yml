@@ -1,0 +1,40 @@
+name: release-please
+
+# The release engine. On every push to main, release-please maintains a standing "release PR"
+# that bumps the version (crates/delryn/Cargo.toml + Cargo.lock) and rewrites CHANGELOG.md from
+# Conventional Commits. Merging that PR IS the release: release-please tags vX.Y.Z and creates
+# the GitHub Release — and because the tag is created via a GitHub App token (NOT the default
+# GITHUB_TOKEN), that tag *triggers* release.yml, which builds + attaches the binaries. A
+# GITHUB_TOKEN-created tag would not trigger any workflow, which is why the App token matters.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # Mint a short-lived token from the release-bot GitHub App — NOT GITHUB_TOKEN. A release
+      # PR opened by GITHUB_TOKEN does not trigger `pull_request` workflows, so CI + the
+      # PR-title check would never run on it, and under enforce_admins branch protection it
+      # would be permanently unmergeable. (Secrets keep their RELEASE_PLZ_* names from the prior
+      # release-plz setup — same App, same values.)
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.RELEASE_PLZ_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_PRIVATE_KEY }}
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
