@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/dilmun/delryn/compare/v0.1.0...v0.2.0) (2026-07-10)
+
+
+### Features
+
+* **mobi:** HUFF/CDIC decompression (type 17480) ([#9](https://github.com/dilmun/delryn/issues/9)) ([770a351](https://github.com/dilmun/delryn/commit/770a3512ed0d0b985c29d1fa9dfc793a847132a6))
+* **mobi:** KF8/AZW3 sections, NCX table of contents, and inline images ([#13](https://github.com/dilmun/delryn/issues/13)) ([288d008](https://github.com/dilmun/delryn/commit/288d008b95c172ea9b9575e32d2a3b04fbd27a6d))
+
+
+### Bug Fixes
+
+* **reader:** heading-aware TOC navigation, status bar, and format label ([#14](https://github.com/dilmun/delryn/issues/14)) ([b9c24cb](https://github.com/dilmun/delryn/commit/b9c24cb681dea6466f055dffa3570e2ee7848602))
+
 ## [Unreleased]
 
 ## [0.1.0](https://github.com/dilmun/delryn/releases/tag/v0.1.0) - 2026-07-09
