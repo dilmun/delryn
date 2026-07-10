@@ -78,6 +78,10 @@ impl Reader {
         }
         best.map(|(_, oi)| oi)
             .or_else(|| self.nav.heading_lines.first().map(|&(oi, _)| oi))
+            // A continuation section (a chapter spanning several sections) has no
+            // outline entry of its own, so `heading_lines` is empty — fall back to
+            // the chapter that contains it (last entry at/before this section).
+            .or_else(|| self.outline_for_section(self.section))
     }
 
     /// The outline index whose target page is the greatest at or before

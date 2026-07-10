@@ -23,6 +23,44 @@ fn seg_w(seg: &Segment) -> usize {
     seg.spans.iter().map(span_w).sum()
 }
 
+/// The most the Left zone (book title) may occupy so it never crosses into the
+/// centred zone — or the visual middle of the row when there is no centre content.
+/// The `-2` leaves the leading space and a gap before the centre.
+fn left_max(total: usize, center_w: usize) -> usize {
+    (total.saturating_sub(center_w) / 2).saturating_sub(2)
+}
+
+/// Truncate `spans` to at most `max` display cells, appending an ellipsis when cut
+/// (used to trim a long book title so it stops before the middle of the bar).
+fn truncate_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
+    if spans.iter().map(span_w).sum::<usize>() <= max {
+        return spans;
+    }
+    if max == 0 {
+        return Vec::new();
+    }
+    let budget = max - 1; // reserve a cell for the ellipsis
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for s in &spans {
+        let w = span_w(s);
+        if used + w <= budget {
+            out.push(s.clone());
+            used += w;
+        } else {
+            let take = budget - used;
+            if take > 0 {
+                let content: String = s.content.chars().take(take).collect();
+                out.push(Span::styled(content, s.style));
+            }
+            break;
+        }
+    }
+    let style = out.last().map(|s| s.style).unwrap_or_default();
+    out.push(Span::styled("…".to_string(), style));
+    out
+}
+
 /// The configured segment order for a zone (by `SegmentId` label).
 fn zone_order(status: &StatusFields, zone: Zone) -> &[String] {
     match zone {
@@ -57,11 +95,13 @@ pub fn render(f: &mut Frame, area: Rect, bar: &StatusBar, theme: Theme, status: 
     let mut kept: Vec<&Segment> = bar.segments.iter().collect();
     kept.sort_by_key(|s| order_rank(s, status));
 
-    // Drop the lowest-priority segments until the kept set fits the row.
+    // Drop the lowest-priority segments until the kept set fits the row. The Left
+    // zone (the book title) is treated as capped at the middle — it gets truncated
+    // rather than pushing the Right-zone reading fields off the row.
     loop {
-        let need = zone_w(&kept, Zone::Left, sep_w)
-            + zone_w(&kept, Zone::Center, sep_w)
-            + zone_w(&kept, Zone::Right, sep_w);
+        let center_w = zone_w(&kept, Zone::Center, sep_w);
+        let left_eff = zone_w(&kept, Zone::Left, sep_w).min(left_max(total, center_w));
+        let need = left_eff + center_w + zone_w(&kept, Zone::Right, sep_w);
         // Leading + trailing pad, plus a gap between adjacent non-empty zones.
         let gaps = 2 + present_gaps(&kept);
         if need + gaps <= total || kept.len() <= 1 {
@@ -80,12 +120,17 @@ pub fn render(f: &mut Frame, area: Rect, bar: &StatusBar, theme: Theme, status: 
         }
     }
 
-    let left_w = 1 + zone_w(&kept, Zone::Left, sep_w); // +1 leading space
     let right_w = zone_w(&kept, Zone::Right, sep_w) + 1; // +1 trailing space
     let center_w = zone_w(&kept, Zone::Center, sep_w);
 
+    // Build the Left zone, truncating it so a long title never crosses the middle.
+    let mut left_spans: Vec<Span> = Vec::new();
+    push_zone(&mut left_spans, &kept, Zone::Left, &sep, sep_style);
+    let left_spans = truncate_spans(left_spans, left_max(total, center_w));
+    let left_w = 1 + left_spans.iter().map(span_w).sum::<usize>(); // +1 leading space
+
     let mut spans: Vec<Span> = vec![Span::raw(" ".to_string())];
-    push_zone(&mut spans, &kept, Zone::Left, &sep, sep_style);
+    spans.extend(left_spans);
 
     if center_w > 0 {
         let pad_l = ((total.saturating_sub(center_w)) / 2).saturating_sub(left_w);
@@ -127,13 +172,7 @@ fn present_gaps(kept: &[&Segment]) -> usize {
     present.saturating_sub(1)
 }
 
-fn push_zone<'a>(
-    out: &mut Vec<Span<'a>>,
-    kept: &[&'a Segment],
-    zone: Zone,
-    sep: &str,
-    style: Style,
-) {
+fn push_zone(out: &mut Vec<Span<'static>>, kept: &[&Segment], zone: Zone, sep: &str, style: Style) {
     let mut first = true;
     for seg in kept.iter().filter(|s| s.zone == zone) {
         if !first {

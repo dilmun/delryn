@@ -22,6 +22,7 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
     let isbn = b.isbn.clone();
     let language = b.language.clone();
     let size = fmt_size(b.size);
+    let format = format_label(&b.path);
     let pct = b.pct;
     let fav = b.favorite;
     let converted = b.converted;
@@ -93,9 +94,9 @@ pub(crate) fn render_detail(f: &mut Frame, area: Rect, app: &mut App, theme: The
         Span::styled("Source: ", theme.style(Role::Muted)),
         Span::styled(
             if converted {
-                "Converted EPUB"
+                format!("Converted {format}")
             } else {
-                "Original EPUB"
+                format!("Original {format}")
             },
             Style::default().fg(if converted {
                 theme.color(Role::Marker)
@@ -128,4 +129,20 @@ fn meta_kv(key: &str, val: &str, theme: Theme) -> Line<'static> {
         Span::styled(format!("{key}: "), theme.style(Role::Muted)),
         Span::styled(val.to_string(), theme.style(Role::Body)),
     ])
+}
+
+/// The book's format name, from its file extension (for the "Source" line).
+fn format_label(path: &str) -> &'static str {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "pdf" => "PDF",
+        "epub" => "EPUB",
+        "mobi" | "prc" => "MOBI",
+        "azw" | "azw3" | "kf8" => "AZW3",
+        _ => "book",
+    }
 }
