@@ -13,7 +13,7 @@
 
 use crate::app::{
     AnnotState, BulkRename, CollInput, DupResolve, IgnoredView, ImageViewer, MetaEdit, Palette,
-    Prompt, Settings, ShelfPicker, TagInput,
+    Prompt, Settings, ShelfPicker, TagInput, WordLookup,
 };
 use crate::library::stats::LibraryStats;
 
@@ -55,6 +55,8 @@ pub enum Overlay {
     Stats(LibraryStats),
     /// Command palette (was `app.palette`).
     Palette(Palette),
+    /// Word-lookup panel (dictionary + Wikipedia) for the `K`-selected term.
+    WordLookup(WordLookup),
 }
 
 impl Overlay {
@@ -74,6 +76,7 @@ impl Overlay {
                 | Overlay::Annot(_)
                 | Overlay::Stats(_)
                 | Overlay::Palette(_)
+                | Overlay::WordLookup(_)
         )
     }
 }

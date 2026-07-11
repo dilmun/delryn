@@ -74,6 +74,9 @@ mod dispatch;
 mod palette;
 pub use palette::{Command, Palette, PaletteItem};
 
+mod word_lookup;
+pub use word_lookup::{LookupState, WordLookup};
+
 mod page_deck;
 use page_deck::PageDeck;
 
@@ -283,6 +286,9 @@ pub struct App {
     /// Receiver for async Open Library results (search / cover), if a request
     /// from the editor's Online tab is in flight.
     pub online_rx: Option<Receiver<OnlineMsg>>,
+    /// Receiver for an in-flight word lookup (dictionary + Wikipedia), while the
+    /// `K` lookup panel is fetching. See `app/word_lookup.rs`.
+    pub define_rx: Option<Receiver<online::LookupResult>>,
     /// In-flight thorough duplicate scan (cover hashing on a worker thread), if
     /// the reader triggered one from the Duplicates view.
     pub dup_scan: Option<dup_scan::DupScan>,
@@ -448,6 +454,7 @@ impl App {
             },
             library: LibraryState::default(),
             online_rx: None,
+            define_rx: None,
             dup_scan: None,
             scan: None,
             edit_cover: None,
@@ -490,6 +497,7 @@ impl App {
             },
             library: LibraryState::default(),
             online_rx: None,
+            define_rx: None,
             dup_scan: None,
             scan: None,
             edit_cover: None,
@@ -708,6 +716,7 @@ impl App {
                 | Overlay::BulkRename(_)
                 | Overlay::ShelfPicker(_)
                 | Overlay::ImageView(_)
+                | Overlay::WordLookup(_)
         )
     }
 

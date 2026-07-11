@@ -61,6 +61,32 @@ impl Reader {
         self.select.map(|s| s.text(&self.lines)).unwrap_or_default()
     }
 
+    /// The whitespace-delimited word under the caret, for `K` lookup in cursor
+    /// mode (empty if there's no caret or it sits on blank space). Surrounding
+    /// punctuation is stripped but internal hyphens/apostrophes are kept, so
+    /// `well-being` and `don't` survive while `(hello),` becomes `hello`.
+    pub fn word_at_caret(&self) -> String {
+        let Some(sel) = self.select else {
+            return String::new();
+        };
+        let chars = current_chars(&self.lines, sel.caret.line);
+        let col = sel.caret.col;
+        if chars.get(col).is_none_or(|c| c.is_whitespace()) {
+            return String::new();
+        }
+        let mut start = col;
+        while start > 0 && !chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        let mut end = col;
+        while end + 1 < chars.len() && !chars[end + 1].is_whitespace() {
+            end += 1;
+        }
+        let word: String = chars[start..=end].iter().collect();
+        word.trim_matches(|c: char| !c.is_alphanumeric())
+            .to_string()
+    }
+
     /// The selection's `[start, end)` column span on a display line, for washing —
     /// `None` in cursor mode (nothing anchored yet).
     pub fn selection_span_on(&self, line: usize) -> Option<(usize, usize)> {
