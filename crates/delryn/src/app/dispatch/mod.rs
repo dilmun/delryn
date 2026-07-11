@@ -107,6 +107,10 @@ impl App {
             self.palette_key(key);
             return;
         }
+        if matches!(self.overlay, Overlay::WordLookup(_)) {
+            self.word_lookup_key(key);
+            return;
+        }
         // The in-book search prompt is a focused text input: it must capture
         // every key (including shortcut letters like 'i' / ';' / ':') before any
         // global shortcut below gets a chance to fire.

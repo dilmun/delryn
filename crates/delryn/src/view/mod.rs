@@ -14,6 +14,7 @@ pub mod settings;
 pub mod shelf_picker;
 pub mod stats;
 pub mod status;
+pub mod word_lookup;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -344,6 +345,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     if matches!(app.overlay, Overlay::Palette(_)) {
         palette::render(f, app);
+    }
+    if matches!(app.overlay, Overlay::WordLookup(_)) {
+        word_lookup::render(f, app);
     }
     if matches!(app.overlay, Overlay::DupResolve(_)) {
         dup_resolve::render(f, app);

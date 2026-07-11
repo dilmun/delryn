@@ -8,8 +8,12 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-/// Identify the app to Open Library for the higher rate tier (per their docs).
-const USER_AGENT: &str = "delryn/0.1 (afathi.social@gmail.com)";
+pub mod define;
+pub use define::{DefItem, Definition, LookupResult, LookupSources, Meaning, WikiSummary, look_up};
+
+/// Identify the app for the higher rate tier (per Open Library's docs), and to
+/// satisfy Wikipedia's descriptive-User-Agent policy. Shared by every provider.
+pub(crate) const USER_AGENT: &str = "delryn/0.1 (afathi.social@gmail.com)";
 const SEARCH_URL: &str = "https://openlibrary.org/search.json";
 /// Fields requested from the search endpoint (keeps the payload small).
 const FIELDS: &str = "title,subtitle,author_name,first_publish_year,publisher,isbn,series_name,series_position,cover_i";

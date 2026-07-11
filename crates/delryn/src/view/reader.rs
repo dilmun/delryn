@@ -102,9 +102,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     } else if reader.selection_active() {
         let style = theme.style(Role::StatusBar);
         let hint = if reader.selection_selecting() {
-            " SELECT · h/l/w/b/j/k extend · ^d/^u ½page · y copy · 1-5/H highlight · a note · Esc "
+            " SELECT · h/l/w/b/j/k extend · ^d/^u ½page · y copy · 1-5/H highlight · a note · K look up · Esc "
         } else {
-            " CURSOR · h/l/w/b/j/k move · ^d/^u ½page · v select · m bookmark · H highlight · a note · Esc "
+            " CURSOR · h/l/w/b/j/k move · ^d/^u ½page · v select · m bookmark · H highlight · a note · K look up · Esc "
         };
         f.render_widget(Paragraph::new(Line::raw(hint)).style(style), status);
     } else if show_status {

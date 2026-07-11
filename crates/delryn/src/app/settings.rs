@@ -60,6 +60,10 @@ pub enum SettingItem {
     TrimMargins,
     PdfMargin,
     Mouse,
+    /// Word-lookup (`K`) sources — the Lookup tab.
+    LookupSdcv,
+    LookupDictionary,
+    LookupWikipedia,
     LibLayout,
     GridSize,
     /// A configured library source folder on the Sources tab (carries its index
@@ -114,6 +118,9 @@ impl SettingItem {
             SettingItem::TrimMargins => "Trim PDF margins",
             SettingItem::PdfMargin => "PDF margin crop %",
             SettingItem::Mouse => "Mouse",
+            SettingItem::LookupSdcv => "Local dictionary (sdcv)",
+            SettingItem::LookupDictionary => "Online dictionary",
+            SettingItem::LookupWikipedia => "Wikipedia summary",
             SettingItem::Source(_) => "Folder",
             SettingItem::AddSource => "Add folder…",
             SettingItem::RescanNow => "Rescan now",
@@ -176,6 +183,9 @@ impl SettingItem {
             SettingItem::TrimMargins => onoff(c.pdf_trim),
             SettingItem::PdfMargin => format!("{}%", c.pdf_margin_pct),
             SettingItem::Mouse => onoff(c.mouse_enabled),
+            SettingItem::LookupSdcv => onoff(c.lookup_sdcv),
+            SettingItem::LookupDictionary => onoff(c.lookup_dictionary),
+            SettingItem::LookupWikipedia => onoff(c.lookup_wikipedia),
             // Sources-tab rows render bespoke (see `view::settings`); the generic
             // label/value path is never taken for them.
             SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow => {
@@ -272,6 +282,15 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(StatusPercent),
                     I(StatusGauge),
                     I(StatusClock),
+                ],
+            ),
+            tab(
+                "Lookup",
+                vec![
+                    S("Word lookup (K)"),
+                    I(LookupSdcv),
+                    I(LookupDictionary),
+                    I(LookupWikipedia),
                 ],
             ),
             tab("Input", vec![S("Mouse"), I(Mouse)]),
@@ -683,6 +702,9 @@ impl App {
                     (c.pdf_margin_pct as i32 + delta).clamp(0, MAX_PDF_MARGIN_PCT as i32) as u16
             }
             SettingItem::Mouse => c.mouse_enabled = !c.mouse_enabled,
+            SettingItem::LookupSdcv => c.lookup_sdcv = !c.lookup_sdcv,
+            SettingItem::LookupDictionary => c.lookup_dictionary = !c.lookup_dictionary,
+            SettingItem::LookupWikipedia => c.lookup_wikipedia = !c.lookup_wikipedia,
             SettingItem::LibLayout => {
                 c.library_layout = if delta > 0 {
                     c.library_layout.next()

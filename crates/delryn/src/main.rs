@@ -150,6 +150,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         // reader costs ~0% CPU.
         let busy = app.animating()
             || app.online_active()
+            || app.define_active()
             || app.lib_grid_pending()
             || app.cover_pending()
             || app.preview_pending()
@@ -187,6 +188,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
 
         // Pick up finished Open Library results (editor's Online tab).
         if app.poll_online() {
+            dirty = true;
+        }
+        // Pick up a finished word lookup (dictionary + Wikipedia).
+        if app.poll_define() {
             dirty = true;
         }
         // Advance the thorough duplicate scan (cover hashing on a worker thread).

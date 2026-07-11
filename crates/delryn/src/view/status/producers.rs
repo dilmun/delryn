@@ -301,6 +301,9 @@ fn legend(app: &App) -> Option<(String, String)> {
             "↑↓ move · ⏎ jump · r name · f folder · d delete · Esc close".into(),
         ));
     }
+    if matches!(app.overlay, Overlay::WordLookup(_)) {
+        return Some(("Look up".into(), "j/k scroll · d/u page · Esc close".into()));
+    }
     // The image viewer is fullscreen and shows its own shortcut footer, so it
     // doesn't use the shared status-row legend.
     if let Overlay::MetaEdit(ed) = &app.overlay {

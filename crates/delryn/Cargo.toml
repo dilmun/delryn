@@ -11,6 +11,7 @@ delryn-model = { workspace = true }
 delryn-infra = { workspace = true }
 delryn-store = { workspace = true }
 delryn-online = { workspace = true }
+unicode-width.workspace = true
 delryn-media = { workspace = true }
 delryn-format = { workspace = true }
 delryn-render = { workspace = true }

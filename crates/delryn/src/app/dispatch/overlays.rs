@@ -507,6 +507,20 @@ impl App {
             KeyCode::Char(c) if selecting && ('1'..='5').contains(&c) => {
                 self.highlight_selection(HighlightColor::ALL[c as usize - '1' as usize]);
             }
+            // Look up the selected phrase, else the word under the caret (vim `K`),
+            // in the dictionary + Wikipedia panel. Leaves the selection intact.
+            KeyCode::Char('K') => {
+                let term = self.reader.as_ref().map(|r| {
+                    if selecting {
+                        r.selection_text()
+                    } else {
+                        r.word_at_caret()
+                    }
+                });
+                if let Some(term) = term {
+                    self.open_word_lookup(term);
+                }
+            }
             // Note on the selection, else on the caret's line (then leave the mode,
             // handing over to the commentary prompt).
             KeyCode::Char('a') => {

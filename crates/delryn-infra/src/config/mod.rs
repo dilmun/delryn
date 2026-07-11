@@ -258,6 +258,15 @@ pub struct Config {
     /// Duplicate auto-select: book-format keep priority (high → low), as format
     /// labels ("EPUB", "PDF", …). Earlier = preferred to keep.
     pub dup_format_order: Vec<String>,
+    /// Word-lookup (`K`) sources, each independently toggleable in
+    /// Settings ▸ Lookup. See `app/word_lookup.rs`.
+    /// Local `sdcv` (StarDict) dictionary — offline, the user's own dictionaries.
+    pub lookup_sdcv: bool,
+    /// Online Free Dictionary API (dictionaryapi.dev). Off ⇒ no word you read is
+    /// sent to it.
+    pub lookup_dictionary: bool,
+    /// Online Wikipedia summary. Off ⇒ no lookup term is sent to Wikipedia.
+    pub lookup_wikipedia: bool,
 }
 
 impl Default for Config {
@@ -298,6 +307,9 @@ impl Default for Config {
             library_columns: LIB_COLUMNS.iter().map(|(k, _)| k.to_string()).collect(),
             dup_converted_delete: false,
             dup_format_order: DUP_FORMAT_ORDER.iter().map(|s| s.to_string()).collect(),
+            lookup_sdcv: true,
+            lookup_dictionary: true,
+            lookup_wikipedia: true,
         }
     }
 }
