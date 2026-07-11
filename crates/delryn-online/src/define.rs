@@ -19,6 +19,9 @@ use crate::USER_AGENT;
 
 const DICT_URL: &str = "https://api.dictionaryapi.dev/api/v2/entries/en";
 const WIKI_URL: &str = "https://en.wikipedia.org/api/rest_v1/page/summary";
+/// Google's free, key-less web-translate endpoint (`client=gtx`) — the same one
+/// translate-shell uses. Unofficial; degrades to `None` if it ever changes.
+const TRANSLATE_URL: &str = "https://translate.googleapis.com/translate_a/single";
 
 /// The combined result of a word lookup: the term as queried, a dictionary
 /// definition (if any source had one), and a Wikipedia summary (if one exists).
@@ -27,12 +30,13 @@ pub struct LookupResult {
     pub word: String,
     pub definition: Option<Definition>,
     pub wiki: Option<WikiSummary>,
+    pub translation: Option<Translation>,
 }
 
 impl LookupResult {
-    /// Whether neither provider returned anything (drives the "nothing found" UI).
+    /// Whether no provider returned anything (drives the "nothing found" UI).
     pub fn is_empty(&self) -> bool {
-        self.definition.is_none() && self.wiki.is_none()
+        self.definition.is_none() && self.wiki.is_none() && self.translation.is_none()
     }
 }
 
@@ -73,8 +77,8 @@ pub struct WikiSummary {
 
 /// Which providers a lookup may consult, from the user's Lookup settings. A
 /// definition prefers the first enabled source that answers (sdcv, then the
-/// online dictionary); Wikipedia is independent.
-#[derive(Debug, Clone, Copy)]
+/// online dictionary); Wikipedia and translation are independent.
+#[derive(Debug, Clone, Default)]
 pub struct LookupSources {
     /// Local `sdcv` (StarDict) — offline, the user's own dictionaries.
     pub sdcv: bool,
@@ -82,6 +86,17 @@ pub struct LookupSources {
     pub dictionary: bool,
     /// The online Wikipedia summary.
     pub wikipedia: bool,
+    /// Target language code to translate the term into (e.g. `"en"`), or `None`
+    /// to skip translation.
+    pub translate_to: Option<String>,
+}
+
+/// A translation of the looked-up term: the translated text and the language the
+/// source was auto-detected as.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Translation {
+    pub text: String,
+    pub source_lang: String,
 }
 
 /// Look up `term` across the enabled `sources`: a dictionary definition (local
@@ -98,10 +113,15 @@ pub fn look_up(term: &str, sources: LookupSources) -> LookupResult {
         .flatten()
         .or_else(|| sources.dictionary.then(|| online_define(term)).flatten());
     let wiki = sources.wikipedia.then(|| wikipedia(term)).flatten();
+    let translation = sources
+        .translate_to
+        .as_deref()
+        .and_then(|target| translate(term, target));
     LookupResult {
         word: term.to_string(),
         definition,
         wiki,
+        translation,
     }
 }
 
@@ -231,6 +251,43 @@ fn parse_wiki(s: WikiResp) -> Option<WikiSummary> {
         description: s.description.filter(|d| !d.trim().is_empty()),
         extract,
     })
+}
+
+/// Translate `text` into `target` via Google's free web endpoint (source
+/// auto-detected). `None` on any error.
+fn translate(text: &str, target: &str) -> Option<Translation> {
+    if text.is_empty() || target.is_empty() {
+        return None;
+    }
+    let url = format!(
+        "{TRANSLATE_URL}?client=gtx&sl=auto&tl={}&dt=t&q={}",
+        enc_path(target),
+        enc_path(text)
+    );
+    let mut resp = ureq::get(&url)
+        .header("User-Agent", USER_AGENT)
+        .call()
+        .ok()?;
+    let v: serde_json::Value = resp.body_mut().read_json().ok()?;
+    parse_translate(&v)
+}
+
+/// Parse the endpoint's nested-array response: `[[["translated","orig",…],…],
+/// null,"<detected-lang>",…]`. Concatenates every sentence chunk.
+fn parse_translate(v: &serde_json::Value) -> Option<Translation> {
+    let mut text = String::new();
+    for seg in v.get(0)?.as_array()? {
+        if let Some(chunk) = seg.get(0).and_then(serde_json::Value::as_str) {
+            text.push_str(chunk);
+        }
+    }
+    let text = text.trim().to_string();
+    let source_lang = v
+        .get(2)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    (!text.is_empty()).then_some(Translation { text, source_lang })
 }
 
 #[derive(Deserialize)]
@@ -370,6 +427,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_google_translate_response() {
+        // Two sentence chunks + a detected source language.
+        let json = r#"[[["Hello ","Hola ",null,null,10],["world","mundo",null,null,3]],null,"es",null,null,null,null,[]]"#;
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        let t = parse_translate(&v).expect("a translation");
+        assert_eq!(t.text, "Hello world");
+        assert_eq!(t.source_lang, "es");
+
+        // An empty sentence list yields nothing.
+        let empty: serde_json::Value = serde_json::from_str(r#"[[],null,"und"]"#).unwrap();
+        assert!(parse_translate(&empty).is_none());
+    }
+
+    #[test]
     fn path_encoding_uses_percent_twenty_for_space() {
         assert_eq!(enc_path("machine learning"), "machine%20learning");
         assert_eq!(enc_path("naïve"), "na%C3%AFve");
@@ -379,11 +450,7 @@ mod tests {
     #[test]
     fn all_sources_disabled_makes_no_network_call() {
         // Every source off ⇒ both degrade to None without any network call.
-        let none = LookupSources {
-            sdcv: false,
-            dictionary: false,
-            wikipedia: false,
-        };
+        let none = LookupSources::default();
         let r = look_up("serendipity", none);
         assert_eq!(r.word, "serendipity");
         assert!(r.is_empty());
@@ -397,6 +464,7 @@ mod tests {
             sdcv: true,
             dictionary: true,
             wikipedia: true,
+            translate_to: Some("es".to_string()),
         };
         let r = look_up("hello", all);
         assert!(!r.is_empty(), "expected a live definition or summary");

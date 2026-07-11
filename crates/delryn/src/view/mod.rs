@@ -2,6 +2,7 @@
 //! sees the `Document` model and app state. See `DESIGN.md` §2.
 
 pub mod annotations;
+pub mod bidi;
 pub mod bulk_rename;
 pub mod dup_resolve;
 pub mod image;

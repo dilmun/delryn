@@ -114,6 +114,25 @@ pub const MAX_EQUATION_SCALE: u16 = 300;
 /// labels (not `BookFormat`, which lives in a crate that depends on this one).
 pub const DUP_FORMAT_ORDER: [&str; 4] = ["EPUB", "PDF", "MOBI", "AZW3"];
 
+/// Target languages offered by the Lookup "Translate to" stepper: `(code, label)`.
+/// The code is what's stored in `translate_to` and sent to the endpoint.
+pub const TRANSLATE_LANGS: [(&str, &str); 14] = [
+    ("en", "English"),
+    ("es", "Spanish"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("it", "Italian"),
+    ("pt", "Portuguese"),
+    ("nl", "Dutch"),
+    ("ru", "Russian"),
+    ("ar", "Arabic"),
+    ("zh", "Chinese"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("hi", "Hindi"),
+    ("tr", "Turkish"),
+];
+
 /// Reconcile a stored format keep-order with the known formats: drop unknown/
 /// duplicate labels, keep the user's order, and append any missing formats at the
 /// end — so the list is always the complete set in the user's preferred order.
@@ -267,6 +286,13 @@ pub struct Config {
     pub lookup_dictionary: bool,
     /// Online Wikipedia summary. Off ⇒ no lookup term is sent to Wikipedia.
     pub lookup_wikipedia: bool,
+    /// Translate the looked-up term via Google's free endpoint. Off by default —
+    /// most useful when reading a foreign language (an English term translated to
+    /// English is redundant). Off ⇒ no term is sent to the translation endpoint.
+    pub lookup_translate: bool,
+    /// Target language code for `lookup_translate` (e.g. `"en"`); the source is
+    /// auto-detected. One of [`TRANSLATE_LANGS`].
+    pub translate_to: String,
 }
 
 impl Default for Config {
@@ -310,6 +336,8 @@ impl Default for Config {
             lookup_sdcv: true,
             lookup_dictionary: true,
             lookup_wikipedia: true,
+            lookup_translate: false,
+            translate_to: "en".to_string(),
         }
     }
 }
@@ -322,6 +350,31 @@ impl Config {
     /// Whether an optional library column is shown.
     pub fn column_on(&self, key: &str) -> bool {
         self.library_columns.iter().any(|c| c == key)
+    }
+
+    /// Display label for the current translation target (falls back to the code
+    /// itself if it isn't one of [`TRANSLATE_LANGS`]).
+    pub fn translate_lang_label(&self) -> &str {
+        TRANSLATE_LANGS
+            .iter()
+            .find(|(code, _)| *code == self.translate_to)
+            .map(|(_, label)| *label)
+            .unwrap_or(&self.translate_to)
+    }
+
+    /// Step the translation target to the next/previous preset language (wrapping).
+    pub fn step_translate_to(&mut self, forward: bool) {
+        let n = TRANSLATE_LANGS.len();
+        let cur = TRANSLATE_LANGS
+            .iter()
+            .position(|(code, _)| *code == self.translate_to)
+            .unwrap_or(0);
+        let next = if forward {
+            (cur + 1) % n
+        } else {
+            (cur + n - 1) % n
+        };
+        self.translate_to = TRANSLATE_LANGS[next].0.to_string();
     }
 
     /// Show/hide an optional library column.

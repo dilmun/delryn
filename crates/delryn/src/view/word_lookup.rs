@@ -15,8 +15,11 @@ use crate::theme::{Role, Theme};
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
-    let any_source =
-        app.config.lookup_sdcv || app.config.lookup_dictionary || app.config.lookup_wikipedia;
+    let any_source = app.config.lookup_sdcv
+        || app.config.lookup_dictionary
+        || app.config.lookup_wikipedia
+        || app.config.lookup_translate;
+    let target = app.config.translate_to.clone();
     let large = app.overlay_large;
     let area = super::overlay_rect(f.area(), large);
     let inner_w = area.width.saturating_sub(2) as usize;
@@ -27,7 +30,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     };
     f.render_widget(Clear, area);
 
-    let lines = build(wl, theme, inner_w, any_source);
+    let lines = build(wl, theme, inner_w, any_source, &target);
     // Clamp scroll so `G`/overscroll can't drop the content off the top.
     let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
     wl.scroll = wl.scroll.min(max_scroll);
@@ -55,8 +58,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
 /// Lay the lookup state out as styled, already-wrapped lines (so scroll is exact).
 /// `any_source` is whether at least one lookup source is enabled — its absence is
-/// why an empty result came back, so the message points at Settings.
-fn build(wl: &WordLookup, theme: Theme, width: usize, any_source: bool) -> Vec<Line<'static>> {
+/// why an empty result came back, so the message points at Settings. `target` is
+/// the translation target language code.
+fn build(
+    wl: &WordLookup,
+    theme: Theme,
+    width: usize,
+    any_source: bool,
+    target: &str,
+) -> Vec<Line<'static>> {
     let muted = theme.style(Role::Muted);
     let body = theme.style(Role::Body);
     let heading = theme.style(Role::Hint).add_modifier(Modifier::BOLD);
@@ -66,7 +76,7 @@ fn build(wl: &WordLookup, theme: Theme, width: usize, any_source: bool) -> Vec<L
         LookupState::Fetching => vec![Line::raw(""), indented(" Looking up…", muted)],
         LookupState::Ready(result) if result.is_empty() => {
             let msg = if any_source {
-                format!(" No dictionary or Wikipedia entry for “{}”.", wl.word)
+                format!(" No results for “{}”.", wl.word)
             } else {
                 " No lookup sources are enabled (Settings ▸ Lookup).".to_string()
             };
@@ -77,9 +87,42 @@ fn build(wl: &WordLookup, theme: Theme, width: usize, any_source: bool) -> Vec<L
             render_definition(
                 result, &mut lines, width, theme, heading, body, muted, example,
             );
+            render_translation(result, &mut lines, width, target, heading, body);
             render_wiki(result, &mut lines, width, heading, body, muted);
             lines
         }
+    }
+}
+
+/// The translation section — skipped when the source is already the target
+/// language (a redundant same-language "translation").
+fn render_translation(
+    result: &LookupResult,
+    lines: &mut Vec<Line<'static>>,
+    width: usize,
+    target: &str,
+    heading: Style,
+    body: Style,
+) {
+    let Some(tr) = &result.translation else {
+        return;
+    };
+    if tr.source_lang == target {
+        return;
+    }
+    if !lines.is_empty() {
+        lines.push(Line::raw(""));
+    }
+    let hdr = if tr.source_lang.is_empty() {
+        format!(" Translation → {target}")
+    } else {
+        format!(" Translation ({} → {target})", tr.source_lang)
+    };
+    lines.push(Line::from(Span::styled(hdr, heading)));
+    // Reorder RTL (Arabic/Hebrew/Persian) output to visual order per line — the
+    // terminal won't. A no-op for LTR targets. See `view::bidi`.
+    for seg in wrap(&tr.text, width.saturating_sub(1)) {
+        lines.push(indented(format!(" {}", super::bidi::to_visual(&seg)), body));
     }
 }
 
