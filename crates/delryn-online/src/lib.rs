@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 pub mod define;
-pub use define::{DefItem, Definition, LookupResult, LookupSources, Meaning, WikiSummary, look_up};
+pub use define::{
+    DefItem, Definition, LookupResult, LookupSources, Meaning, Translation, WikiSummary, look_up,
+};
 
 /// Identify the app for the higher rate tier (per Open Library's docs), and to
 /// satisfy Wikipedia's descriptive-User-Agent policy. Shared by every provider.

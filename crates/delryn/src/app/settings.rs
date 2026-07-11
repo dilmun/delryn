@@ -64,6 +64,8 @@ pub enum SettingItem {
     LookupSdcv,
     LookupDictionary,
     LookupWikipedia,
+    LookupTranslate,
+    TranslateTo,
     LibLayout,
     GridSize,
     /// A configured library source folder on the Sources tab (carries its index
@@ -121,6 +123,8 @@ impl SettingItem {
             SettingItem::LookupSdcv => "Local dictionary (sdcv)",
             SettingItem::LookupDictionary => "Online dictionary",
             SettingItem::LookupWikipedia => "Wikipedia summary",
+            SettingItem::LookupTranslate => "Translation",
+            SettingItem::TranslateTo => "Translate to",
             SettingItem::Source(_) => "Folder",
             SettingItem::AddSource => "Add folder…",
             SettingItem::RescanNow => "Rescan now",
@@ -186,6 +190,8 @@ impl SettingItem {
             SettingItem::LookupSdcv => onoff(c.lookup_sdcv),
             SettingItem::LookupDictionary => onoff(c.lookup_dictionary),
             SettingItem::LookupWikipedia => onoff(c.lookup_wikipedia),
+            SettingItem::LookupTranslate => onoff(c.lookup_translate),
+            SettingItem::TranslateTo => c.translate_lang_label().to_string(),
             // Sources-tab rows render bespoke (see `view::settings`); the generic
             // label/value path is never taken for them.
             SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow => {
@@ -291,6 +297,9 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(LookupSdcv),
                     I(LookupDictionary),
                     I(LookupWikipedia),
+                    S("Translation"),
+                    I(LookupTranslate),
+                    I(TranslateTo),
                 ],
             ),
             tab("Input", vec![S("Mouse"), I(Mouse)]),
@@ -705,6 +714,8 @@ impl App {
             SettingItem::LookupSdcv => c.lookup_sdcv = !c.lookup_sdcv,
             SettingItem::LookupDictionary => c.lookup_dictionary = !c.lookup_dictionary,
             SettingItem::LookupWikipedia => c.lookup_wikipedia = !c.lookup_wikipedia,
+            SettingItem::LookupTranslate => c.lookup_translate = !c.lookup_translate,
+            SettingItem::TranslateTo => c.step_translate_to(delta > 0),
             SettingItem::LibLayout => {
                 c.library_layout = if delta > 0 {
                     c.library_layout.next()

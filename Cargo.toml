@@ -9,6 +9,10 @@ license = "MIT"
 repository = "https://github.com/dilmun/delryn"
 
 [workspace.dependencies]
+# RTL text for the terminal: reshape Arabic/Persian to presentation forms, then
+# reorder each line to visual order (terminals — esp. under tmux — don't do bidi).
+ar-reshaper = "1.5.0"
+unicode-bidi = "0.3.18"
 # External
 anyhow = "1.0.102"
 arboard = "3.6.1"

@@ -40,6 +40,10 @@ impl App {
             sdcv: self.config.lookup_sdcv,
             dictionary: self.config.lookup_dictionary,
             wikipedia: self.config.lookup_wikipedia,
+            translate_to: self
+                .config
+                .lookup_translate
+                .then(|| self.config.translate_to.clone()),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let query = word.clone();
