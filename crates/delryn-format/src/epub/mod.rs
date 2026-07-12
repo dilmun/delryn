@@ -4,9 +4,11 @@
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Component, Path, PathBuf};
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
 use epub::doc::EpubDoc;
+use regex::Regex;
 
 use super::{Block, Document, Metadata, OutlineItem, Section, SectionLoader, TocEntry};
 use crate::container::filename_eq;
@@ -78,13 +80,17 @@ fn load_blocks(doc: &mut EpubDoc<BufReader<File>>, index: usize) -> Result<Vec<B
     let (xhtml, _mime) = doc
         .get_current_str()
         .context("reading current section content")?;
-    let mut blocks = super::html::parse_blocks(&xhtml);
-
-    // Resolve each figure image's bytes from the archive.
+    // The section's directory, for resolving its linked stylesheets and images.
     let dir = doc
         .get_current_path()
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_default();
+    // Pass the linked CSS so the parser honours `display: block` on inline citation
+    // spans (author/title/DOI lines that otherwise run together).
+    let css = section_css(doc, &dir, &xhtml);
+    let mut blocks = super::html::parse_blocks_with_css(&xhtml, &css);
+
+    // Resolve each figure image's bytes from the archive.
     for block in &mut blocks {
         if let Block::Image { src, data, .. } = block
             && let Some(bytes) = resolve_image(doc, &dir, src)
@@ -151,6 +157,31 @@ impl Document for EpubDocument {
             Vec::new()
         }
     }
+}
+
+/// The concatenated text of the section's linked stylesheets (`<link
+/// rel="stylesheet">`), resolved from the archive, so the parser can honour their
+/// `display: block` rules (Springer/Apress citation spans). Best-effort: an
+/// unresolved sheet is skipped; inline `<style>` blocks are read by the parser.
+fn section_css(doc: &mut EpubDoc<BufReader<File>>, dir: &Path, xhtml: &str) -> String {
+    static LINK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?is)<link\b[^>]*\brel\s*=\s*["']?stylesheet["']?[^>]*>"#).unwrap()
+    });
+    static HREF: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?is)\bhref\s*=\s*["']([^"']+)["']"#).unwrap());
+    let mut css = String::new();
+    for link in LINK.find_iter(xhtml) {
+        let Some(href) = HREF.captures(link.as_str()).and_then(|c| c.get(1)) else {
+            continue;
+        };
+        let href = href.as_str().split('#').next().unwrap_or("");
+        let joined = normalize_path(&dir.join(href));
+        if let Some(bytes) = doc.get_resource_by_path(&joined) {
+            css.push_str(&String::from_utf8_lossy(&bytes));
+            css.push('\n');
+        }
+    }
+    css
 }
 
 /// Resolve an image `src` (relative to the chapter dir) to its bytes, with a
