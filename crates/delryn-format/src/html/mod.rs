@@ -2,6 +2,8 @@
 //! formats) to drive the rich typography engine. Produces headings, styled
 //! paragraphs, lists, blockquotes, and code blocks rather than flat text.
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use ego_tree::NodeRef;
@@ -10,6 +12,54 @@ use scraper::{Html, Node};
 
 use super::{Anchor, Block, CalloutKind, ImageWidth, Inline, Span, TableCell};
 use crate::container::{body_or_root, descendant_text};
+
+thread_local! {
+    /// Class names the section's CSS gives `display: block` (or list-item/table/…),
+    /// so an inline element (a `<span>`/`<a>`) carrying one is laid out as its own
+    /// block — otherwise Springer/Apress citation lines (author · title · DOI link),
+    /// each a `display:block` `<span>` with no whitespace between them, run together.
+    /// Set for the duration of one [`parse_blocks_with_css`] call, then cleared.
+    static BLOCK_CLASSES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// Whether the current parse's CSS makes an element with `class` block-level.
+fn class_is_block_display(e: &scraper::node::Element) -> bool {
+    let Some(class) = e.attr("class") else {
+        return false;
+    };
+    BLOCK_CLASSES
+        .with_borrow(|set| !set.is_empty() && class.split_whitespace().any(|t| set.contains(t)))
+}
+
+/// The class names any `display: block | list-item | table | flex | grid` rule
+/// targets — the *last* class of each comma-separated selector (its subject), so a
+/// descendant rule (`.Wrapper .BookTitle{display:block}`) marks `BookTitle`, not the
+/// wrapper. Comments are stripped; `@media` bodies are scanned too (their inner
+/// rules match the same way). A best-effort text scan, not a full CSS engine.
+fn block_display_classes(css: &str) -> HashSet<String> {
+    static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/\*[\s\S]*?\*/").unwrap());
+    // Innermost `selector { body }` (no braces inside either), so a rule nested in
+    // an `@media { … }` block still matches on its own.
+    static RULE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([^{}]*)\{([^{}]*)\}").unwrap());
+    static BLOCKISH: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"display\s*:\s*(?:block|list-item|table|flex|grid)\b").unwrap()
+    });
+    static CLASS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\.(-?[A-Za-z_][A-Za-z0-9_-]*)").unwrap());
+    let css = COMMENT.replace_all(css, " ");
+    let mut out = HashSet::new();
+    for rule in RULE.captures_iter(&css) {
+        if !BLOCKISH.is_match(&rule[2]) {
+            continue;
+        }
+        for sel in rule[1].split(',') {
+            if let Some(subject) = CLASS.captures_iter(sel).last() {
+                out.insert(subject[1].to_string());
+            }
+        }
+    }
+    out
+}
 
 mod callout;
 mod code;
@@ -31,13 +81,35 @@ use semantics::*;
 use table::*;
 use toolchain::*;
 
-/// Parse a section's XHTML into a list of reflowable blocks.
+/// Parse a section's XHTML into a list of reflowable blocks. Any `<style>` in the
+/// document is honoured for block-`display`; a linked stylesheet (EPUB) is passed
+/// via [`parse_blocks_with_css`].
 pub fn parse_blocks(xhtml: &str) -> Vec<Block> {
+    parse_blocks_with_css(xhtml, "")
+}
+
+/// As [`parse_blocks`], plus `extra_css` (the section's linked stylesheets, which
+/// EPUB resolves from the archive) so `display: block` on inline citation `<span>`s
+/// is honoured — otherwise their lines run together with no whitespace.
+pub fn parse_blocks_with_css(xhtml: &str, extra_css: &str) -> Vec<Block> {
     let xhtml = expand_self_closing(xhtml);
     let doc = Html::parse_document(&xhtml);
+    // Collect block-display classes from the linked CSS and any inline `<style>`.
+    let mut css = extra_css.to_string();
+    for node in doc.tree.root().descendants() {
+        if matches!(node.value(), Node::Element(e) if e.name() == "style") {
+            css.push('\n');
+            css.push_str(&descendant_text(node, false, None));
+        }
+    }
+    let classes = block_display_classes(&css);
+    BLOCK_CLASSES.with_borrow_mut(|set| *set = classes);
+
     let mut out = Vec::new();
     walk_children(body_or_root(&doc), &Ctx::default(), &mut out);
     attach_trailing_captions(&mut out);
+
+    BLOCK_CLASSES.with_borrow_mut(HashSet::clear); // don't leak across sections
     out
 }
 
@@ -170,6 +242,10 @@ impl Ctx {
 
 fn is_block(node: NodeRef<Node>) -> bool {
     match node.value() {
+        // An inline element the CSS gives `display: block` (Springer/Apress citation
+        // `<span>`s: author · title · DOI link) — lay it out on its own line so the
+        // parts don't concatenate. Its content recurses as a `Container`.
+        Node::Element(e) if class_is_block_display(e) => true,
         // Real figure/cover images render block-level; math/icon images stay
         // inline (handled in collect_inline).
         Node::Element(e) if matches!(e.name(), "img" | "image") => is_real_image(e),

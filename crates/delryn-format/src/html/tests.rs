@@ -965,3 +965,77 @@ fn native_inline_mathml_stays_in_the_paragraph() {
         "no tags: {text:?}"
     );
 }
+
+/// The paragraph texts, in order (skips images/rules/etc.).
+fn para_texts(blocks: &[Block]) -> Vec<String> {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Para { spans, .. } => {
+                Some(spans.iter().map(|s| s.text.as_str()).collect::<String>())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn block_display_classes_extracts_the_selector_subject() {
+    let css = r#"
+        .A, .Wrapper .B { color: red; display: block; }
+        .C { display: inline; }
+        /* .D { display: block; } */
+        @media screen { .E { display: block; } }
+    "#;
+    let set = block_display_classes(css);
+    assert!(set.contains("A"), "grouped selector subject");
+    assert!(
+        set.contains("B"),
+        "descendant selector *subject* (last class)"
+    );
+    assert!(!set.contains("Wrapper"), "not the descendant ancestor");
+    assert!(!set.contains("C"), "display:inline is not block");
+    assert!(!set.contains("D"), "commented-out rule ignored");
+    assert!(set.contains("E"), "rule inside @media still counts");
+}
+
+#[test]
+fn css_block_display_spans_render_on_separate_lines() {
+    // The Springer/Apress citation shape: author · title · DOI link, each a
+    // `display:block` <span> with no whitespace between them.
+    let html = r#"
+        <html><head><style>
+            .Author, .BookTitle, .ChapterDOI { display: block; }
+        </style></head><body>
+          <div class="cite"><span class="Author">Sayan Mukhopadhyay</span><span class="BookTitle">Advanced Data Analytics Using Python</span><span class="ChapterDOI"><a href="https://doi.org/x">https://doi.org/x</a></span></div>
+        </body></html>
+    "#;
+    let texts = para_texts(&parse_blocks(html));
+    assert!(
+        texts
+            .iter()
+            .any(|t| t == "Advanced Data Analytics Using Python"),
+        "title on its own line: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t == "https://doi.org/x"),
+        "DOI link on its own line: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("Pythonhttps")),
+        "title and DOI must not run together: {texts:?}"
+    );
+}
+
+#[test]
+fn inline_spans_stay_inline_without_a_block_rule() {
+    // No display:block anywhere → adjacent spans still join (the existing behaviour,
+    // so we don't split ordinary inline markup).
+    let html = r#"<html><body><p><span>foo</span><span>bar</span></p></body></html>"#;
+    let texts = para_texts(&parse_blocks(html));
+    assert_eq!(
+        texts,
+        vec!["foobar".to_string()],
+        "no block rule → one paragraph"
+    );
+}
