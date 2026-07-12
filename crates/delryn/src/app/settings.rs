@@ -56,6 +56,8 @@ pub enum SettingItem {
     CodeWrap,
     CodeLineNumbers,
     CodeLanguageLabel,
+    CodeFold,
+    CodeFoldThreshold,
     TableWrap,
     Paged,
     Continuous,
@@ -119,6 +121,8 @@ impl SettingItem {
             SettingItem::CodeWrap => "Wrap long lines",
             SettingItem::CodeLineNumbers => "Line numbers",
             SettingItem::CodeLanguageLabel => "Language label",
+            SettingItem::CodeFold => "Fold long code",
+            SettingItem::CodeFoldThreshold => "Fold threshold",
             SettingItem::TableWrap => "Wrap tables",
             SettingItem::Paged => "Page mode",
             SettingItem::Continuous => "Continuous scroll",
@@ -189,6 +193,8 @@ impl SettingItem {
             SettingItem::CodeWrap => onoff(c.code_wrap),
             SettingItem::CodeLineNumbers => onoff(c.code_line_numbers),
             SettingItem::CodeLanguageLabel => onoff(c.code_language_label),
+            SettingItem::CodeFold => onoff(c.code_fold),
+            SettingItem::CodeFoldThreshold => format!("{} lines", c.code_fold_threshold),
             SettingItem::TableWrap => onoff(c.table_wrap),
             SettingItem::Paged => onoff(c.paged),
             SettingItem::Continuous => onoff(c.continuous),
@@ -275,6 +281,8 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(CodeWrap),
                     I(CodeLineNumbers),
                     I(CodeLanguageLabel),
+                    I(CodeFold),
+                    I(CodeFoldThreshold),
                     S("Tables & text"),
                     I(TableWrap),
                     I(TidySpacing),
@@ -734,6 +742,11 @@ impl App {
             SettingItem::CodeWrap => c.code_wrap = !c.code_wrap,
             SettingItem::CodeLineNumbers => c.code_line_numbers = !c.code_line_numbers,
             SettingItem::CodeLanguageLabel => c.code_language_label = !c.code_language_label,
+            SettingItem::CodeFold => c.code_fold = !c.code_fold,
+            SettingItem::CodeFoldThreshold => {
+                c.code_fold_threshold =
+                    (c.code_fold_threshold as i32 + delta * 5).clamp(5, 200) as usize
+            }
             SettingItem::TableWrap => c.table_wrap = !c.table_wrap,
             SettingItem::Paged => c.paged = !c.paged,
             SettingItem::Continuous => c.continuous = !c.continuous,

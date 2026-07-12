@@ -211,6 +211,12 @@ pub struct Config {
     pub code_line_numbers: bool,
     /// Show a language tag at the top of each code block (skipped for plain text).
     pub code_language_label: bool,
+    /// Collapse code blocks longer than [`Config::code_fold_threshold`] lines to a
+    /// short preview (an editor-style fold). Toggle all blocks with `Z`, or the one
+    /// under the cursor with `F`; the fullscreen code viewer (`O`) is never folded.
+    pub code_fold: bool,
+    /// Line count above which a code block folds when `code_fold` is on.
+    pub code_fold_threshold: usize,
     /// Word-wrap table cells to their column (true) vs. truncate with `…` (false).
     pub table_wrap: bool,
     /// Fully justify body text to the column width (true) vs. ragged-right /
@@ -318,6 +324,8 @@ impl Default for Config {
             code_wrap: true,
             code_line_numbers: true,
             code_language_label: true,
+            code_fold: true,
+            code_fold_threshold: 20,
             table_wrap: true,
             justify: false,
             tidy_spacing: true,

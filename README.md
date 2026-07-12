@@ -134,7 +134,8 @@ the essentials:
 | `m` · `H` · `a` | bookmark · highlight (cycles colour) · note |
 | `'` | open annotations browser (Bookmarks / Notes / Highlights) |
 | `V` | visual selection → `y` copy · `H`/`1`–`5` highlight · `a` note |
-| `i` | figure / image browser |
+| `I` · `O` | figure browser · code browser (fullscreen, scroll + copy) |
+| `Z` · `F` | fold all long code · pick a visible code block to fold (`1`–`9`) |
 </details>
 
 <details>

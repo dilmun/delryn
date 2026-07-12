@@ -13,7 +13,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
 use crate::HighlightColor;
 use crate::app::{
-    App, Focus, ImageGeom, PageTarget, PageView, PanRoom, Reader, Viewport, place_page,
+    App, Focus, HintKind, ImageGeom, PageTarget, PageView, PanRoom, Reader, Viewport, place_page,
     raster_width_for_crispness,
 };
 use crate::config::{Config, ViewMode};
@@ -49,6 +49,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.code_wrap = config.code_wrap;
     reader.code_line_numbers = config.code_line_numbers;
     reader.code_label = config.code_language_label;
+    reader.code_fold = config.code_fold;
+    reader.code_fold_threshold = config.code_fold_threshold;
     reader.table_wrap = config.table_wrap;
     reader.justify = config.justify;
     reader.tidy_spacing = config.tidy_spacing;
@@ -290,6 +292,12 @@ fn render_content(
         if col.gutter {
             draw_gutter(f, col.area, reader, col.scroll, theme);
         }
+        // The `F`/`I` pick-mode: a bright number badge on each visible element in
+        // this column (drawn over the cells; images are centred so the left edge
+        // is clear of the Kitty graphic).
+        if reader.hint_active() {
+            draw_hint_badges(f, col.area, reader, col.scroll, theme);
+        }
     }
 
     // Inline figures: each column shows the figures in its own slice. During a
@@ -312,6 +320,34 @@ fn render_content(
                 }
             }
         }
+    }
+}
+
+/// Draw the pick-mode number badges for this column: a bright `[n]` at the first
+/// visible row of each badged element (code block or figure). Badge `n` maps to
+/// `targets[n-1]`, so the numbers run in reading order across both spread columns.
+fn draw_hint_badges(f: &mut Frame, area: Rect, reader: &Reader, top: usize, theme: Theme) {
+    let Some((kind, targets)) = reader.hint() else {
+        return;
+    };
+    let view_end = top + area.height as usize;
+    // The `Selection` role (ink on the accent, bold) — the same legible pill as a
+    // selected row / search match. It resolves via `on_accent()`, so it stays
+    // readable in the `auto` theme too, where `Heading` is `Reset` (no colour).
+    let style = theme.style(Role::Selection);
+    let buf = f.buffer_mut();
+    for (n, &idx) in targets.iter().enumerate() {
+        let first = reader.lines.iter().position(|l| match (kind, l.kind) {
+            (HintKind::Code, LineKind::Code(x)) => x == idx,
+            (HintKind::Image, LineKind::Image(x)) => x == idx,
+            _ => false,
+        });
+        let Some(first) = first else { continue };
+        if first < top || first >= view_end {
+            continue;
+        }
+        let y = area.y + (first - top) as u16;
+        buf.set_string(area.x, y, format!(" {} ", n + 1), style);
     }
 }
 

@@ -12,7 +12,21 @@ use crate::config::{Config, ViewMode};
 /// measure is. When any of them changes (a view-mode switch, a reading preset, a
 /// width/spacing tweak), the section re-wraps, so the reader preserves its
 /// reading position across the change via [`Reader::hold_reflow_position`].
-fn reflow_key(c: &Config) -> (ViewMode, u16, u16, u8, u8, bool, bool, bool, bool) {
+fn reflow_key(
+    c: &Config,
+) -> (
+    ViewMode,
+    u16,
+    u16,
+    u8,
+    u8,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    usize,
+) {
     (
         c.view_mode,
         c.side_padding,
@@ -23,6 +37,8 @@ fn reflow_key(c: &Config) -> (ViewMode, u16, u16, u8, u8, bool, bool, bool, bool
         c.tidy_spacing,
         c.code_wrap,
         c.table_wrap,
+        c.code_fold,
+        c.code_fold_threshold,
     )
 }
 
@@ -301,6 +317,40 @@ impl App {
                     .to_string(),
                 );
                 save = true;
+            }
+            Action::ToggleFold => {
+                self.config.code_fold = !self.config.code_fold;
+                reader.code_fold = self.config.code_fold;
+                reader.code_fold_flip.clear(); // a clean global switch, like wrap
+                // Pin the central code block so the whole-page reflow doesn't shove
+                // the reader's focus (falls back to the generic fraction hold below
+                // when no code is in view).
+                if let Some(idx) = reader.fold_target() {
+                    reader.hold_code_block(idx);
+                }
+                // Line counts change → inline images move; delete + rebuild their
+                // Kitty placements (they composite above the cells) and repaint.
+                reader.restage_visible_images();
+                reader.request_repaint();
+                reader.flash = Some(
+                    if self.config.code_fold {
+                        "code: fold long blocks"
+                    } else {
+                        "code: unfold all"
+                    }
+                    .to_string(),
+                );
+                save = true;
+            }
+            Action::ToggleFoldBlock => {
+                // `F` opens the fold pick-mode. With one block in view it just
+                // toggles it (each block anchors itself — see `hold_code_block`);
+                // with several it badges them and awaits a digit (see `hint_key`).
+                reader.flash = match reader.hint_start(HintKind::Code) {
+                    HintStart::None => Some("no code block in view".into()),
+                    HintStart::Single(idx) => Some(reader.toggle_fold_at(idx)),
+                    HintStart::Entered(n) => Some(format!("fold: press 1–{n} · Esc")),
+                };
             }
             // Horizontal panning only applies to non-wrapped code.
             Action::PanLeft => {

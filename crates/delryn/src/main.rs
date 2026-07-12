@@ -262,6 +262,12 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
             terminal.clear()?;
             dirty = true;
         }
+        // A code fold/unfold reflows in place and moves inline images; force the same
+        // full repaint so the old placement doesn't linger until the next scroll.
+        if app.take_repaint() {
+            terminal.clear()?;
+            dirty = true;
+        }
 
         if dirty && last_draw.elapsed() >= FRAME {
             draw(terminal, app, sync)?;

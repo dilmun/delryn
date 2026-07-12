@@ -128,12 +128,19 @@ impl App {
             self.visual_key(key);
             return;
         }
+        // The `F`/`I` number-badge pick-mode captures digits (so they don't feed the
+        // vim count) until a choice is made or it's cancelled.
+        if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.hint_active()) {
+            self.hint_key(key);
+            return;
+        }
         // ':' opens the command palette in the library.
         if self.mode == Mode::Library && key.code == KeyCode::Char(':') {
             self.open_palette();
             return;
         }
-        if self.mode == Mode::Reader && key.code == KeyCode::Char('i') {
+        // `I` opens the figure pick-mode (capital, matching `F` for folds).
+        if self.mode == Mode::Reader && key.code == KeyCode::Char('I') {
             self.open_images();
             return;
         }
