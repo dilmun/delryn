@@ -364,16 +364,19 @@ fn draw_following_images(
     col_offset: usize,
 ) {
     for (row, key) in reader.continuous_following_images() {
-        if row < col_offset {
-            continue; // in an earlier column / above this one
-        }
-        let screen_row = row - col_offset;
-        if screen_row >= area.height as usize {
+        // Signed: a figure whose top scrolled above this column's top (or that spans
+        // the spread boundary from the left column) renders with a negative `y` so the
+        // Kitty slice clips its top — it shows *partially* instead of vanishing.
+        let screen_row = row as isize - col_offset as isize;
+        if screen_row >= area.height as isize {
             continue; // entirely below this column
         }
         let Some(plan) = reader.image_plan_by_key(&key) else {
             continue; // not built yet — the reserved rows stay blank this frame
         };
+        if screen_row + plan.rows as isize <= 0 {
+            continue; // entirely above this column (fully clipped off the top)
+        }
         if scrolling && plan.needs_pretransmit() {
             continue; // defer a first heavy upload to the settle frame
         }
