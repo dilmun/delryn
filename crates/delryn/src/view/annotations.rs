@@ -6,9 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph,
-};
+use ratatui::widgets::{Clear, List, ListItem, ListState, Padding, Paragraph};
 
 use crate::HighlightColor;
 use crate::app::{AnnotTab, App, Overlay, Prompt, PromptKind};
@@ -47,6 +45,7 @@ fn render_prompt(f: &mut Frame, app: &App, prompt: &Prompt) {
 
 fn render_overlay(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
+    let bold = app.config.bold_borders;
     let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
@@ -59,10 +58,7 @@ fn render_overlay(f: &mut Frame, app: &mut App) {
     let filtering = state.filtering;
     let filter = state.filter.clone();
     let bg = theme.paper();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::BorderFocus))
+    let block = super::overlay_frame(theme, bold)
         .padding(Padding::horizontal(1))
         .title(Span::styled(" Annotations ", theme.style(Role::Title)))
         .title_bottom(Line::from(Span::styled(

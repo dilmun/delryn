@@ -7,9 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-};
+use ratatui::widgets::{Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::app::{App, Mode, Overlay, SettingItem, SettingRow, settings_tabs, tab_rows};
 use crate::config::Config;
@@ -26,6 +24,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let (scope_mode, active_tab, sel_row) = (state.scope, state.tab, state.row);
     let adding = state.adding.as_ref();
     let theme = app.config.theme;
+    let bold = app.config.bold_borders;
     let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
@@ -43,10 +42,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         " Tab section · ↑↓ move · ←→ change · q close "
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::BorderFocus))
+    let block = super::overlay_frame(theme, bold)
         .title(Span::styled(
             format!(" {scope} Settings "),
             theme.style(Role::Title),

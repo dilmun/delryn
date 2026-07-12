@@ -4,6 +4,7 @@
 pub mod annotations;
 pub mod bidi;
 pub mod bulk_rename;
+pub mod code_view;
 pub mod dup_resolve;
 pub mod image;
 pub mod layout;
@@ -72,7 +73,7 @@ pub fn cover_image_rect(area: Rect, font: (u16, u16), dims: (u32, u32)) -> Rect 
 /// window shares one geometry ([`overlay_rect`]); the full-screen image viewer
 /// covers everything.
 fn overlay_occlusion(area: Rect, app: &App) -> Option<Rect> {
-    if matches!(app.overlay, Overlay::ImageView(_)) {
+    if matches!(app.overlay, Overlay::ImageView(_) | Overlay::CodeView(_)) {
         return Some(area);
     }
     if app.overlay.is_resizable_window() {
@@ -311,6 +312,187 @@ pub fn overlay_rect(area: Rect, large: bool) -> Rect {
     }
 }
 
+/// A presentable chapter name for `section` from the reader's outline: the label
+/// as-is, a bare number prefixed with "Chapter", else "§N". Shared by the image
+/// and code viewers' sidebars.
+pub fn chapter_label(reader: Option<&crate::app::Reader>, section: usize) -> String {
+    let label = reader
+        .and_then(|r| {
+            r.outline
+                .iter()
+                .find(|e| e.section == section)
+                .map(|e| e.label.clone())
+        })
+        .unwrap_or_default();
+    let t = label.trim();
+    if t.is_empty() {
+        format!("§{}", section + 1)
+    } else if t.chars().all(|c| c.is_ascii_digit()) {
+        format!("Chapter {t}")
+    } else {
+        t.to_string()
+    }
+}
+
+/// The one place every overlay/popup border is defined, so a change here (or the
+/// `bold` toggle) applies to all of them at once. `bold` (from
+/// `config.bold_borders`) draws a thick, bold border; otherwise a thin rounded
+/// one. Callers add their own `.title(...)` and surface `.style(...)`.
+pub fn overlay_frame(theme: crate::theme::Theme, bold: bool) -> ratatui::widgets::Block<'static> {
+    use ratatui::style::Modifier;
+    use ratatui::widgets::{Block, BorderType, Borders};
+    let (kind, style) = if bold {
+        (
+            BorderType::Thick,
+            theme
+                .style(crate::theme::Role::BorderFocus)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (
+            BorderType::Rounded,
+            theme.style(crate::theme::Role::BorderFocus),
+        )
+    };
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(kind)
+        .border_style(style)
+}
+
+/// A sidebar list of `(section, label)` items grouped by chapter: a chapter
+/// separator before each group, plus a sticky chapter header pinned at the top
+/// that floats as you scroll (the pinned chapter's own separator is skipped so a
+/// chapter is never headed twice). Shared by the code and image viewers. Returns
+/// each rendered item's `(item index, screen rect)` for mouse hit-testing.
+pub fn grouped_sidebar(
+    f: &mut Frame,
+    area: Rect,
+    items: &[(usize, &str)],
+    sel: usize,
+    focused: bool,
+    reader: Option<&crate::app::Reader>,
+    theme: crate::theme::Theme,
+) -> Vec<(usize, Rect)> {
+    use crate::theme::Role;
+    use ratatui::style::Modifier;
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::Paragraph;
+
+    struct Entry {
+        header: bool,
+        section: usize,
+        item: usize,
+        label: String,
+    }
+    let mut hits: Vec<(usize, Rect)> = Vec::new();
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut prev: Option<usize> = None;
+    let mut sel_line = 0usize;
+    for (i, (section, label)) in items.iter().enumerate() {
+        if prev != Some(*section) {
+            prev = Some(*section);
+            entries.push(Entry {
+                header: true,
+                section: *section,
+                item: 0,
+                label: chapter_label(reader, *section),
+            });
+        }
+        if i == sel {
+            sel_line = entries.len();
+        }
+        entries.push(Entry {
+            header: false,
+            section: *section,
+            item: i,
+            label: (*label).to_string(),
+        });
+    }
+
+    let head_area = Rect { height: 1, ..area };
+    let list_area = Rect {
+        y: area.y.saturating_add(1),
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    let h = list_area.height as usize;
+    if h == 0 || entries.is_empty() {
+        return hits;
+    }
+    let offset = sel_line
+        .saturating_sub(h / 2)
+        .min(entries.len().saturating_sub(h));
+
+    // Pinned (floating) header — the chapter of the topmost visible entry.
+    let pinned = entries[offset].section;
+    let name = truncate(
+        &chapter_label(reader, pinned),
+        area.width.saturating_sub(2) as usize,
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {name}"),
+            theme.style(Role::Accent).add_modifier(Modifier::BOLD),
+        ))),
+        head_area,
+    );
+
+    // Skip the pinned chapter's own separator when it's the top row.
+    let start = if entries[offset].header {
+        offset + 1
+    } else {
+        offset
+    };
+    let sel_style = if focused {
+        theme.style(Role::Selection)
+    } else {
+        theme.style(Role::Muted)
+    };
+    for (row, e) in entries[start..].iter().take(h).enumerate() {
+        let rect = Rect {
+            x: list_area.x,
+            y: list_area.y + row as u16,
+            width: list_area.width,
+            height: 1,
+        };
+        if e.header {
+            let name = truncate(&e.label, list_area.width.saturating_sub(2) as usize);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!(" {name}"),
+                    theme.style(Role::Muted).add_modifier(Modifier::BOLD),
+                ))),
+                rect,
+            );
+        } else if e.item == sel {
+            let inset = Rect {
+                x: rect.x + 1,
+                width: rect.width.saturating_sub(2),
+                ..rect
+            };
+            let label = truncate(&e.label, inset.width.saturating_sub(2) as usize);
+            f.render_widget(
+                Paragraph::new(Line::from(format!("  {label}"))).style(sel_style),
+                inset,
+            );
+            round_bar(f, inset, theme);
+            hits.push((e.item, rect));
+        } else {
+            let label = truncate(&e.label, list_area.width.saturating_sub(4) as usize);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("   {label}"),
+                    theme.style(Role::Body),
+                ))),
+                rect,
+            );
+            hits.push((e.item, rect));
+        }
+    }
+    hits
+}
+
 pub fn render(f: &mut Frame, app: &mut App) {
     // Hit rects are rebuilt every frame by the renderers below.
     app.mouse.clear();
@@ -349,6 +531,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     if matches!(app.overlay, Overlay::WordLookup(_)) {
         word_lookup::render(f, app);
+    }
+    if matches!(app.overlay, Overlay::CodeView(_)) {
+        code_view::render(f, app);
     }
     if matches!(app.overlay, Overlay::DupResolve(_)) {
         dup_resolve::render(f, app);

@@ -115,14 +115,22 @@ impl App {
         if let Overlay::ImageView(v) = &mut self.overlay {
             v.flash = None;
         }
+        // Standard vim list navigation (j/k · Ctrl-d/u · PgUp/Dn · g/G) over the
+        // figures — shared with every other list.
+        if let Overlay::ImageView(v) = &mut self.overlay
+            && let Some(ns) = crate::input::list_nav(key, v.sel, v.position().1, 10)
+        {
+            v.sel = ns;
+            return;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => self.close_image_viewer(),
-            KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('n') => {
+            KeyCode::Char('n') => {
                 if let Overlay::ImageView(v) = &mut self.overlay {
                     v.move_sel(1);
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up | KeyCode::Char('N') => {
+            KeyCode::Char('N') => {
                 if let Overlay::ImageView(v) = &mut self.overlay {
                     v.move_sel(-1);
                 }
@@ -341,6 +349,13 @@ impl App {
         }
 
         let (len, sel) = (a.filtered().len(), a.sel);
+        // Standard vim list navigation over the annotations.
+        if let Some(ns) = crate::input::list_nav(key, sel, len, 10) {
+            if let Overlay::Annot(a) = &mut self.overlay {
+                a.sel = ns;
+            }
+            return;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('\'') | KeyCode::Char('q') => self.overlay = Overlay::None,
             // Cycle the Bookmarks / Notes / Highlights tabs (⇥ / → forward, ⇤ / ←
@@ -362,18 +377,6 @@ impl App {
             KeyCode::Char('/') => {
                 if let Overlay::Annot(a) = &mut self.overlay {
                     a.filtering = true;
-                }
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Overlay::Annot(a) = &mut self.overlay
-                    && len > 0
-                {
-                    a.sel = (sel + 1).min(len - 1);
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Overlay::Annot(a) = &mut self.overlay {
-                    a.sel = sel.saturating_sub(1);
                 }
             }
             KeyCode::Enter | KeyCode::Char('l') => self.annot_jump_selected(),

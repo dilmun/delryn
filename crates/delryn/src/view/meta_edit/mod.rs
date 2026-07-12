@@ -28,6 +28,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         return;
     }
     let theme = app.config.theme;
+    let bold = app.config.bold_borders;
     let bg = theme.paper();
     let area = super::overlay_rect(f.area(), app.overlay_large);
 
@@ -51,10 +52,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             super::truncate(&ed.book_title, area.width.saturating_sub(20) as usize)
         )
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::BorderFocus))
+    let block = super::overlay_frame(theme, bold)
         .title(Span::styled(title, theme.style(Role::Title)))
         .style(theme.style(Role::Body).bg(bg));
     let inner = block.inner(area);
@@ -126,10 +124,7 @@ fn render_diff(f: &mut Frame, app: &App, theme: Theme) {
     let bg = theme.paper();
     let area = super::centered(f.area(), 84, diff.rows.len() as u16 + 4);
     f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::BorderFocus))
+    let block = super::overlay_frame(theme, app.config.bold_borders)
         .title(Span::styled(
             " Apply remote metadata ",
             theme.style(Role::Title),

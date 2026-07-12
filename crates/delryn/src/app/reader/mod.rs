@@ -77,6 +77,9 @@ pub struct Reader {
     /// Code rendering (set each render from config / panning).
     pub code_wrap: bool,
     pub code_hscroll: usize,
+    /// Show the code line-number gutter / language tag (set each render from config).
+    pub code_line_numbers: bool,
+    pub code_label: bool,
     /// Word-wrap table cells (set each render from config).
     pub table_wrap: bool,
     /// Full justification + converter-spacing tidy (set each render from config).
@@ -226,6 +229,9 @@ pub struct Reader {
     /// A figure to scroll to once the section is wrapped with image rows (a
     /// jump from the image viewer; resolved one-shot on the next draw).
     pending_image: Option<usize>,
+    /// A code block to scroll to once wrapped (a jump from the code viewer's
+    /// Enter; resolved one-shot alongside `pending_image`).
+    pending_code: Option<usize>,
     /// Collapsed parent rows (outline indices) in the sidebar tree.
     collapsed: HashSet<usize>,
     /// The active visual text selection (vim `V`), or `None` in normal reading.
@@ -268,6 +274,8 @@ impl Reader {
             paragraph_spacing: 1,
             code_wrap: true,
             code_hscroll: 0,
+            code_line_numbers: true,
+            code_label: true,
             table_wrap: true,
             justify: false,
             tidy_spacing: true,
@@ -317,6 +325,7 @@ impl Reader {
             last_measure: 72,
             pending_frac: None,
             pending_image: None,
+            pending_code: None,
             overlay_occlude: None,
             collapsed: HashSet::new(),
             select: None,
@@ -378,6 +387,48 @@ impl Reader {
             })
             .min_by_key(|(i, _)| (*i as isize - center as isize).unsigned_abs())
             .map(|(_, idx)| idx)
+    }
+
+    /// Index of the code block nearest the viewport centre among the current
+    /// section's code blocks (matches `LineKind::Code`) — used to pre-select it in
+    /// the code viewer. `None` if none is in view.
+    pub fn current_code_index(&self) -> Option<usize> {
+        let center = self.scroll + self.viewport_lines / 2;
+        self.lines
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| match l.kind {
+                LineKind::Code(idx) => Some((i, idx)),
+                _ => None,
+            })
+            .min_by_key(|(i, _)| (*i as isize - center as isize).unsigned_abs())
+            .map(|(_, idx)| idx)
+    }
+
+    /// Collect the code blocks for the viewer: the current chapter, or every
+    /// section when `whole_book`. Mirrors [`figures`](Self::figures).
+    pub fn code_blocks(&mut self, whole_book: bool) -> Vec<super::CodeSnippet> {
+        let mut out = Vec::new();
+        if whole_book {
+            for s in 0..self.doc.section_count() {
+                let blocks = self.fetch_blocks(s);
+                super::code_view::collect_code_blocks(&blocks, s, &mut out);
+            }
+        } else {
+            super::code_view::collect_code_blocks(&self.blocks, self.section, &mut out);
+        }
+        out
+    }
+
+    /// Stage `text` for the OS clipboard (drained by the event loop) and flash the
+    /// count. Shared by the selection copy and the code viewer's copy-all.
+    pub fn stage_clipboard(&mut self, text: String) {
+        let n = text.chars().count();
+        self.pending_clipboard = Some(text);
+        self.flash = Some(format!(
+            "✓ copied {n} char{}",
+            if n == 1 { "" } else { "s" }
+        ));
     }
 
     /// Gather the renderable figures for the image viewer: the current chapter
@@ -505,6 +556,8 @@ impl Reader {
                 para_spacing: self.paragraph_spacing,
                 code_wrap: self.code_wrap,
                 code_hscroll: self.code_hscroll,
+                code_line_numbers: self.code_line_numbers,
+                code_label: self.code_label,
                 table_wrap: self.table_wrap,
                 justify: self.justify,
                 tidy_spacing: self.tidy_spacing,
@@ -777,6 +830,19 @@ impl Reader {
         self.focus = Focus::Content;
     }
 
+    /// Navigate to a code block's location (from the code viewer's Enter): its
+    /// section, then scroll to the block once wrapped. Mirrors [`jump_to_image`].
+    pub fn jump_to_code(&mut self, section: usize, code_index: usize) {
+        self.push_history();
+        if section != self.section {
+            self.load(section);
+        } else {
+            self.scroll = 0;
+        }
+        self.pending_code = Some(code_index);
+        self.focus = Focus::Content;
+    }
+
     fn push_history(&mut self) {
         self.nav.back_stack.push(Pos {
             section: self.section,
@@ -850,6 +916,15 @@ impl Reader {
                 .lines
                 .iter()
                 .position(|l| l.kind == LineKind::Image(idx))
+        {
+            self.scroll = line;
+        }
+        // One-shot: scroll to the jumped-to code block's first line.
+        if let Some(idx) = self.pending_code.take()
+            && let Some(line) = self
+                .lines
+                .iter()
+                .position(|l| l.kind == LineKind::Code(idx))
         {
             self.scroll = line;
         }

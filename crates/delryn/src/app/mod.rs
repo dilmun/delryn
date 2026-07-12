@@ -77,6 +77,9 @@ pub use palette::{Command, Palette, PaletteItem};
 mod word_lookup;
 pub use word_lookup::{LookupState, WordLookup};
 
+mod code_view;
+pub use code_view::{CodeFocus, CodeSnippet, CodeView};
+
 mod page_deck;
 use page_deck::PageDeck;
 
@@ -717,6 +720,7 @@ impl App {
                 | Overlay::ShelfPicker(_)
                 | Overlay::ImageView(_)
                 | Overlay::WordLookup(_)
+                | Overlay::CodeView(_)
         )
     }
 

@@ -264,6 +264,8 @@ fn wrap_nested(
         para_spacing: opts.para_spacing,
         code_wrap: true,
         code_hscroll: 0,
+        code_line_numbers: opts.code_line_numbers,
+        code_label: opts.code_label,
         table_wrap: opts.table_wrap,
         justify: false,
         tidy_spacing: opts.tidy_spacing,

@@ -100,6 +100,10 @@ pub struct WrapOpts<'a> {
     /// horizontally by `code_hscroll` (false).
     pub code_wrap: bool,
     pub code_hscroll: usize,
+    /// Show the line-number gutter in code blocks.
+    pub code_line_numbers: bool,
+    /// Show a language tag at the top of each code block (skipped for plain text).
+    pub code_label: bool,
     /// Word-wrap table cells to their column (true) vs. truncate with `…` (false).
     pub table_wrap: bool,
     /// Fully justify body paragraphs to the column (true) vs. ragged-right (false).
@@ -117,6 +121,8 @@ impl Default for WrapOpts<'_> {
             para_spacing: 1,
             code_wrap: true,
             code_hscroll: 0,
+            code_line_numbers: true,
+            code_label: false,
             table_wrap: true,
             justify: false,
             tidy_spacing: true,

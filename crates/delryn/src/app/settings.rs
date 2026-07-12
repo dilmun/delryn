@@ -1,7 +1,7 @@
 //! The settings popup: a scoped (Reading vs Library) list of adjustable options
 //! and the keys that move through and change them.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{App, Mode, Overlay};
 use crate::config::Config;
@@ -39,6 +39,7 @@ pub enum SettingItem {
     TidySpacing,
     ShowSidebar,
     ShowStatus,
+    BoldBorders,
     StatusTheme,
     StatusView,
     StatusPosition,
@@ -53,6 +54,8 @@ pub enum SettingItem {
     MathScale,
     EquationScale,
     CodeWrap,
+    CodeLineNumbers,
+    CodeLanguageLabel,
     TableWrap,
     Paged,
     Continuous,
@@ -99,6 +102,7 @@ impl SettingItem {
             SettingItem::TidySpacing => "Tidy spacing",
             SettingItem::ShowSidebar => "Sidebar by default",
             SettingItem::ShowStatus => "Status bar by default",
+            SettingItem::BoldBorders => "Bold popup borders",
             SettingItem::StatusTheme => "Theme",
             SettingItem::StatusView => "View",
             SettingItem::StatusPosition => "Position",
@@ -112,7 +116,9 @@ impl SettingItem {
             SettingItem::GraphicalMath => "Graphical math",
             SettingItem::MathScale => "Math size %",
             SettingItem::EquationScale => "Equation size %",
-            SettingItem::CodeWrap => "Wrap code blocks",
+            SettingItem::CodeWrap => "Wrap long lines",
+            SettingItem::CodeLineNumbers => "Line numbers",
+            SettingItem::CodeLanguageLabel => "Language label",
             SettingItem::TableWrap => "Wrap tables",
             SettingItem::Paged => "Page mode",
             SettingItem::Continuous => "Continuous scroll",
@@ -160,6 +166,7 @@ impl SettingItem {
             SettingItem::TidySpacing => onoff(c.tidy_spacing),
             SettingItem::ShowSidebar => onoff(c.show_sidebar),
             SettingItem::ShowStatus => onoff(c.show_status),
+            SettingItem::BoldBorders => onoff(c.bold_borders),
             SettingItem::StatusTheme => onoff(c.status.theme),
             SettingItem::StatusView => onoff(c.status.view),
             SettingItem::StatusPosition => onoff(c.status.position),
@@ -180,6 +187,8 @@ impl SettingItem {
             SettingItem::MathScale => format!("{}%", c.math_scale),
             SettingItem::EquationScale => format!("{}%", c.equation_scale),
             SettingItem::CodeWrap => onoff(c.code_wrap),
+            SettingItem::CodeLineNumbers => onoff(c.code_line_numbers),
+            SettingItem::CodeLanguageLabel => onoff(c.code_language_label),
             SettingItem::TableWrap => onoff(c.table_wrap),
             SettingItem::Paged => onoff(c.paged),
             SettingItem::Continuous => onoff(c.continuous),
@@ -262,8 +271,11 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(GraphicalMath),
                     I(MathScale),
                     I(EquationScale),
-                    S("Blocks"),
+                    S("Code"),
                     I(CodeWrap),
+                    I(CodeLineNumbers),
+                    I(CodeLanguageLabel),
+                    S("Tables & text"),
                     I(TableWrap),
                     I(TidySpacing),
                     S("Pagination"),
@@ -281,6 +293,7 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     S("Panes"),
                     I(ShowSidebar),
                     I(ShowStatus),
+                    I(BoldBorders),
                     S("Status bar segments"),
                     I(StatusTheme),
                     I(StatusView),
@@ -336,7 +349,13 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                 tab("Columns", columns),
                 tab(
                     "General",
-                    vec![S("Appearance"), I(Theme), S("Input"), I(Mouse)],
+                    vec![
+                        S("Appearance"),
+                        I(Theme),
+                        I(BoldBorders),
+                        S("Input"),
+                        I(Mouse),
+                    ],
                 ),
                 tab("Sources", sources),
                 tab("Duplicates", dups),
@@ -383,6 +402,18 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.settings_move(-1),
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.settings_change(1),
             KeyCode::Char('h') | KeyCode::Left => self.settings_change(-1),
+            // Vim half-page (Ctrl-d/u · PgDn/Up) and jump-to-ends (g/G) over the
+            // options — settings_move skips section headers.
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.settings_move(5)
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.settings_move(-5)
+            }
+            KeyCode::PageDown => self.settings_move(5),
+            KeyCode::PageUp => self.settings_move(-5),
+            KeyCode::Char('g') | KeyCode::Home => self.settings_move(-9999),
+            KeyCode::Char('G') | KeyCode::End => self.settings_move(9999),
             // Remove the focused library source (no-op on any other row/tab).
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
                 self.settings_delete_source()
@@ -651,6 +682,7 @@ impl App {
             SettingItem::TidySpacing => c.tidy_spacing = !c.tidy_spacing,
             SettingItem::ShowSidebar => c.show_sidebar = !c.show_sidebar,
             SettingItem::ShowStatus => c.show_status = !c.show_status,
+            SettingItem::BoldBorders => c.bold_borders = !c.bold_borders,
             SettingItem::StatusTheme => c.status.theme = !c.status.theme,
             SettingItem::StatusView => c.status.view = !c.status.view,
             SettingItem::StatusPosition => c.status.position = !c.status.position,
@@ -700,6 +732,8 @@ impl App {
                     as u16
             }
             SettingItem::CodeWrap => c.code_wrap = !c.code_wrap,
+            SettingItem::CodeLineNumbers => c.code_line_numbers = !c.code_line_numbers,
+            SettingItem::CodeLanguageLabel => c.code_language_label = !c.code_language_label,
             SettingItem::TableWrap => c.table_wrap = !c.table_wrap,
             SettingItem::Paged => c.paged = !c.paged,
             SettingItem::Continuous => c.continuous = !c.continuous,

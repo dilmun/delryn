@@ -3,7 +3,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::{App, Overlay};
 use crate::theme::Role;
@@ -13,15 +13,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
         return;
     };
     let theme = app.config.theme;
+    let bold = app.config.bold_borders;
     let matches = p.filtered();
     let sel = p.sel;
     let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::BorderFocus))
+    let block = super::overlay_frame(theme, bold)
         .title(Span::styled(" Commands ", theme.style(Role::Title)))
         .style(theme.text_style());
     let inner = block.inner(area);

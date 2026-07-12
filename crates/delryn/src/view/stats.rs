@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::{App, Overlay};
 use crate::library::stats::fmt_duration;
@@ -15,6 +15,7 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
+    let bold = app.config.bold_borders;
     let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
@@ -52,10 +53,7 @@ pub fn render(f: &mut Frame, app: &App) {
         }
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::BorderFocus))
+    let block = super::overlay_frame(theme, bold)
         .title(Span::styled(
             " Library statistics ",
             theme.style(Role::Title),

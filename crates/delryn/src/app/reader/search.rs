@@ -78,6 +78,9 @@ impl Reader {
                         // Search always wraps code/tables so no matches are hidden off-screen.
                         code_wrap: true,
                         code_hscroll: 0,
+                        // Gutter/label must mirror the display so match line indices align.
+                        code_line_numbers: self.code_line_numbers,
+                        code_label: self.code_label,
                         table_wrap: true,
                         // Never justify (keeps single spaces so phrase matches work);
                         // tidy must match the display so positions line up.

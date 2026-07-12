@@ -473,14 +473,28 @@ fn apply_nav(reader: &mut Reader, action: Action, paged: bool, flip_ready: bool)
             Focus::Content => reader.queue_scroll(-(n as isize)),
             Focus::Sidebar => reader.sidebar_move(-(n as isize)),
         },
-        Action::HalfDown if paged => page_forward(reader),
-        Action::HalfUp if paged => page_backward(reader),
-        Action::HalfDown => reader.scroll_down(reader.page_lines.max(2) / 2),
-        Action::HalfUp => reader.scroll_up(reader.page_lines.max(2) / 2),
-        Action::PageDown if paged => page_forward(reader),
-        Action::PageUp if paged => page_backward(reader),
-        Action::PageDown => reader.scroll_down(reader.page_lines.max(1)),
-        Action::PageUp => reader.scroll_up(reader.page_lines.max(1)),
+        // Half/full-page: move the TOC cursor when the sidebar is focused, else
+        // scroll (or page, for image documents) the content.
+        Action::HalfDown => match reader.focus {
+            Focus::Sidebar => reader.sidebar_move((reader.page_lines.max(2) / 2) as isize),
+            _ if paged => page_forward(reader),
+            _ => reader.scroll_down(reader.page_lines.max(2) / 2),
+        },
+        Action::HalfUp => match reader.focus {
+            Focus::Sidebar => reader.sidebar_move(-((reader.page_lines.max(2) / 2) as isize)),
+            _ if paged => page_backward(reader),
+            _ => reader.scroll_up(reader.page_lines.max(2) / 2),
+        },
+        Action::PageDown => match reader.focus {
+            Focus::Sidebar => reader.sidebar_move(reader.page_lines.max(1) as isize),
+            _ if paged => page_forward(reader),
+            _ => reader.scroll_down(reader.page_lines.max(1)),
+        },
+        Action::PageUp => match reader.focus {
+            Focus::Sidebar => reader.sidebar_move(-(reader.page_lines.max(1) as isize)),
+            _ if paged => page_backward(reader),
+            _ => reader.scroll_up(reader.page_lines.max(1)),
+        },
         Action::Top => {
             if reader.focus == Focus::Sidebar {
                 reader.sidebar_sel = 0;

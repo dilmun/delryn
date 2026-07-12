@@ -7,9 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-};
+use ratatui::widgets::{Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::app::{App, Overlay};
 use crate::theme::Role;
@@ -20,14 +18,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
         return;
     };
     let theme = app.config.theme;
+    let bold = app.config.bold_borders;
     let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
     let to_delete = dr.checked_count();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::BorderFocus))
+    let block = super::overlay_frame(theme, bold)
         .title(Span::styled(
             format!(
                 " Resolve Duplicates — {} group{} · {to_delete} to delete ",
@@ -207,13 +203,11 @@ pub fn render_ignored(f: &mut Frame, app: &mut App) {
         return;
     };
     let theme = app.config.theme;
+    let bold = app.config.bold_borders;
     let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::BorderFocus))
+    let block = super::overlay_frame(theme, bold)
         .title(Span::styled(
             format!(" Ignored Duplicate Groups — {} ", v.signatures.len()),
             theme.style(Role::Title),
