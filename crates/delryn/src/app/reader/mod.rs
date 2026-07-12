@@ -204,6 +204,10 @@ pub struct Reader {
     /// joined into the render buffer this frame, so the view can place that
     /// section's images at the right rows. Anchor images are placed from `lines`.
     cont_spans: Vec<(usize, usize)>,
+    /// A following continuous section is requested but not yet decoded, so the
+    /// buffer stopped short this frame — keep redrawing until it lands (mirrors
+    /// [`images_pending`](Self::images_pending)), so it never blocks the scroll.
+    cont_pending: bool,
     /// Inline-image lifecycle (built protocols, row estimates, in-flight builds).
     images: ImageState,
     /// Paged-image (PDF) page theming (themer + themed-PNG cache + active policy).
@@ -351,6 +355,7 @@ impl Reader {
             cont_cache: HashMap::new(),
             cont_key: WrapKey::invalid(),
             cont_spans: Vec::new(),
+            cont_pending: false,
             images: ImageState::default(),
             pages: PageThemeState::default(),
             crisp,
@@ -423,6 +428,23 @@ impl Reader {
         math::convert_math_blocks(&mut blocks);
         self.sections.sections.insert(section, blocks.clone());
         blocks
+    }
+
+    /// Non-blocking [`fetch_blocks`]: the section's blocks if already decoded, else
+    /// `None` after requesting them from the background loader (which parses and
+    /// renders display math *off the main thread*). The continuous following buffer
+    /// uses this so a not-yet-decoded — or math-heavy — section never blocks the
+    /// scroll on the render thread; it fills in a frame or two later once the loader
+    /// finishes (`cont_pending` keeps the loop redrawing until then).
+    fn fetch_blocks_async(&mut self, section: usize) -> Option<Vec<Block>> {
+        self.drain_loader();
+        if let Some(blocks) = self.sections.sections.get(&section) {
+            return Some(blocks.clone());
+        }
+        if self.sections.requested.insert(section) {
+            let _ = self.sections.req_tx.send(section);
+        }
+        None
     }
 
     /// Index of the code block nearest the viewport centre among the current
@@ -660,6 +682,13 @@ impl Reader {
             6
         } else if self.is_paged_image() {
             4
+        } else if self.reflow_flows() {
+            // Continuous reflow stitches the *following* sections into the scroll
+            // buffer, so pre-decode a few each side (their math renders off-thread)
+            // before they scroll into view — otherwise a math-heavy following/previous
+            // section cold-renders on the loader at the boundary and the buffer waits
+            // (a redraw spin) for it. Kept within the loader's stale radius.
+            3
         } else {
             1
         };
@@ -2128,6 +2157,29 @@ mod tests {
             b_new - r.scroll,
             offset,
             "block B stays at its screen row after everything folds"
+        );
+    }
+
+    // A following continuous section already decoded is served from the cache with
+    // no synchronous load and no re-request — the fast path of the non-blocking fetch
+    // that keeps a math-heavy section from freezing the scroll.
+    #[test]
+    fn async_fetch_serves_a_cached_section_without_requesting() {
+        let mut r =
+            Reader::new(Box::new(MockDoc::new(vec![vec![para()], vec![code("x")]]))).unwrap();
+        r.sections.sections.insert(1, vec![code("x")]);
+        r.sections.requested.clear(); // drop the constructor's prefetch request
+        assert!(
+            r.fetch_blocks_async(1).is_some(),
+            "cached section returns now"
+        );
+        assert!(
+            !r.sections.requested.contains(&1),
+            "a cached section issues no new loader request"
+        );
+        assert!(
+            !r.following_pending(),
+            "nothing pending when everything's cached"
         );
     }
 

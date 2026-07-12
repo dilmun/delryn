@@ -740,6 +740,10 @@ impl App {
         let in_reader = self.mode == Mode::Reader;
         r.is_scrolling()
             || (in_reader && r.images_pending())
+            // Keep redrawing while a following continuous section is still decoding
+            // (its blocks/math render off the main thread), so it fills the buffer
+            // tail as soon as it lands instead of after the next keypress.
+            || (in_reader && r.following_pending())
             // PDF: keep redrawing while a visible page is still rasterizing
             // (async, off the main thread) or is ready but not yet placed, so it
             // pops in without needing a keypress.

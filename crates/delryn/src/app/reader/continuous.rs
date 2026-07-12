@@ -338,10 +338,18 @@ impl Reader {
         // Repopulated per shown section by `following_lines` (below), so stale
         // sections no longer on screen drop out of the draw set.
         self.images.following.clear();
+        self.cont_pending = false;
         let count = self.doc.section_count();
         let mut s = self.section + 1;
         // One extra line so a partial last row still has content beneath it.
         while out.len() <= height && s < count {
+            // Fetch the section off the main thread: if it isn't decoded yet, stop
+            // extending the buffer this frame (a blank tail) rather than blocking the
+            // scroll to parse + render its math. It fills in once the loader lands.
+            let Some(lines) = self.following_lines(s) else {
+                self.cont_pending = true;
+                break;
+            };
             // A blank line between chapters so a section's leading heading doesn't
             // butt against the previous chapter's last line (per-section paging
             // starts each chapter at a fresh page top; the flow needs the gap
@@ -351,7 +359,6 @@ impl Reader {
                 kind: LineKind::Body,
             });
             self.cont_spans.push((s, out.len()));
-            let lines = self.following_lines(s);
             out.extend(lines);
             s += 1;
         }
@@ -394,7 +401,7 @@ impl Reader {
     /// that section's own image rows (its stable decode estimate, computed on demand
     /// so a newly-shown section is sized right the first frame — no lag, no shift).
     /// Cached; invalidated wholesale when the wrap inputs (`cont_key`) change.
-    fn following_lines(&mut self, s: usize) -> Vec<DisplayLine> {
+    fn following_lines(&mut self, s: usize) -> Option<Vec<DisplayLine>> {
         if self.cont_key != self.wrapped {
             self.cont_cache.clear();
             self.cont_key = self.wrapped.clone();
@@ -407,9 +414,12 @@ impl Reader {
             self.images.following.insert(s, info);
         }
         if let Some(v) = self.cont_cache.get(&s) {
-            return v.clone();
+            return Some(v.clone());
         }
-        let blocks = self.fetch_blocks(s);
+        // Async: skip this section this frame if it isn't decoded yet, so a
+        // math-heavy following section never freezes the scroll (it renders on the
+        // loader thread and lands within a frame or two).
+        let blocks = self.fetch_blocks_async(s)?;
         let rows: Vec<u16> = self
             .images
             .following
@@ -420,7 +430,13 @@ impl Reader {
         // anchor section's local indices, so they don't carry here.
         let lines = self.wrap_at_with_rows(&blocks, self.last_measure.max(1), &rows, &[]);
         self.cont_cache.insert(s, lines.clone());
-        lines
+        Some(lines)
+    }
+
+    /// Whether the continuous buffer stopped short on a not-yet-decoded following
+    /// section this frame (so the loop should keep redrawing until it lands).
+    pub fn following_pending(&self) -> bool {
+        self.cont_pending
     }
 
     /// Continuous scroll-down: advance the anchor across section boundaries. The
