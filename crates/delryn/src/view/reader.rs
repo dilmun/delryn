@@ -415,7 +415,7 @@ fn image_geom(config: &Config, avail: u16, max_rows: u16) -> ImageGeom {
         max_rows,
         max_px: config.image_max_px,
         width_pct: config.image_width_pct,
-        eq_scale: config.equation_scale,
+        math_scale: config.math_scale,
         fit_mode: config.image_fit,
         policy: image_policy(config),
     }

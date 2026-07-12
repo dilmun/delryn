@@ -2,6 +2,8 @@
 
 use delryn_infra::config::ImageFit;
 
+use crate::profile::InkProfile;
+
 /// How an image's display size was authored (mirrors `delryn_model::ImageWidth`,
 /// kept here so this crate stays independent of the content model).
 #[derive(Clone, Copy, PartialEq)]
@@ -22,14 +24,19 @@ pub enum SizeHint {
 pub struct SizeSpec {
     /// The authored display width, if any.
     pub hint: SizeHint,
-    /// Real math rendered as a picture (from LaTeX/MathML): always kept at native
-    /// size, proportional to the text, never normalized or enlarged.
+    /// Real math re-rendered from LaTeX/MathML: sized by its render em at render
+    /// time, shown native (only shrunk to fit the column).
     pub math: bool,
-    /// Whether the image carries a caption. Captions are the reliable
-    /// figure/table-vs-equation signal in books: figures and tables are captioned
-    /// (and normalize to the column band), while equation pictures are uncaptioned
-    /// (and stay text-proportional). Only consulted in [`ImageFit::Fit`].
+    /// Whether the image carries a caption — a figure/table signal (figures and
+    /// tables are captioned; equations are not). Consulted by the classifier.
     pub captioned: bool,
+    /// The image's alt text parses as math (`$…$`, `\(`, MathML, …). The strongest
+    /// positive "this raster is an equation" signal, independent of the pixels.
+    pub alt_math: bool,
+    /// The measured equation ink profile, when this is a publisher equation raster
+    /// (filled once off-thread; see [`crate::ink_profile`]). Drives DPI-independent,
+    /// text-relative equation sizing; `None` for figures, photos, and rendered math.
+    pub ink: Option<InkProfile>,
 }
 
 impl Default for SizeSpec {
@@ -38,6 +45,8 @@ impl Default for SizeSpec {
             hint: SizeHint::Auto,
             math: false,
             captioned: false,
+            alt_math: false,
+            ink: None,
         }
     }
 }
@@ -48,22 +57,31 @@ impl Default for SizeSpec {
 /// figure grow enough to be readable and consistent with its neighbours.
 const MAX_UPSCALE: f64 = 4.0;
 
-/// Target display height (in text lines) an equation picture is auto-boosted *up*
-/// to when it's rendering smaller than this — so a low-resolution equation (whose
-/// glyphs are packed too small to read) grows to a legible size. Taller equations
-/// (multi-line arrays) already exceed it and keep native size; the user's
-/// `eq_scale` knob tunes on top for the rest.
+/// Target displayed height, in text cells, of one equation's **text em** — the
+/// text-relative size a publisher equation raster is normalised to (per the measured
+/// glyph em [`InkProfile::line_px`]), independent of the file's DPI. Every equation on
+/// a page is scaled so its body glyphs hit this size, so they look consistent; tall
+/// operators (Σ, fractions) then extend above/below proportionally. The `math_scale`
+/// knob tunes on top (100% = this value). Adjust here if the default reads large/small.
+const EQ_TARGET_LINE_CELLS: f64 = 1.0;
+
+/// Ink-line count at or below which a monochrome line-art raster is taken to be an
+/// equation rather than a diagram (a genuine figure with many text rows reads as a
+/// figure). Only used by the classifier when there's no stronger signal.
+const ARRAY_MAX_LINES: u16 = 8;
+
+/// Fallback (unprofiled raster) only: the height in text lines a low-resolution
+/// equation is boosted *up* toward. Used when no [`InkProfile`] is available, so the
+/// DPI-independent path can't run; keeps the old boost-only behaviour as a floor.
 const EQUATION_MIN_LINES: f64 = 2.0;
 
-/// Upper bound on the *automatic* low-resolution boost (quality guard). The user's
-/// `eq_scale` knob can still enlarge past this deliberately (bounded only by the
-/// column/viewport).
+/// Fallback upper bound on the unprofiled low-resolution boost (quality guard).
 const EQUATION_AUTO_MAX: f64 = 2.5;
 
 /// The cell geometry and caps an image must fit into: terminal cell size
 /// (`fw`×`fh` px), the available `cols`×`rows` box, the longest-side pixel cap
 /// (`max_px`, 0 = none), the default/normalized figure width (`target_pct`% of
-/// the column), the equation-picture size knob (`eq_scale`%), and the sizing
+/// the column), the equation-picture size knob (`math_scale`%), and the sizing
 /// policy (`fit_mode`: normalize vs. faithful).
 #[derive(Clone, Copy)]
 pub struct FitBox {
@@ -73,83 +91,126 @@ pub struct FitBox {
     pub rows: u16,
     pub max_px: u16,
     pub target_pct: u16,
-    pub eq_scale: u16,
+    pub math_scale: u16,
     pub fit_mode: ImageFit,
+}
+
+/// How a graphic is sized, decided by [`classify`] from the sizing signals.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum GraphicKind {
+    /// A full-bleed page image (PDF): fills the pane.
+    Page,
+    /// Real math re-rendered from LaTeX: sized by its render em; shown native.
+    RenderedMath,
+    /// A publisher equation shipped as a raster: normalised to a text-relative size.
+    EquationRaster,
+    /// A figure / table / photo / diagram: normalised to the column band.
+    Figure,
+}
+
+/// Classify a graphic from its sizing signals — the one place equations are told
+/// apart from figures. `spec.math` marks *any* display-math image: delryn's own
+/// LaTeX render (no ink profile — sized by its render em, shown native) versus a
+/// **publisher** equation raster (carries an [`InkProfile`] — normalised to a
+/// text-relative size like every other raster, so the size knob and DPI-independence
+/// apply). In [`ImageFit::Faithful`] every remaining graphic is a figure (the
+/// authored width is honoured). In `Fit` (the default) the signals, strongest first:
+/// alt text that parses as math ⇒ equation; a caption ⇒ figure; else the measured
+/// ink — sparse line-art with few lines ⇒ equation, anything denser or unprofiled ⇒
+/// figure.
+fn classify(spec: SizeSpec, fit_mode: ImageFit) -> GraphicKind {
+    if matches!(spec.hint, SizeHint::Full) {
+        return GraphicKind::Page;
+    }
+    if spec.math {
+        // A profiled math image is a publisher equation raster (normalise it); an
+        // unprofiled one is delryn's own crisp LaTeX render (native, sized by its em).
+        return match spec.ink {
+            Some(_) => GraphicKind::EquationRaster,
+            None => GraphicKind::RenderedMath,
+        };
+    }
+    if fit_mode != ImageFit::Fit {
+        return GraphicKind::Figure;
+    }
+    if spec.alt_math {
+        return GraphicKind::EquationRaster;
+    }
+    if spec.captioned {
+        return GraphicKind::Figure;
+    }
+    match spec.ink {
+        Some(p) if p.line_count <= ARRAY_MAX_LINES => GraphicKind::EquationRaster,
+        _ => GraphicKind::Figure,
+    }
 }
 
 /// Cell size (cols, rows) for a `w`×`h` px image.
 ///
-/// Figures are sized to a *consistent display width* so they look the same across
-/// books, regardless of the publisher's authored width or the file's resolution
-/// (both unreliable). In [`ImageFit::Fit`] (the default) that width is
-/// `fit.target_pct`% of the column — the authored width is deliberately ignored;
-/// in [`ImageFit::Faithful`] the authored width (`spec.hint`) is honored, else the
-/// same `target_pct` default. Either way a low-res figure is enlarged up to
-/// [`MAX_UPSCALE`] so it isn't tiny, but never past the `fit.cols`×`fit.rows` box.
+/// One text-relative model, four kinds (see [`classify`]):
+/// - **Page** (`SizeHint::Full`): fills the `cols`×`rows` pane, preserving aspect.
+/// - **Rendered math** (`spec.math`): already sized by its render em — shown native,
+///   only shrunk to fit the column.
+/// - **Equation raster**: normalised so one ink-line is [`EQ_TARGET_LINE_CELLS`]
+///   text cells tall (from the measured [`InkProfile`]) — *bidirectional*, so a
+///   high-DPI raster shrinks and a low-DPI one grows (enlargement quality-capped),
+///   the same text-relative size in every book. An unprofiled one falls back to the
+///   legacy low-res boost. A multi-line array scales proportionally; all are bounded
+///   to fit the column.
+/// - **Figure**: normalised to `target_pct`% of the column in `Fit`, or the authored
+///   width in `Faithful` — enlarged up to [`MAX_UPSCALE`], never past the box.
 ///
-/// Equations are sized proportional to the text, not stretched to the column.
-/// Real math (`spec.math`) shows native (its size comes from `math_scale` at
-/// render time). In `Fit` mode an *uncaptioned* graphic is an equation picture
-/// (captioned graphics are figures/tables — captions are the reliable
-/// figure-vs-equation signal, where pixel shape cannot tell a wide table from a
-/// wide equation or a tall array from a tall figure): it shows native, but a
-/// low-resolution one (glyphs too small to read) is auto-boosted up toward
-/// [`EQUATION_MIN_LINES`] tall (quality-capped by [`EQUATION_AUTO_MAX`]), then
-/// scaled by the user's `eq_scale` knob. Full-bleed pages (`SizeHint::Full`) fill
-/// the pane.
-///
-/// The longest displayed side is finally capped to `fit.max_px` px to bound the
-/// terminal transfer. Used by both the up-front row estimate and the background
-/// build, so the two always agree (no gap).
+/// Equations are measured on their **ink** (whitespace margins cropped away, via
+/// [`InkProfile::bbox_dims`]) so the file's padding never inflates the size, and the
+/// build crops to the same bbox so displayed pixels match. The longest displayed side
+/// is finally capped to `fit.max_px`. Used by both the up-front row estimate and the
+/// background build, so the two always agree (no gap).
 pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
     if w == 0 || h == 0 || fit.fw == 0 || fit.fh == 0 {
         return (1, 1);
     }
-    let (wf, hf) = (w as f64, h as f64);
     let (fwf, fhf) = (f64::from(fit.fw), f64::from(fit.fh));
-    // The most the aspect-preserving image can scale before it overflows the
-    // column width or the viewport height.
-    let cap = (f64::from(fit.cols) * fwf / wf).min(f64::from(fit.rows) * fhf / hf);
+    // Effective size: an equation is sized on its ink bbox (margins cropped away);
+    // every other graphic on its full pixels.
+    let (bw, bh) = match spec.ink {
+        Some(p) => p.bbox_dims(),
+        None => (w as f64, h as f64),
+    };
+    // The most the aspect-preserving image can scale before it overflows the column
+    // width or the viewport height.
+    let cap = (f64::from(fit.cols) * fwf / bw).min(f64::from(fit.rows) * fhf / bh);
+    let knob = f64::from(fit.math_scale) / 100.0;
 
-    // An uncaptioned graphic (in Fit mode) is a display equation shipped as a
-    // picture — captioned graphics are figures/tables. It reads best proportional
-    // to the text, not stretched to the column.
-    let is_equation_pic = fit.fit_mode == ImageFit::Fit && !spec.captioned && !spec.math;
-
-    let mut scale = if matches!(spec.hint, SizeHint::Full) {
-        // A full-bleed page (PDF): fill the pane box, preserving aspect —
-        // enlarging a small page or shrinking a large one to the cols×rows box.
-        cap
-    } else if spec.math {
-        // Real math (LaTeX/MathML) is already sized by `math_scale` at render
-        // time — show it native, only shrinking to fit.
-        cap.min(1.0)
-    } else if is_equation_pic {
-        // An equation picture. Keep it proportional to the text, but auto-boost a
-        // low-resolution one (whose glyphs are packed too small to read) up toward
-        // a readable height, then apply the user's `eq_scale` knob. Bounded by the
-        // box; the automatic part is additionally quality-capped.
-        let auto = (EQUATION_MIN_LINES * fhf / hf).clamp(1.0, EQUATION_AUTO_MAX);
-        let knob = f64::from(fit.eq_scale) / 100.0;
-        (auto * knob).min(cap)
-    } else {
-        // A figure/table/diagram. The display width we want it to occupy: in Fit
-        // mode a consistent fraction of the column (authored width ignored — it's
-        // as unreliable as the pixel resolution); in Faithful mode the authored
-        // width, else the same normalized default.
-        let want_px = if fit.fit_mode == ImageFit::Fit {
-            f64::from(fit.cols) * fwf * f64::from(fit.target_pct) / 100.0
-        } else {
-            match spec.hint {
-                SizeHint::Pct(p) => f64::from(fit.cols) * fwf * f64::from(p).clamp(0.0, 1.0),
-                SizeHint::Px(px) => f64::from(px),
-                SizeHint::Auto => f64::from(fit.cols) * fwf * f64::from(fit.target_pct) / 100.0,
-                SizeHint::Full => unreachable!("full-bleed handled above"),
-            }
-        };
-        // Reach it (up- or down-scaling), but never blow up low-res art past the
-        // upscale cap and never exceed the box.
-        (want_px / wf).min(cap).min(MAX_UPSCALE)
+    let mut scale = match classify(spec, fit.fit_mode) {
+        GraphicKind::Page => cap,
+        GraphicKind::RenderedMath => cap.min(1.0),
+        GraphicKind::EquationRaster => {
+            let s = match spec.ink {
+                // DPI-independent: bring one ink-line to the text-relative target,
+                // shrinking a high-DPI raster and growing a low-DPI one alike.
+                Some(p) => fhf * EQ_TARGET_LINE_CELLS * knob / f64::from(p.line_px),
+                // Unprofiled: keep the legacy low-res boost (never shrinks).
+                None => (EQUATION_MIN_LINES * fhf / bh).clamp(1.0, EQUATION_AUTO_MAX) * knob,
+            };
+            let s = s.min(cap); // fit the column / viewport
+            if s > 1.0 { s.min(MAX_UPSCALE) } else { s } // quality-cap enlargement only
+        }
+        GraphicKind::Figure => {
+            // The display width the figure should occupy: a consistent fraction of
+            // the column in Fit (authored width ignored — as unreliable as the
+            // resolution); the authored width in Faithful, else the same default.
+            let want_px = if fit.fit_mode == ImageFit::Fit {
+                f64::from(fit.cols) * fwf * f64::from(fit.target_pct) / 100.0
+            } else {
+                match spec.hint {
+                    SizeHint::Pct(p) => f64::from(fit.cols) * fwf * f64::from(p).clamp(0.0, 1.0),
+                    SizeHint::Px(px) => f64::from(px),
+                    SizeHint::Auto => f64::from(fit.cols) * fwf * f64::from(fit.target_pct) / 100.0,
+                    SizeHint::Full => unreachable!("full-bleed is GraphicKind::Page"),
+                }
+            };
+            (want_px / bw).min(cap).min(MAX_UPSCALE)
+        }
     };
     if scale <= 0.0 {
         scale = cap.min(1.0);
@@ -157,12 +218,12 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
 
     // A full-bleed page is bounded by the pane itself; the per-figure pixel cap
     // (which bounds inline-figure transfers) would only letterbox it, so skip it.
-    let longest = (wf * scale).max(hf * scale);
+    let longest = (bw * scale).max(bh * scale);
     if fit.max_px > 0 && longest > f64::from(fit.max_px) && !matches!(spec.hint, SizeHint::Full) {
         scale *= f64::from(fit.max_px) / longest;
     }
-    let cols = ((wf * scale / fwf).ceil() as u16).clamp(1, fit.cols.max(1));
-    let rows = ((hf * scale / fhf).ceil() as u16).clamp(1, fit.rows.max(1));
+    let cols = ((bw * scale / fwf).ceil() as u16).clamp(1, fit.cols.max(1));
+    let rows = ((bh * scale / fhf).ceil() as u16).clamp(1, fit.rows.max(1));
     (cols, rows)
 }
 
@@ -180,7 +241,7 @@ mod tests {
             rows,
             max_px: 0,
             target_pct: 85,
-            eq_scale: 100,
+            math_scale: 100,
             fit_mode: ImageFit::Fit,
         }
     }
@@ -196,15 +257,170 @@ mod tests {
     /// A captioned figure/table (normalizes to the column band), no authored size.
     fn fig() -> SizeSpec {
         SizeSpec {
-            hint: SizeHint::Auto,
-            math: false,
             captioned: true,
+            ..SizeSpec::default()
         }
     }
 
-    /// An uncaptioned equation picture (stays text-proportional), no authored size.
-    fn eq() -> SizeSpec {
-        SizeSpec::default()
+    /// A profiled equation raster whose ink fills a `w`×`h` bbox as `line_count`
+    /// lines of `line_px` each — the signal a real publisher equation carries.
+    fn eq(w: u32, h: u32, line_px: f32, line_count: u16) -> SizeSpec {
+        SizeSpec {
+            ink: Some(InkProfile {
+                x0: 0,
+                y0: 0,
+                x1: w,
+                y1: h,
+                line_px,
+                line_count,
+            }),
+            ..SizeSpec::default()
+        }
+    }
+
+    /// The headline fix: a single-line equation lands at the *same* text-relative
+    /// height regardless of the file's DPI — a 4× range of ink-line heights all
+    /// render to the same rows (the boost-only code left a hi-DPI raster huge).
+    #[test]
+    fn equation_size_is_dpi_independent() {
+        let rows: Vec<u16> = [8.0f32, 16.0, 32.0, 64.0]
+            .into_iter()
+            .map(|line_px| {
+                let h = line_px as u32;
+                target_cells(100, h, fit(400, 400), eq(100, h, line_px, 1)).1
+            })
+            .collect();
+        assert!(
+            rows.iter().all(|&r| r == rows[0]),
+            "same equation at 4 DPIs → same height, got {rows:?}"
+        );
+        // …and far below the native 4 rows a 64px raster would occupy at 1:1.
+        assert!(
+            rows[0] < 64 / 16,
+            "hi-DPI raster shrinks below its native height: {}",
+            rows[0]
+        );
+    }
+
+    /// A multi-line array normalises *per line*, so it stays tall (proportional),
+    /// never squashed to a single line like a naive height-normalisation would.
+    #[test]
+    fn multiline_array_scales_proportionally() {
+        let single = target_cells(100, 16, fit(400, 400), eq(100, 16, 16.0, 1)).1;
+        let triple = target_cells(100, 48, fit(400, 400), eq(100, 48, 16.0, 3)).1;
+        assert!(
+            triple >= 2 * single,
+            "three lines stay ~3× tall (proportional): {triple} vs {single}"
+        );
+    }
+
+    /// A wide equation is shrunk uniformly to fit the column — its cells never
+    /// exceed the available width, in single- or two-page layout.
+    #[test]
+    fn wide_equation_fits_the_column() {
+        for avail in [20u16, 48, 96] {
+            let (cols, _) = target_cells(4000, 16, fit(avail, 40), eq(4000, 16, 16.0, 1));
+            assert!(cols <= avail, "avail={avail}: cols={cols} must fit");
+        }
+    }
+
+    /// The `math_scale` knob scales profiled equations on top of the target.
+    #[test]
+    fn math_scale_knob_scales_equations() {
+        let base = fit(400, 400);
+        let big = FitBox {
+            math_scale: 200,
+            ..base
+        };
+        let r1 = target_cells(100, 32, base, eq(100, 32, 32.0, 1)).1;
+        let r2 = target_cells(100, 32, big, eq(100, 32, 32.0, 1)).1;
+        assert!(r2 > r1, "200% math_scale renders larger: {r2} vs {r1}");
+    }
+
+    /// An equation is sized on its **ink** bbox, so the file's whitespace margins
+    /// never inflate it (the build crops to the same bbox).
+    #[test]
+    fn equation_sized_on_ink_not_margins() {
+        // A 400×400 image whose ink is only a 100×16 strip in the corner sizes as a
+        // single small line, not as a big 400px-tall graphic.
+        let mut spec = eq(100, 16, 16.0, 1);
+        if let Some(p) = spec.ink.as_mut() {
+            (p.x1, p.y1) = (100, 16); // ink bbox ≪ the 400×400 image
+        }
+        let (_c, rows) = target_cells(400, 400, fit(400, 400), spec);
+        assert!(
+            rows <= 3,
+            "sized on the 16px ink line, not the 400px canvas: {rows}"
+        );
+    }
+
+    /// An unprofiled equation (`ink == None` but flagged by its alt text) falls back
+    /// to the legacy low-resolution boost, so nothing regresses when profiling is
+    /// unavailable.
+    #[test]
+    fn unprofiled_equation_falls_back_to_boost() {
+        let spec = SizeSpec {
+            alt_math: true,
+            ..SizeSpec::default()
+        };
+        let (_c, rows) = target_cells(300, 16, fit(200, 60), spec);
+        assert!(rows >= 2, "low-res unprofiled equation boosted: {rows}");
+    }
+
+    /// The classifier maps every signal combination to the right kind.
+    #[test]
+    fn classify_covers_every_kind() {
+        let page = SizeSpec {
+            hint: SizeHint::Full,
+            ..SizeSpec::default()
+        };
+        let math = SizeSpec {
+            math: true,
+            ..SizeSpec::default()
+        };
+        let alt = SizeSpec {
+            alt_math: true,
+            ..SizeSpec::default()
+        };
+        // Math flag, no ink = delryn's own LaTeX render (native, sized by its em).
+        // Math flag WITH ink = a publisher equation raster (normalise it + knob).
+        let pub_eq = SizeSpec {
+            math: true,
+            ..eq(100, 16, 16.0, 1)
+        };
+        assert_eq!(classify(page, ImageFit::Fit), GraphicKind::Page);
+        assert_eq!(classify(math, ImageFit::Fit), GraphicKind::RenderedMath);
+        assert_eq!(classify(pub_eq, ImageFit::Fit), GraphicKind::EquationRaster);
+        assert_eq!(classify(alt, ImageFit::Fit), GraphicKind::EquationRaster);
+        assert_eq!(classify(fig(), ImageFit::Fit), GraphicKind::Figure);
+        // Ink line-art with few lines is an equation; many lines reads as a figure.
+        assert_eq!(
+            classify(eq(100, 16, 16.0, 1), ImageFit::Fit),
+            GraphicKind::EquationRaster
+        );
+        assert_eq!(
+            classify(eq(100, 400, 16.0, 20), ImageFit::Fit),
+            GraphicKind::Figure
+        );
+        // Faithful mode never treats a graphic as an equation (authored width wins).
+        assert_eq!(
+            classify(eq(100, 16, 16.0, 1), ImageFit::Faithful),
+            GraphicKind::Figure
+        );
+        // Unprofiled + uncaptioned + no math signal ⇒ a figure, not an equation.
+        assert_eq!(
+            classify(SizeSpec::default(), ImageFit::Fit),
+            GraphicKind::Figure
+        );
+    }
+
+    /// An uncaptioned graphic with no ink profile (a photo the profiler declined) is
+    /// sized as a figure — identical to a captioned figure of the same pixels.
+    #[test]
+    fn unprofiled_uncaptioned_graphic_is_a_figure() {
+        let a = target_cells(400, 300, fit(200, 200), SizeSpec::default());
+        let b = target_cells(400, 300, fit(200, 200), fig());
+        assert_eq!(a, b, "unprofiled uncaptioned graphic sizes like a figure");
     }
 
     #[test]
@@ -234,35 +450,13 @@ mod tests {
     }
 
     #[test]
-    fn uncaptioned_graphics_stay_text_proportional() {
-        // Uncaptioned graphics (equation pictures) keep native size in Fit mode,
-        // whatever their shape — a wide/short strip AND a tall multi-line array
-        // both stay near native, never stretched or blown up to the column like a
-        // captioned figure of the same pixels is.
-        let (strip_cols, _) = target_cells(400, 50, fit(200, 60), eq());
-        let (fig_strip_cols, _) = target_cells(400, 50, fit(200, 60), fig());
-        assert!(
-            fig_strip_cols > strip_cols,
-            "wide strip: figure enlarges ({fig_strip_cols}), equation stays native ({strip_cols})"
-        );
-
-        // A tall array (the case the old aspect heuristic blew up as a "figure").
-        let (_eq_cols, eq_rows) = target_cells(400, 300, fit(200, 60), eq());
-        let (_fig_cols, fig_rows) = target_cells(400, 300, fit(200, 60), fig());
-        assert!(
-            fig_rows > eq_rows,
-            "tall array: figure enlarges ({fig_rows} rows), equation stays native ({eq_rows})"
-        );
-    }
-
-    #[test]
     fn fit_mode_overrides_small_authored_width_for_figures() {
         // In Fit mode a captioned figure's tiny authored width is ignored: it is
         // normalized to the target band, not left small (~5 cols if honored).
         let small = SizeSpec {
             hint: SizeHint::Px(40),
-            math: false,
             captioned: true,
+            ..SizeSpec::default()
         };
         let (cols, _) = target_cells(400, 300, fit(200, 200), small);
         assert!(
@@ -272,38 +466,12 @@ mod tests {
     }
 
     #[test]
-    fn low_res_equations_auto_boost_to_readable() {
-        // A low-resolution single-line equation (~1 text line tall at native) is
-        // auto-enlarged toward EQUATION_MIN_LINES so its glyphs are legible, even
-        // at the default eq_scale (no manual tuning needed).
-        let (_c, rows) = target_cells(300, 16, fit(200, 60), eq());
-        assert!(rows >= 2, "tiny equation auto-boosted to >=2 rows: {rows}");
-        // A taller multi-line array is already legible and stays native.
-        let (_c2, tall_rows) = target_cells(300, 96, fit(200, 60), eq());
-        assert_eq!(tall_rows, 6, "tall array keeps native ~6 rows: {tall_rows}");
-    }
-
-    #[test]
-    fn eq_scale_knob_scales_equations() {
-        // The eq_scale knob enlarges equation pictures on top of the auto size.
-        let base = fit(200, 200);
-        let big = FitBox {
-            eq_scale: 200,
-            ..base
-        };
-        let (_c1, r1) = target_cells(300, 60, base, eq());
-        let (_c2, r2) = target_cells(300, 60, big, eq());
-        assert!(r2 > r1, "200% eq_scale renders larger: {r2} vs {r1}");
-    }
-
-    #[test]
     fn math_images_stay_native_size() {
         // Real math (LaTeX/MathML pictures) keeps native size regardless of caption
         // or mode — proportional to the text, never normalized up to the column.
         let math = SizeSpec {
-            hint: SizeHint::Auto,
             math: true,
-            captioned: false,
+            ..SizeSpec::default()
         };
         let (cols, _) = target_cells(80, 40, fit(200, 40), math);
         assert!(
@@ -318,8 +486,7 @@ mod tests {
         // pixel resolution or caption (in Fit mode the authored width is ignored).
         let half = SizeSpec {
             hint: SizeHint::Pct(0.5),
-            math: false,
-            captioned: false,
+            ..SizeSpec::default()
         };
         let (cols, _) = target_cells(4000, 2000, faithful(100, 200), half);
         assert!(
@@ -334,8 +501,7 @@ mod tests {
         // only by the cols×rows box, ignoring the upscale cap and the px cap.
         let page = SizeSpec {
             hint: SizeHint::Full,
-            math: false,
-            captioned: false,
+            ..SizeSpec::default()
         };
         // A portrait (A4-ish) page in a wide-enough pane fills the column width.
         let (cols, _) = target_cells(1240, 1750, fit(100, 200), page);

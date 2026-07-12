@@ -359,6 +359,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             math: true,
             // Equation images render at native size, so the authored width is moot.
             width: ImageWidth::Auto,
+            ink: None, // measured later, off-thread, by the reader
         }),
         ElementRole::CodeBlock => {
             let lines = strip_line_numbers(trim_blank_edges(code_lines(node).into_iter()));
@@ -419,6 +420,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             caption: Vec::new(),
             math: false,
             width: parse_img_width(e.attr("width"), e.attr("style")),
+            ink: None,
         }),
         ElementRole::Figure => emit_figure(node, ctx, out),
         ElementRole::AsideIconTable(kind) => {
@@ -477,6 +479,7 @@ fn emit_figure(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
         caption: figure_caption_spans(node),
         math: false,
         width: parse_img_width(img.attr("width"), img.attr("style")),
+        ink: None,
     });
 }
 

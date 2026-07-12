@@ -29,7 +29,7 @@ pub struct ImgKey {
     pub target_pct: u16,
     /// Equation-picture size (% of auto) — part of the key so changing the knob
     /// rebuilds at the new size instead of serving a stale one.
-    pub eq_scale: u16,
+    pub math_scale: u16,
     /// Sizing policy (normalize vs. faithful) — part of the key so toggling it
     /// rebuilds at the new size rather than serving a stale one.
     pub fit_mode: ImageFit,
@@ -86,6 +86,20 @@ fn build_plan(
         ..fit
     };
     let (cols, rows) = target_cells(w, h, fit, spec);
+
+    // Crop an equation raster to its measured ink bbox before scaling, so the file's
+    // whitespace margins don't shrink the glyphs. `target_cells` sized (cols, rows)
+    // on this same bbox, so the crop fills them exactly (estimate == build).
+    let img = match spec.ink {
+        Some(p) => {
+            let x0 = p.x0.min(w);
+            let y0 = p.y0.min(h);
+            let cw = p.x1.min(w).saturating_sub(x0).max(1);
+            let ch = p.y1.min(h).saturating_sub(y0).max(1);
+            img.crop_imm(x0, y0, cw, ch)
+        }
+        None => img,
+    };
 
     // Resize to exactly the target cell box in pixels so the protocol fills
     // (cols, rows) precisely. Lanczos3 is the highest-quality resampling filter
@@ -175,7 +189,7 @@ impl ImageBuilder {
                     rows: k.max_rows,
                     max_px: k.max_px,
                     target_pct: k.target_pct,
-                    eq_scale: k.eq_scale,
+                    math_scale: k.math_scale,
                     fit_mode: k.fit_mode,
                 };
                 let plan = build_plan(&picker, &req.bytes, fit, k.policy, req.spec);

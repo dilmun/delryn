@@ -7,6 +7,7 @@ mod cover;
 mod decode;
 mod kitty;
 mod page;
+mod profile;
 mod recolor;
 mod sizing;
 
@@ -20,6 +21,7 @@ pub use kitty::{
     transmit_file_seq, transmit_image_seq,
 };
 pub use page::{PageKey, PageThemer, ThemedPage};
+pub use profile::{InkProfile, ink_profile};
 pub use recolor::{
     Ink, RenderPolicy, flatten_onto, is_line_art, recolor_ink, render_for_theme, theme_invert,
     theme_page_png,

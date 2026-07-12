@@ -217,6 +217,7 @@ fn render_page(doc: &PdfiumDoc, index: usize) -> Vec<Block> {
             caption: Vec::new(),
             math: false,
             width: ImageWidth::Full,
+            ink: None,
         }],
         None => vec![render_failed(index)],
     }

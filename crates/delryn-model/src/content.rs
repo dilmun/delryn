@@ -134,6 +134,25 @@ pub enum ImageWidth {
     Full,
 }
 
+/// Ink geometry of an equation image, measured once off-thread from its pixels
+/// (mirrors `delryn_media::InkProfile`; kept here — with no image dependency — so the
+/// content model stays a leaf crate). Lets the reader size a publisher equation
+/// picture relative to the text by its measured ink-line height (DPI-independent),
+/// instead of trusting the file's raw pixel resolution. `None` on a [`Block::Image`]
+/// means "not a profiled equation" — a figure, a photo, or rendered LaTeX math.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InkProfile {
+    /// Tight ink bounding box in source pixels (1px margin), `[x0,x1) × [y0,y1)`.
+    pub x0: u32,
+    pub y0: u32,
+    pub x1: u32,
+    pub y1: u32,
+    /// Median height (px) of one equation line — the raster's measured "em".
+    pub line_px: f32,
+    /// Ink-line count (≈ rows of a multi-line array); 1 for a single equation.
+    pub line_count: u16,
+}
+
 /// A reflowable content block. The layout pass wraps these to the pane width.
 ///
 /// Beyond the basic prose blocks, the model carries *technical* content —
@@ -194,6 +213,9 @@ pub enum Block {
     /// fallback) rather than a content figure — so the figure viewer can skip it.
     /// `width` is the authored display size (from the `<img>` width / CSS), used
     /// to size the figure faithfully; [`ImageWidth::Auto`] when unspecified.
+    /// `ink` is the measured equation ink profile (see [`InkProfile`]) when this
+    /// image is a publisher equation picture, filled once off-thread; `None` for
+    /// figures, photos, and rendered LaTeX math (which is sized by its render em).
     Image {
         src: String,
         alt: String,
@@ -201,6 +223,7 @@ pub enum Block {
         caption: Vec<Span>,
         math: bool,
         width: ImageWidth,
+        ink: Option<InkProfile>,
     },
     /// Horizontal rule.
     Rule,

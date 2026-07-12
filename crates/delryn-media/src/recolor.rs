@@ -33,7 +33,7 @@ pub struct RenderPolicy {
 }
 
 /// The kind of background a graphic sits on, decided once per image.
-enum Background {
+pub(crate) enum Background {
     /// Has meaningful transparency — its alpha channel *is* the ink matte.
     Alpha,
     /// Opaque, on a near-uniform background of this (normalised) colour.
@@ -46,7 +46,7 @@ const TRANSPARENT_FRAC: f32 = 0.02;
 const ALPHA_CUTOFF: u8 = 250;
 
 /// Inspect a graphic's border + alpha to decide its background.
-fn analyze_background(img: &RgbaImage) -> Background {
+pub(crate) fn analyze_background(img: &RgbaImage) -> Background {
     let (w, h) = img.dimensions();
     let total = (w * h).max(1) as f32;
     let transparent = img.pixels().filter(|p| p[3] < ALPHA_CUTOFF).count() as f32;
@@ -76,7 +76,7 @@ fn analyze_background(img: &RgbaImage) -> Background {
 
 /// How much a pixel is "ink" (1.0) vs "background" (0.0): alpha for transparent
 /// graphics, else its colour distance from the detected background.
-fn ink_coverage(p: &Rgba<u8>, bg: &Background) -> f32 {
+pub(crate) fn ink_coverage(p: &Rgba<u8>, bg: &Background) -> f32 {
     match bg {
         Background::Alpha => p[3] as f32 / 255.0,
         Background::Solid(b) => {
@@ -96,7 +96,7 @@ fn chroma(p: &Rgba<u8>) -> f32 {
 }
 
 /// Mean chroma below which ink counts as greyscale (0–1).
-const INK_CHROMA_MAX: f32 = 0.12;
+pub(crate) const INK_CHROMA_MAX: f32 = 0.12;
 
 /// Whether `img` is a transparent monochrome ink graphic — a math equation or
 /// line drawing whose *transparent* background exposes the dark page, so its
@@ -120,7 +120,7 @@ fn transparent_frac(img: &RgbaImage) -> f32 {
 }
 
 /// Mean chroma over the opaque (ink) pixels — i.e. what colour the strokes are.
-fn opaque_chroma(img: &RgbaImage) -> f32 {
+pub(crate) fn opaque_chroma(img: &RgbaImage) -> f32 {
     let mut sum = 0f32;
     let mut n = 0f32;
     for p in img.pixels() {
