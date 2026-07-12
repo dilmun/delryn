@@ -55,8 +55,8 @@ pub use editor::{
 mod reader;
 pub use page_deck::PageTarget;
 pub use reader::{
-    AnchorHit, ImageGeom, PageView, PanRoom, Reader, Viewport, place_page,
-    raster_width_for_crispness,
+    AnchorHit, Hint, HintKind, HintStart, ImageGeom, PageView, PanRoom, Reader, Viewport,
+    place_page, raster_width_for_crispness,
 };
 
 mod image_view;
@@ -596,6 +596,13 @@ impl App {
         }
         ids.append(&mut self.overlay_image_deletes);
         ids
+    }
+
+    /// Whether an in-place reflow (a code fold/unfold) asked for a full repaint this
+    /// frame — the loop clears the terminal so a moved inline image doesn't leave its
+    /// old placement behind (terminal graphics don't compose with the cell-diff).
+    pub fn take_repaint(&mut self) -> bool {
+        self.reader.as_mut().is_some_and(|r| r.take_repaint())
     }
 
     /// Whether full PDF pages should be on screen right now: reading a PDF with

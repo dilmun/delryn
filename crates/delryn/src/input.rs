@@ -80,6 +80,10 @@ pub enum Action {
     OpenAnnotations,
     CopyCode,
     ToggleCodeWrap,
+    /// Fold/unfold every long code block on the page (global).
+    ToggleFold,
+    /// Fold/unfold the code block under the cursor (per-block override).
+    ToggleFoldBlock,
     PanLeft,
     PanRight,
     ToggleChapterLock,
@@ -184,6 +188,8 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('E') => Action::PrevAnchor,
         KeyCode::Esc => Action::ClearAnchor,
         KeyCode::Char('\\') => Action::ToggleCodeWrap,
+        KeyCode::Char('Z') => Action::ToggleFold,
+        KeyCode::Char('F') => Action::ToggleFoldBlock,
         KeyCode::Char('<') => Action::PanLeft,
         KeyCode::Char('>') => Action::PanRight,
         KeyCode::Char('c') => Action::ToggleChapterLock,

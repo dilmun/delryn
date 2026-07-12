@@ -416,7 +416,9 @@ impl Reader {
             .get(&s)
             .map(|info| info.iter().map(|(_, r)| *r).collect())
             .unwrap_or_default();
-        let lines = self.wrap_at_with_rows(&blocks, self.last_measure.max(1), &rows);
+        // A following section folds by default: the per-block overrides are the
+        // anchor section's local indices, so they don't carry here.
+        let lines = self.wrap_at_with_rows(&blocks, self.last_measure.max(1), &rows, &[]);
         self.cont_cache.insert(s, lines.clone());
         lines
     }

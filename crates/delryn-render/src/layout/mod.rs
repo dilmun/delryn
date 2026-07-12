@@ -104,6 +104,14 @@ pub struct WrapOpts<'a> {
     pub code_line_numbers: bool,
     /// Show a language tag at the top of each code block (skipped for plain text).
     pub code_label: bool,
+    /// Collapse code blocks longer than `code_fold_threshold` lines to a preview.
+    pub code_fold: bool,
+    /// Line count above which a code block folds (when `code_fold` is on).
+    pub code_fold_threshold: usize,
+    /// Section-local code-block indices whose fold state is *flipped* from the
+    /// `code_fold` default — the per-block `F` overrides. A block folds when
+    /// `code_fold != code_fold_flip.contains(idx)` and it exceeds the threshold.
+    pub code_fold_flip: &'a [usize],
     /// Word-wrap table cells to their column (true) vs. truncate with `…` (false).
     pub table_wrap: bool,
     /// Fully justify body paragraphs to the column (true) vs. ragged-right (false).
@@ -123,6 +131,9 @@ impl Default for WrapOpts<'_> {
             code_hscroll: 0,
             code_line_numbers: true,
             code_label: false,
+            code_fold: false,
+            code_fold_threshold: 20,
+            code_fold_flip: &[],
             table_wrap: true,
             justify: false,
             tidy_spacing: true,

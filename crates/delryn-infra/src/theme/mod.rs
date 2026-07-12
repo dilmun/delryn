@@ -272,6 +272,25 @@ mod tests {
     }
 
     #[test]
+    fn auto_theme_selection_pill_is_legible() {
+        // Number badges / selected rows paint with `Role::Selection` (accent bg +
+        // `on_accent` fg). The auto theme's `heading` is `Reset`, so a pill keyed to
+        // it vanishes on the terminal's own backdrop; keyed to the concrete accent it
+        // must stay opaque and contrasting on any terminal.
+        let s = AUTO.style(Role::Selection);
+        let fg =
+            s.fg.and_then(rgb_of)
+                .expect("auto selection fg is concrete");
+        let bg =
+            s.bg.and_then(rgb_of)
+                .expect("auto selection bg is the concrete accent, not Reset");
+        assert!(
+            (luma(fg) - luma(bg)).abs() >= 64.0,
+            "auto selection pill must contrast: {fg:?} on {bg:?}"
+        );
+    }
+
+    #[test]
     fn terminal_theme_inks_black_on_white() {
         // Reset fg + no bg, no detected terminal colour → the publisher's intended
         // dark-on-light page.

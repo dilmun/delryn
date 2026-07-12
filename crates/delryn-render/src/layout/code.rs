@@ -25,9 +25,22 @@ pub(super) fn emit_code(
     {
         emit_label(name, width, code_idx, out);
     }
+    // Fold a long block to a short head preview: the global `code_fold` default,
+    // flipped for this block by a per-`F` override. Short blocks never fold.
+    let total = highlighted.len();
+    let folded = opts.code_fold_threshold > 0
+        && total > opts.code_fold_threshold
+        && (opts.code_fold ^ opts.code_fold_flip.contains(&code_idx));
+    let shown = if folded {
+        FOLD_PREVIEW.min(opts.code_fold_threshold).min(total)
+    } else {
+        total
+    };
     // The gutter is optional; when off, code fills the full column with no numbers.
+    // Its width follows the *full* line count so the numbers keep their column
+    // whether or not the block is folded.
     let gutter_w = if opts.code_line_numbers {
-        lines.len().max(1).to_string().len()
+        total.max(1).to_string().len()
     } else {
         0
     };
@@ -36,7 +49,7 @@ pub(super) fn emit_code(
     } else {
         String::new()
     };
-    for (i, runs) in highlighted.into_iter().enumerate() {
+    for (i, runs) in highlighted.into_iter().enumerate().take(shown) {
         let num = if opts.code_line_numbers {
             format!("{:>gutter_w$} │ ", i + 1)
         } else {
@@ -49,6 +62,45 @@ pub(super) fn emit_code(
             emit_panned_line(runs, num, opts.code_hscroll, avail, width, code_idx, out);
         }
     }
+    if folded {
+        emit_fold_marker(total - shown, gutter_w, width, code_idx, out);
+    }
+}
+
+/// Head lines a folded block previews before its fold marker.
+const FOLD_PREVIEW: usize = 10;
+
+/// The summary row shown under a folded block's preview: the hidden-line count and
+/// the keys that expand it. A `Code` line, so it sits inside the code panel and
+/// inherits its surface; muted italic to read as chrome, not code.
+fn emit_fold_marker(
+    hidden: usize,
+    gutter_w: usize,
+    width: usize,
+    code_idx: usize,
+    out: &mut Vec<DisplayLine>,
+) {
+    let gutter = if gutter_w > 0 {
+        format!("{:>gutter_w$} │ ", "⋯")
+    } else {
+        "⋯ ".to_string()
+    };
+    let plural = if hidden == 1 { "" } else { "s" };
+    let mut runs = vec![Run {
+        text: format!("{gutter}{hidden} more line{plural} · F expand · O viewer"),
+        style: Inline {
+            italic: true,
+            code: true,
+            ..Inline::default()
+        },
+        fg: None,
+        anchor: None,
+    }];
+    pad_to_width(&mut runs, width);
+    out.push(DisplayLine {
+        runs,
+        kind: LineKind::Code(code_idx),
+    });
 }
 
 /// A dim, right-aligned language tag at the top of the code panel. A `Code` line,
@@ -265,6 +317,55 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("Rust"), "a language tag is present: {text:?}");
+    }
+
+    #[test]
+    fn long_block_folds_to_a_preview_plus_marker() {
+        let lines: Vec<String> = (0..30).map(|i| format!("line_{i} = {i}")).collect();
+        let block = Block::Code {
+            lang: Some("text".into()),
+            lines,
+        };
+        let opts = WrapOpts {
+            width: 60,
+            code_fold: true,
+            code_fold_threshold: 20,
+            ..Default::default()
+        };
+        let code: Vec<String> = wrap_blocks(&[block], &opts, &[])
+            .iter()
+            .filter(|l| matches!(l.kind, LineKind::Code(_)))
+            .map(|l| l.text())
+            .collect();
+        // 10 preview lines + 1 fold marker (short lines don't wrap).
+        assert_eq!(code.len(), 11, "preview + marker: {code:?}");
+        let marker = code.last().unwrap();
+        assert!(
+            marker.contains("20 more lines"),
+            "marker names the 30-10 hidden lines: {marker:?}"
+        );
+    }
+
+    #[test]
+    fn per_block_flip_expands_a_folded_block() {
+        let lines: Vec<String> = (0..30).map(|i| format!("x{i}")).collect();
+        let block = Block::Code {
+            lang: Some("text".into()),
+            lines,
+        };
+        let flip = [0usize];
+        let opts = WrapOpts {
+            width: 40,
+            code_fold: true,
+            code_fold_threshold: 20,
+            code_fold_flip: &flip,
+            ..Default::default()
+        };
+        let code = wrap_blocks(&[block], &opts, &[])
+            .into_iter()
+            .filter(|l| matches!(l.kind, LineKind::Code(_)))
+            .count();
+        assert_eq!(code, 30, "the flipped block shows every line, no marker");
     }
 
     #[test]

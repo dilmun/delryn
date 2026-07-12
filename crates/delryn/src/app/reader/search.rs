@@ -68,6 +68,15 @@ impl Reader {
             let width = self.last_measure.max(1);
             for s in 0..self.doc.section_count() {
                 let blocks = self.fetch_blocks(s);
+                // Fold must mirror the display so a match's line index lands where it
+                // shows: the per-block overrides are the current section's, so only it
+                // gets them. (A match in a folded block's hidden tail isn't listed —
+                // `Z` unfolds to search the whole block.)
+                let flip: &[usize] = if s == self.section {
+                    &self.code_fold_flip
+                } else {
+                    &[]
+                };
                 let lines = wrap_blocks(
                     &blocks,
                     &WrapOpts {
@@ -81,6 +90,9 @@ impl Reader {
                         // Gutter/label must mirror the display so match line indices align.
                         code_line_numbers: self.code_line_numbers,
                         code_label: self.code_label,
+                        code_fold: self.code_fold,
+                        code_fold_threshold: self.code_fold_threshold,
+                        code_fold_flip: flip,
                         table_wrap: true,
                         // Never justify (keeps single spaces so phrase matches work);
                         // tidy must match the display so positions line up.

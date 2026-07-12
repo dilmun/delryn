@@ -8,22 +8,76 @@ use crate::ui::TextInput;
 use crossterm::event::KeyModifiers;
 
 impl App {
-    /// Open the image viewer on the current chapter's figures, selecting the one
-    /// nearest the current reading position.
+    /// `I` opens the figure pick-mode (the image analogue of `F` for folds): with
+    /// one figure in view it opens the viewer on it, with several it badges them and
+    /// awaits a digit (see [`App::hint_key`]).
     pub(super) fn open_images(&mut self) {
-        let (Some(_picker), Some(reader)) = (self.picker.as_ref(), self.reader.as_mut()) else {
+        if self.picker.is_none() {
+            return;
+        }
+        let outcome = match self.reader.as_mut() {
+            Some(r) => r.hint_start(HintKind::Image),
+            None => return,
+        };
+        match outcome {
+            HintStart::None => self.set_reader_flash("no image in view"),
+            HintStart::Single(idx) => self.open_image_at(idx),
+            HintStart::Entered(n) => self.set_reader_flash(&format!("image: press 1–{n} · Esc")),
+        }
+    }
+
+    /// Open the image viewer on the current chapter's figures, selecting figure
+    /// `image_index`. Shared by the single-figure fast path and a badge pick.
+    fn open_image_at(&mut self, image_index: usize) {
+        let Some(reader) = self.reader.as_mut() else {
             return;
         };
-        let current = reader.current_image_index();
         let figs = reader.figures(false);
         let mut viewer = ImageViewer::new(figs, false);
-        if let (Some(v), Some(idx)) = (viewer.as_mut(), current) {
-            v.select_image(idx);
+        if let Some(v) = viewer.as_mut() {
+            v.select_image(image_index);
         }
         self.overlay = match viewer {
             Some(v) => Overlay::ImageView(v),
             None => Overlay::None,
         };
+    }
+
+    /// Number-badge pick-mode key (`F`/`I`): a `1..=9` digit acts on that element —
+    /// toggles a fold or opens the figure — anything else cancels. Digits are
+    /// consumed here so they never feed the vim count prefix. See [`Reader::hint`].
+    pub(super) fn hint_key(&mut self, key: KeyEvent) {
+        let picked = match key.code {
+            KeyCode::Char(c @ '1'..='9') => {
+                let n = c.to_digit(10).unwrap() as usize;
+                self.reader.as_mut().and_then(|r| r.hint_pick(n))
+            }
+            _ => {
+                // Esc or any other key cancels the pick.
+                if let Some(r) = self.reader.as_mut() {
+                    r.hint_cancel();
+                    r.flash = None;
+                }
+                return;
+            }
+        };
+        match picked {
+            Some((HintKind::Code, idx)) => {
+                if let Some(r) = self.reader.as_mut() {
+                    let msg = r.toggle_fold_at(idx);
+                    r.flash = Some(msg);
+                }
+            }
+            Some((HintKind::Image, idx)) => self.open_image_at(idx),
+            None => {} // out-of-range digit: stay in the mode
+        }
+    }
+
+    /// Set the reader's transient flash (no-op outside the reader).
+    fn set_reader_flash(&mut self, msg: &str) {
+        if let Some(r) = self.reader.as_mut() {
+            r.flash = Some(msg.to_string());
+        }
     }
 
     /// Rebuild the viewer toggling between current-chapter and whole-book scope.

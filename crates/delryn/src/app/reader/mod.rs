@@ -52,6 +52,33 @@ use state::{
 /// the exact pixel width of every page. See [`crate::document::pdf::PAGE_RASTER_WIDTH`].
 const BASE_RASTER_WIDTH: u32 = crate::document::pdf::PAGE_RASTER_WIDTH as u32;
 
+/// Which kind of element a [`Hint`] pick-mode is labelling.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HintKind {
+    /// Code blocks — a pick toggles the fold.
+    Code,
+    /// Figures — a pick opens the image viewer on that figure.
+    Image,
+}
+
+/// The active "press a number to act on that element" pick-mode: `F`/`I` label
+/// each visible element `1..=9`, then a digit acts on the chosen one. Shared by
+/// code-fold and image-open so both feel the same (see [`Reader::hint_start`]).
+pub struct Hint {
+    pub kind: HintKind,
+    /// The visible elements' section-local indices, in reading order — badge `n`
+    /// is `targets[n - 1]`.
+    pub targets: Vec<usize>,
+}
+
+/// The result of pressing the pick key ([`Reader::hint_start`]): nothing in view,
+/// exactly one (act now, no badges), or several (badges shown, awaiting a digit).
+pub enum HintStart {
+    None,
+    Single(usize),
+    Entered(usize),
+}
+
 /// A followable inline anchor located in the wrapped lines (reading order). The
 /// link cursor steps through these; the view highlights the selected one.
 pub struct AnchorHit {
@@ -80,6 +107,12 @@ pub struct Reader {
     /// Show the code line-number gutter / language tag (set each render from config).
     pub code_line_numbers: bool,
     pub code_label: bool,
+    /// Fold long code blocks to a preview (set each render from config).
+    pub code_fold: bool,
+    pub code_fold_threshold: usize,
+    /// Section-local code-block indices whose fold state is flipped from the default
+    /// by a per-block `F` toggle. Cleared on section change (indices are local).
+    pub code_fold_flip: Vec<usize>,
     /// Word-wrap table cells (set each render from config).
     pub table_wrap: bool,
     /// Full justification + converter-spacing tidy (set each render from config).
@@ -194,6 +227,10 @@ pub struct Reader {
     pending_open: Option<String>,
     /// A transient status-bar message (e.g. "copied"), cleared on next key.
     pub flash: Option<String>,
+    /// Set by an in-place reflow that repositions inline images (a fold/unfold):
+    /// terminal graphics don't compose with the cell-diff, so the loop must force a
+    /// full repaint or the old image placement lingers until the next scroll.
+    pub pending_repaint: bool,
     /// Index of the top visible line within `lines`.
     pub scroll: usize,
     /// Requested but not-yet-applied line movement; eased a few lines per frame
@@ -232,6 +269,14 @@ pub struct Reader {
     /// A code block to scroll to once wrapped (a jump from the code viewer's
     /// Enter; resolved one-shot alongside `pending_image`).
     pending_code: Option<usize>,
+    /// A folded/unfolded code block to keep pinned across the re-wrap: `(code
+    /// index, rows below the viewport top)`. Resolved one-shot so the toggled block
+    /// starts at the same screen row it was on — the reflow grows/shrinks *below* it
+    /// instead of shoving the reader's focus around. Overrides `pending_frac`.
+    pending_code_hold: Option<(usize, usize)>,
+    /// The active number-badge pick-mode (`F` for folds, `I` for figures), or
+    /// `None`. While set, the view badges each visible element and a digit acts on it.
+    pub hint: Option<Hint>,
     /// Collapsed parent rows (outline indices) in the sidebar tree.
     collapsed: HashSet<usize>,
     /// The active visual text selection (vim `V`), or `None` in normal reading.
@@ -276,6 +321,9 @@ impl Reader {
             code_hscroll: 0,
             code_line_numbers: true,
             code_label: true,
+            code_fold: true,
+            code_fold_threshold: 20,
+            code_fold_flip: Vec::new(),
             table_wrap: true,
             justify: false,
             tidy_spacing: true,
@@ -313,6 +361,7 @@ impl Reader {
             pending_clipboard: None,
             pending_open: None,
             flash: None,
+            pending_repaint: false,
             scroll: 0,
             scroll_pending: 0,
             focus: Focus::Content,
@@ -326,6 +375,8 @@ impl Reader {
             pending_frac: None,
             pending_image: None,
             pending_code: None,
+            pending_code_hold: None,
+            hint: None,
             overlay_occlude: None,
             collapsed: HashSet::new(),
             select: None,
@@ -374,21 +425,6 @@ impl Reader {
         blocks
     }
 
-    /// The section image index nearest the current viewport, so the image viewer
-    /// can open on the figure you're looking at rather than the chapter's first.
-    pub fn current_image_index(&self) -> Option<usize> {
-        let center = self.scroll + self.viewport_lines / 2;
-        self.lines
-            .iter()
-            .enumerate()
-            .filter_map(|(i, l)| match l.kind {
-                LineKind::Image(idx) => Some((i, idx)),
-                _ => None,
-            })
-            .min_by_key(|(i, _)| (*i as isize - center as isize).unsigned_abs())
-            .map(|(_, idx)| idx)
-    }
-
     /// Index of the code block nearest the viewport centre among the current
     /// section's code blocks (matches `LineKind::Code`) — used to pre-select it in
     /// the code viewer. `None` if none is in view.
@@ -403,6 +439,172 @@ impl Reader {
             })
             .min_by_key(|(i, _)| (*i as isize - center as isize).unsigned_abs())
             .map(|(_, idx)| idx)
+    }
+
+    /// Lines of `self.lines` on screen at once. A two-page reflow spread stacks two
+    /// column-heights side by side, so its second column is in view too; every other
+    /// view shows a single column-height.
+    fn visible_span(&self) -> usize {
+        let cols = if self.view_mode == ViewMode::TwoPage && !self.is_paged_image() {
+            2
+        } else {
+            1
+        };
+        self.viewport_lines * cols
+    }
+
+    /// The code block a fold toggle acts on: the one nearest the centre of the whole
+    /// visible area (both spread columns), so `F` reaches a right-column block, not
+    /// only the left one.
+    pub fn fold_target(&self) -> Option<usize> {
+        let center = self.scroll + self.visible_span() / 2;
+        self.lines
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| match l.kind {
+                LineKind::Code(idx) => Some((i, idx)),
+                _ => None,
+            })
+            .min_by_key(|(i, _)| (*i as isize - center as isize).unsigned_abs())
+            .map(|(_, idx)| idx)
+    }
+
+    /// The section-local indices of every visible element of `kind`, in reading
+    /// order (left spread column before right), capped at 9 so each gets a `1..=9`
+    /// badge. Shared by the `F`/`I` pick-modes.
+    fn visible_elements(&self, kind: HintKind) -> Vec<usize> {
+        let end = self.scroll + self.visible_span();
+        let mut out: Vec<usize> = Vec::new();
+        for line in self.lines.iter().skip(self.scroll).take(end - self.scroll) {
+            let idx = match (kind, line.kind) {
+                (HintKind::Code, LineKind::Code(x)) => x,
+                (HintKind::Image, LineKind::Image(x)) => x,
+                _ => continue,
+            };
+            if !out.contains(&idx) {
+                out.push(idx);
+                if out.len() == 9 {
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// Open the number-badge pick-mode for `kind`: nothing in view, one element (act
+    /// now — no badges for a single choice), or several (badges shown, awaiting a
+    /// digit; the caller stashes the state). See [`HintStart`].
+    pub fn hint_start(&mut self, kind: HintKind) -> HintStart {
+        let targets = self.visible_elements(kind);
+        match targets.len() {
+            0 => HintStart::None,
+            1 => HintStart::Single(targets[0]),
+            n => {
+                self.hint = Some(Hint { kind, targets });
+                HintStart::Entered(n)
+            }
+        }
+    }
+
+    /// Resolve badge `n` (1-based) to its `(kind, element index)` and close the
+    /// pick-mode. `None` (leaving the mode open) when `n` is out of range.
+    pub fn hint_pick(&mut self, n: usize) -> Option<(HintKind, usize)> {
+        let hint = self.hint.as_ref()?;
+        let idx = *hint.targets.get(n.checked_sub(1)?)?;
+        let kind = hint.kind;
+        self.hint = None;
+        Some((kind, idx))
+    }
+
+    /// Close the pick-mode without acting (Esc / any non-digit key).
+    pub fn hint_cancel(&mut self) {
+        self.hint = None;
+    }
+
+    /// Whether a pick-mode is open (so the key router captures digits for it).
+    pub fn hint_active(&self) -> bool {
+        self.hint.is_some()
+    }
+
+    /// The open pick-mode's kind and its ordered targets, for the badge renderer.
+    pub fn hint(&self) -> Option<(HintKind, &[usize])> {
+        self.hint.as_ref().map(|h| (h.kind, h.targets.as_slice()))
+    }
+
+    /// Pin code block `idx` across the next re-wrap so its first row stays at the
+    /// same screen offset (the reflow grows/shrinks below it). Captured from the
+    /// current `lines`, before the toggle re-wraps. A no-op for paged docs.
+    pub fn hold_code_block(&mut self, idx: usize) {
+        if self.is_paged_image() {
+            return;
+        }
+        if let Some(start) = self
+            .lines
+            .iter()
+            .position(|l| l.kind == LineKind::Code(idx))
+        {
+            self.pending_code_hold = Some((idx, start.saturating_sub(self.scroll)));
+        }
+    }
+
+    /// Line count of the `idx`-th code block in the current section, if any.
+    fn code_block_len(&self, idx: usize) -> Option<usize> {
+        self.blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Code { lines, .. } => Some(lines.len()),
+                _ => None,
+            })
+            .nth(idx)
+    }
+
+    /// Toggle the fold of code block `idx` (its per-block override against the global
+    /// `code_fold` default), pin it to its screen row, and refresh the moved images.
+    /// Returns a status line for the flash. A short block (at or under the threshold)
+    /// can't fold, so it reports that instead.
+    pub fn toggle_fold_at(&mut self, idx: usize) -> String {
+        if self
+            .code_block_len(idx)
+            .is_some_and(|n| n <= self.code_fold_threshold)
+        {
+            return "code block is short — nothing to fold".into();
+        }
+        let now_flipped = match self.code_fold_flip.iter().position(|&i| i == idx) {
+            Some(pos) => {
+                self.code_fold_flip.remove(pos);
+                false
+            }
+            None => {
+                self.code_fold_flip.push(idx);
+                true
+            }
+        };
+        // Folded now iff the default and the (new) flip state agree on folding.
+        let folded = self.code_fold ^ now_flipped;
+        // Keep the toggled block pinned at its screen row so the reflow doesn't
+        // shove the reader's focus.
+        self.hold_code_block(idx);
+        // The line count changed, so inline images below move to new rows. Kitty
+        // images composite above the cell grid, so the old placement lingers unless
+        // its id is deleted — `restage` deletes + rebuilds them at the new rows.
+        self.restage_visible_images();
+        self.request_repaint();
+        if folded {
+            "code block folded"
+        } else {
+            "code block unfolded"
+        }
+        .into()
+    }
+
+    /// Request a full repaint next frame (see [`pending_repaint`](Self::pending_repaint)).
+    pub fn request_repaint(&mut self) {
+        self.pending_repaint = true;
+    }
+
+    /// Take the pending-repaint request; the loop clears the terminal when it's set.
+    pub fn take_repaint(&mut self) -> bool {
+        std::mem::take(&mut self.pending_repaint)
     }
 
     /// Collect the code blocks for the viewer: the current chapter, or every
@@ -516,6 +718,9 @@ impl Reader {
             para_spacing: self.paragraph_spacing,
             code_wrap: self.code_wrap,
             code_hscroll: self.code_hscroll,
+            code_fold: self.code_fold,
+            code_fold_threshold: self.code_fold_threshold,
+            code_fold_flip: self.code_fold_flip.clone(),
             table_wrap: self.table_wrap,
             justify: self.justify,
             tidy: self.tidy_spacing,
@@ -534,18 +739,26 @@ impl Reader {
     /// the one place the [`WrapOpts`] are assembled, shared by the anchor section
     /// ([`ensure_wrapped`](Self::ensure_wrapped)) and the continuous-scroll buffer.
     fn wrap_at(&self, blocks: &[Block], width: usize) -> Vec<DisplayLine> {
-        self.wrap_at_with_rows(blocks, width, &self.images.rows_estimate)
+        // Per-block fold overrides are section-local, so they apply to the anchor.
+        self.wrap_at_with_rows(
+            blocks,
+            width,
+            &self.images.rows_estimate,
+            &self.code_fold_flip,
+        )
     }
 
-    /// Wrap `blocks` reserving `image_rows` blank rows per image. The anchor uses
-    /// its own `rows_estimate` (via [`wrap_at`]); a *following* continuous section
-    /// passes its own rows so its figures reserve the right space (and align with
-    /// where the view draws them).
+    /// Wrap `blocks` reserving `image_rows` blank rows per image, applying the
+    /// per-block fold overrides in `flip`. The anchor passes its own `rows_estimate`
+    /// and `code_fold_flip` (via [`wrap_at`]); a *following* continuous section passes
+    /// its own rows and an empty `flip` (the overrides are the anchor's local indices)
+    /// so its figures reserve the right space and its code folds by the default.
     fn wrap_at_with_rows(
         &self,
         blocks: &[Block],
         width: usize,
         image_rows: &[u16],
+        flip: &[usize],
     ) -> Vec<DisplayLine> {
         wrap_blocks(
             blocks,
@@ -558,6 +771,9 @@ impl Reader {
                 code_hscroll: self.code_hscroll,
                 code_line_numbers: self.code_line_numbers,
                 code_label: self.code_label,
+                code_fold: self.code_fold,
+                code_fold_threshold: self.code_fold_threshold,
+                code_fold_flip: flip,
                 table_wrap: self.table_wrap,
                 justify: self.justify,
                 tidy_spacing: self.tidy_spacing,
@@ -714,6 +930,8 @@ impl Reader {
             .store(section, Ordering::Relaxed);
         self.blocks = self.fetch_blocks(section);
         self.scroll = 0;
+        self.code_fold_flip.clear(); // per-block fold overrides are section-local
+        self.hint = None; // any open pick-mode is stale in a new section
         self.nav.anchor_sel = None; // a new section has a different anchor set
         self.wrapped.width = usize::MAX; // force a re-wrap on next draw
         self.prefetch_neighbors();
@@ -927,6 +1145,16 @@ impl Reader {
                 .position(|l| l.kind == LineKind::Code(idx))
         {
             self.scroll = line;
+        }
+        // One-shot: keep a folded/unfolded block at its old screen row (applied
+        // last so it wins over a fraction resume set by the generic reflow hold).
+        if let Some((idx, offset)) = self.pending_code_hold.take()
+            && let Some(start) = self
+                .lines
+                .iter()
+                .position(|l| l.kind == LineKind::Code(idx))
+        {
+            self.scroll = start.saturating_sub(offset);
         }
     }
 
@@ -1855,6 +2083,96 @@ mod tests {
         assert!(r.prev_element(), "back to first element");
         assert_eq!(r.scroll, starts[0].0);
         assert!(!r.prev_element(), "no element above the first");
+    }
+
+    // Folding all blocks pins the block the reader was on: its first row stays at the
+    // same screen offset even though a block *above* it collapsed and shifted the
+    // text up. (The old fraction-based hold would have drifted it.)
+    #[test]
+    fn global_fold_pins_the_central_block_to_its_screen_row() {
+        let long = |p: &str| Block::Code {
+            lang: Some("text".into()),
+            lines: (0..30).map(|i| format!("{p}{i}")).collect(),
+        };
+        // Two long code blocks (idx 0 above, idx 1 below) with a paragraph between.
+        let mut r = reader_with(vec![long("a"), para(), long("b")]);
+        r.viewport_lines = 20;
+        r.code_fold = false; // start fully unfolded
+        r.code_fold_threshold = 20;
+        r.ensure_wrapped(40);
+
+        // Park so block B's first row sits 4 rows below the viewport top.
+        let b_start = r
+            .lines
+            .iter()
+            .position(|l| l.kind == LineKind::Code(1))
+            .unwrap();
+        r.scroll = b_start.saturating_sub(4);
+        let offset = b_start - r.scroll;
+        assert_eq!(offset, 4);
+
+        // The `Z` path: flip the global default, pin the central block, re-wrap.
+        r.code_fold = true;
+        let target = r.fold_target();
+        assert_eq!(target, Some(1), "the block near the centre is B");
+        r.hold_code_block(target.unwrap());
+        r.ensure_wrapped(40);
+        r.resolve_pending();
+
+        let b_new = r
+            .lines
+            .iter()
+            .position(|l| l.kind == LineKind::Code(1))
+            .unwrap();
+        assert_eq!(
+            b_new - r.scroll,
+            offset,
+            "block B stays at its screen row after everything folds"
+        );
+    }
+
+    #[test]
+    fn hint_labels_visible_blocks_in_reading_order() {
+        let mut r = reader_with(vec![code("a"), para(), code("b"), para(), code("c")]);
+        r.viewport_lines = 100; // the whole section is on screen
+        r.scroll = 0;
+        // Three code blocks in view → the pick-mode opens with three badges.
+        match r.hint_start(HintKind::Code) {
+            HintStart::Entered(n) => assert_eq!(n, 3),
+            _ => panic!("expected a multi-block pick-mode"),
+        }
+        assert!(r.hint_active());
+        // Badge 2 resolves to the second code block (index 1) and closes the mode.
+        assert_eq!(r.hint_pick(2), Some((HintKind::Code, 1)));
+        assert!(!r.hint_active(), "a pick closes the mode");
+    }
+
+    #[test]
+    fn hint_acts_directly_on_a_single_block() {
+        let mut r = reader_with(vec![code("only"), para()]);
+        r.viewport_lines = 100;
+        r.scroll = 0;
+        match r.hint_start(HintKind::Code) {
+            HintStart::Single(idx) => assert_eq!(idx, 0),
+            _ => panic!("one block → act directly, no badges"),
+        }
+        assert!(!r.hint_active(), "a single choice never enters the mode");
+    }
+
+    #[test]
+    fn hint_pick_out_of_range_keeps_the_mode_open() {
+        let mut r = reader_with(vec![code("a"), para(), code("b")]);
+        r.viewport_lines = 100;
+        r.scroll = 0;
+        assert!(matches!(
+            r.hint_start(HintKind::Code),
+            HintStart::Entered(2)
+        ));
+        assert_eq!(r.hint_pick(5), None, "no 5th block");
+        assert!(
+            r.hint_active(),
+            "an out-of-range digit leaves the mode open"
+        );
     }
 
     #[test]
