@@ -19,36 +19,82 @@ pub(super) fn emit_code(
     opts: &WrapOpts,
     out: &mut Vec<DisplayLine>,
 ) {
-    let gutter_w = lines.len().max(1).to_string().len();
-    let highlighted = highlight_code(lines, lang, opts.code_theme);
+    let (highlighted, lang_name) = highlight_code(lines, lang, opts.code_theme);
+    if opts.code_label
+        && let Some(name) = &lang_name
+    {
+        emit_label(name, width, code_idx, out);
+    }
+    // The gutter is optional; when off, code fills the full column with no numbers.
+    let gutter_w = if opts.code_line_numbers {
+        lines.len().max(1).to_string().len()
+    } else {
+        0
+    };
+    let cont = if opts.code_line_numbers {
+        format!("{:>gutter_w$}   ", "")
+    } else {
+        String::new()
+    };
     for (i, runs) in highlighted.into_iter().enumerate() {
-        let num = format!("{:>gutter_w$} │ ", i + 1);
+        let num = if opts.code_line_numbers {
+            format!("{:>gutter_w$} │ ", i + 1)
+        } else {
+            String::new()
+        };
         let avail = width.saturating_sub(display_width(&num)).max(1);
         if opts.code_wrap {
-            emit_wrapped_line(runs, &num, gutter_w, avail, width, code_idx, out);
+            emit_wrapped_line(runs, &num, &cont, avail, width, code_idx, out);
         } else {
             emit_panned_line(runs, num, opts.code_hscroll, avail, width, code_idx, out);
         }
     }
 }
 
-/// Soft-wrap one source line: it spills onto several rows, the gutter shown only
-/// on the first.
+/// A dim, right-aligned language tag at the top of the code panel. A `Code` line,
+/// so it inherits the muted code colour and the surface background.
+fn emit_label(name: &str, width: usize, code_idx: usize, out: &mut Vec<DisplayLine>) {
+    let tag = format!("{name} ");
+    let pad = width.saturating_sub(display_width(&tag));
+    let mut runs = Vec::new();
+    if pad > 0 {
+        runs.push(Run {
+            text: " ".repeat(pad),
+            style: Inline::default(),
+            fg: None,
+            anchor: None,
+        });
+    }
+    runs.push(Run {
+        text: tag,
+        style: Inline {
+            italic: true,
+            code: true,
+            ..Inline::default()
+        },
+        fg: None,
+        anchor: None,
+    });
+    pad_to_width(&mut runs, width);
+    out.push(DisplayLine {
+        runs,
+        kind: LineKind::Code(code_idx),
+    });
+}
+
+/// Soft-wrap one source line: it spills onto several rows, the gutter (`first`)
+/// shown only on the first, continuation rows using the blank `cont` gutter.
 fn emit_wrapped_line(
     runs: Vec<Run>,
-    num: &str,
-    gutter_w: usize,
+    first: &str,
+    cont: &str,
     avail: usize,
     width: usize,
     code_idx: usize,
     out: &mut Vec<DisplayLine>,
 ) {
     for (j, mut line_runs) in pack_runs(runs, avail).into_iter().enumerate() {
-        let gutter = if j == 0 {
-            num.to_string()
-        } else {
-            format!("{:>gutter_w$}   ", "")
-        };
+        let gutter = if j == 0 { first } else { cont }.to_string();
         let mut full = vec![Run {
             text: gutter,
             style: Inline::default(),
@@ -200,5 +246,47 @@ mod tests {
                 l.text()
             );
         }
+    }
+
+    #[test]
+    fn language_label_row_shown_when_enabled() {
+        let block = Block::Code {
+            lang: Some("rust".into()),
+            lines: vec!["fn main() {}".into()],
+        };
+        let opts = WrapOpts {
+            width: 40,
+            code_label: true,
+            ..Default::default()
+        };
+        let text = wrap_blocks(&[block], &opts, &[])
+            .iter()
+            .map(|l| l.text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Rust"), "a language tag is present: {text:?}");
+    }
+
+    #[test]
+    fn no_gutter_when_line_numbers_off() {
+        let block = Block::Code {
+            lang: Some("text".into()),
+            lines: vec!["x = 1".into()],
+        };
+        let opts = WrapOpts {
+            width: 40,
+            code_line_numbers: false,
+            ..Default::default()
+        };
+        let code: Vec<String> = wrap_blocks(&[block], &opts, &[])
+            .iter()
+            .filter(|l| matches!(l.kind, LineKind::Code(_)))
+            .map(|l| l.text())
+            .collect();
+        assert!(!code.is_empty());
+        assert!(
+            code.iter().all(|t| !t.contains('│')),
+            "no gutter bar when off: {code:?}"
+        );
     }
 }

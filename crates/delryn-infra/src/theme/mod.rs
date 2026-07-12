@@ -168,6 +168,17 @@ impl Theme {
         ))
     }
 
+    /// The syntect theme name to highlight code with. A concrete-background theme
+    /// trusts its configured pairing; the adaptive `auto` theme (no `bg` of its
+    /// own) picks a light syntect theme when the **detected** terminal background
+    /// is light, so code colours match the backdrop instead of forcing dark.
+    pub fn code_syntect(&self) -> &'static str {
+        if self.bg.is_none() && terminal_background().is_some_and(|bg| luma(bg) >= 128.0) {
+            return "InspiredGitHub";
+        }
+        self.syntect
+    }
+
     /// The (ink, paper) sRGB pair used to recolour monochrome/line-art images to
     /// match the theme. Terminal-relative colours (`Reset`, no `bg`) fall back to
     /// black ink on a white page — the publisher's intent — and the two are

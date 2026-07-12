@@ -174,6 +174,13 @@ impl App {
 
     /// Keys while the overlay is open.
     pub(crate) fn dup_resolve_key(&mut self, key: KeyEvent) {
+        // Standard vim list navigation over the group rows (j/k · Ctrl-d/u · g/G).
+        if let Overlay::DupResolve(dr) = &mut self.overlay
+            && let Some(ns) = crate::input::list_nav(key, dr.cursor, dr.rows().len(), 10)
+        {
+            dr.cursor = ns;
+            return;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
             // Re-run the (config-driven) auto-select.
@@ -189,17 +196,6 @@ impl App {
                     && let Some(path) = dr.selected_path()
                 {
                     reveal_in_file_manager(path);
-                }
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Overlay::DupResolve(dr) = &mut self.overlay {
-                    let last = dr.rows().len().saturating_sub(1);
-                    dr.cursor = (dr.cursor + 1).min(last);
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Overlay::DupResolve(dr) = &mut self.overlay {
-                    dr.cursor = dr.cursor.saturating_sub(1);
                 }
             }
             KeyCode::Char(' ') => self.dup_toggle_checked(),
@@ -309,19 +305,15 @@ impl App {
 
     /// Keys while the ignored-groups manager is open.
     pub(crate) fn ignored_view_key(&mut self, key: KeyEvent) {
+        // Standard vim list navigation (Ctrl-u for half-page; plain `u` restores).
+        if let Overlay::IgnoredView(v) = &mut self.overlay
+            && let Some(ns) = crate::input::list_nav(key, v.cursor, v.signatures.len(), 10)
+        {
+            v.cursor = ns;
+            return;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Overlay::IgnoredView(v) = &mut self.overlay {
-                    let last = v.signatures.len().saturating_sub(1);
-                    v.cursor = (v.cursor + 1).min(last);
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Overlay::IgnoredView(v) = &mut self.overlay {
-                    v.cursor = v.cursor.saturating_sub(1);
-                }
-            }
             // Restore (un-ignore) the selected group.
             KeyCode::Char('u') | KeyCode::Enter => self.ignored_restore_selected(),
             // Restore all.

@@ -43,10 +43,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let cell_h = images.map(|(p, _)| p.font_size().height).unwrap_or(20);
     reader.sync_graphical_math(math_on, cell_h, config.math_scale);
     let theme = config.theme;
-    reader.code_theme = theme.syntect.to_string();
+    reader.code_theme = theme.code_syntect().to_string();
     reader.line_spacing = config.line_spacing;
     reader.paragraph_spacing = config.paragraph_spacing;
     reader.code_wrap = config.code_wrap;
+    reader.code_line_numbers = config.code_line_numbers;
+    reader.code_label = config.code_language_label;
     reader.table_wrap = config.table_wrap;
     reader.justify = config.justify;
     reader.tidy_spacing = config.tidy_spacing;
@@ -692,6 +694,23 @@ fn line_decor<'a>(
             .filter(|(l, _)| *l == idx)
             .map(|(_, c)| c),
     }
+}
+
+/// Render display lines to styled ratatui lines with no decorations (no
+/// selection / search / highlight overlay) — for read-only panels such as the
+/// fullscreen code viewer. Reuses the per-run [`run_style`].
+pub(crate) fn plain_lines(lines: &[DisplayLine], theme: Theme) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .map(|line| {
+            Line::from(
+                line.runs
+                    .iter()
+                    .map(|r| Span::styled(r.text.clone(), run_style(r, line.kind, theme)))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
 }
 
 fn to_ratatui(line: &DisplayLine, theme: Theme, decor: &LineDecor) -> Line<'static> {

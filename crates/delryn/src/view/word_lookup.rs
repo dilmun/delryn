@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, LookupState, Overlay, WordLookup};
@@ -20,6 +20,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         || app.config.lookup_wikipedia
         || app.config.lookup_translate;
     let target = app.config.translate_to.clone();
+    let bold = app.config.bold_borders;
     let large = app.overlay_large;
     let area = super::overlay_rect(f.area(), large);
     let inner_w = area.width.saturating_sub(2) as usize;
@@ -36,10 +37,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     wl.scroll = wl.scroll.min(max_scroll);
 
     let title = super::truncate(&wl.word, inner_w.saturating_sub(6));
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::BorderFocus))
+    let block = super::overlay_frame(theme, bold)
         .title(Span::styled(
             format!(" 📖 {title} "),
             theme.style(Role::Title),

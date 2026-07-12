@@ -4,7 +4,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::{App, Overlay, fill_template};
 use crate::theme::Role;
@@ -14,6 +14,7 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     };
     let theme = app.config.theme;
+    let bold = app.config.bold_borders;
     let bg = theme.paper();
     let area = super::overlay_rect(f.area(), app.overlay_large);
     f.render_widget(Clear, area);
@@ -21,10 +22,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let n = br.targets.len();
     let books = if n == 1 { "book" } else { "books" };
     let title = format!(" Rename · {n} {books} ");
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::BorderFocus))
+    let block = super::overlay_frame(theme, bold)
         .title(Span::styled(title, theme.style(Role::Title)))
         .style(theme.style(Role::Body).bg(bg));
     let inner = block.inner(area);

@@ -12,8 +12,8 @@
 //! resolver while a duplicate is previewed in the reader.
 
 use crate::app::{
-    AnnotState, BulkRename, CollInput, DupResolve, IgnoredView, ImageViewer, MetaEdit, Palette,
-    Prompt, Settings, ShelfPicker, TagInput, WordLookup,
+    AnnotState, BulkRename, CodeView, CollInput, DupResolve, IgnoredView, ImageViewer, MetaEdit,
+    Palette, Prompt, Settings, ShelfPicker, TagInput, WordLookup,
 };
 use crate::library::stats::LibraryStats;
 
@@ -57,6 +57,8 @@ pub enum Overlay {
     Palette(Palette),
     /// Word-lookup panel (dictionary + Wikipedia) for the `K`-selected term.
     WordLookup(WordLookup),
+    /// Fullscreen code-block viewer (`O`): scrollable, copy-all.
+    CodeView(CodeView),
 }
 
 impl Overlay {

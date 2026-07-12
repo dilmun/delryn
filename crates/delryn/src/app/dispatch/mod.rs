@@ -111,6 +111,10 @@ impl App {
             self.word_lookup_key(key);
             return;
         }
+        if matches!(self.overlay, Overlay::CodeView(_)) {
+            self.code_view_key(key);
+            return;
+        }
         // The in-book search prompt is a focused text input: it must capture
         // every key (including shortcut letters like 'i' / ';' / ':') before any
         // global shortcut below gets a chance to fire.
@@ -131,6 +135,11 @@ impl App {
         }
         if self.mode == Mode::Reader && key.code == KeyCode::Char('i') {
             self.open_images();
+            return;
+        }
+        // `O` opens the code block in view in the fullscreen code viewer.
+        if self.mode == Mode::Reader && key.code == KeyCode::Char('O') {
+            self.open_code_view();
             return;
         }
         if key.code == KeyCode::Char(';') {

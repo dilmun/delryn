@@ -11,6 +11,31 @@ pub struct Pending {
     pub g: bool,
 }
 
+/// Standard vim navigation for any selectable list: the new selection index for
+/// `key`, or `None` if it isn't a nav key. `j/k` (and arrows) step and wrap;
+/// `Ctrl-d/Ctrl-u` and PageDown/PageUp move a half-page (`page` rows); `g`/Home
+/// and `G`/End jump to the ends. Shared by every list/overlay so navigation feels
+/// the same everywhere.
+pub fn list_nav(key: KeyEvent, sel: usize, len: usize, page: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let last = len - 1;
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let next = match key.code {
+        KeyCode::Char('j') | KeyCode::Down => (sel + 1).min(last),
+        KeyCode::Char('k') | KeyCode::Up => sel.saturating_sub(1),
+        KeyCode::Char('d') if ctrl => (sel + page).min(last),
+        KeyCode::Char('u') if ctrl => sel.saturating_sub(page),
+        KeyCode::PageDown => (sel + page).min(last),
+        KeyCode::PageUp => sel.saturating_sub(page),
+        KeyCode::Char('g') | KeyCode::Home => 0,
+        KeyCode::Char('G') | KeyCode::End => last,
+        _ => return None,
+    };
+    Some(next)
+}
+
 /// A semantic intent. `Down`/`Up` are routed by focus (scroll vs. select).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -181,6 +206,20 @@ mod tests {
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn list_nav_covers_the_vim_motions() {
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        assert_eq!(list_nav(key('j'), 0, 5, 3), Some(1));
+        assert_eq!(list_nav(key('j'), 4, 5, 3), Some(4)); // clamps at bottom
+        assert_eq!(list_nav(key('k'), 0, 5, 3), Some(0)); // clamps at top
+        assert_eq!(list_nav(ctrl('d'), 0, 10, 3), Some(3)); // half-page down
+        assert_eq!(list_nav(ctrl('u'), 1, 10, 3), Some(0)); // clamps at top
+        assert_eq!(list_nav(key('g'), 4, 5, 3), Some(0));
+        assert_eq!(list_nav(key('G'), 0, 5, 3), Some(4));
+        assert_eq!(list_nav(key('x'), 0, 5, 3), None); // not a nav key
+        assert_eq!(list_nav(key('j'), 0, 0, 3), None); // empty list
     }
 
     /// `G` jumps to the bottom; a count prefix turns it into an absolute

@@ -215,6 +215,11 @@ impl App {
             }
             return;
         }
+        // Standard vim list navigation over the collections + the "new" row.
+        if let Some(ns) = crate::input::list_nav(key, p.sel, p.new_row() + 1, 10) {
+            p.sel = ns;
+            return;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 // After a bulk filing, the selection has been consumed.
@@ -225,8 +230,6 @@ impl App {
                 }
                 self.refresh_library();
             }
-            KeyCode::Up | KeyCode::Char('k') => p.sel = p.sel.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => p.sel = (p.sel + 1).min(p.new_row()),
             KeyCode::Enter | KeyCode::Char(' ') => self.shelf_picker_activate(),
             _ => {}
         }

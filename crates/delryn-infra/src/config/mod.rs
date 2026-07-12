@@ -207,6 +207,10 @@ pub struct Config {
     /// Soft-wrap code blocks to the column (true) vs. keep lines intact and
     /// scroll horizontally (false).
     pub code_wrap: bool,
+    /// Show the line-number gutter in code blocks.
+    pub code_line_numbers: bool,
+    /// Show a language tag at the top of each code block (skipped for plain text).
+    pub code_language_label: bool,
     /// Word-wrap table cells to their column (true) vs. truncate with `…` (false).
     pub table_wrap: bool,
     /// Fully justify body text to the column width (true) vs. ragged-right /
@@ -235,6 +239,9 @@ pub struct Config {
     #[serde(skip)]
     pub focus_mode: bool,
     pub mouse_enabled: bool,
+    /// Draw overlay/popup windows with a bold, thick border (vs. a thin rounded
+    /// one), so they stand out clearly over the content.
+    pub bold_borders: bool,
     pub status: StatusFields,
     /// Max inline-image resolution (longest side, px). Caps the data sent to the
     /// terminal so big figures don't stall scrolling.
@@ -309,6 +316,8 @@ impl Default for Config {
             view_mode: ViewMode::Center,
             theme: theme::default_theme(),
             code_wrap: true,
+            code_line_numbers: true,
+            code_language_label: true,
             table_wrap: true,
             justify: false,
             tidy_spacing: true,
@@ -317,6 +326,7 @@ impl Default for Config {
             chapter_lock: false,
             show_sidebar: true,
             show_status: true,
+            bold_borders: true,
             focus_mode: false,
             mouse_enabled: true,
             status: StatusFields::default(),

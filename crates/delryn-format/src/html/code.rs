@@ -123,23 +123,122 @@ pub(super) fn trim_blank_edges(lines: impl Iterator<Item = String>) -> Vec<Strin
     v
 }
 
-/// Detect a code language from a `class="language-xxx"`/`lang-xxx` on the
-/// `<pre>` or its child `<code>`.
+/// Detect a code language from the common EPUB conventions on the `<pre>` or its
+/// child `<code>`: a `language-xxx`/`lang-xxx`/`highlight-source-xxx` class, a
+/// `data-lang`/`data-language` attribute, Pandoc's `sourceCode xxx`, or a bare
+/// single language class (`class="python"`). The token is best-effort — the
+/// highlighter validates it, so an unknown one just renders as plain text.
 pub(super) fn detect_lang(node: NodeRef<Node>) -> Option<String> {
-    fn from_class(class: &str) -> Option<String> {
-        class.split_whitespace().find_map(|c| {
-            c.strip_prefix("language-")
-                .or_else(|| c.strip_prefix("lang-"))
-                .map(|s| s.to_string())
-        })
-    }
     for n in node.descendants() {
-        if let Node::Element(e) = n.value()
-            && let Some(class) = e.attr("class")
+        let Node::Element(e) = n.value() else {
+            continue;
+        };
+        if let Some(l) = e.attr("data-lang").or_else(|| e.attr("data-language")) {
+            let l = l.trim();
+            if !l.is_empty() {
+                return Some(l.to_string());
+            }
+        }
+        if let Some(class) = e.attr("class")
             && let Some(lang) = from_class(class)
         {
             return Some(lang);
         }
     }
     None
+}
+
+/// Framework/style class words that must never be taken as a bare language token.
+const CLASS_NOISE: &[&str] = &[
+    "sourcecode",
+    "code",
+    "codeblock",
+    "highlight",
+    "highlighted",
+    "hljs",
+    "pre",
+    "prettyprint",
+    "block",
+    "listing",
+    "programlisting",
+    "screen",
+    "example",
+    "verbatim",
+    "literal",
+    "literallayout",
+    "snippet",
+    "numberlines",
+    "linenums",
+    "nohighlight",
+    "text",
+    "plain",
+    "monospace",
+    "mono",
+];
+
+/// Whether a class token plausibly names a programming language (not framework
+/// noise): at least two chars, alphanumeric plus the `+ # -` used by `c++`/`c#`.
+fn plausible_lang(c: &str) -> bool {
+    c.len() >= 2
+        && !CLASS_NOISE.iter().any(|n| n.eq_ignore_ascii_case(c))
+        && c.chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '#' | '-'))
+}
+
+/// Pull a language token out of a `class` attribute (see [`detect_lang`]).
+fn from_class(class: &str) -> Option<String> {
+    let tokens: Vec<&str> = class.split_whitespace().collect();
+    // 1. Explicit language prefixes (CommonMark / highlight.js / GitHub / Rouge).
+    for c in &tokens {
+        if let Some(l) = c
+            .strip_prefix("language-")
+            .or_else(|| c.strip_prefix("lang-"))
+            .or_else(|| c.strip_prefix("highlight-source-"))
+            && !l.is_empty()
+        {
+            return Some(l.to_string());
+        }
+    }
+    // 2. Else the single token that plausibly names a language, with the rest
+    //    being framework noise (Pandoc's `sourceCode`, `hljs`, `highlight`, …).
+    //    A genuinely ambiguous multi-language class is left to first-line detection.
+    let cands: Vec<&str> = tokens
+        .iter()
+        .copied()
+        .filter(|c| plausible_lang(c))
+        .collect();
+    (cands.len() == 1).then(|| cands[0].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::from_class;
+
+    #[test]
+    fn detects_language_across_conventions() {
+        // CommonMark / highlight.js prefix.
+        assert_eq!(from_class("language-python").as_deref(), Some("python"));
+        assert_eq!(from_class("lang-rust").as_deref(), Some("rust"));
+        assert_eq!(from_class("hljs language-js").as_deref(), Some("js"));
+        // GitHub source prefix.
+        assert_eq!(
+            from_class("highlight-source-python").as_deref(),
+            Some("python")
+        );
+        // Pandoc: sourceCode + language token.
+        assert_eq!(from_class("sourceCode python").as_deref(), Some("python"));
+        // Bare single language class.
+        assert_eq!(from_class("python").as_deref(), Some("python"));
+        assert_eq!(from_class("rust highlight").as_deref(), Some("rust"));
+        assert_eq!(from_class("c++").as_deref(), Some("c++"));
+    }
+
+    #[test]
+    fn ignores_non_language_classes() {
+        assert_eq!(from_class("code"), None);
+        assert_eq!(from_class("highlight hljs"), None);
+        assert_eq!(from_class(""), None);
+        // Ambiguous (two plausible tokens) → leave it to first-line detection.
+        assert_eq!(from_class("python ruby"), None);
+    }
 }

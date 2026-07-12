@@ -5,9 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
-};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui_image::{FontSize, Resize, StatefulImage};
 
 use crate::app::{App, Overlay};
@@ -15,6 +13,7 @@ use crate::theme::Role;
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.config.theme;
+    let bold = app.config.bold_borders;
     let policy = crate::media::RenderPolicy {
         tint: super::theme_ink(theme),
         mode: app.config.image_mode,
@@ -62,10 +61,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         " ↑↓ select · ⏎ go · / filter · w chapter/book · m mode · c copy · s save · Esc "
             .to_string()
     };
-    let mut block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::BorderFocus))
+    let mut block = super::overlay_frame(theme, bold)
         .title(Span::styled(title, theme.style(Role::Title)))
         .title_bottom(Line::from(Span::styled(footer, theme.style(Role::Muted))))
         .style(theme.style(Role::Body).bg(bg));
@@ -86,29 +82,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // narrow screen so the figure keeps the room (shared app-standard split).
     let (sidebar, right) = super::sidebar_split(inner, 30, 24, 40, 50);
 
-    // The book's own chapter label, made presentable: a bare number gets a
-    // "Chapter " prefix; a label that already names the chapter is shown as-is
-    // (so we never double "Chapter Chapter 7").
-    let chapter_label = |sec: usize| -> String {
-        let label = reader
-            .and_then(|r| {
-                r.outline
-                    .iter()
-                    .find(|e| e.section == sec)
-                    .map(|e| e.label.clone())
-            })
-            .unwrap_or_default();
-        let t = label.trim();
-        if t.is_empty() {
-            format!("§{}", sec + 1)
-        } else if t.chars().all(|c| c.is_ascii_digit()) {
-            format!("Chapter {t}")
-        } else {
-            t.to_string()
-        }
-    };
-
-    // Sidebar: the filtered figure list (skipped when collapsed on a narrow pane).
+    // Sidebar: figures grouped by chapter with a sticky chapter header — exactly
+    // like the code viewer (shared `grouped_sidebar`). Skipped when collapsed.
     if let Some(sidebar) = sidebar {
         if viewer.is_empty() {
             f.render_widget(
@@ -116,38 +91,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 sidebar,
             );
         } else {
-            let items: Vec<ListItem> = viewer
+            let items: Vec<(usize, &str)> = viewer
                 .visible()
-                .map(|(_, fig)| {
-                    Line::from(vec![
-                        Span::styled(format!("§{} ", fig.section + 1), theme.style(Role::Muted)),
-                        Span::styled(fig.name.clone(), theme.style(Role::Body)),
-                    ])
-                    .into()
-                })
+                .map(|(_, fig)| (fig.section, fig.name.as_str()))
                 .collect();
-            let count = items.len();
-            let list = List::new(items).highlight_style(theme.style(Role::Selection));
-            let mut st = ListState::default();
-            st.select(Some(viewer.sel));
-            crate::view::round_list(f, sidebar, list, &mut st, theme);
-            // Figure rows for click hit-testing: round_list insets one column each
-            // side, and the visible-list index is exactly `viewer.sel`'s space.
-            let off = st.offset();
-            let vis_h = sidebar.height as usize;
-            let mut hits: Vec<(usize, Rect)> = Vec::new();
-            for i in off..(off + vis_h).min(count) {
-                hits.push((
-                    i,
-                    Rect {
-                        x: sidebar.x + 1,
-                        y: sidebar.y + (i - off) as u16,
-                        width: sidebar.width.saturating_sub(2),
-                        height: 1,
-                    },
-                ));
-            }
-            mouse.overlay_rows = hits;
+            mouse.overlay_rows =
+                super::grouped_sidebar(f, sidebar, &items, viewer.sel, true, reader, theme);
         }
     }
 
@@ -181,7 +130,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // when the figure has one — no synthetic "Figure N"). Dimensions live in the
     // title badge.
     let mut dlines = vec![Line::from(Span::styled(
-        chapter_label(section),
+        super::chapter_label(reader, section),
         Style::default().fg(theme.color(Role::Heading)),
     ))];
     if !caption.is_empty() {
