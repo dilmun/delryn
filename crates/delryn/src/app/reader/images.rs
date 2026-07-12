@@ -14,7 +14,13 @@ use crate::media::{ImageBuilder, ImagePlan, ImgKey};
 /// layer's sizing intent. A caption is the reliable figure/table-vs-equation
 /// signal: figures and tables are captioned and normalize to the column band;
 /// equation pictures are uncaptioned and stay text-proportional.
-fn size_spec(width: delryn_model::ImageWidth, math: bool, captioned: bool) -> media::SizeSpec {
+fn size_spec(
+    width: delryn_model::ImageWidth,
+    math: bool,
+    captioned: bool,
+    alt_math: bool,
+    ink: Option<delryn_model::InkProfile>,
+) -> media::SizeSpec {
     let hint = match width {
         delryn_model::ImageWidth::Auto => media::SizeHint::Auto,
         delryn_model::ImageWidth::Pct(p) => media::SizeHint::Pct(p),
@@ -25,6 +31,17 @@ fn size_spec(width: delryn_model::ImageWidth, math: bool, captioned: bool) -> me
         hint,
         math,
         captioned,
+        alt_math,
+        // Cross the crate boundary: the content model's dependency-free profile
+        // becomes the media crate's (mirrors ImageWidth -> SizeHint above).
+        ink: ink.map(|p| media::InkProfile {
+            x0: p.x0,
+            y0: p.y0,
+            x1: p.x1,
+            y1: p.y1,
+            line_px: p.line_px,
+            line_count: p.line_count,
+        }),
     }
 }
 
@@ -39,7 +56,7 @@ pub struct ImageGeom {
     pub max_rows: u16,
     pub max_px: u16,
     pub width_pct: u16,
-    pub eq_scale: u16,
+    pub math_scale: u16,
     pub fit_mode: media::ImageFit,
     pub policy: media::RenderPolicy,
 }
@@ -111,7 +128,7 @@ impl Reader {
             geom.max_rows,
             geom.max_px,
             geom.width_pct,
-            geom.eq_scale,
+            geom.math_scale,
             geom.fit_mode,
         );
         if self.images.images_key != key || self.images.policy != geom.policy {
@@ -170,13 +187,21 @@ impl Reader {
         for block in blocks {
             if let Block::Image {
                 data,
+                alt,
                 math,
                 width,
                 caption,
+                ink,
                 ..
             } = block
             {
-                let spec = size_spec(*width, *math, !caption.is_empty());
+                let spec = size_spec(
+                    *width,
+                    *math,
+                    !caption.is_empty(),
+                    delryn_model::math::is_math(alt),
+                    *ink,
+                );
                 let key = ImgKey {
                     section,
                     idx,
@@ -184,7 +209,7 @@ impl Reader {
                     max_rows: geom.max_rows,
                     max_px: geom.max_px,
                     target_pct: geom.width_pct,
-                    eq_scale: geom.eq_scale,
+                    math_scale: geom.math_scale,
                     fit_mode: geom.fit_mode,
                     policy: geom.policy,
                 };
@@ -195,7 +220,7 @@ impl Reader {
                     rows: geom.max_rows,
                     max_px: geom.max_px,
                     target_pct: geom.width_pct,
-                    eq_scale: geom.eq_scale,
+                    math_scale: geom.math_scale,
                     fit_mode: geom.fit_mode,
                 };
                 let rows = if data.is_empty() {
@@ -230,13 +255,21 @@ impl Reader {
         for block in &self.blocks {
             if let Block::Image {
                 data,
+                alt,
                 math,
                 width,
                 caption,
+                ink,
                 ..
             } = block
             {
-                let spec = size_spec(*width, *math, !caption.is_empty());
+                let spec = size_spec(
+                    *width,
+                    *math,
+                    !caption.is_empty(),
+                    delryn_model::math::is_math(alt),
+                    *ink,
+                );
                 let key = ImgKey {
                     section: self.section,
                     idx,
@@ -244,7 +277,7 @@ impl Reader {
                     max_rows: geom.max_rows,
                     max_px: geom.max_px,
                     target_pct: geom.width_pct,
-                    eq_scale: geom.eq_scale,
+                    math_scale: geom.math_scale,
                     fit_mode: geom.fit_mode,
                     policy: geom.policy,
                 };
@@ -255,7 +288,7 @@ impl Reader {
                     rows: geom.max_rows,
                     max_px: geom.max_px,
                     target_pct: geom.width_pct,
-                    eq_scale: geom.eq_scale,
+                    math_scale: geom.math_scale,
                     fit_mode: geom.fit_mode,
                 };
                 // Reserve the stable decode estimate — deliberately not the built
@@ -348,9 +381,11 @@ impl Reader {
         for block in blocks {
             if let Block::Image {
                 data,
+                alt,
                 math,
                 width,
                 caption,
+                ink,
                 ..
             } = block
             {
@@ -362,7 +397,7 @@ impl Reader {
                         max_rows: geom.max_rows,
                         max_px: geom.max_px,
                         target_pct: geom.width_pct,
-                        eq_scale: geom.eq_scale,
+                        math_scale: geom.math_scale,
                         fit_mode: geom.fit_mode,
                         policy: geom.policy,
                     };
@@ -373,7 +408,13 @@ impl Reader {
                         requests.push((
                             key,
                             data.clone(),
-                            size_spec(*width, *math, !caption.is_empty()),
+                            size_spec(
+                                *width,
+                                *math,
+                                !caption.is_empty(),
+                                delryn_model::math::is_math(alt),
+                                *ink,
+                            ),
                         ));
                         budget -= 1;
                         if budget == 0 {

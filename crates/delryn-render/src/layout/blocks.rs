@@ -392,6 +392,7 @@ mod tests {
             caption: vec![Span::plain("Figure 1: the pipeline")],
             math: false,
             width: delryn_model::ImageWidth::Auto,
+            ink: None,
         };
         // No image protocol (image_rows empty) → text placeholder + caption.
         let lines = texts(&wrap_blocks(&[block], &WrapOpts::default(), &[]));
@@ -411,6 +412,7 @@ mod tests {
             caption: vec![Span::plain("Figure 1")],
             math: false,
             width: delryn_model::ImageWidth::Auto,
+            ink: None,
         };
         let opts = WrapOpts {
             width: 40,

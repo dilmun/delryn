@@ -303,6 +303,7 @@ impl Reader {
         let mut sections = SectionCache::new(doc.loader(), start);
         let mut first = doc.load_section(start).unwrap_or_default().blocks;
         math::convert_math_blocks(&mut first);
+        math::profile_equation_images(&mut first);
         sections.sections.insert(start, first.clone());
 
         // Paged (PDF) documents get an off-thread rasterizer for the viewport-
@@ -426,6 +427,7 @@ impl Reader {
             .map(|s| s.blocks)
             .unwrap_or_default();
         math::convert_math_blocks(&mut blocks);
+        math::profile_equation_images(&mut blocks);
         self.sections.sections.insert(section, blocks.clone());
         blocks
     }
@@ -1430,6 +1432,45 @@ mod tests {
         r
     }
 
+    /// The "Math size %" knob must actually resize rendered equations: lowering the
+    /// scale re-renders the equation smaller (regression for the size knob).
+    #[test]
+    fn math_scale_resizes_rendered_equations() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_mscale_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        // SAFETY: serialised by `_env`; scopes the math cache dir to this test.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+
+        let mut r = reader_with(vec![Block::Math {
+            unicode: "x".into(),
+            latex: Some("\\frac{x^2}{y}".into()),
+        }]);
+        let dims = |r: &mut Reader| -> (u32, u32) {
+            r.fetch_blocks(0)
+                .iter()
+                .find_map(|b| match b {
+                    Block::Image {
+                        data, math: true, ..
+                    } => crate::media::image_dimensions(data),
+                    _ => None,
+                })
+                .expect("a rendered math image")
+        };
+
+        r.sync_graphical_math(true, 16, 100);
+        let big = dims(&mut r);
+        r.sync_graphical_math(true, 16, 50);
+        let small = dims(&mut r);
+        r.sync_graphical_math(false, 16, 100); // reset ENABLED so it doesn't leak
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(
+            small.1 < big.1,
+            "50% math size must render shorter than 100%: {small:?} vs {big:?}"
+        );
+    }
+
     #[test]
     fn toc_locator_prefers_heading_over_listing() {
         // A single-section book with an on-page "Table of Contents" lists chapter
@@ -1627,7 +1668,7 @@ mod tests {
             max_rows: 20,
             max_px: 0,
             target_pct: 85,
-            eq_scale: 100,
+            math_scale: 100,
             fit_mode: ImageFit::default(),
             policy: RenderPolicy {
                 tint: Ink {
@@ -1765,6 +1806,7 @@ mod tests {
             caption: Vec::new(),
             math: false,
             width: delryn_model::ImageWidth::Full,
+            ink: None,
         }]
     }
 
@@ -2425,6 +2467,7 @@ mod tests {
             caption: Vec::new(),
             math: false,
             width: delryn_model::ImageWidth::Auto,
+            ink: None,
         }
     }
 
@@ -2449,7 +2492,7 @@ mod tests {
             max_rows: 40,
             max_px: 0,
             width_pct: 85,
-            eq_scale: 100,
+            math_scale: 100,
             fit_mode: media::ImageFit::default(),
             policy: media::RenderPolicy {
                 tint: media::Ink {
