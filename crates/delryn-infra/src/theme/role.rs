@@ -35,6 +35,10 @@ pub enum Role {
     Muted,
     /// Display equation (accented like a heading).
     Math,
+    /// Inline math set within a line of prose: the body ink nudged subtly toward the
+    /// math accent and italicised, so an equation reads as distinct from the text
+    /// around it without shouting — the natural terminal-font math look.
+    MathInline,
 
     // ── Chrome (frames, titles, hints) ───────────────────────────────────
     /// Pane / popup border.
@@ -104,6 +108,13 @@ pub(super) fn resolve(t: &Theme, role: Role) -> Resolved {
         Marker => plain(t.marker),
         Muted => plain(t.muted),
         Math => plain(t.heading),
+        // Body ink nudged toward the math accent (falling back to plain body when the
+        // theme's colours aren't concrete RGB), italic — a subtle, un-bold contrast.
+        MathInline => Resolved {
+            fg: Some(t.math_ink().unwrap_or(t.fg)),
+            bg: None,
+            modifier: Modifier::ITALIC,
+        },
 
         Border => plain(t.muted),
         BorderFocus => plain(t.accent),
@@ -155,6 +166,24 @@ mod tests {
         let b = DARK.style(Role::Body);
         assert_eq!(b.fg, Some(DARK.fg));
         assert!(b.add_modifier.is_empty());
+    }
+
+    #[test]
+    fn inline_math_is_italic_with_a_subtle_tint() {
+        let s = DARK.style(Role::MathInline);
+        assert!(
+            s.add_modifier.contains(Modifier::ITALIC),
+            "inline math is italic — the natural terminal-font math look"
+        );
+        // A subtle nudge of the body ink toward the math accent: a distinct colour,
+        // but neither the plain body nor the full heading accent.
+        let tint = s.fg.expect("inline math carries a foreground");
+        assert_eq!(tint, DARK.math_ink().unwrap());
+        assert_ne!(tint, DARK.fg, "nudged off the plain body ink");
+        assert_ne!(
+            tint, DARK.heading,
+            "…but only part-way to the heading accent"
+        );
     }
 
     #[test]

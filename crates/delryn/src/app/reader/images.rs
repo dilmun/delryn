@@ -25,6 +25,7 @@ fn size_spec(
         delryn_model::ImageWidth::Auto => media::SizeHint::Auto,
         delryn_model::ImageWidth::Pct(p) => media::SizeHint::Pct(p),
         delryn_model::ImageWidth::Px(px) => media::SizeHint::Px(px),
+        delryn_model::ImageWidth::Em(em) => media::SizeHint::Em(em),
         delryn_model::ImageWidth::Full => media::SizeHint::Full,
     };
     media::SizeSpec {
@@ -32,6 +33,9 @@ fn size_spec(
         math,
         captioned,
         alt_math,
+        // Block figures/equations are never the inline (mid-line) kind; inline math
+        // builds its own `SizeSpec` in `remap_inline_math`.
+        inline: false,
         // Cross the crate boundary: the content model's dependency-free profile
         // becomes the media crate's (mirrors ImageWidth -> SizeHint above).
         ink: ink.map(|p| media::InkProfile {
@@ -86,7 +90,8 @@ impl Reader {
         //    Touch them first so the eviction victims are the off-screen prefetch
         //    entries. (An evicted image also rebuilds with a fresh protocol whose
         //    transmit flag is reset, causing a re-transmit flicker.)
-        let visible: Vec<ImgKey> = self.images.section_images.values().copied().collect();
+        let mut visible: Vec<ImgKey> = self.images.section_images.values().copied().collect();
+        visible.extend(self.images.section_inline.values().copied());
         for k in &visible {
             self.images.cache.get(k);
         }
@@ -135,6 +140,7 @@ impl Reader {
             self.images.images_key = key;
             self.images.policy = geom.policy;
             self.remap_section_images(builder, picker, geom);
+            self.remap_inline_math(builder, picker, geom);
         }
 
         // 4. Pre-build neighbouring sections' images once the current one is ready.
@@ -203,6 +209,7 @@ impl Reader {
                     *ink,
                 );
                 let key = ImgKey {
+                    kind: media::ImgSlot::Figure,
                     section,
                     idx,
                     avail: geom.avail,
@@ -271,6 +278,7 @@ impl Reader {
                     *ink,
                 );
                 let key = ImgKey {
+                    kind: media::ImgSlot::Figure,
                     section: self.section,
                     idx,
                     avail: geom.avail,
@@ -338,6 +346,103 @@ impl Reader {
         }
     }
 
+    /// Map the current section's **inline** math runs (the atoms `convert_inline_math`
+    /// rendered) to cache keys, estimate each atom's reserved cell width for the
+    /// wrapper (`inline_cols`, keyed by the run's section-local id), and request any
+    /// builds not already cached / in-flight. The inline analogue of
+    /// [`remap_section_images`], in its own [`media::ImgSlot::InlineMath`] index space
+    /// so a figure's `idx` and an equation's `id` never collide. The `id` is the one
+    /// `convert_inline_math` stamped on the run, so the width estimate here, the
+    /// wrapper's atom reservation, and the draw all agree. Called right after
+    /// `remap_section_images` (which sized the cache to the figures); this grows it
+    /// again to fit the inline equations too.
+    fn remap_inline_math(&mut self, builder: &ImageBuilder, picker: &Picker, geom: ImageGeom) {
+        let fs = picker.font_size();
+        let (fw, fh) = (fs.width, fs.height);
+        let spec = media::SizeSpec {
+            inline: true,
+            math: true,
+            ..Default::default()
+        };
+        let fit = media::FitBox {
+            fw,
+            fh,
+            cols: geom.avail,
+            rows: geom.max_rows,
+            max_px: geom.max_px,
+            target_pct: geom.width_pct,
+            math_scale: geom.math_scale,
+            fit_mode: geom.fit_mode,
+        };
+        let mut section_inline = HashMap::new();
+        let mut cols_by_id: Vec<u16> = Vec::new();
+        let mut rows_by_id: Vec<u16> = Vec::new();
+        let mut requests: Vec<(ImgKey, Vec<u8>)> = Vec::new();
+        for block in &self.blocks {
+            let spans = match block {
+                Block::Para { spans, .. } | Block::Heading { spans, .. } => spans,
+                _ => continue,
+            };
+            for span in spans {
+                let Some(delryn_model::SpanMath::Raster { id, png }) = &span.math else {
+                    continue;
+                };
+                let key = ImgKey {
+                    kind: media::ImgSlot::InlineMath,
+                    section: self.section,
+                    idx: *id,
+                    avail: geom.avail,
+                    max_rows: geom.max_rows,
+                    max_px: geom.max_px,
+                    target_pct: geom.width_pct,
+                    math_scale: geom.math_scale,
+                    fit_mode: geom.fit_mode,
+                    policy: geom.policy,
+                };
+                // The atom's reserved width *and height* — the same `target_cells` the
+                // build uses, so the wrapper's reservation (columns, and a spacer row
+                // for a two-row fraction) matches the drawn raster exactly.
+                let (cols, rows) = media::image_dimensions(png)
+                    .map(|(w, h)| media::target_cells(w, h, fit, spec))
+                    .unwrap_or((0, 1));
+                if *id >= cols_by_id.len() {
+                    cols_by_id.resize(*id + 1, 0);
+                    rows_by_id.resize(*id + 1, 1);
+                }
+                cols_by_id[*id] = cols;
+                rows_by_id[*id] = rows;
+                section_inline.insert(*id, key);
+                if cols > 0
+                    && !self.images.cache.contains(&key)
+                    && !self.images.requested.contains(&key)
+                    && !self.images.failed.contains(&key)
+                {
+                    requests.push((key, png.clone()));
+                }
+            }
+        }
+        self.images.section_inline = section_inline;
+        self.images.inline_cols = cols_by_id;
+        self.images.inline_rows = rows_by_id;
+        // Grow the cache so the section's figures *and* inline equations all fit,
+        // keeping `IMAGE_CACHE_CAP` spare for neighbour prefetch (grow only).
+        let needed = self
+            .images
+            .section_images
+            .len()
+            .saturating_add(self.images.section_inline.len())
+            .saturating_add(IMAGE_CACHE_CAP);
+        if self.images.cache.cap().get() < needed
+            && let Some(cap) = NonZeroUsize::new(needed)
+        {
+            self.images.cache.resize(cap);
+        }
+        for (k, bytes) in requests {
+            self.images.requested.insert(k);
+            builder.request(k, bytes, spec);
+        }
+    }
+
     /// Build adjacent sections' images ahead of time (from already-prefetched
     /// blocks) so a page turn / chapter crossing is instant. Never forces a load.
     fn prefetch_neighbor_images(&mut self, builder: &ImageBuilder, geom: ImageGeom) {
@@ -391,6 +496,7 @@ impl Reader {
             {
                 if !data.is_empty() {
                     let key = ImgKey {
+                        kind: media::ImgSlot::Figure,
                         section,
                         idx,
                         avail: geom.avail,
@@ -437,6 +543,18 @@ impl Reader {
         self.images.cache.peek(key)
     }
 
+    /// Look up a built plan for the current section's inline-math atom `id` — the
+    /// small equation raster the reader paints over the atom's reserved cells.
+    pub fn inline_math_plan(&self, id: usize) -> Option<&ImagePlan> {
+        let key = self.images.section_inline.get(&id)?;
+        self.images.cache.peek(key)
+    }
+
+    /// The current section's inline-math atom widths (by id), for the wrapper.
+    pub fn inline_math_cols(&self) -> &[u16] {
+        &self.images.inline_cols
+    }
+
     /// The built plan for a specific cache key — a *following* section's image in
     /// continuous mode (see [`Reader::continuous_following_images`]). Peek (no LRU
     /// touch); `None` until it's built.
@@ -460,7 +578,13 @@ impl Reader {
     /// on terminals that ignore a re-transmit of the same id (Ghostty #6711), and
     /// `images_pending()` keeps the loop drawing until they land — no keypress needed.
     pub fn restage_visible_images(&mut self) {
-        let keys: Vec<ImgKey> = self.images.section_images.values().copied().collect();
+        let keys: Vec<ImgKey> = self
+            .images
+            .section_images
+            .values()
+            .chain(self.images.section_inline.values())
+            .copied()
+            .collect();
         for k in keys {
             if let Some(plan) = self.images.cache.pop(&k)
                 && let Some(id) = plan.image_id()
@@ -475,18 +599,25 @@ impl Reader {
         self.images.images_key.0 = usize::MAX;
     }
 
-    /// Are any of the current section's images still building (so the loop
-    /// should keep redrawing until they pop in)?
+    /// Are any of the current section's images (figures or inline equations) still
+    /// building (so the loop should keep redrawing until they pop in)?
     pub fn images_pending(&self) -> bool {
-        self.images
+        let unbuilt =
+            |k: &ImgKey| !self.images.cache.contains(k) && !self.images.failed.contains(k);
+        let figures = self
+            .images
             .rows_estimate
             .iter()
             .enumerate()
-            .any(|(i, &rows)| {
-                rows > 0
-                    && self.images.section_images.get(&i).is_some_and(|k| {
-                        !self.images.cache.contains(k) && !self.images.failed.contains(k)
-                    })
-            })
+            .any(|(i, &rows)| rows > 0 && self.images.section_images.get(&i).is_some_and(unbuilt));
+        let inline = self
+            .images
+            .inline_cols
+            .iter()
+            .enumerate()
+            .any(|(id, &cols)| {
+                cols > 0 && self.images.section_inline.get(&id).is_some_and(unbuilt)
+            });
+        figures || inline
     }
 }

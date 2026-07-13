@@ -246,11 +246,12 @@ fn is_block(node: NodeRef<Node>) -> bool {
         // `<span>`s: author · title · DOI link) — lay it out on its own line so the
         // parts don't concatenate. Its content recurses as a `Container`.
         Node::Element(e) if class_is_block_display(e) => true,
-        // Real figure/cover images render block-level; math/icon images stay
-        // inline (handled in collect_inline).
+        // Math — a native `<math>` or a rasterised equation image: block iff the
+        // display classifier says so (display attr / displaystyle / container class
+        // / delimiter / standalone); inline math is handled in collect_inline.
+        Node::Element(_) if is_math_node(node) => math_is_display(node),
+        // Real figure/cover images render block-level; icon images stay inline.
         Node::Element(e) if matches!(e.name(), "img" | "image") => is_real_image(e),
-        // Display (block) MathML is a block; inline math stays inline.
-        Node::Element(e) if is_math_element(e) => is_display_math(e),
         Node::Element(e) => matches!(
             e.name(),
             "p" | "div"
@@ -351,16 +352,6 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 out.push(Block::Footnote { id, label, blocks });
             }
         }
-        ElementRole::DisplayMathImage(src, alt) => out.push(Block::Image {
-            src,
-            alt,
-            data: Vec::new(),
-            caption: Vec::new(),
-            math: true,
-            // Equation images render at native size, so the authored width is moot.
-            width: ImageWidth::Auto,
-            ink: None, // measured later, off-thread, by the reader
-        }),
         ElementRole::CodeBlock => {
             let lines = strip_line_numbers(trim_blank_edges(code_lines(node).into_iter()));
             if !lines.is_empty() {
@@ -370,10 +361,33 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 });
             }
         }
-        ElementRole::DisplayMath => {
-            let (unicode, latex) = native_math(node);
-            if !unicode.trim().is_empty() {
-                out.push(Block::Math { unicode, latex });
+        ElementRole::DisplayMath(mb) => {
+            // Prefer delryn's crisp RaTeX render from the recovered LaTeX (Style::
+            // Display, no inline height gate). No LaTeX (MathML-only alt, or a bare
+            // equation image) → the publisher's rendered image; else the centred
+            // Unicode approximation. The fallback is never worse than before.
+            if let Some(latex) = mb.latex.filter(|l| !l.trim().is_empty()) {
+                out.push(Block::Math {
+                    unicode: mb.unicode,
+                    latex: Some(latex),
+                });
+            } else if let Some(src) = mb.img_src.filter(|s| !s.is_empty()) {
+                out.push(Block::Image {
+                    src,
+                    alt: mb.unicode,
+                    data: Vec::new(),
+                    caption: Vec::new(),
+                    math: true,
+                    // The raster's authored `em` width (its text-relative size) sizes it
+                    // to the prose — DPI-independent, so it never renders out of scale.
+                    width: mb.width,
+                    ink: None, // measured later, off-thread, by the reader
+                });
+            } else if !mb.unicode.trim().is_empty() {
+                out.push(Block::Math {
+                    unicode: mb.unicode,
+                    latex: None,
+                });
             }
         }
         ElementRole::Heading(level) => {
@@ -513,7 +527,7 @@ fn figure_caption_spans(figure: NodeRef<Node>) -> Vec<Span> {
 /// The authored display width of an `<img>`, from its inline CSS `width` (which
 /// wins) or its presentational `width` attribute. This is the publisher's
 /// *intended* size; the renderer prefers it over the file's pixel resolution.
-fn parse_img_width(width_attr: Option<&str>, style_attr: Option<&str>) -> ImageWidth {
+pub(super) fn parse_img_width(width_attr: Option<&str>, style_attr: Option<&str>) -> ImageWidth {
     if let Some(style) = style_attr
         && let Some(w) = css_width(style)
     {
@@ -535,9 +549,9 @@ fn css_width(style: &str) -> Option<ImageWidth> {
     None
 }
 
-/// Parse a CSS/HTML length: `80%` → a column fraction, `600`/`600px` → pixels.
-/// Other units (em/pt/…) are too context-dependent to map reliably, so they fall
-/// back to [`ImageWidth::Auto`] (normalized like an unsized image).
+/// Parse a CSS/HTML length: `80%` → a column fraction, `7.88em`/`rem` → a font-
+/// relative (text) width, `600`/`600px` → pixels. Other units (pt/…) are too
+/// context-dependent to map reliably, so they fall back to [`ImageWidth::Auto`].
 fn parse_len(s: &str) -> ImageWidth {
     let s = s.trim();
     if let Some(pct) = s
@@ -545,6 +559,16 @@ fn parse_len(s: &str) -> ImageWidth {
         .and_then(|n| n.trim().parse::<f32>().ok())
     {
         return ImageWidth::Pct((pct / 100.0).clamp(0.0, 1.0));
+    }
+    // Font-relative width: the publisher's text-relative size — the reliable, DPI-
+    // independent hint for sizing an equation raster to the surrounding text.
+    if let Some(em) = s
+        .strip_suffix("rem")
+        .or_else(|| s.strip_suffix("em"))
+        .and_then(|n| n.trim().parse::<f32>().ok())
+        && em > 0.0
+    {
+        return ImageWidth::Em(em);
     }
     let n = s.strip_suffix("px").unwrap_or(s).trim();
     match n.parse::<f32>() {
@@ -747,6 +771,7 @@ fn bold_spans(spans: Vec<Span>) -> Vec<Span> {
                 ..s.style
             },
             anchor: s.anchor,
+            math: s.math,
         })
         .collect()
 }

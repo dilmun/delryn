@@ -12,7 +12,7 @@ pub mod tags;
 pub mod toc;
 
 pub use content::{
-    Anchor, Block, CalloutKind, ImageWidth, InkProfile, Inline, Section, Span, TableCell,
+    Anchor, Block, CalloutKind, ImageWidth, InkProfile, Inline, Section, Span, SpanMath, TableCell,
     find_footnote,
 };
 pub use metadata::Metadata;

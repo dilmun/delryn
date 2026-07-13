@@ -486,6 +486,7 @@ mod tests {
                 style: Inline::default(),
                 fg: None,
                 anchor: None,
+                math: None,
             }],
             kind: LineKind::Body,
         }

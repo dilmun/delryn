@@ -428,7 +428,10 @@ impl Reader {
             .unwrap_or_default();
         // A following section folds by default: the per-block overrides are the
         // anchor section's local indices, so they don't carry here.
-        let lines = self.wrap_at_with_rows(&blocks, self.last_measure.max(1), &rows, &[]);
+        // A following continuous section reserves no inline-math atom widths (the
+        // reader only draws the anchor's inline math), so its equations show as their
+        // Unicode fallback until it becomes the anchor.
+        let lines = self.wrap_at_with_rows(&blocks, self.last_measure.max(1), &rows, &[], &[], &[]);
         self.cont_cache.insert(s, lines.clone());
         Some(lines)
     }

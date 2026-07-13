@@ -14,11 +14,24 @@ use crate::decode::decode;
 use crate::recolor::{RenderPolicy, render_for_theme};
 use crate::sizing::{FitBox, SizeSpec, target_cells};
 
+/// Which per-section index space a built image belongs to, so a figure's `idx` and
+/// an inline equation's `id` — both section-local and both starting at 0 — never
+/// collide in the shared cache.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ImgSlot {
+    /// A block-level figure / equation raster (row-reserving).
+    Figure,
+    /// A small inline equation drawn mid-line.
+    InlineMath,
+}
+
 /// Identifies one built image so it can be cached and reused across sections
 /// (revisiting a section reuses the already-uploaded image — no re-transmit).
 /// Equal keys ⇒ identical build, so they share one cache entry.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImgKey {
+    /// Which index space `idx` counts in (figures vs. inline math).
+    pub kind: ImgSlot,
     pub section: usize,
     pub idx: usize,
     pub avail: u16,

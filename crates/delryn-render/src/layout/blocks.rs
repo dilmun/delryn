@@ -4,7 +4,7 @@
 
 use delryn_model::{Block, CalloutKind, Inline, Span};
 
-use super::spans::{tidy_spacing, wrap_spans};
+use super::spans::{InlineMathDims, Prefix, tidy_spacing, wrap_spans};
 use super::width::display_width;
 use super::{DisplayLine, LineKind, Run, WrapOpts, wrap_blocks};
 
@@ -16,6 +16,7 @@ pub(super) fn emit_rule(width: usize, out: &mut Vec<DisplayLine>) {
             style: Inline::default(),
             fg: None,
             anchor: None,
+            math: None,
         }],
         kind: LineKind::Rule,
     });
@@ -31,7 +32,21 @@ pub(super) fn emit_heading(
 ) {
     let tidied = opts.tidy_spacing.then(|| tidy_spacing(spans)).flatten();
     let spans = tidied.as_deref().unwrap_or(spans);
-    wrap_spans(spans, width, "", "", LineKind::Heading(level), false, out);
+    wrap_spans(
+        spans,
+        width,
+        Prefix {
+            first: "",
+            cont: "",
+        },
+        LineKind::Heading(level),
+        false,
+        InlineMathDims {
+            cols: opts.inline_math_cols,
+            rows: opts.inline_math_rows,
+        },
+        out,
+    );
 }
 
 /// A paragraph — possibly a quote, a list item (`marker`), or nested (`indent`).
@@ -58,10 +73,16 @@ pub(super) fn emit_para(
     wrap_spans(
         spans,
         width,
-        &first_prefix,
-        &cont_prefix,
+        Prefix {
+            first: &first_prefix,
+            cont: &cont_prefix,
+        },
         kind,
         opts.justify,
+        InlineMathDims {
+            cols: opts.inline_math_cols,
+            rows: opts.inline_math_rows,
+        },
         out,
     );
 }
@@ -98,6 +119,7 @@ pub(super) fn emit_image(
                 style: Inline::default(),
                 fg: None,
                 anchor: None,
+                math: None,
             }],
             kind: LineKind::Body,
         });
@@ -123,10 +145,28 @@ pub(super) fn emit_image(
                     ..s.style
                 },
                 anchor: s.anchor.clone(),
+                math: None,
             })
             .collect();
         let mut cap = Vec::new();
-        wrap_spans(&italic, width, "", "", LineKind::Body, false, &mut cap);
+        // Captions never carry inline-math atoms (the reader only reserves widths
+        // for body/heading spans), so pass no widths — any math stays Unicode.
+        let no_prefix = Prefix {
+            first: "",
+            cont: "",
+        };
+        wrap_spans(
+            &italic,
+            width,
+            no_prefix,
+            LineKind::Body,
+            false,
+            InlineMathDims {
+                cols: &[],
+                rows: &[],
+            },
+            &mut cap,
+        );
         for mut line in cap {
             center_line(&mut line, width);
             out.push(line);
@@ -147,6 +187,7 @@ fn center_line(line: &mut DisplayLine, width: usize) {
                 style: Inline::default(),
                 fg: None,
                 anchor: None,
+                math: None,
             },
         );
     }
@@ -167,6 +208,7 @@ pub(super) fn emit_math(tex: &str, width: usize, out: &mut Vec<DisplayLine>) {
                 },
                 fg: None,
                 anchor: None,
+                math: None,
             }],
             kind: LineKind::Math,
         });
@@ -198,6 +240,7 @@ pub(super) fn emit_callout(
                 style: Inline::default(),
                 fg: None,
                 anchor: None,
+                math: None,
             },
             Run {
                 text: head,
@@ -207,6 +250,7 @@ pub(super) fn emit_callout(
                 },
                 fg: None,
                 anchor: None,
+                math: None,
             },
         ],
         kind: LineKind::Quote,
@@ -235,6 +279,7 @@ pub(super) fn emit_footnote(
         },
         fg: None,
         anchor: None,
+        math: None,
     };
     match out.get_mut(start).and_then(|l| l.runs.first_mut()) {
         // Replace the first body line's indent prefix with the label.
@@ -274,6 +319,10 @@ fn wrap_nested(
         table_wrap: opts.table_wrap,
         justify: false,
         tidy_spacing: opts.tidy_spacing,
+        // Nested inline math keeps its own id space (unaddressed by the reader's
+        // section-level reservation), so it degrades to Unicode like nested images.
+        inline_math_cols: &[],
+        inline_math_rows: &[],
     };
     for line in wrap_blocks(blocks, &inner, &[]) {
         let mut runs = Vec::with_capacity(line.runs.len() + 1);
@@ -282,6 +331,7 @@ fn wrap_nested(
             style: Inline::default(),
             fg: None,
             anchor: None,
+            math: None,
         });
         runs.extend(line.runs);
         out.push(DisplayLine { runs, kind });

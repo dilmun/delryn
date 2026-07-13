@@ -14,6 +14,11 @@ pub enum SizeHint {
     Pct(f32),
     /// An absolute CSS-pixel width.
     Px(u32),
+    /// A font-relative width in CSS `em`. The publisher's *text-relative* size — the
+    /// reliable, DPI-independent hint for an equation raster: the source pixels are
+    /// ignored and the raster is scaled so one authored em is a fixed number of text
+    /// cells ([`MATH_EM_CELLS`]), so every equation flows at the prose size.
+    Em(f32),
     /// Fill the pane (preserving aspect), bounded only by the cols×rows box —
     /// for page-as-image content (PDF), not inline figures.
     Full,
@@ -37,6 +42,10 @@ pub struct SizeSpec {
     /// (filled once off-thread; see [`crate::ink_profile`]). Drives DPI-independent,
     /// text-relative equation sizing; `None` for figures, photos, and rendered math.
     pub ink: Option<InkProfile>,
+    /// A small inline equation drawn mid-line (delryn's own LaTeX render at ~text
+    /// size): shown near-native in a single text row (only shrunk to fit one cell
+    /// tall / the column). Takes precedence over `math`; `ink` is not consulted.
+    pub inline: bool,
 }
 
 impl Default for SizeSpec {
@@ -47,6 +56,7 @@ impl Default for SizeSpec {
             captioned: false,
             alt_math: false,
             ink: None,
+            inline: false,
         }
     }
 }
@@ -65,10 +75,42 @@ const MAX_UPSCALE: f64 = 4.0;
 /// knob tunes on top (100% = this value). Adjust here if the default reads large/small.
 const EQ_TARGET_LINE_CELLS: f64 = 1.0;
 
+/// On-screen height, in text cells, of one authored CSS `em` for an equation raster
+/// sized by its publisher [`SizeHint::Em`] width. Set to the **text** em (matching the
+/// reader's `DISPLAY_EM_FACTOR`) so a publisher raster and a LaTeX equation delryn
+/// re-renders come out the same size — and the same size as the surrounding prose. The
+/// `math_scale` knob scales up from there. The *reliable* path: source pixels ignored,
+/// so a raster never renders out of scale regardless of its DPI.
+const MATH_EM_CELLS: f64 = 1.0;
+
+/// A display equation is capped to this fraction of the available rows, so a tall /
+/// multi-line one shrinks uniformly instead of dominating the page (a wide multi-line
+/// equation otherwise fills the column width and, by its aspect, runs many rows tall).
+/// Single-line equations sit far under the cap and are untouched. Floored by
+/// [`EQ_MAX_ROWS_FLOOR`] so a short pane still shows a readable equation.
+const EQ_MAX_ROWS_FRAC: f64 = 0.28;
+
+/// Absolute floor (in text rows) for the [`EQ_MAX_ROWS_FRAC`] cap, so a small viewport
+/// doesn't shrink a multi-line equation to an illegible sliver.
+const EQ_MAX_ROWS_FLOOR: f64 = 6.0;
+
 /// Ink-line count at or below which a monochrome line-art raster is taken to be an
 /// equation rather than a diagram (a genuine figure with many text rows reads as a
 /// figure). Only used by the classifier when there's no stronger signal.
 const ARRAY_MAX_LINES: u16 = 8;
+
+/// The most text rows an **inline** equation may occupy. A script-only equation is one
+/// row; a fraction / limit-stack (allowed through the reader's height gate) spans two,
+/// hanging into a blank spacer row the wrapper inserts below its line. Anything taller
+/// stays the Unicode fallback.
+const INLINE_MAX_ROWS: u16 = 2;
+
+/// Natural height (in text cells) at or below which an inline equation stays **one**
+/// row — a script-only equation (`xᵢ²`, `√2`) or a compact stack that shrinks cleanly
+/// into a single cell. Above it (a real two-line fraction) the equation keeps native
+/// size across two rows instead of being squashed. Calibrated against RaTeX's compact
+/// inline fractions (`\frac{1}{2}` ≈ 1.2 cells, a busy fraction ≈ 1.5 cells).
+const INLINE_ONE_ROW_MAX: f64 = 1.35;
 
 /// Fallback (unprofiled raster) only: the height in text lines a low-resolution
 /// equation is boosted *up* toward. Used when no [`InkProfile`] is available, so the
@@ -100,6 +142,10 @@ pub struct FitBox {
 enum GraphicKind {
     /// A full-bleed page image (PDF): fills the pane.
     Page,
+    /// A small inline equation drawn mid-line: shown at its native render-em size
+    /// (so its glyphs match the surrounding text) in a single row — only shrunk if
+    /// it would overflow one cell tall or the column.
+    InlineMath,
     /// Real math re-rendered from LaTeX: sized by its render em; shown native.
     RenderedMath,
     /// A publisher equation shipped as a raster: normalised to a text-relative size.
@@ -122,11 +168,16 @@ fn classify(spec: SizeSpec, fit_mode: ImageFit) -> GraphicKind {
     if matches!(spec.hint, SizeHint::Full) {
         return GraphicKind::Page;
     }
+    if spec.inline {
+        return GraphicKind::InlineMath;
+    }
     if spec.math {
-        // A profiled math image is a publisher equation raster (normalise it); an
-        // unprofiled one is delryn's own crisp LaTeX render (native, sized by its em).
+        // A publisher equation raster (profiled ink, or an authored `em` width — either
+        // gives a text-relative size) is normalised; an unprofiled one with no size hint
+        // is delryn's own crisp LaTeX render (native, sized by its render em).
         return match spec.ink {
             Some(_) => GraphicKind::EquationRaster,
+            None if matches!(spec.hint, SizeHint::Em(_)) => GraphicKind::EquationRaster,
             None => GraphicKind::RenderedMath,
         };
     }
@@ -181,16 +232,42 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
     let cap = (f64::from(fit.cols) * fwf / bw).min(f64::from(fit.rows) * fhf / bh);
     let knob = f64::from(fit.math_scale) / 100.0;
 
-    let mut scale = match classify(spec, fit.fit_mode) {
+    let kind = classify(spec, fit.fit_mode);
+    let mut scale = match kind {
         GraphicKind::Page => cap,
+        // Sized by its render em, shown **native** (like RenderedMath) so the base
+        // glyphs match the surrounding text and every inline equation is the same
+        // Native (never upscaled), so base glyphs match the surrounding text: a
+        // short equation shrinks into one cell; a two-line fraction keeps native size
+        // across INLINE_MAX_ROWS rows. Only shrunk to fit the column width or that row
+        // budget. (Fitting the whole bbox to a cell would make script-free equations
+        // fill the cell, bigger than scripted ones.)
+        GraphicKind::InlineMath => {
+            let budget = if bh / fhf <= INLINE_ONE_ROW_MAX {
+                1.0
+            } else {
+                f64::from(INLINE_MAX_ROWS)
+            };
+            (f64::from(fit.cols) * fwf / bw)
+                .min(budget * fhf / bh)
+                .min(1.0)
+        }
         GraphicKind::RenderedMath => cap.min(1.0),
         GraphicKind::EquationRaster => {
-            let s = match spec.ink {
-                // DPI-independent: bring one ink-line to the text-relative target,
-                // shrinking a high-DPI raster and growing a low-DPI one alike.
-                Some(p) => fhf * EQ_TARGET_LINE_CELLS * knob / f64::from(p.line_px),
-                // Unprofiled: keep the legacy low-res boost (never shrinks).
-                None => (EQUATION_MIN_LINES * fhf / bh).clamp(1.0, EQUATION_AUTO_MAX) * knob,
+            let s = if let SizeHint::Em(em_w) = spec.hint {
+                // Reliable path: the publisher's exact text-relative width. Scale so one
+                // authored em is MATH_EM_CELLS cells — derived from the *full* source
+                // width `w` (what the `em` measures), so the DPI drops out entirely and
+                // every equation flows at the prose size. Ink measurement not consulted.
+                f64::from(em_w) * MATH_EM_CELLS * fhf * knob / f64::from(w)
+            } else {
+                match spec.ink {
+                    // DPI-independent: bring one ink-line to the text-relative target,
+                    // shrinking a high-DPI raster and growing a low-DPI one alike.
+                    Some(p) => fhf * EQ_TARGET_LINE_CELLS * knob / f64::from(p.line_px),
+                    // Unprofiled: keep the legacy low-res boost (never shrinks).
+                    None => (EQUATION_MIN_LINES * fhf / bh).clamp(1.0, EQUATION_AUTO_MAX) * knob,
+                }
             };
             let s = s.min(cap); // fit the column / viewport
             if s > 1.0 { s.min(MAX_UPSCALE) } else { s } // quality-cap enlargement only
@@ -205,6 +282,9 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
                 match spec.hint {
                     SizeHint::Pct(p) => f64::from(fit.cols) * fwf * f64::from(p).clamp(0.0, 1.0),
                     SizeHint::Px(px) => f64::from(px),
+                    // A font-relative width on a non-math figure (rare): 1 em ≈ the cell
+                    // height, so the figure occupies that many ems of column width.
+                    SizeHint::Em(em) => f64::from(em) * fhf,
                     SizeHint::Auto => f64::from(fit.cols) * fwf * f64::from(fit.target_pct) / 100.0,
                     SizeHint::Full => unreachable!("full-bleed is GraphicKind::Page"),
                 }
@@ -216,6 +296,20 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
         scale = cap.min(1.0);
     }
 
+    // Height-cap a display equation so a tall / multi-line one can't dominate the page:
+    // shrink the whole equation uniformly to fit a fraction of the available rows. A
+    // single-line equation sits far under the cap and is untouched; inline math (one
+    // row), figures, and pages are exempt.
+    if matches!(
+        kind,
+        GraphicKind::EquationRaster | GraphicKind::RenderedMath
+    ) {
+        let max_h_px = (f64::from(fit.rows) * EQ_MAX_ROWS_FRAC).max(EQ_MAX_ROWS_FLOOR) * fhf;
+        if bh * scale > max_h_px {
+            scale = max_h_px / bh;
+        }
+    }
+
     // A full-bleed page is bounded by the pane itself; the per-figure pixel cap
     // (which bounds inline-figure transfers) would only letterbox it, so skip it.
     let longest = (bw * scale).max(bh * scale);
@@ -223,7 +317,18 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
         scale *= f64::from(fit.max_px) / longest;
     }
     let cols = ((bw * scale / fwf).ceil() as u16).clamp(1, fit.cols.max(1));
-    let rows = ((bh * scale / fhf).ceil() as u16).clamp(1, fit.rows.max(1));
+    // Inline math reserves one row for a short equation, two for a taller fraction —
+    // the same `INLINE_ONE_ROW_MAX` split as the scale above, so the reserved rows and
+    // the drawn raster always agree. Every other kind ceils to its fitted height.
+    let rows = if kind == GraphicKind::InlineMath {
+        if bh / fhf <= INLINE_ONE_ROW_MAX {
+            1
+        } else {
+            INLINE_MAX_ROWS
+        }
+    } else {
+        ((bh * scale / fhf).ceil() as u16).clamp(1, fit.rows.max(1))
+    };
     (cols, rows)
 }
 
@@ -300,6 +405,86 @@ mod tests {
             "hi-DPI raster shrinks below its native height: {}",
             rows[0]
         );
+    }
+
+    /// The #17 fix: an equation shipped as a raster with an authored `em` width is
+    /// sized from that width, so two rasters of wildly different pixel resolution but
+    /// the *same* em width render to the SAME cells — the DPI drops out entirely. (The
+    /// pixel-based ink measurement was unreliable at low DPI; the em width is exact.)
+    #[test]
+    fn em_width_equation_is_dpi_independent() {
+        let em = |w: u32, h: u32| {
+            let spec = SizeSpec {
+                math: true,
+                hint: SizeHint::Em(8.0),
+                ..SizeSpec::default()
+            };
+            target_cells(w, h, fit(400, 400), spec)
+        };
+        // The same 8em-wide, 2:1 equation at 4× DPI: 200×100 vs 800×400 px.
+        let (lo, hi) = (em(200, 100), em(800, 400));
+        assert_eq!(
+            lo, hi,
+            "same em width → same cells at any DPI: {lo:?} vs {hi:?}"
+        );
+        // …and it lands text-relative (8em × 1.0 cells/em × fh/fw ≈ ~16 cols), not
+        // blown up by the raw pixels.
+        assert!(
+            (12..=20).contains(&lo.0),
+            "8em ≈ ~16 cols wide (text-relative), got {}",
+            lo.0
+        );
+    }
+
+    /// The `math_scale` knob still scales an em-sized equation (it enlarges from the
+    /// text-relative floor, like every other equation).
+    #[test]
+    fn em_width_equation_respects_math_scale() {
+        let spec = SizeSpec {
+            math: true,
+            hint: SizeHint::Em(8.0),
+            ..SizeSpec::default()
+        };
+        let base = target_cells(300, 120, fit(400, 400), spec);
+        let big = target_cells(
+            300,
+            120,
+            FitBox {
+                math_scale: 200,
+                ..fit(400, 400)
+            },
+            spec,
+        );
+        assert!(big.0 > base.0, "200% enlarges: {big:?} vs {base:?}");
+    }
+
+    /// A tall / multi-line display equation is height-capped so it can't dominate the
+    /// page — shrunk to a fraction of the available rows — while a single-line one is
+    /// far under the cap and untouched.
+    #[test]
+    fn tall_equation_is_height_capped() {
+        // A ~30-row pane. A big, near-square multi-line equation (wide → fills the
+        // column, tall by aspect) must be capped well under its uncapped height.
+        let pane = fit(45, 30);
+        let big = SizeSpec {
+            math: true,
+            hint: SizeHint::Em(30.0),
+            ..SizeSpec::default()
+        };
+        let (_c, rows) = target_cells(1270, 850, pane, big);
+        let cap = (30.0 * EQ_MAX_ROWS_FRAC).max(EQ_MAX_ROWS_FLOOR).ceil() as u16;
+        assert!(
+            rows <= cap,
+            "multi-line equation capped to ~{cap} rows, got {rows}"
+        );
+        // A single-line equation (short, wide) is nowhere near the cap.
+        let line = SizeSpec {
+            math: true,
+            hint: SizeHint::Em(20.0),
+            ..SizeSpec::default()
+        };
+        let (_c, r1) = target_cells(800, 90, pane, line);
+        assert!(r1 < cap, "single-line equation untouched by the cap: {r1}");
     }
 
     /// A multi-line array normalises *per line*, so it stays tall (proportional),
@@ -493,6 +678,54 @@ mod tests {
             (i32::from(cols) - 50).abs() <= 2,
             "≈50% of 100 cols: {cols}"
         );
+    }
+
+    /// Inline math is shown **native** (never upscaled) and occupies one or two text
+    /// rows: a script-only equation stays one row; a fraction spans two (hanging into a
+    /// spacer row); anything taller shrinks to fit two rows.
+    #[test]
+    fn inline_math_is_one_or_two_rows() {
+        let inline = SizeSpec {
+            inline: true,
+            math: true,
+            ..SizeSpec::default()
+        };
+        // 8×16px cells. A one-cell-tall (script-only) equation → one row, native width.
+        let (cols, rows) = target_cells(64, 16, fit(400, 40), inline);
+        assert_eq!(
+            (cols, rows),
+            (8, 1),
+            "one-cell equation: one row, native width"
+        );
+        // A two-cell-tall fraction → two rows, still native (never upscaled).
+        let (cols, rows) = target_cells(64, 32, fit(400, 40), inline);
+        assert_eq!(
+            (cols, rows),
+            (8, 2),
+            "two-cell fraction: two rows, native width"
+        );
+        // Never more than two rows: a very tall raster shrinks to fit INLINE_MAX_ROWS.
+        let (_cols, rows) = target_cells(64, 64, fit(400, 40), inline);
+        assert_eq!(rows, 2, "capped at two rows (shrunk to fit)");
+        // A short, wide equation is drawn at NATIVE width — ceil(px/cell), not enlarged
+        // to fill the cell height (that enlargement made script-free equations look big).
+        let (cols, rows) = target_cells(40, 10, fit(400, 40), inline);
+        assert_eq!(
+            (cols, rows),
+            (5, 1),
+            "40px wide at native = ceil(40/8) = 5 cols"
+        );
+    }
+
+    /// Inline sizing takes precedence over the `math`/`ink` signals: a spec flagged
+    /// both inline and (publisher) equation still classifies as one-row inline math.
+    #[test]
+    fn inline_precedes_equation_raster() {
+        let spec = SizeSpec {
+            inline: true,
+            ..eq(100, 32, 32.0, 1)
+        };
+        assert_eq!(classify(spec, ImageFit::Fit), GraphicKind::InlineMath);
     }
 
     #[test]

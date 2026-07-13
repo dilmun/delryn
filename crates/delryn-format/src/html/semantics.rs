@@ -17,11 +17,11 @@ pub(super) enum ElementRole {
         id: String,
         label: String,
     },
-    /// Display math backed by an image: `(src, unicode-alt)`.
-    DisplayMathImage(String, String),
     CodeBlock,
-    /// A native `<math display="block">` display equation.
-    DisplayMath,
+    /// Display (block) math — a native `<math>`, a rasterised equation image, or a
+    /// math container the display classifier resolved to block-level. Carries the
+    /// recovered LaTeX / Unicode / image so the extractor renders without re-parsing.
+    DisplayMath(MathBlock),
     Heading(u8),
     Paragraph,
     List {
@@ -64,19 +64,28 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
     {
         return ElementRole::Footnote { id, label };
     }
-    // 3. Display (block) math backed by an image — render the image, alt as fallback.
-    if matches!(name, "p" | "div")
-        && let Some((src, alt)) = display_math_image(node)
-    {
-        return ElementRole::DisplayMathImage(src, alt);
+    // 3. Display (block) math — the element is itself a math node resolved to
+    //    block-level (a direct `<math>`/equation-image child), or a `<p>`/`<div>`
+    //    container whose standalone content is a display equation (the usual case:
+    //    the equation node sits inside a paragraph/div wrapper).
+    if is_math_node(node) {
+        return ElementRole::DisplayMath(recover_math_block(node));
+    }
+    if let Some(m) = standalone_math_node(node) {
+        return ElementRole::DisplayMath(recover_math_block(m));
+    }
+    // A publisher equation shipped as a plain `<img>` (path/empty alt) inside a tight
+    // display-equation container — the container class is the math signal, so it's an
+    // equation raster (sized text-relatively), not a figure normalised to the column.
+    if let Some(img) = equation_image_node(node) {
+        return ElementRole::DisplayMath(recover_math_block(img));
     }
     // 4. Code listings (<pre>, styled container, or multi-line <code>).
     if is_code_block(e, node) {
         return ElementRole::CodeBlock;
     }
-    // 5. Native display math, headings, then the structural element.
+    // 5. Headings, then the structural element.
     match name {
-        "math" => ElementRole::DisplayMath,
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => ElementRole::Heading(name.as_bytes()[1] - b'0'),
         "figure" => ElementRole::Figure,
         "p" => ElementRole::Paragraph,

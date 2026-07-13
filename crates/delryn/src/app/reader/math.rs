@@ -16,6 +16,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use delryn_model::SpanMath;
+
 use crate::document::Block;
 
 use super::Reader;
@@ -24,16 +26,49 @@ use super::Reader;
 /// available). Read on every decoded section.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
+/// Whether *inline* math is rasterised too (the [`ENABLED`] master toggle **and**
+/// the `graphical_inline_math` opt-in). Off by default: inline math then stays the
+/// natural terminal-font Unicode approximation, which lines up with the prose far
+/// better mid-sentence than a raster. Gates [`convert_inline_math`] alone.
+static INLINE_ENABLED: AtomicBool = AtomicBool::new(false);
+
 /// The em size in px to rasterise equations at (`0` = unset), so a display equation
 /// shows at a text-relative type size — delryn-media shows math at native px.
 static EM_PX: AtomicU32 = AtomicU32::new(0);
 
-/// Rasterise math at ~1.2× the text em — the TeX/KaTeX convention that math is sized
-/// relative to the surrounding text (KaTeX renders at ~1.21× its font). A single-line
-/// display equation (~1.2 em tall) then lands at ~1.5 text rows: legible and prominent
-/// without the old 1.7× "dominates the page" look. The user's `math_scale` knob tunes
-/// on top.
-const DISPLAY_EM_FACTOR: f32 = 1.2;
+/// The em size in px to rasterise *inline* equations at (`0` = unset). Fixed at a
+/// small multiple of the cell height (independent of the `math_scale` knob — inline
+/// math tracks the surrounding text, always drawn one cell tall); oversampled so the
+/// fit-to-one-cell downscale stays crisp.
+static INLINE_EM_PX: AtomicU32 = AtomicU32::new(0);
+
+/// Inline equations rasterise at a **text-relative** em (~0.9× the cell height) and
+/// are shown near-native, so their base glyphs match the surrounding text and every
+/// inline equation is the same size — a script-free `A⊂B` no bigger than a scripted
+/// `xᵢ²` (the earlier "fit the whole bbox to a cell" made script-free equations fill
+/// the cell). KaTeX cap-height ≈ 0.68 em, so ~0.9 em ≈ the text cap-height.
+const INLINE_EM_FACTOR: f32 = 0.9;
+
+/// Height gate for inline math, in render ems: an equation whose rendered raster is
+/// taller than this keeps the Unicode fallback, since even two text rows can't hold it.
+/// Calibrated against real RaTeX output (fractions render compactly): `\frac{a}{b}`
+/// ≈ 1.2 em, a busy `\frac{…}{…}` ≈ 1.7 em, a triple-nested fraction ≈ 1.8 em all
+/// render (across up to two rows, see `INLINE_MAX_ROWS`), while a 2×2 matrix (~2.5 em)
+/// and taller stacks fall back to Unicode.
+const INLINE_MAX_H_EM: f32 = 2.2;
+
+/// The px-per-em to rasterise inline equations at, for a terminal `cell_h` (px).
+fn inline_em_px(cell_h: u16) -> u32 {
+    (f32::from(cell_h.max(1)) * INLINE_EM_FACTOR).round() as u32
+}
+
+/// Rasterise display math at the **text em** — equation glyphs match the surrounding
+/// prose, so a single-line display equation sits at text height and reads as part of
+/// the page rather than dominating it. `100%` `math_scale` is therefore exactly text
+/// size (the floor — math is never smaller than the text); the knob scales up from
+/// there. Multi-line equations are additionally height-capped in the sizer
+/// (`EQ_MAX_ROWS_FRAC`) so a tall stack can't take over the page.
+const DISPLAY_EM_FACTOR: f32 = 1.0;
 
 /// The px-per-em to rasterise display equations at, for a terminal `cell_h` (px) and
 /// the `scale_pct` "Math size %" knob (100 = the built-in [`DISPLAY_EM_FACTOR`]). Pure,
@@ -79,6 +114,54 @@ pub(crate) fn convert_math_blocks(blocks: &mut [Block]) {
             // ink profile — so it needs no profiling.
             ink: None,
         };
+    }
+}
+
+/// Rasterise each **inline** math run in `blocks` that kept a LaTeX source
+/// ([`SpanMath::Latex`]) to a small themed image drawn mid-line, assigning each a
+/// section-local id and swapping it in place for [`SpanMath::Raster`]. A no-op
+/// unless graphical inline math is enabled (the master toggle **and** the
+/// `graphical_inline_math` opt-in); per-run best-effort — a render failure, a too-tall
+/// equation (a fraction / limit stack that would smear in one text row), or an
+/// undecodable raster leaves the run as `Latex`, so the wrapper shows its Unicode
+/// approximation (the fallback is never regressed).
+///
+/// Only top-level `Para`/`Heading` runs are rendered — the same runs the wrapper
+/// can reserve atom cells for; nested (callout/footnote/table/caption) inline math
+/// keeps its own id space the reader doesn't address, so it stays Unicode. Runs off
+/// the main thread at every decode site (after [`convert_math_blocks`]); cheap after
+/// the first render thanks to delryn-math's disk cache.
+pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
+    if !INLINE_ENABLED.load(Ordering::Relaxed) {
+        return; // inline math stays the natural Unicode approximation
+    }
+    let em_px = INLINE_EM_PX.load(Ordering::Relaxed);
+    if em_px == 0 {
+        return;
+    }
+    let mut next_id = 0usize;
+    for b in blocks.iter_mut() {
+        let spans = match b {
+            Block::Para { spans, .. } | Block::Heading { spans, .. } => spans,
+            _ => continue,
+        };
+        for span in spans.iter_mut() {
+            let Some(SpanMath::Latex(latex)) = &span.math else {
+                continue;
+            };
+            let Some(png) = delryn_math::render(latex, delryn_math::Style::Inline, em_px) else {
+                continue; // unrenderable → keep the Unicode fallback
+            };
+            // Height gate: a single-line inline equation fits one text row; a tall
+            // stack (fraction, ∫/∑ with limits) would smear, so keep it Unicode.
+            let too_tall = crate::media::image_dimensions(&png)
+                .is_none_or(|(_, h)| h as f32 > INLINE_MAX_H_EM * em_px as f32);
+            if too_tall {
+                continue;
+            }
+            span.math = Some(SpanMath::Raster { id: next_id, png });
+            next_id += 1;
+        }
     }
 }
 
@@ -172,21 +255,28 @@ fn unify_section_em(blocks: &mut [Block]) {
 
 impl Reader {
     /// Mirror the graphical-math state from the view each frame: `on` = the config
-    /// toggle AND a graphics protocol; `cell_h` = the terminal cell height in px;
-    /// `scale_pct` = the "Math size %" setting (100 = the built-in size). When the
-    /// effective state changes (startup, toggle, size, or a cell-size change) the open
-    /// sections are re-decoded so equations switch / resize live, without reopening.
-    pub fn sync_graphical_math(&mut self, on: bool, cell_h: u16, scale_pct: u16) {
+    /// toggle AND a graphics protocol; `inline_on` = that **and** the
+    /// `graphical_inline_math` opt-in (off ⇒ inline math stays Unicode); `cell_h` =
+    /// the terminal cell height in px; `scale_pct` = the "Math size %" setting (100 =
+    /// the built-in size). When the effective state changes (startup, toggle, size, or
+    /// a cell-size change) the open sections are re-decoded so equations switch /
+    /// resize live, without reopening.
+    pub fn sync_graphical_math(&mut self, on: bool, inline_on: bool, cell_h: u16, scale_pct: u16) {
         let em = display_em_px(cell_h, scale_pct);
-        // Update BOTH atomics unconditionally, then OR the results: a `||` between the
-        // two `swap`s would short-circuit and skip the EM_PX write whenever `on` had
-        // changed, stranding the em at a stale size — so a later "Math size %" change
-        // (which only moves `em`, not `on`) would never reach the renderer.
+        let inline_em = inline_em_px(cell_h);
+        // Update ALL atomics unconditionally, then OR the results: a `||` between the
+        // `swap`s would short-circuit and skip a later write whenever an earlier value
+        // had changed, stranding an em at a stale size — so e.g. a "Math size %" change
+        // (which only moves the display `em`) would never reach the renderer.
         let enabled_changed = ENABLED.swap(on, Ordering::Relaxed) != on;
+        let inline_enabled_changed = INLINE_ENABLED.swap(inline_on, Ordering::Relaxed) != inline_on;
         let em_changed = EM_PX.swap(em, Ordering::Relaxed) != em;
+        let inline_em_changed = INLINE_EM_PX.swap(inline_em, Ordering::Relaxed) != inline_em;
         // Only reflowable docs have math to (un)convert; never drop a paged doc's
         // rasterized-page cache (it would blank the page and force a reload).
-        if (enabled_changed || em_changed) && !self.is_paged_image() {
+        if (enabled_changed || inline_enabled_changed || em_changed || inline_em_changed)
+            && !self.is_paged_image()
+        {
             self.invalidate_sections();
         }
     }
@@ -207,18 +297,16 @@ impl Reader {
 mod tests {
     use super::*;
 
-    /// The rasterise em is text-relative: ~1.2× the cell height at 100%, scaling
-    /// linearly with the "Math size %" knob — the KaTeX-style size, not the old ~1.7×.
+    /// The rasterise em is the text em at the 100% floor (equation glyphs match the
+    /// prose), scaling linearly with the "Math size %" knob. The knob only enlarges
+    /// (the config floors it at 100), so display math is never smaller than the text.
     #[test]
     fn display_em_px_is_text_relative() {
-        assert_eq!(display_em_px(20, 100), 24); // 20 × 1.2
-        assert_eq!(display_em_px(20, 200), 48); // knob doubles it
-        assert_eq!(display_em_px(20, 50), 12); // …and halves it
-        // A 1.2× factor is well below the old 1.7× (which would be 34px here).
-        assert!(
-            display_em_px(20, 100) < 30,
-            "no longer the oversized ~1.7× em"
-        );
+        assert_eq!(display_em_px(20, 100), 20); // floor: exactly the text (cell) em
+        assert_eq!(display_em_px(20, 200), 40); // knob doubles it
+        assert_eq!(display_em_px(20, 300), 60); // …up to the 300% max
+        // At the 100% floor a display equation is text-sized — never smaller.
+        assert_eq!(display_em_px(20, 100), 20, "the floor is exactly text size");
     }
 
     /// With graphical math on, a display equation that kept its LaTeX source becomes
@@ -270,6 +358,76 @@ mod tests {
         );
 
         ENABLED.store(false, Ordering::Relaxed); // don't leak to other tests
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Inline math with a LaTeX source is rasterised to a `SpanMath::Raster` when
+    /// short enough for one text row; a tall stack (a fraction) keeps its Unicode
+    /// fallback; and everything stays Unicode when graphical math is off.
+    #[test]
+    fn converts_short_inline_math_and_skips_tall_stacks() {
+        let _env = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_imath_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        // SAFETY: serialised by `_env`; scopes the math cache dir to this test.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+
+        // A paragraph "see <inline math>" — only the second span is math.
+        let para = |latex: &str| Block::Para {
+            spans: vec![
+                delryn_model::Span::plain("see "),
+                delryn_model::Span::math("approx", latex),
+            ],
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let math_of = |b: &Block| match b {
+            Block::Para { spans, .. } => spans[1].math.clone(),
+            _ => unreachable!(),
+        };
+        INLINE_EM_PX.store(32, Ordering::Relaxed); // ~2× a 16px cell (the calib em)
+
+        // Off → no conversion (stays a LaTeX source span). Inline rasterising is
+        // gated on its own opt-in (`INLINE_ENABLED`), not the display master toggle.
+        INLINE_ENABLED.store(false, Ordering::Relaxed);
+        let mut off = vec![para("x^2")];
+        convert_inline_math(&mut off);
+        assert!(
+            matches!(math_of(&off[0]), Some(SpanMath::Latex(_))),
+            "off: inline math stays a LaTeX source"
+        );
+
+        // On → a short equation rasterises to an atom; a tall fraction stays Unicode.
+        INLINE_ENABLED.store(true, Ordering::Relaxed);
+        let mut short = vec![para("x^2")];
+        convert_inline_math(&mut short);
+        match math_of(&short[0]) {
+            Some(SpanMath::Raster { id, png }) => {
+                assert_eq!(id, 0, "first inline equation gets id 0");
+                assert!(!png.is_empty(), "carries the rendered PNG bytes");
+            }
+            other => panic!("short inline math should rasterise, got {other:?}"),
+        }
+
+        // A fraction now rasterises (was Unicode) — it fits within two rows.
+        let mut frac = vec![para("\\frac{a}{b}")];
+        convert_inline_math(&mut frac);
+        assert!(
+            matches!(math_of(&frac[0]), Some(SpanMath::Raster { .. })),
+            "a fraction rasterises (two-row inline math)"
+        );
+
+        // A genuinely tall equation (a 2×2 matrix, ~2.5 em) exceeds even two rows →
+        // Unicode fallback (never smashed into the line).
+        let mut tall = vec![para("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}")];
+        convert_inline_math(&mut tall);
+        assert!(
+            matches!(math_of(&tall[0]), Some(SpanMath::Latex(_))),
+            "a too-tall stack keeps its Unicode fallback"
+        );
+
+        INLINE_ENABLED.store(false, Ordering::Relaxed); // don't leak to other tests
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

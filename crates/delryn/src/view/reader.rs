@@ -38,10 +38,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Images need both the protocol picker and the background builder.
     let images = picker.as_ref().zip(image_builder.as_ref());
     // Graphical math needs the config toggle + a graphics protocol; the cell height
-    // sizes equations. A change here re-decodes the open sections (image ⇆ Unicode).
+    // sizes equations. Inline math is rasterised only with the extra opt-in — off, it
+    // stays the natural Unicode approximation. A change here re-decodes the open
+    // sections (image ⇆ Unicode).
     let math_on = config.graphical_math && images.is_some();
+    let inline_math_on = math_on && config.graphical_inline_math;
     let cell_h = images.map(|(p, _)| p.font_size().height).unwrap_or(20);
-    reader.sync_graphical_math(math_on, cell_h, config.math_scale);
+    reader.sync_graphical_math(math_on, inline_math_on, cell_h, config.math_scale);
     let theme = config.theme;
     reader.code_theme = theme.code_syntect().to_string();
     reader.line_spacing = config.line_spacing;
@@ -310,6 +313,7 @@ fn render_content(
         for placement in &plan.placements {
             if let Placement::Text(col) = placement {
                 draw_images_in(f, col.area, reader, col.scroll, scrolling);
+                draw_inline_math_in(f, col.area, reader, col.scroll, scrolling);
                 // Cross-section flow (continuous Center, or any two-page spread)
                 // joins following sections into this column; draw their figures too
                 // so a boundary figure fills the column instead of a blank gap. Each
@@ -658,6 +662,58 @@ fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize, scroll
     }
 }
 
+/// Draw the ready inline-math equation rasters over the atom runs in the visible
+/// slice of `reader.lines`, painting each small image over the blank cells the
+/// wrapper reserved for it. Runs after the text so the raster covers those cells.
+/// Placement is mid-line: `x` is the atom's column within the text (the summed
+/// display width of the preceding runs), `y` its line's screen row. A one-row atom
+/// covers only its line; a two-row fraction hangs into the blank spacer row the
+/// wrapper reserved below (ratatui clips a raster that runs past the pane). Only the
+/// anchor section's atoms exist (a following continuous section shows its Unicode).
+fn draw_inline_math_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize, scrolling: bool) {
+    use unicode_width::UnicodeWidthStr;
+    let start = top.min(reader.lines.len());
+    let end = (top + area.height as usize).min(reader.lines.len());
+    for i in start..end {
+        let line = &reader.lines[i];
+        let mut col = 0usize;
+        for run in &line.runs {
+            if let Some(id) = run.math
+                && let Some(plan) = reader.inline_math_plan(id)
+                // Defer a not-yet-uploaded raster's heavy first transmit until the
+                // scroll settles, exactly like `draw_images_in` (the reserved cells
+                // stay blank one frame rather than stuttering the scroll).
+                && !(scrolling && plan.needs_pretransmit())
+            {
+                let x = col as i16;
+                let y = (i - top) as i16;
+                if !inline_math_occluded(reader, area, x, y, plan.cols, plan.rows) {
+                    f.render_widget(SlicedImage::new(&plan.proto, SignedPosition { x, y }), area);
+                }
+            }
+            col += UnicodeWidthStr::width(run.text.as_str());
+        }
+    }
+}
+
+/// Whether an inline-math atom at cell offset `(x, y)` of `area`, spanning `cols`×
+/// `rows` cells, overlaps an open popup's occlusion rect — terminal graphics draw
+/// above the cell layer, so an atom over a popup would paint on top of it. Mirrors the
+/// figure occlusion guard.
+fn inline_math_occluded(reader: &Reader, area: Rect, x: i16, y: i16, cols: u16, rows: u16) -> bool {
+    let Some(o) = reader.overlay_occlude else {
+        return false;
+    };
+    let left = area.x.saturating_add(x.max(0) as u16);
+    let right = area
+        .x
+        .saturating_add((x + cols as i16).clamp(0, area.width as i16) as u16);
+    let row = area.y.saturating_add(y.max(0) as u16);
+    let h_overlap = left < o.right() && right > o.x;
+    let v_overlap = row < o.bottom() && row + rows.max(1) > o.y;
+    h_overlap && v_overlap
+}
+
 /// The rendered lines for continuous mode: the cross-section buffer (anchor tail +
 /// following sections' heads) styled like [`visible_lines`]. The link-cursor
 /// highlight and search matches follow the anchor section — matches are re-found by
@@ -869,7 +925,12 @@ fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
     if run.style.bold {
         style = style.add_modifier(Modifier::BOLD);
     }
-    if run.style.italic {
+    // Inline math (the Unicode approximation shown in prose) reads as the natural
+    // terminal-font look: italic + a subtle accent nudge. Skipped on a display-math
+    // line (already the accented `Math` role) and on a rasterised atom (`run.math` is
+    // `Some` — blank placeholder cells the reader paints an equation over).
+    let inline_math = run.style.math && run.math.is_none() && !matches!(kind, LineKind::Math);
+    if run.style.italic || inline_math {
         style = style.add_modifier(Modifier::ITALIC);
     }
 
@@ -878,10 +939,73 @@ fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
         style = style.fg(Color::Rgb(r, g, b)); // syntax highlight (the one literal)
     } else if run.style.code && matches!(kind, LineKind::Body) {
         style = style.fg(theme.color(Role::Code)); // inline code
+    } else if inline_math {
+        style = style.fg(theme.color(Role::MathInline)); // subtle math contrast
     }
     if run.style.link {
         // Links read as their theme colour — no underline (it's noisy in a TUI).
         style = style.fg(theme.color(Role::Link));
     }
     style
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::DARK;
+    use delryn_model::Inline;
+
+    /// A run tagged as inline math (the Unicode approximation, not a rasterised atom).
+    fn math_run() -> Run {
+        Run {
+            text: "x²".into(),
+            style: Inline {
+                math: true,
+                ..Inline::default()
+            },
+            ..Run::default()
+        }
+    }
+
+    #[test]
+    fn inline_math_run_is_italic_and_tinted() {
+        // In prose, inline math reads as the natural terminal-font look: italic + the
+        // subtle `MathInline` tint.
+        let s = run_style(&math_run(), LineKind::Body, DARK);
+        assert!(
+            s.add_modifier.contains(Modifier::ITALIC),
+            "inline math is italicised"
+        );
+        assert_eq!(
+            s.fg,
+            Some(DARK.color(Role::MathInline)),
+            "inline math carries the subtle math tint"
+        );
+    }
+
+    #[test]
+    fn display_math_line_keeps_the_math_role() {
+        // On a display-math line the run is already the accented `Math` role; the
+        // inline italic/tint must NOT be layered on top.
+        let s = run_style(&math_run(), LineKind::Math, DARK);
+        assert_eq!(s.fg, Some(DARK.color(Role::Math)), "the display Math ink");
+        assert!(
+            !s.add_modifier.contains(Modifier::ITALIC),
+            "no inline italic on a display-math line"
+        );
+    }
+
+    #[test]
+    fn rasterised_atom_is_not_tinted() {
+        // A rasterised inline-math atom (`math = Some`) is blank placeholder cells the
+        // reader paints an equation over — it gets no text styling.
+        let mut r = math_run();
+        r.math = Some(0);
+        let s = run_style(&r, LineKind::Body, DARK);
+        assert_ne!(
+            s.fg,
+            Some(DARK.color(Role::MathInline)),
+            "a raster atom is not tinted like Unicode math"
+        );
+    }
 }

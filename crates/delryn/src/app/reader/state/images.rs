@@ -16,6 +16,19 @@ pub struct ImageState {
     pub cache: LruCache<ImgKey, ImagePlan>,
     /// Current section's image index → cache key.
     pub section_images: HashMap<usize, ImgKey>,
+    /// Current section's inline-math id → cache key (a separate index space from
+    /// `section_images`; see [`media::ImgSlot`]). Built alongside the section's
+    /// figures, drawn mid-line by the reader's inline-math pass.
+    pub section_inline: HashMap<usize, ImgKey>,
+    /// Reserved cell width per inline-math id, estimated up front (like
+    /// `rows_estimate` for figures) so the wrapper can reserve the atom's columns
+    /// before its raster finishes building. Passed to the wrapper as
+    /// `WrapOpts::inline_math_cols`.
+    pub inline_cols: Vec<u16>,
+    /// Reserved cell **height** per inline-math id (parallel to [`inline_cols`]). A
+    /// value > 1 (a fraction) makes the wrapper reserve a blank spacer row below its
+    /// line. Passed to the wrapper as `WrapOpts::inline_math_rows`.
+    pub inline_rows: Vec<u16>,
     /// Reserved rows per image index, estimated up front so reflow doesn't wait
     /// on the background build.
     pub rows_estimate: Vec<u16>,
@@ -49,6 +62,9 @@ impl Default for ImageState {
         Self {
             cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAP).unwrap()),
             section_images: HashMap::new(),
+            section_inline: HashMap::new(),
+            inline_cols: Vec::new(),
+            inline_rows: Vec::new(),
             rows_estimate: Vec::new(),
             images_key: (usize::MAX, 0, 0, 0, 0, 0, media::ImageFit::default()),
             policy: media::RenderPolicy {

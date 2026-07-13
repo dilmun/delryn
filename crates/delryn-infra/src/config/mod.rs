@@ -99,10 +99,13 @@ pub const MAX_IMAGE_PX: u16 = 4096;
 pub const MIN_IMAGE_WIDTH_PCT: u16 = 20;
 pub const MAX_IMAGE_WIDTH_PCT: u16 = 100;
 
-/// Math display size, as a percent of the built-in text-relative size (100 = the
-/// ~1.2× text default). One knob for *all* equations — rendered LaTeX and publisher
-/// equation images alike — scaling them up or down together.
-pub const MIN_MATH_SCALE: u16 = 25;
+/// Math display size, as a percent of the built-in text-relative size. `100` is
+/// the floor — the built-in size, calibrated so equation glyphs match the
+/// surrounding text — so math is **never rendered smaller than the prose**; the
+/// knob only enlarges from there. One knob governs *all* display equations
+/// (rendered LaTeX and publisher equation images alike), scaling them together. A
+/// saved value below the floor (from an older build) is migrated up on load.
+pub const MIN_MATH_SCALE: u16 = 100;
 pub const MAX_MATH_SCALE: u16 = 300;
 
 /// Book-format labels in the default duplicate keep-priority (high → low). Kept as
@@ -261,9 +264,18 @@ pub struct Config {
     /// approximation, when a LaTeX source and a graphics protocol are available.
     /// Falls back to Unicode otherwise.
     pub graphical_math: bool,
-    /// Math display size as a percent of the built-in text-relative default (100 =
-    /// ~1.2× text). One knob governs *all* equations — rendered LaTeX and publisher
-    /// equation images alike — normalising them to the same text-relative size.
+    /// Render *inline* math (equations set within a line of prose) graphically too.
+    /// On by default: a short inline equation renders as a small crisp raster sized to
+    /// sit **perfectly on the line** at the surrounding text size (the display-math
+    /// look, inline). Turn it off to fall back to the natural terminal-font Unicode
+    /// approximation. Either way, a too-tall equation (a tall fraction / limit stack)
+    /// and any equation with no renderable source stay Unicode. Has no effect unless
+    /// [`graphical_math`] is on.
+    pub graphical_inline_math: bool,
+    /// Math display size as a percent of the built-in text-relative default. `100`
+    /// (the floor) sizes equation glyphs to match the prose — math is never smaller
+    /// than the surrounding text — and the knob only enlarges from there. One knob
+    /// governs *all* display equations, rendered LaTeX and publisher rasters alike.
     pub math_scale: u16,
     /// Directories scanned for the library.
     pub library_paths: Vec<String>,
@@ -335,9 +347,12 @@ impl Default for Config {
             image_mode: ImageMode::default(),
             image_fit: ImageFit::default(),
             graphical_math: true,
-            // Calibrated so equations render at a comfortable text-relative size out
-            // of the box; the knob (25–300%) tunes from here.
-            math_scale: 65,
+            // Inline equations render inline at text size (fit the line); Unicode is
+            // the fallback for too-tall / source-less math (see `graphical_inline_math`).
+            graphical_inline_math: true,
+            // 100% = the built-in text-relative size (the floor); the knob (100–300%)
+            // only enlarges, so display math is never smaller than the prose.
+            math_scale: 100,
             library_paths: Vec::new(),
             library_layout: LibLayout::List,
             library_grid_size: GridSize::Medium,
@@ -644,6 +659,36 @@ library_grid_size = "??"
         assert_eq!(back.dup_format_order, c.dup_format_order);
         assert!(!back.status.gauge);
         assert!(!back.focus_mode, "focus_mode is transient, never persisted");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A config from an older build (a `math_scale` below the new 100% floor, and no
+    /// `graphical_inline_math` field at all) is migrated on load: the size floors up
+    /// to 100 so math is never smaller than the text, and inline graphical math
+    /// defaults off (inline math stays the natural Unicode approximation).
+    #[test]
+    fn migrates_legacy_math_settings() {
+        let _g = crate::test_env_guard();
+        let dir = std::env::temp_dir().join(format!("delryn-cfg-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: serialized by `test_env_guard`; points config_dir at a scratch dir.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+
+        let path = config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "graphical_math = true\nmath_scale = 55\n").unwrap();
+
+        let c = Config::load();
+        assert_eq!(
+            c.math_scale, MIN_MATH_SCALE,
+            "a sub-floor saved size migrates up to 100%"
+        );
+        assert!(
+            c.graphical_inline_math,
+            "inline graphical math defaults on (rendered inline) when the field is absent"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

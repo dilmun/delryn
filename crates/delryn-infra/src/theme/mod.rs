@@ -168,6 +168,22 @@ impl Theme {
         ))
     }
 
+    /// The ink for inline math: body text nudged ~30% toward the heading/math
+    /// accent, so an inline equation reads as subtly distinct from the prose without
+    /// shouting (paired with italics in the view — see [`Role::MathInline`]). `None`
+    /// when the theme's `fg`/`heading` aren't concrete RGB (e.g. the `terminal`/
+    /// `auto` themes), so inline math then falls back to plain italic body text.
+    pub fn math_ink(&self) -> Option<Color> {
+        let fg = rgb_of(self.fg)?;
+        let accent = rgb_of(self.heading)?;
+        let mix = |a: u8, b: u8| (f32::from(a) * 0.70 + f32::from(b) * 0.30).round() as u8;
+        Some(Color::Rgb(
+            mix(fg[0], accent[0]),
+            mix(fg[1], accent[1]),
+            mix(fg[2], accent[2]),
+        ))
+    }
+
     /// The syntect theme name to highlight code with. A concrete-background theme
     /// trusts its configured pairing; the adaptive `auto` theme (no `bg` of its
     /// own) picks a light syntect theme when the **detected** terminal background

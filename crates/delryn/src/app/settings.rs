@@ -51,6 +51,7 @@ pub enum SettingItem {
     ImageFit,
     ImageMode,
     GraphicalMath,
+    GraphicalInlineMath,
     MathScale,
     CodeWrap,
     CodeLineNumbers,
@@ -115,6 +116,7 @@ impl SettingItem {
             SettingItem::ImageFit => "Figure sizing",
             SettingItem::ImageMode => "Image mode",
             SettingItem::GraphicalMath => "Graphical math",
+            SettingItem::GraphicalInlineMath => "Graphical inline math",
             SettingItem::MathScale => "Math size %",
             SettingItem::CodeWrap => "Wrap long lines",
             SettingItem::CodeLineNumbers => "Line numbers",
@@ -186,6 +188,7 @@ impl SettingItem {
             SettingItem::ImageFit => c.image_fit.label().to_string(),
             SettingItem::ImageMode => c.image_mode.label().to_string(),
             SettingItem::GraphicalMath => onoff(c.graphical_math),
+            SettingItem::GraphicalInlineMath => onoff(c.graphical_inline_math),
             SettingItem::MathScale => format!("{}%", c.math_scale),
             SettingItem::CodeWrap => onoff(c.code_wrap),
             SettingItem::CodeLineNumbers => onoff(c.code_line_numbers),
@@ -272,6 +275,7 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(ImageFit),
                     I(ImageMode),
                     I(GraphicalMath),
+                    I(GraphicalInlineMath),
                     I(MathScale),
                     S("Code"),
                     I(CodeWrap),
@@ -721,6 +725,7 @@ impl App {
                 }
             }
             SettingItem::GraphicalMath => c.graphical_math = !c.graphical_math,
+            SettingItem::GraphicalInlineMath => c.graphical_inline_math = !c.graphical_inline_math,
             SettingItem::MathScale => {
                 use crate::config::{MAX_MATH_SCALE, MIN_MATH_SCALE};
                 // Step in 10% increments within the allowed band.

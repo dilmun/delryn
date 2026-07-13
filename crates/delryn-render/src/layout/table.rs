@@ -115,6 +115,7 @@ fn table_row(
                     },
                     fg: None,
                     anchor: None,
+                    math: None,
                 }],
                 kind: LineKind::Table { shaded },
             }
@@ -171,6 +172,7 @@ pub(super) fn wrap_table(
                 style: Inline::default(),
                 fg: None,
                 anchor: None,
+                math: None,
             }],
             kind: LineKind::Table { shaded: false },
         });
