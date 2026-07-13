@@ -5,8 +5,8 @@
 //! typeset matrices, but sums, products, fractions, and scripted symbols come
 //! out readable in a terminal: `∑_{i=1}^{N} i²` → `∑ᵢ₌₁ᴺ i²`.
 
-use ego_tree::NodeRef;
 use delryn_model::math::{subscript_str, superscript_str};
+use ego_tree::NodeRef;
 use scraper::{Html, Node};
 
 /// Maximum MathML nesting depth walked before the transcoder stops recursing and

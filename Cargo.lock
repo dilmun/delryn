@@ -685,6 +685,126 @@ dependencies = [
 ]
 
 [[package]]
+name = "delryn"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ar-reshaper",
+ "arboard",
+ "chrono",
+ "crossterm",
+ "delryn-format",
+ "delryn-infra",
+ "delryn-library",
+ "delryn-math",
+ "delryn-media",
+ "delryn-model",
+ "delryn-online",
+ "delryn-render",
+ "delryn-store",
+ "image",
+ "lru",
+ "ratatui",
+ "ratatui-image",
+ "regex",
+ "syntect",
+ "trash",
+ "unicode-bidi",
+ "unicode-width",
+]
+
+[[package]]
+name = "delryn-format"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "delryn-model",
+ "ego-tree",
+ "epub",
+ "html2text",
+ "image",
+ "pdfium-render",
+ "regex",
+ "scraper",
+ "zip",
+]
+
+[[package]]
+name = "delryn-infra"
+version = "0.1.0"
+dependencies = [
+ "ratatui",
+ "serde",
+ "toml",
+]
+
+[[package]]
+name = "delryn-library"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "delryn-format",
+ "delryn-infra",
+ "delryn-model",
+ "delryn-store",
+]
+
+[[package]]
+name = "delryn-math"
+version = "0.1.0"
+dependencies = [
+ "delryn-infra",
+ "ratex-layout",
+ "ratex-parser",
+ "ratex-render",
+ "ratex-types",
+]
+
+[[package]]
+name = "delryn-media"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "delryn-infra",
+ "image",
+ "ratatui",
+ "ratatui-image",
+]
+
+[[package]]
+name = "delryn-model"
+version = "0.1.0"
+
+[[package]]
+name = "delryn-online"
+version = "0.1.0"
+dependencies = [
+ "delryn-infra",
+ "delryn-model",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
+name = "delryn-render"
+version = "0.1.0"
+dependencies = [
+ "delryn-model",
+ "syntect",
+ "unicode-width",
+]
+
+[[package]]
+name = "delryn-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "delryn-infra",
+ "rusqlite",
+]
+
+[[package]]
 name = "deltae"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -997,126 +1117,6 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
-
-[[package]]
-name = "delryn"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ar-reshaper",
- "arboard",
- "chrono",
- "crossterm",
- "delryn-format",
- "delryn-infra",
- "delryn-library",
- "delryn-math",
- "delryn-media",
- "delryn-model",
- "delryn-online",
- "delryn-render",
- "delryn-store",
- "image",
- "lru",
- "ratatui",
- "ratatui-image",
- "regex",
- "syntect",
- "trash",
- "unicode-bidi",
- "unicode-width",
-]
-
-[[package]]
-name = "delryn-format"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ego-tree",
- "epub",
- "delryn-model",
- "html2text",
- "image",
- "pdfium-render",
- "regex",
- "scraper",
- "zip",
-]
-
-[[package]]
-name = "delryn-infra"
-version = "0.1.0"
-dependencies = [
- "ratatui",
- "serde",
- "toml",
-]
-
-[[package]]
-name = "delryn-library"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "delryn-format",
- "delryn-infra",
- "delryn-model",
- "delryn-store",
-]
-
-[[package]]
-name = "delryn-math"
-version = "0.1.0"
-dependencies = [
- "delryn-infra",
- "ratex-layout",
- "ratex-parser",
- "ratex-render",
- "ratex-types",
-]
-
-[[package]]
-name = "delryn-media"
-version = "0.1.0"
-dependencies = [
- "base64",
- "delryn-infra",
- "image",
- "ratatui",
- "ratatui-image",
-]
-
-[[package]]
-name = "delryn-model"
-version = "0.1.0"
-
-[[package]]
-name = "delryn-online"
-version = "0.1.0"
-dependencies = [
- "delryn-infra",
- "delryn-model",
- "serde",
- "serde_json",
- "ureq",
-]
-
-[[package]]
-name = "delryn-render"
-version = "0.1.0"
-dependencies = [
- "delryn-model",
- "syntect",
- "unicode-width",
-]
-
-[[package]]
-name = "delryn-store"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "delryn-infra",
- "rusqlite",
-]
 
 [[package]]
 name = "fontconfig-parser"
