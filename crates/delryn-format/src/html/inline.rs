@@ -136,7 +136,9 @@ fn collect_inline_at(node: NodeRef<Node>, style: Inline, depth: u16, out: &mut V
                         .or_else(|| img_math_comment(node));
                     if let Some(raw) = math_raw {
                         let latex = (!delryn_model::math::is_mathml(&raw)).then(|| {
-                            delryn_model::SpanMath::Latex(delryn_model::math::strip_delimiters(&raw))
+                            delryn_model::SpanMath::Latex(delryn_model::math::strip_delimiters(
+                                &raw,
+                            ))
                         });
                         out.push(Span {
                             text: math_unicode(&raw),
