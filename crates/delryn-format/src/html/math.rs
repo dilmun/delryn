@@ -412,12 +412,18 @@ pub(super) fn native_math(node: NodeRef<Node>) -> (String, Option<String>) {
         let unicode = delryn_model::math::latex_to_unicode(&tex);
         return (unicode, Some(delryn_model::math::strip_delimiters(&tex)));
     }
-    // 3. Walk the presentation MathML (serialise the subtree, then transcode).
-    let unicode = match scraper::ElementRef::wrap(node) {
-        Some(el) => crate::mathml::to_unicode(&el.html()),
-        None => String::new(),
+    // 3. Presentation MathML only (no LaTeX equivalent): serialise the subtree, then
+    //    both transcode to Unicode (the fallback) *and* synthesise LaTeX from the tree
+    //    so the equation can still render graphically (RaTeX) instead of as lossy
+    //    Unicode — a render failure downstream falls back to that Unicode.
+    let Some(el) = scraper::ElementRef::wrap(node) else {
+        return (String::new(), None);
     };
-    (unicode, None)
+    let html = el.html();
+    (
+        crate::mathml::to_unicode(&html),
+        crate::mathml::to_latex(&html),
+    )
 }
 
 /// The text of a `<math>`'s TeX `<annotation>`, if present.

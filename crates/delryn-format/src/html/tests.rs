@@ -1058,11 +1058,16 @@ fn native_math_retains_latex_source() {
     );
     assert_eq!(first_math_latex(&annotated).as_deref(), Some(r"\alpha"));
 
-    // Presentation-MathML-only math has no LaTeX to recover → None (Unicode only).
+    // Presentation-MathML-only math (no alttext/annotation) is transpiled to LaTeX so
+    // it can still render graphically instead of as lossy Unicode.
     let mathml = parse_blocks(
         r#"<html><body><math display="block"><msup><mi>x</mi><mn>2</mn></msup></math></body></html>"#,
     );
-    assert_eq!(first_math_latex(&mathml), None);
+    let latex = first_math_latex(&mathml).expect("MathML transpiled to LaTeX");
+    assert!(
+        latex.contains("x") && latex.contains("^{2}"),
+        "presentation MathML → LaTeX superscript: {latex}"
+    );
 }
 
 #[test]
