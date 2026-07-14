@@ -394,7 +394,26 @@ fn math_structural_display(node: NodeRef<Node>) -> bool {
     }
     !parent.children().any(|c| match c.value() {
         Node::Text(t) => !t.text.trim().is_empty(),
-        Node::Element(e) => c.id() != node.id() && !matches!(e.name(), "br"),
+        // Only a sibling that carries real content disqualifies the equation from
+        // being the block's sole content. An *empty* marker element — InDesign's
+        // `<st>` story-position anchors, an empty `<a id="…">` link target, a bare
+        // `<span></span>` — must not, or a lone display equation shipped as
+        // `<p><img …/><st></st></p>` (Packt / InDesign MathTools) reads as inline.
+        Node::Element(e) => {
+            c.id() != node.id() && !matches!(e.name(), "br") && sibling_has_content(c)
+        }
+        _ => false,
+    })
+}
+
+/// Whether a sibling element carries content that should keep a math node from
+/// counting as the *sole* content of its block: any non-whitespace text, or an
+/// embedded image / media element. Empty position markers (`<st>`, an empty
+/// `<a id>` / `<span>`) carry none, so they don't disqualify the equation.
+fn sibling_has_content(node: NodeRef<Node>) -> bool {
+    node.descendants().any(|d| match d.value() {
+        Node::Text(t) => !t.text.trim().is_empty(),
+        Node::Element(e) => matches!(e.name(), "img" | "image" | "svg"),
         _ => false,
     })
 }

@@ -1229,6 +1229,36 @@ fn standalone_math_is_display_but_mid_sentence_is_inline() {
     assert!(first_math(&inline).is_none(), "mid-sentence → inline");
 }
 
+/// An empty marker element beside a lone equation (InDesign `<st>` story anchors,
+/// an empty `<a id>` link target) must NOT knock the equation off the display path.
+/// Packt / InDesign MathTools ship display equations as `<p><img …/><st></st></p>`;
+/// the empty `<st>` used to make the equation read as inline Unicode (deaf to the
+/// display Math-size knob) instead of the em-sized publisher raster.
+#[test]
+fn empty_marker_sibling_does_not_force_a_display_equation_inline() {
+    for sib in [
+        r#"<st c="7051"></st>"#,
+        r#"<a id="anchor"></a>"#,
+        "<span></span>",
+    ] {
+        let html = format!(
+            r#"<html><body><p><img src="image/98.png" alt="&lt;math display=&quot;block&quot;&gt;&lt;msub&gt;&lt;mi&gt;x&lt;/mi&gt;&lt;mi&gt;i&lt;/mi&gt;&lt;/msub&gt;&lt;/math&gt;" style="width:1.812em"/>{sib}</p></body></html>"#
+        );
+        let blocks = parse_blocks(&html);
+        let img = blocks.iter().find_map(|b| match b {
+            Block::Image {
+                src, math, width, ..
+            } => Some((src.as_str(), *math, *width)),
+            _ => None,
+        });
+        assert_eq!(
+            img,
+            Some(("image/98.png", true, ImageWidth::Em(1.812))),
+            "with sibling {sib:?}, the lone equation must be a math image, got {blocks:?}"
+        );
+    }
+}
+
 /// A container that wraps *several* display equations with no separating text must
 /// emit them all — the classifier recurses instead of collapsing to the first (which
 /// used to silently drop every equation after it).
