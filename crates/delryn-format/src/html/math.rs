@@ -339,25 +339,35 @@ fn source_display_delim(raw: &str) -> Option<bool> {
     None
 }
 
-/// If a block-level element's content is a standalone display equation, the math
-/// node inside it (native `<math>` or a math image). This is how most publishers
-/// ship display math: the equation node sits inside a `<p>`/`<div>` container, so
-/// it's found here (at the container) rather than as a direct block child. Returns
-/// the math node when it classifies as display *and* either it's the container's
-/// sole content or the container carries an equation class (so an equation-number
-/// sibling doesn't disqualify it); `None` for prose containing inline math.
+/// If a block-level element's content is a *single* standalone display equation,
+/// the math node inside it (native `<math>` or a math image). This is how most
+/// publishers ship display math: the equation node sits inside a `<p>`/`<div>`
+/// container, so it's found here (at the container) rather than as a direct block
+/// child. Returns the math node when it classifies as display *and* either it's the
+/// container's sole content or the container carries an equation class (so an
+/// equation-number sibling doesn't disqualify it); `None` for prose containing
+/// inline math, and `None` when the container holds *several* equations (letting
+/// `classify` recurse so each equation is emitted as its own block — collapsing to
+/// the first would silently drop the rest).
 pub(super) fn standalone_math_node(node: NodeRef<Node>) -> Option<NodeRef<Node>> {
     let mut math: Option<NodeRef<Node>> = None;
     let mut other_text = false;
     for d in node.descendants() {
         if is_math_node(d) {
-            if math.is_none() {
-                math = Some(d);
+            if math.is_some() {
+                // A second equation in the same container: don't collapse to the
+                // first (which would drop the rest). Recurse into the container so
+                // each equation is classified — and emitted — on its own.
+                return None;
             }
+            math = Some(d);
             continue;
         }
-        // Text *inside* the math node is its content, not sibling prose.
-        if let Node::Text(t) = d.value()
+        // Text *inside* the math node is its content, not sibling prose. Skip the
+        // ancestor walk once we've already seen prose — one non-math text node is
+        // enough to set the flag, so large prose containers aren't rescanned.
+        if !other_text
+            && let Node::Text(t) = d.value()
             && !t.text.trim().is_empty()
             && !d.ancestors().any(is_math_node)
         {

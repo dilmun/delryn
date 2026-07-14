@@ -1229,6 +1229,40 @@ fn standalone_math_is_display_but_mid_sentence_is_inline() {
     assert!(first_math(&inline).is_none(), "mid-sentence → inline");
 }
 
+/// A container that wraps *several* display equations with no separating text must
+/// emit them all — the classifier recurses instead of collapsing to the first (which
+/// used to silently drop every equation after it).
+#[test]
+fn several_display_equations_in_one_container_all_render() {
+    // Two native <math display="block"> equations, side by side in one <div>.
+    let two = parse_blocks(
+        r#"<html><body><div><math display="block" alttext="a=1"><mi>a</mi></math><math display="block" alttext="b=2"><mi>b</mi></math></div></body></html>"#,
+    );
+    let latex: Vec<_> = two
+        .iter()
+        .filter_map(|b| match b {
+            Block::Math { latex, .. } => latex.as_deref(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        latex,
+        vec!["a=1", "b=2"],
+        "both equations render, got {two:?}"
+    );
+
+    // The equation-class variant: two `EquationContent` wrappers inside one
+    // `Equation` container — each is its own display block, none dropped.
+    let wrapped = parse_blocks(
+        r#"<html><body><div class="Equation"><div class="EquationContent"><math alttext="x=1"><mi>x</mi></math></div><div class="EquationContent"><math alttext="y=2"><mi>y</mi></math></div></div></body></html>"#,
+    );
+    let n = wrapped
+        .iter()
+        .filter(|b| matches!(b, Block::Math { .. }))
+        .count();
+    assert_eq!(n, 2, "both wrapped equations render, got {wrapped:?}");
+}
+
 /// The paragraph texts, in order (skips images/rules/etc.).
 fn para_texts(blocks: &[Block]) -> Vec<String> {
     blocks
