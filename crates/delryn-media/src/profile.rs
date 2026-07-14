@@ -44,6 +44,19 @@ const MIN_BREAK_PX: f32 = 3.0;
 /// minus signs), not glyphs — excluded from the glyph-em estimate.
 const MIN_GLYPH_PX: f32 = 3.0;
 
+/// The em quantile of glyph-component heights — the text em ≈ the cap height. A high
+/// percentile is robust to JPEG fragmentation (compression shatters a glyph into many
+/// small components that drag a lower estimate far below the true size) while staying
+/// under the few tall operators (`Σ`, big parens) in the top quartile, so a sparse and
+/// a busy equation measure the same size.
+const EM_QUANTILE: f32 = 0.75;
+
+/// The most text ems tall one *counted* equation line can plausibly be. A monochrome
+/// line-drawing / illustration that slips past the sparse-ink gate spans far more than
+/// this per line, so it is rejected as a figure rather than normalised as a giant
+/// equation (its ink is not text).
+const MAX_EM_PER_LINE: f32 = 5.0;
+
 /// The measured ink geometry of an equation raster (mirrors `delryn_model::InkProfile`
 /// — this crate stays independent of the content model). Produced by [`ink_profile`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,9 +66,9 @@ pub struct InkProfile {
     pub y0: u32,
     pub x1: u32,
     pub y1: u32,
-    /// The text em in px — the base-glyph cluster height, robust to tall operators
-    /// (`Σ`, fractions) and small subscripts, so a plain line and a busy one measure
-    /// the same size.
+    /// The text em in px — the cap-height quantile of glyph heights, robust to tall
+    /// operators (`Σ`, fractions), small subscripts, and JPEG fragmentation, so a plain
+    /// line and a busy one measure the same size.
     pub line_px: f32,
     /// Ink-line count (≈ rows of a multi-line array); 1 for a single equation.
     pub line_count: u16,
@@ -110,12 +123,21 @@ pub fn ink_profile(img: &DynamicImage) -> Option<InkProfile> {
     let (x0, x1) = ink_span(&col_ink)?;
     let (y0, y1) = ink_span(&row_ink)?;
 
-    // The text em ≈ the densest cluster of glyph (connected-component) heights — the
-    // base body glyphs, apart from the small sub/superscripts and the tall operators —
-    // so it tracks the body text size, not the full bbox, and a plain line and a busy
-    // one measure the same. Fall back to the bbox height when no sizeable glyph found.
+    // The text em ≈ the cap height: a high percentile ([`EM_QUANTILE`]) of the glyph
+    // (connected-component) heights — above the small sub/superscripts and the JPEG
+    // fragments, below the few tall operators — so it tracks the body text size, not
+    // the full bbox, and a plain line and a busy one measure the same. Fall back to the
+    // bbox height when no sizeable glyph is found.
     let line_px = glyph_em(&mask, wu, x0, x1, y0, y1).unwrap_or((y1 - y0) as f32);
     let line_count = count_lines(&row_ink, y0, y1);
+
+    // Reject a monochrome *figure* — a line drawing / illustration sparse enough to pass
+    // the ink-density gate but whose ink spans far more than text. A real equation is at
+    // most [`MAX_EM_PER_LINE`] ems tall per counted line; anything taller is a picture,
+    // sized to the column as a figure, not normalised as an oversized equation.
+    if (y1 - y0) as f32 > line_px * MAX_EM_PER_LINE * f32::from(line_count.max(1)) {
+        return None;
+    }
 
     // Pad the bbox by 1px (clamped) so the crisp crop keeps antialiased edges.
     Some(InkProfile {
@@ -141,13 +163,14 @@ fn ink_span(mass: &[f32]) -> Option<(usize, usize)> {
     Some((lo, hi))
 }
 
-/// A robust estimate of the text em: the centre of the densest cluster of connected
-/// ink-component (glyph) heights (see [`cluster_centre`]). The base body glyphs are
-/// the tightest, most numerous cluster, so this ignores the small sub/superscripts and
-/// the tall operators (Σ, fractions) *however many* there are — every equation recovers
-/// the same font size and normalises consistently. Specks and thin rules (below
-/// [`MIN_GLYPH_PX`]) are dropped. 4-connected flood fill; `None` when nothing sizeable
-/// is found.
+/// A robust estimate of the text em: a high percentile ([`EM_QUANTILE`]) of the
+/// connected ink-component (glyph) heights — the cap height. A high quantile (rather
+/// than the mean/mode) is what makes a JPEG equation measure consistently: its glyphs
+/// shatter into many small fragments that would drag a lower estimate far below the true
+/// size, while the few tall operators (Σ, fractions) sit above the quantile and don't
+/// inflate it — so every equation, sparse or busy, recovers the same font size and
+/// normalises to the same on-screen size. Specks and thin rules (below [`MIN_GLYPH_PX`])
+/// are dropped. 4-connected flood fill; `None` when nothing sizeable is found.
 fn glyph_em(mask: &[bool], w: usize, x0: usize, x1: usize, y0: usize, y1: usize) -> Option<f32> {
     let mut visited = vec![false; mask.len()];
     let mut heights: Vec<f32> = Vec::new();
@@ -193,29 +216,7 @@ fn glyph_em(mask: &[bool], w: usize, x0: usize, x1: usize, y0: usize, y1: usize)
     if heights.is_empty() {
         return None;
     }
-    heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    Some(cluster_centre(&heights))
-}
-
-/// The centre of the densest cluster in an ascending, non-empty slice — the
-/// "half-sample mode". Finds the shortest window holding half the values (the tightest,
-/// most numerous group — the base glyphs) and returns its middle, so sparse outliers on
-/// either side (subscripts below, tall operators above) don't move it, regardless of
-/// how many there are.
-fn cluster_centre(sorted: &[f32]) -> f32 {
-    let n = sorted.len();
-    if n <= 2 {
-        return sorted[n / 2];
-    }
-    let half = n.div_ceil(2);
-    let mut best = (f32::INFINITY, 0usize);
-    for i in 0..=(n - half) {
-        let range = sorted[i + half - 1] - sorted[i];
-        if range < best.0 {
-            best = (range, i);
-        }
-    }
-    sorted[best.1 + half / 2]
+    Some(percentile(heights.iter().copied(), EM_QUANTILE).max(1.0))
 }
 
 /// Count the equation's ink lines: raw ink-row runs merged across small (intra-line)
@@ -299,19 +300,6 @@ mod tests {
         assert!(p.x0 >= 40 && p.x1 <= 160, "bbox tight in x: {p:?}");
     }
 
-    /// A tall operator (Σ, big parens) is a minority component the median ignores —
-    /// so the em tracks the body glyphs, keeping a busy line the same size as a plain
-    /// one. This is what makes the on-screen size consistent.
-    #[test]
-    fn cluster_centre_finds_base_glyphs() {
-        // Small subscripts (6), a dense base cluster (12), tall operators (30): the
-        // base size is recovered whether operators or subscripts dominate the extremes.
-        let subs = [6.0, 6.0, 6.0, 12.0, 12.0, 12.0, 12.0, 12.0, 30.0];
-        assert_eq!(cluster_centre(&subs), 12.0);
-        let ops = [12.0, 12.0, 12.0, 12.0, 30.0, 30.0, 30.0];
-        assert_eq!(cluster_centre(&ops), 12.0);
-    }
-
     #[test]
     fn glyph_em_ignores_tall_operators() {
         let mut img = RgbaImage::from_pixel(120, 60, Rgba([0, 0, 0, 0]));
@@ -334,6 +322,58 @@ mod tests {
             (p.line_px - 10.0).abs() <= 3.0,
             "em tracks the glyphs (~10px), not the 40px spike: {}",
             p.line_px
+        );
+    }
+
+    /// The em is the *cap* height (the tall common glyphs), not the more-numerous
+    /// x-height glyphs nor the lone tall operator — a high quantile recovers it. This is
+    /// what makes the bbox a small, consistent multiple of the em across equations.
+    #[test]
+    fn em_is_the_cap_height_not_the_x_height() {
+        let mut img = RgbaImage::from_pixel(130, 60, Rgba([0, 0, 0, 0]));
+        let mut fill = |x0: u32, y0: u32, x1: u32, y1: u32| {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+                }
+            }
+        };
+        // Six x-height glyphs (10px, the majority)…
+        for i in 0..6u32 {
+            fill(10 + i * 10, 25, 16 + i * 10, 35);
+        }
+        // …three cap-height glyphs (16px)…
+        for i in 0..3u32 {
+            fill(75 + i * 10, 19, 81 + i * 10, 35);
+        }
+        // …and one tall operator (40px).
+        fill(110, 5, 118, 45);
+        let p = ink_profile(&DynamicImage::ImageRgba8(img)).expect("an equation");
+        assert!(
+            (p.line_px - 16.0).abs() <= 3.0,
+            "em ≈ cap height (~16px), not x-height (10) or operator (40): {}",
+            p.line_px
+        );
+    }
+
+    /// A sparse monochrome *illustration* (a sketch: many small marks spread over a tall
+    /// area) passes the ink-density gate but its ink is far taller than a few text lines,
+    /// so it is rejected — sized as the figure it is, not blown up as a giant equation.
+    #[test]
+    fn sparse_illustration_is_rejected_as_a_figure() {
+        let mut img = RgbaImage::from_pixel(100, 120, Rgba([0, 0, 0, 0]));
+        for i in 0..36u32 {
+            let y = 6 + i * 3; // step < mark height → rows overlap → one "line"
+            let x = 5 + (i * 11) % 88; // scattered x → small, separate components
+            for yy in y..y + 6 {
+                for xx in x..x + 4 {
+                    img.put_pixel(xx, yy, Rgba([0, 0, 0, 255]));
+                }
+            }
+        }
+        assert!(
+            ink_profile(&DynamicImage::ImageRgba8(img)).is_none(),
+            "a tall sparse sketch is a figure, not an equation"
         );
     }
 
