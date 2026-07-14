@@ -33,12 +33,31 @@ use super::Reader;
 /// its rasters carry their own resolution and must not be sized by the previous book.
 static BOOK_EMS: Mutex<BTreeMap<usize, Vec<f32>>> = Mutex::new(BTreeMap::new());
 
+/// The book-wide reference em in effect (×100; `0` = unset), and a generation that ticks
+/// only when it *shifts meaningfully*. Early on — before the pool has enough correctly-
+/// measured equations — the reference can move as sections load; a section baked against
+/// the old value is then out of scale. The generation lets the reader cheaply notice a
+/// shift and re-decode its *off-screen* cached sections at the new size (see
+/// [`Reader::sync_graphical_math`]) so they're already right when scrolled to. For normal
+/// reading the reference is stable from the first page, so this never ticks.
+static BOOK_REF: AtomicU32 = AtomicU32::new(0);
+static BOOK_REF_GEN: AtomicU32 = AtomicU32::new(0);
+/// The generation the reader has already reacted to, so a shift drops off-screen sections
+/// exactly once (not every frame).
+static BOOK_REF_SEEN: AtomicU32 = AtomicU32::new(0);
+/// A meaningful reference shift: below this the generation doesn't tick, so tiny
+/// measurement jitter never churns the section cache.
+const BOOK_REF_SHIFT: f32 = 0.06;
+
 /// Forget the accumulated equation ems, so one book's measurements never size another's.
-/// Called when a book is opened.
+/// Called when a book is opened; also re-syncs the reaction generation so a fresh book
+/// doesn't spuriously drop its cache on the first frame.
 pub(crate) fn reset_book_ems() {
     if let Ok(mut pool) = BOOK_EMS.lock() {
         pool.clear();
     }
+    BOOK_REF.store(0, Ordering::Relaxed);
+    BOOK_REF_SEEN.store(BOOK_REF_GEN.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
 /// Whether display equations are rendered graphically (config on + graphics
@@ -281,6 +300,12 @@ fn unify_book_em(blocks: &mut [Block], section: usize) {
     let Some(reference) = book_reference(&all) else {
         return;
     };
+    // Publish the reference; tick the generation only on a meaningful move, so the reader
+    // re-decodes off-screen sections it baked against a now-stale size (not on jitter).
+    let prev = BOOK_REF.swap((reference * 100.0) as u32, Ordering::Relaxed);
+    if prev != 0 && (reference * 100.0 - prev as f32).abs() > prev as f32 * BOOK_REF_SHIFT {
+        BOOK_REF_GEN.fetch_add(1, Ordering::Relaxed);
+    }
     for b in blocks.iter_mut() {
         if let Block::Image { ink: Some(p), .. } = b {
             p.line_px = reference;
@@ -326,7 +351,27 @@ impl Reader {
             && !self.is_paged_image()
         {
             self.invalidate_sections();
+        } else {
+            self.resize_offscreen_on_ref_shift();
         }
+    }
+
+    /// When the book-wide equation em shifts (early reading, before enough equations are
+    /// pooled — see [`BOOK_REF_GEN`]), drop the cached **off-screen** sections so they
+    /// re-decode at the new shared size when scrolled to. The visible section is left
+    /// untouched, so there is no resize on screen; it self-corrects on the next revisit.
+    /// A no-op for normal reading, where the reference is stable and never ticks — and on
+    /// a paged doc, whose rasterized-page cache must never be dropped mid-view.
+    fn resize_offscreen_on_ref_shift(&mut self) {
+        let current = BOOK_REF_GEN.load(Ordering::Relaxed);
+        if current == BOOK_REF_SEEN.swap(current, Ordering::Relaxed) || self.is_paged_image() {
+            return;
+        }
+        let cur = self.section;
+        self.sections.sections.retain(|&s, _| s == cur);
+        self.sections.requested.retain(|&s| s == cur);
+        self.cont_cache.clear();
+        self.prefetch_neighbors();
     }
 
     /// Drop cached section blocks so they re-decode (and re-run the math conversion)
