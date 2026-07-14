@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/dilmun/delryn/compare/v0.2.0...v0.3.0) (2026-07-14)
+
+
+### Features
+
+* **reader:** code folding and the F/I number-badge pick-mode ([#20](https://github.com/dilmun/delryn/issues/20)) ([b7f4e20](https://github.com/dilmun/delryn/commit/b7f4e20a646ac0a05db2cf157984d1fd089e3848))
+* **reader:** DPI-independent, consistent equation & image sizing ([#22](https://github.com/dilmun/delryn/issues/22)) ([b9eaa86](https://github.com/dilmun/delryn/commit/b9eaa86807fb40c2ae247d1a4b48edd62c397fcc))
+* **reader:** fullscreen code viewer, theme-aware highlighting, and shared list nav ([#19](https://github.com/dilmun/delryn/issues/19)) ([2f984de](https://github.com/dilmun/delryn/commit/2f984de31eccd976a31ad8cc575059c994ea1138))
+* **reader:** translate looked-up words in the K panel ([6757e7e](https://github.com/dilmun/delryn/commit/6757e7e75de8145a436879a9787b8303f6dbda74))
+* **reader:** word lookup (K) — dictionary + Wikipedia popup ([e91315a](https://github.com/dilmun/delryn/commit/e91315a9d9ba347fc295a35ec93e63469a7fad06))
+
+
+### Bug Fixes
+
+* **epub:** honor CSS display:block so citation lines don't run together ([#18](https://github.com/dilmun/delryn/issues/18)) ([a6587eb](https://github.com/dilmun/delryn/commit/a6587ebf2f78b3177aefb4d75f49668cca9ec0a0))
+* **reader:** clip inline images across continuous boundaries instead of vanishing ([#21](https://github.com/dilmun/delryn/issues/21)) ([474840c](https://github.com/dilmun/delryn/commit/474840c690cc898784c3c187434f468236100062))
+
 ## [0.2.0](https://github.com/dilmun/delryn/compare/v0.1.0...v0.2.0) (2026-07-10)
 
 
