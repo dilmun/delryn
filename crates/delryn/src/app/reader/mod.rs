@@ -301,10 +301,13 @@ impl Reader {
         // owned by the section cache (see `SectionCache::new`). Seed the cache with
         // the start section's blocks, decoded inline so the first frame can wrap.
         let mut sections = SectionCache::new(doc.loader(), start);
+        // A fresh book: forget the previous book's equation ems (its rasters have their
+        // own resolution) so equation sizing is unified within this book alone.
+        math::reset_book_ems();
         let mut first = doc.load_section(start).unwrap_or_default().blocks;
         math::convert_math_blocks(&mut first);
         math::convert_inline_math(&mut first);
-        math::profile_equation_images(&mut first);
+        math::profile_equation_images(&mut first, start);
         sections.sections.insert(start, first.clone());
 
         // Paged (PDF) documents get an off-thread rasterizer for the viewport-
@@ -429,7 +432,7 @@ impl Reader {
             .unwrap_or_default();
         math::convert_math_blocks(&mut blocks);
         math::convert_inline_math(&mut blocks);
-        math::profile_equation_images(&mut blocks);
+        math::profile_equation_images(&mut blocks, section);
         self.sections.sections.insert(section, blocks.clone());
         blocks
     }

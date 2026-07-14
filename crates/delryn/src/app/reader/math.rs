@@ -14,6 +14,8 @@
 //! the background section loader (off the main thread) and the inline fetch — and
 //! delryn-math disk-caches every render, so only the first-ever render costs anything.
 
+use std::collections::BTreeMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use delryn_model::SpanMath;
@@ -21,6 +23,23 @@ use delryn_model::SpanMath;
 use crate::document::Block;
 
 use super::Reader;
+
+/// Every publisher-equation em measured so far in the *current book*, keyed by section
+/// so re-decoding a section replaces (never duplicates) its contribution. Pooled
+/// **book-wide** because a whole section can be uniformly mis-measured — a page of
+/// `1/n Σ` error metrics, every one undershot, has no well-measured neighbour to level
+/// against — so the rest of the book's correctly-measured equations set the shared size
+/// instead (see [`unify_book_em`]). Reset when a new book opens ([`reset_book_ems`]);
+/// its rasters carry their own resolution and must not be sized by the previous book.
+static BOOK_EMS: Mutex<BTreeMap<usize, Vec<f32>>> = Mutex::new(BTreeMap::new());
+
+/// Forget the accumulated equation ems, so one book's measurements never size another's.
+/// Called when a book is opened.
+pub(crate) fn reset_book_ems() {
+    if let Ok(mut pool) = BOOK_EMS.lock() {
+        pool.clear();
+    }
+}
 
 /// Whether display equations are rendered graphically (config on + graphics
 /// available). Read on every decoded section.
@@ -176,7 +195,7 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
 /// delryn's *own* LaTeX renders (from [`convert_math_blocks`]) carry an empty `src`
 /// and are sized by their render em — they are skipped. A figure or photo that slips
 /// through the candidate gate profiles to `None` and is then sized as a figure.
-pub(crate) fn profile_equation_images(blocks: &mut [Block]) {
+pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
@@ -223,39 +242,63 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block]) {
             line_count: p.line_count,
         });
     }
-    unify_section_em(blocks);
+    unify_book_em(blocks, section);
 }
 
-/// Give every publisher equation in the section one shared text em, so they all scale
-/// to the same on-screen size. All display equations in a book share one font size, so
-/// unifying them is correct — and it rescues the ones whose glyph measurement misreads.
+/// Give the book's publisher equations one shared text em, so they all scale to the same
+/// on-screen size across the whole book. All display equations in a book share one font
+/// size, so unifying is correct — and it rescues the ones whose glyph measurement
+/// misreads. This section's ems join the book-wide pool ([`BOOK_EMS`]); the shared
+/// reference is drawn from **every** equation seen so far, then applied to this section.
 ///
-/// The reference is the **upper-quartile (p75) em, not the median**, because the
+/// The reference is the pool's **upper-quartile (p75) em, not the median**, because the
 /// measurement only ever errs *low*: a fraction-heavy equation (`1/n Σ`, `x̄ ± Z(σ/√n)`)
 /// is mostly small numerator/denominator/limit glyphs, so its handful of full-height cap
-/// letters are a minority the cap-height estimate can undershoot. The plain equations
-/// measure the true em, so biasing to the upper quartile snaps the undershooting ones up
-/// to the correct shared size instead of dragging the whole section down to their misread
-/// (which a median would do). Needs a few equations to be meaningful; below that, each
-/// keeps its own measurement.
-fn unify_section_em(blocks: &mut [Block]) {
-    let mut ems: Vec<f32> = blocks
+/// letters are a minority the cap-height estimate undershoots. Book-wide pooling plus the
+/// high quantile means even a section that is *entirely* such equations (a page of error
+/// metrics) is snapped up to the size the book's correctly-measured equations agree on,
+/// instead of being levelled to its own misreads (a per-section median did the latter —
+/// the whole page rendered oversized). Below a few samples the pool isn't meaningful yet,
+/// so each equation keeps its own measurement.
+fn unify_book_em(blocks: &mut [Block], section: usize) {
+    let section_ems: Vec<f32> = blocks
         .iter()
         .filter_map(|b| match b {
             Block::Image { ink: Some(p), .. } => Some(p.line_px),
             _ => None,
         })
         .collect();
-    if ems.len() < 3 {
+    let Ok(mut pool) = BOOK_EMS.lock() else {
+        return;
+    };
+    if section_ems.is_empty() {
+        pool.remove(&section);
         return;
     }
-    ems.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let reference = ems[(ems.len() * 3) / 4];
+    pool.insert(section, section_ems);
+    let all: Vec<f32> = pool.values().flatten().copied().collect();
+    drop(pool); // release before touching the blocks
+    let Some(reference) = book_reference(&all) else {
+        return;
+    };
     for b in blocks.iter_mut() {
         if let Block::Image { ink: Some(p), .. } = b {
             p.line_px = reference;
         }
     }
+}
+
+/// The shared equation em from a pool of measured ems: the **upper quartile** — biased
+/// high because the ink measurement only ever errs *low* (see [`unify_book_em`]) — so
+/// undershooting equations are levelled *up* to the size the correctly-measured majority
+/// agree on. `None` below a few samples, where the pool isn't yet meaningful.
+fn book_reference(ems: &[f32]) -> Option<f32> {
+    if ems.len() < 3 {
+        return None;
+    }
+    let mut sorted = ems.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(sorted[(sorted.len() * 3) / 4])
 }
 
 impl Reader {
@@ -475,7 +518,7 @@ mod tests {
 
         // Off → nothing profiled.
         ENABLED.store(false, Ordering::Relaxed);
-        profile_equation_images(&mut blocks);
+        profile_equation_images(&mut blocks, 0);
         assert!(
             matches!(&blocks[0], Block::Image { ink: None, .. }),
             "off: not profiled"
@@ -484,7 +527,7 @@ mod tests {
         // On → both publisher equations are measured; the figure and delryn's own
         // render are left alone.
         ENABLED.store(true, Ordering::Relaxed);
-        profile_equation_images(&mut blocks);
+        profile_equation_images(&mut blocks, 0);
         let ink = |b: &Block| matches!(b, Block::Image { ink: Some(_), .. });
         assert!(ink(&blocks[0]), "uncaptioned equation image is profiled");
         assert!(
@@ -500,38 +543,19 @@ mod tests {
         ENABLED.store(false, Ordering::Relaxed); // don't leak to other tests
     }
 
-    /// The section pass levels a mis-measured outlier to the shared upper-quartile em, so
-    /// an equation the cap-height estimate undershot can't render out of scale with its
-    /// neighbours — biased to the higher (correct) measurements since the error is one-way.
+    /// The shared reference is the pool's upper quartile, so a mis-measured (undershot)
+    /// equation is levelled *up* to what the correctly-measured majority agree on — not
+    /// the median, which a page of uniformly-undershot equations would drag down.
     #[test]
-    fn unify_section_em_levels_an_outlier() {
-        let eq = |line_px: f32| Block::Image {
-            src: "e.png".into(),
-            alt: String::new(),
-            data: vec![1],
-            caption: Vec::new(),
-            math: true,
-            width: delryn_model::ImageWidth::Auto,
-            ink: Some(delryn_model::InkProfile {
-                x0: 0,
-                y0: 0,
-                x1: 100,
-                y1: 20,
-                line_px,
-                line_count: 1,
-            }),
-        };
-        // Three well-measured equations (~20px em) and one that misread far too small.
-        let mut blocks = vec![eq(20.0), eq(21.0), eq(19.0), eq(6.0)];
-        unify_section_em(&mut blocks);
-        for b in &blocks {
-            let Block::Image { ink: Some(p), .. } = b else {
-                unreachable!()
-            };
-            assert_eq!(
-                p.line_px, 21.0,
-                "all share the upper-quartile em; the undershot outlier is levelled up"
-            );
-        }
+    fn book_reference_biases_to_the_upper_quartile() {
+        // Three well-measured (~20px) equations and one undershot outlier (6px).
+        assert_eq!(book_reference(&[20.0, 21.0, 19.0, 6.0]), Some(21.0));
+        // A whole page of undershot metrics next to the book's correct ones snaps up.
+        assert_eq!(
+            book_reference(&[17.0, 17.0, 18.0, 24.0, 24.0, 24.0, 24.0]),
+            Some(24.0)
+        );
+        // Below a few samples the pool isn't meaningful yet.
+        assert_eq!(book_reference(&[20.0, 20.0]), None);
     }
 }
