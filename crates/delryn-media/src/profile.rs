@@ -44,12 +44,19 @@ const MIN_BREAK_PX: f32 = 3.0;
 /// minus signs), not glyphs — excluded from the glyph-em estimate.
 const MIN_GLYPH_PX: f32 = 3.0;
 
-/// The em quantile of glyph-component heights — the text em ≈ the cap height. A high
-/// percentile is robust to JPEG fragmentation (compression shatters a glyph into many
-/// small components that drag a lower estimate far below the true size) while staying
-/// under the few tall operators (`Σ`, big parens) in the top quartile, so a sparse and
-/// a busy equation measure the same size.
-const EM_QUANTILE: f32 = 0.75;
+/// The em quantile of the *glyph* component heights (after the tall operators are
+/// dropped, see [`OPERATOR_EM_RATIO`]) — the text em ≈ the cap height. A high percentile
+/// is robust to JPEG fragmentation (compression shatters a glyph into many small
+/// components that would drag a lower estimate far below the true size) and to the small
+/// sub/superscript limits (∫/Σ bounds) that pull a plain p75 estimate down, so a plain
+/// and a limit-heavy equation measure the same cap height.
+const EM_QUANTILE: f32 = 0.90;
+
+/// A connected component taller than this multiple of the *median* component height is a
+/// tall operator (`Σ`, `∫`, a big fence, a fraction's full span), not a glyph — dropped
+/// before the cap-height quantile so it can't inflate the em. Everything at or below it
+/// is a glyph (base, cap, or subscript).
+const OPERATOR_EM_RATIO: f32 = 2.0;
 
 /// The most text ems tall one *counted* equation line can plausibly be. A monochrome
 /// line-drawing / illustration that slips past the sparse-ink gate spans far more than
@@ -216,7 +223,14 @@ fn glyph_em(mask: &[bool], w: usize, x0: usize, x1: usize, y0: usize, y1: usize)
     if heights.is_empty() {
         return None;
     }
-    Some(percentile(heights.iter().copied(), EM_QUANTILE).max(1.0))
+    // Drop the tall operators (a few components far above the typical glyph — Σ, ∫, big
+    // fences) so they can't inflate the em, then take the cap-height quantile of the
+    // glyphs that remain. The quantile is above the small subscript/limit glyphs, so a
+    // plain equation and one dominated by ∫/Σ bounds recover the same cap height.
+    let median = percentile(heights.iter().copied(), 0.5);
+    let cut = median * OPERATOR_EM_RATIO;
+    let em = percentile(heights.iter().copied().filter(|&h| h <= cut), EM_QUANTILE);
+    Some(em.max(1.0))
 }
 
 /// Count the equation's ink lines: raw ink-row runs merged across small (intra-line)
