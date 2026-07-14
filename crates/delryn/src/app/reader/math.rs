@@ -226,13 +226,18 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block]) {
     unify_section_em(blocks);
 }
 
-/// Give every publisher equation in the section one shared text em — the median of
-/// their measured ems — so they all scale to the same on-screen size. A single
-/// equation whose glyph measurement misreads (e.g. one so subscript-dominated that the
-/// tiny subscripts form the densest height cluster) then can't blow up out of line: the
-/// median across the section's equations rejects it. All display equations in a book
-/// share one font size, so unifying them is correct. Needs a few equations for the
-/// median to reject an outlier; below that, each keeps its own measurement.
+/// Give every publisher equation in the section one shared text em, so they all scale
+/// to the same on-screen size. All display equations in a book share one font size, so
+/// unifying them is correct — and it rescues the ones whose glyph measurement misreads.
+///
+/// The reference is the **upper-quartile (p75) em, not the median**, because the
+/// measurement only ever errs *low*: a fraction-heavy equation (`1/n Σ`, `x̄ ± Z(σ/√n)`)
+/// is mostly small numerator/denominator/limit glyphs, so its handful of full-height cap
+/// letters are a minority the cap-height estimate can undershoot. The plain equations
+/// measure the true em, so biasing to the upper quartile snaps the undershooting ones up
+/// to the correct shared size instead of dragging the whole section down to their misread
+/// (which a median would do). Needs a few equations to be meaningful; below that, each
+/// keeps its own measurement.
 fn unify_section_em(blocks: &mut [Block]) {
     let mut ems: Vec<f32> = blocks
         .iter()
@@ -245,7 +250,7 @@ fn unify_section_em(blocks: &mut [Block]) {
         return;
     }
     ems.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let reference = ems[ems.len() / 2];
+    let reference = ems[(ems.len() * 3) / 4];
     for b in blocks.iter_mut() {
         if let Block::Image { ink: Some(p), .. } = b {
             p.line_px = reference;
@@ -495,8 +500,9 @@ mod tests {
         ENABLED.store(false, Ordering::Relaxed); // don't leak to other tests
     }
 
-    /// The section pass levels a mis-measured outlier to the shared (median) em, so one
-    /// subscript-dominated equation can't render out of scale with its neighbours.
+    /// The section pass levels a mis-measured outlier to the shared upper-quartile em, so
+    /// an equation the cap-height estimate undershot can't render out of scale with its
+    /// neighbours — biased to the higher (correct) measurements since the error is one-way.
     #[test]
     fn unify_section_em_levels_an_outlier() {
         let eq = |line_px: f32| Block::Image {
@@ -523,8 +529,8 @@ mod tests {
                 unreachable!()
             };
             assert_eq!(
-                p.line_px, 20.0,
-                "all share the median em; the outlier is levelled"
+                p.line_px, 21.0,
+                "all share the upper-quartile em; the undershot outlier is levelled up"
             );
         }
     }
