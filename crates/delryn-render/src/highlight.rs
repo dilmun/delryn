@@ -72,6 +72,7 @@ pub fn highlight_code(
                         },
                         fg: Some((c.r, c.g, c.b)),
                         anchor: None,
+                        math: None,
                     });
                 }
             }
@@ -83,6 +84,7 @@ pub fn highlight_code(
                 },
                 fg: None,
                 anchor: None,
+                math: None,
             }),
         }
         out.push(runs);

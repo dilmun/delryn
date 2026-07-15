@@ -57,10 +57,15 @@ pub(super) fn profile() -> &'static ToolchainProfile {
 /// wrappers, generic `math`/`equation` classes. Publisher-agnostic.
 pub(super) const MATH_CLASS_KEYWORDS: &[&str] = &["math", "equation"];
 
-/// The extra class substring that, in addition to [`MATH_CLASS_KEYWORDS`], marks
-/// a *display* (block) equation — so a `class="display"` equation on its own line
-/// renders as a block while inline math stays inline.
-pub(super) const DISPLAY_MATH_CLASS_KEYWORD: &str = "display";
+/// Class substrings (matched anywhere, case-insensitively) marking a math
+/// container as **inline** — checked first, so `InlineEquation` (Springer),
+/// `math inline` (Pandoc), `inline-formula` (JATS) aren't read as display.
+pub(super) const INLINE_MATH_CLASS_KEYWORDS: &[&str] = &["inline"];
+
+/// Class substrings marking a math container as **display** (block): an equation /
+/// formula wrapper — Springer `Equation`/`EquationContent`, Pandoc `math display`,
+/// JATS `disp-formula`. Consulted only after [`INLINE_MATH_CLASS_KEYWORDS`].
+pub(super) const DISPLAY_MATH_CLASS_KEYWORDS: &[&str] = &["disp", "display", "equation", "formula"];
 
 // ── Print-chrome / ToC class vocabularies (read by `dom.rs`) ──────────────────
 

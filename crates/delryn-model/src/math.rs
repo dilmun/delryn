@@ -24,7 +24,7 @@ pub fn is_mathml(s: &str) -> bool {
 }
 
 pub fn latex_to_unicode(raw: &str) -> String {
-    let mut s = strip_delims(raw.trim());
+    let mut s = strip_delimiters(raw.trim());
     s = s
         .replace("&amp;", "&")
         .replace("&lt;", "<")
@@ -59,8 +59,32 @@ pub fn latex_to_unicode(raw: &str) -> String {
             "boldsymbol",
             "mbox",
             "operatorname",
+            // Accents / over-under decorations: keep the base, drop the decoration
+            // (a terminal can't stack a bar/hat), so `\overline{pq}` → `pq`.
+            "overline",
+            "underline",
+            "widehat",
+            "widetilde",
+            "overbrace",
+            "underbrace",
+            "overrightarrow",
+            "overleftarrow",
+            "hat",
+            "bar",
+            "vec",
+            "tilde",
+            "dot",
+            "ddot",
+            "check",
+            "acute",
+            "grave",
+            "breve",
         ],
     );
+    // Spacing commands with a dimension (`\kern0.125em`, `\hspace{2pt}`) and
+    // delimiter-size / bookkeeping noise (`\big`, `\limits`, `\nonumber`) — removed
+    // word-boundary-aware so `\bigcap` / `\overline` aren't corrupted.
+    s = strip_tex_noise(&s);
     s = s.replace("{,}", ","); // protected thousands separator
     s = s.replace("\\\\", "\n"); // row break
     s = s.replace('&', " "); // column separator
@@ -74,15 +98,21 @@ pub fn latex_to_unicode(raw: &str) -> String {
     ] {
         s = s.replace(pat, rep);
     }
+    s = replace_over(&s); // TeX infix fraction `{a \over b}` → `a / b`
     s = fracs(&s);
     s = replace_symbols(&s);
     s = scripts(&s);
     s = s.replace(['{', '}'], "");
-    s = drop_backslashes(&s);
+    // Any command left unmapped (a rare macro, `\BigVert`, a custom `\newcommand`)
+    // is dropped whole rather than leaking its name as literal text.
+    s = strip_leftover_commands(&s);
     collapse_ws(&s)
 }
 
-fn strip_delims(s: &str) -> String {
+/// Strip the outer math delimiters (`$$…$$`, `\[…\]`, `\(…\)`, `$…$`) from a math
+/// source, returning the bare body. Public so the parser can hand RaTeX clean
+/// LaTeX (the renderer wants the body, not the delimiters).
+pub fn strip_delimiters(s: &str) -> String {
     let s = s.trim();
     for (open, close) in [("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$")] {
         if s.len() >= open.len() + close.len() && s.starts_with(open) && s.ends_with(close) {
@@ -438,8 +468,169 @@ fn superscript(c: char) -> Option<char> {
     })
 }
 
-fn drop_backslashes(s: &str) -> String {
-    s.chars().filter(|&c| c != '\\').collect()
+/// Drop any leftover `\command` (letters after a backslash) entirely — an unmapped
+/// symbol or macro vanishes instead of leaking its bare name (`\mid` never becomes
+/// "mid"). A backslash before a non-letter (`\{`, `\_`, `\%`) keeps the escaped
+/// character. Runs last, after symbol replacement, so only unknowns remain.
+fn strip_leftover_commands(s: &str) -> String {
+    let ch: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < ch.len() {
+        if ch[i] == '\\' {
+            let mut j = i + 1;
+            if j < ch.len() && ch[j].is_ascii_alphabetic() {
+                while j < ch.len() && ch[j].is_ascii_alphabetic() {
+                    j += 1; // drop the whole command name
+                }
+            } else if j < ch.len() {
+                out.push(ch[j]); // escaped literal: keep the character
+                j += 1;
+            }
+            i = j;
+        } else {
+            out.push(ch[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Commands taking a dimension (`\kern0.125em`) — removed with their argument.
+const DIM_CMDS: &[&str] = &[
+    "kern", "mkern", "hskip", "mskip", "hspace", "vspace", "raise", "lower",
+];
+
+/// Argument-less noise: delimiter sizers and script/number bookkeeping — removed
+/// (their operand, e.g. the `(` after `\big`, stays).
+const NOISE_CMDS: &[&str] = &[
+    "bigl",
+    "bigr",
+    "biggl",
+    "biggr",
+    "Bigl",
+    "Bigr",
+    "Biggl",
+    "Biggr",
+    "bigm",
+    "Bigm",
+    "biggm",
+    "Biggm",
+    "big",
+    "Big",
+    "bigg",
+    "Bigg",
+    "limits",
+    "nolimits",
+    "displaystyle",
+    "textstyle",
+    "scriptstyle",
+    "scriptscriptstyle",
+    "nonumber",
+    "notag",
+    "mathstrut",
+    "strut",
+    "mathord",
+    "mathbin",
+    "mathrel",
+    "mathop",
+];
+
+/// Strip spacing-with-dimension and delimiter-size / bookkeeping commands,
+/// word-boundary-aware: only a whole `\name` matches, so `\bigcap` and `\overline`
+/// (real symbols) survive to [`replace_symbols`]. A [`DIM_CMDS`] command also
+/// consumes a following `{group}` or a bare dimension (`0.125em`, `2pt`, `3mu`).
+fn strip_tex_noise(s: &str) -> String {
+    let ch: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < ch.len() {
+        if ch[i] != '\\' || i + 1 >= ch.len() || !ch[i + 1].is_ascii_alphabetic() {
+            out.push(ch[i]);
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut j = start;
+        while j < ch.len() && ch[j].is_ascii_alphabetic() {
+            j += 1;
+        }
+        let name: String = ch[start..j].iter().collect();
+        if DIM_CMDS.contains(&name.as_str()) {
+            i = skip_dimension(&ch, j);
+        } else if NOISE_CMDS.contains(&name.as_str()) {
+            i = j;
+        } else {
+            out.extend(&ch[i..j]); // keep the command for later passes
+            i = j;
+        }
+    }
+    out
+}
+
+/// From index `k`, skip optional whitespace then a dimension argument — a
+/// `{…}` brace group, or a `[+-]?digits[.digits]?<unit-letters>` run — and return
+/// the index after it. Used to remove a spacing command's operand.
+fn skip_dimension(ch: &[char], k: usize) -> usize {
+    let mut i = k;
+    while i < ch.len() && ch[i] == ' ' {
+        i += 1;
+    }
+    if i < ch.len() && ch[i] == '{' {
+        let mut depth = 0;
+        while i < ch.len() {
+            match ch[i] {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    i += 1;
+                    if depth == 0 {
+                        return i;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        return i;
+    }
+    // A bare dimension: sign, digits, optional fraction, then unit letters.
+    if i < ch.len() && (ch[i] == '+' || ch[i] == '-') {
+        i += 1;
+    }
+    let num_start = i;
+    while i < ch.len() && (ch[i].is_ascii_digit() || ch[i] == '.') {
+        i += 1;
+    }
+    if i == num_start {
+        return k; // not a dimension after all — leave it
+    }
+    while i < ch.len() && ch[i].is_ascii_alphabetic() {
+        i += 1; // unit (em, ex, pt, mu, px, …)
+    }
+    i
+}
+
+/// Replace the TeX infix fraction command `\over` (word-boundary only, so
+/// `\overline`/`\overbrace` are untouched) with a readable ` / `.
+fn replace_over(s: &str) -> String {
+    let ch: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < ch.len() {
+        if ch[i] == '\\' && ch[i + 1..].starts_with(&['o', 'v', 'e', 'r']) {
+            let after = i + 5;
+            if after >= ch.len() || !ch[after].is_ascii_alphabetic() {
+                out.push_str(" / ");
+                i = after;
+                continue;
+            }
+        }
+        out.push(ch[i]);
+        i += 1;
+    }
+    out
 }
 
 fn collapse_ws(s: &str) -> String {
@@ -453,6 +644,46 @@ fn collapse_ws(s: &str) -> String {
 }
 
 const SYMBOLS: &[(&str, &str)] = &[
+    // Vertical bars / norms (cardinality, absolute value, matrix norms).
+    ("\\lvert", "|"),
+    ("\\rvert", "|"),
+    ("\\vert", "|"),
+    ("\\mid", "|"),
+    ("\\nmid", "∤"),
+    ("\\lVert", "‖"),
+    ("\\rVert", "‖"),
+    ("\\Vert", "‖"),
+    ("\\|", "‖"),
+    ("\\parallel", "∥"),
+    // Big operators (∑/∏ already below; these round out the family).
+    ("\\bigcap", "⋂"),
+    ("\\bigcup", "⋃"),
+    ("\\bigsqcup", "⨆"),
+    ("\\bigvee", "⋁"),
+    ("\\bigwedge", "⋀"),
+    ("\\bigoplus", "⨁"),
+    ("\\bigotimes", "⨂"),
+    ("\\bigodot", "⨀"),
+    ("\\biguplus", "⨄"),
+    // Upright ("var") capital Greek used by some LaTeX math fonts.
+    ("\\varGamma", "Γ"),
+    ("\\varDelta", "Δ"),
+    ("\\varTheta", "Θ"),
+    ("\\varLambda", "Λ"),
+    ("\\varXi", "Ξ"),
+    ("\\varPi", "Π"),
+    ("\\varSigma", "Σ"),
+    ("\\varUpsilon", "Υ"),
+    ("\\varPhi", "Φ"),
+    ("\\varPsi", "Ψ"),
+    ("\\varOmega", "Ω"),
+    // Lowercase Greek variant glyphs.
+    ("\\varepsilon", "ε"),
+    ("\\vartheta", "ϑ"),
+    ("\\varpi", "ϖ"),
+    ("\\varrho", "ϱ"),
+    ("\\varsigma", "ς"),
+    ("\\varphi", "φ"),
     ("\\times", "×"),
     ("\\cdot", "·"),
     ("\\div", "÷"),
@@ -537,3 +768,52 @@ const SYMBOLS: &[(&str, &str)] = &[
     ("\\Psi", "Ψ"),
     ("\\Omega", "Ω"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::{latex_to_unicode, strip_delimiters};
+
+    /// The Unicode fallback never leaks LaTeX macro *names* — a command it can't
+    /// map to a glyph is dropped, not spelled out. Regression for the real-book
+    /// garbling (`\mid`→"mid", `\kern0.125em`→"kern0.125em", `\BigVert`→"BigVert").
+    #[test]
+    fn fallback_never_leaks_command_names() {
+        let cases = [
+            (r"\mid A \cap B \mid", "| A ∩ B |"),
+            (r"(1-\alpha)\kern0.125em \mid B \mid", "(1-α) | B |"),
+            (r"\sqrt{|A| \Big\Vert |B|}", "√|A| ‖ |B|"),
+            (r"{P(A\cap B) \over P(B)}", "P(A∩ B) / P(B)"),
+            (r"\varDelta x", "Δ x"),
+            (r"\overline{pq}", "pq"),
+            (r"\bigcap_{i} A_i", "⋂ᵢ Aᵢ"),
+        ];
+        for (tex, want) in cases {
+            let got = latex_to_unicode(tex);
+            assert_eq!(got, want, "latex_to_unicode({tex:?})");
+            // No bare LaTeX command name survives as prose.
+            for leak in ["mid", "kern", "Vert", "over", "varDelta", "big", "frac"] {
+                assert!(!got.contains(leak), "{tex:?} leaked {leak:?}: {got:?}");
+            }
+        }
+    }
+
+    /// A spacing command's dimension argument is consumed whole (`\hspace{2pt}`,
+    /// `\kern-3mu`), and a word-boundary keeps `\bigcap`/`\overline` intact.
+    #[test]
+    fn strips_dimensions_and_respects_word_boundaries() {
+        assert_eq!(latex_to_unicode(r"a\hspace{2pt}b"), "ab");
+        assert_eq!(latex_to_unicode(r"a\kern-3mu b"), "a b");
+        // `\big(` drops the sizer but keeps the delimiter it sized.
+        assert_eq!(latex_to_unicode(r"\big( x \big)"), "( x )");
+    }
+
+    /// Delimiter stripping exposes the bare body for the renderer.
+    #[test]
+    fn strips_outer_delimiters() {
+        assert_eq!(strip_delimiters(r"$$ \frac12 $$"), r"\frac12");
+        assert_eq!(strip_delimiters(r"\( x^2 \)"), "x^2");
+        assert_eq!(strip_delimiters(r"\[ a+b \]"), "a+b");
+        assert_eq!(strip_delimiters("$y$"), "y");
+        assert_eq!(strip_delimiters("no delims"), "no delims");
+    }
+}

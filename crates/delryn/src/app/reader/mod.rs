@@ -301,9 +301,13 @@ impl Reader {
         // owned by the section cache (see `SectionCache::new`). Seed the cache with
         // the start section's blocks, decoded inline so the first frame can wrap.
         let mut sections = SectionCache::new(doc.loader(), start);
+        // A fresh book: forget the previous book's equation ems (its rasters have their
+        // own resolution) so equation sizing is unified within this book alone.
+        math::reset_book_ems();
         let mut first = doc.load_section(start).unwrap_or_default().blocks;
         math::convert_math_blocks(&mut first);
-        math::profile_equation_images(&mut first);
+        math::convert_inline_math(&mut first);
+        math::profile_equation_images(&mut first, start);
         sections.sections.insert(start, first.clone());
 
         // Paged (PDF) documents get an off-thread rasterizer for the viewport-
@@ -427,7 +431,8 @@ impl Reader {
             .map(|s| s.blocks)
             .unwrap_or_default();
         math::convert_math_blocks(&mut blocks);
-        math::profile_equation_images(&mut blocks);
+        math::convert_inline_math(&mut blocks);
+        math::profile_equation_images(&mut blocks, section);
         self.sections.sections.insert(section, blocks.clone());
         blocks
     }
@@ -770,12 +775,15 @@ impl Reader {
     /// the one place the [`WrapOpts`] are assembled, shared by the anchor section
     /// ([`ensure_wrapped`](Self::ensure_wrapped)) and the continuous-scroll buffer.
     fn wrap_at(&self, blocks: &[Block], width: usize) -> Vec<DisplayLine> {
-        // Per-block fold overrides are section-local, so they apply to the anchor.
+        // Per-block fold overrides and inline-math atom widths are section-local, so
+        // they apply to the anchor section (its `blocks`).
         self.wrap_at_with_rows(
             blocks,
             width,
             &self.images.rows_estimate,
             &self.code_fold_flip,
+            self.images.inline_cols.as_slice(),
+            self.images.inline_rows.as_slice(),
         )
     }
 
@@ -790,6 +798,8 @@ impl Reader {
         width: usize,
         image_rows: &[u16],
         flip: &[usize],
+        inline_math_cols: &[u16],
+        inline_math_rows: &[u16],
     ) -> Vec<DisplayLine> {
         wrap_blocks(
             blocks,
@@ -808,6 +818,8 @@ impl Reader {
                 table_wrap: self.table_wrap,
                 justify: self.justify,
                 tidy_spacing: self.tidy_spacing,
+                inline_math_cols,
+                inline_math_rows,
             },
             image_rows,
         )
@@ -1458,16 +1470,18 @@ mod tests {
                 .expect("a rendered math image")
         };
 
-        r.sync_graphical_math(true, 16, 100);
-        let big = dims(&mut r);
-        r.sync_graphical_math(true, 16, 50);
+        // The knob only enlarges from the 100% floor, so compare the floor against a
+        // larger setting (inline rasterising left off — irrelevant to display math).
+        r.sync_graphical_math(true, false, 16, 100);
         let small = dims(&mut r);
-        r.sync_graphical_math(false, 16, 100); // reset ENABLED so it doesn't leak
+        r.sync_graphical_math(true, false, 16, 200);
+        let big = dims(&mut r);
+        r.sync_graphical_math(false, false, 16, 100); // reset ENABLED so it doesn't leak
         let _ = std::fs::remove_dir_all(&tmp);
 
         assert!(
-            small.1 < big.1,
-            "50% math size must render shorter than 100%: {small:?} vs {big:?}"
+            big.1 > small.1,
+            "200% math size must render taller than the 100% floor: {big:?} vs {small:?}"
         );
     }
 
@@ -1662,6 +1676,7 @@ mod tests {
         use crate::media::{ImageFit, ImgKey, Ink, RenderPolicy};
         let mut r = reader_with(vec![]);
         let key = ImgKey {
+            kind: crate::media::ImgSlot::Figure,
             section: 0,
             idx: 0,
             avail: 40,

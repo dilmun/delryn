@@ -53,7 +53,8 @@ impl SectionCache {
                     // (disk-cached), so the section arrives ready to wrap.
                     let mut blocks = loader.load(index);
                     crate::app::reader::math::convert_math_blocks(&mut blocks);
-                    crate::app::reader::math::profile_equation_images(&mut blocks);
+                    crate::app::reader::math::convert_inline_math(&mut blocks);
+                    crate::app::reader::math::profile_equation_images(&mut blocks, index);
                     (index, Some(blocks))
                 };
                 if res_tx.send(msg).is_err() {

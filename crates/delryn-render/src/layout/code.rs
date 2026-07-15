@@ -95,6 +95,7 @@ fn emit_fold_marker(
         },
         fg: None,
         anchor: None,
+        math: None,
     }];
     pad_to_width(&mut runs, width);
     out.push(DisplayLine {
@@ -115,6 +116,7 @@ fn emit_label(name: &str, width: usize, code_idx: usize, out: &mut Vec<DisplayLi
             style: Inline::default(),
             fg: None,
             anchor: None,
+            math: None,
         });
     }
     runs.push(Run {
@@ -126,6 +128,7 @@ fn emit_label(name: &str, width: usize, code_idx: usize, out: &mut Vec<DisplayLi
         },
         fg: None,
         anchor: None,
+        math: None,
     });
     pad_to_width(&mut runs, width);
     out.push(DisplayLine {
@@ -152,6 +155,7 @@ fn emit_wrapped_line(
             style: Inline::default(),
             fg: None,
             anchor: None,
+            math: None,
         }];
         full.append(&mut line_runs);
         pad_to_width(&mut full, width);
@@ -177,6 +181,7 @@ fn emit_panned_line(
         style: Inline::default(),
         fg: None,
         anchor: None,
+        math: None,
     }];
     full.extend(shift_runs(runs, hscroll, avail));
     pad_to_width(&mut full, width);
@@ -197,6 +202,7 @@ fn pad_to_width(runs: &mut Vec<Run>, width: usize) {
             style: Inline::default(),
             fg: None,
             anchor: None,
+            math: None,
         });
     }
 }
@@ -230,6 +236,7 @@ fn shift_runs(runs: Vec<Run>, skip: usize, avail: usize) -> Vec<Run> {
                 style: run.style,
                 fg: run.fg,
                 anchor: None,
+                math: None,
             });
         }
     }
@@ -257,6 +264,7 @@ fn pack_runs(runs: Vec<Run>, avail: usize) -> Vec<Vec<Run>> {
                 style: run.style,
                 fg: run.fg,
                 anchor: None,
+                math: None,
             });
             len += take;
             idx += take;

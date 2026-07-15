@@ -29,7 +29,7 @@ use width::{display_width, truncate_to_width};
 pub type Rgb = (u8, u8, u8);
 
 /// A styled run of text within a display line.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Run {
     pub text: String,
     pub style: Inline,
@@ -39,6 +39,11 @@ pub struct Run {
     /// link), so the reader's link cursor can locate and follow it. `None` for
     /// ordinary text and all non-prose runs (code, table, prefixes…).
     pub anchor: Option<Anchor>,
+    /// The section-local id of an atomic inline-math image occupying this run's
+    /// cells. `Some` marks a placeholder run of `text` blank spaces the reader
+    /// paints a small equation raster over (see the reader's inline-math draw pass);
+    /// `None` for all ordinary text.
+    pub math: Option<usize>,
 }
 
 /// What a display line represents, so the view can style it by theme.
@@ -118,6 +123,16 @@ pub struct WrapOpts<'a> {
     pub justify: bool,
     /// Collapse converter spacing artifacts in body text (see [`spans`]).
     pub tidy_spacing: bool,
+    /// Reserved cell width per **inline-math** id (section-local), from the reader's
+    /// rendered inline equations. A `SpanMath::Raster` span with a non-zero width
+    /// here becomes an atomic image run of that width; empty (the default) → inline
+    /// math falls back to its Unicode text (e.g. following continuous sections).
+    pub inline_math_cols: &'a [u16],
+    /// Reserved cell **height** per inline-math id (parallel to `inline_math_cols`). An
+    /// atom with a height > 1 (a fraction) makes its wrapped line reserve a blank spacer
+    /// row below, so the raster hangs into empty space rather than over the next line.
+    /// Empty / a `0` entry ⇒ one row.
+    pub inline_math_rows: &'a [u16],
 }
 
 impl Default for WrapOpts<'_> {
@@ -137,6 +152,8 @@ impl Default for WrapOpts<'_> {
             table_wrap: true,
             justify: false,
             tidy_spacing: true,
+            inline_math_cols: &[],
+            inline_math_rows: &[],
         }
     }
 }

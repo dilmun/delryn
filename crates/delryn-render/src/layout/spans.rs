@@ -4,14 +4,54 @@
 
 use std::collections::VecDeque;
 
-use delryn_model::{Anchor, Inline, Span};
+use delryn_model::{Anchor, Inline, Span, SpanMath};
 
 use super::width::{char_width, display_width};
 use super::{DisplayLine, LineKind, Run};
 
-/// One styled glyph carried through wrapping: char + its inline style + any
-/// navigation anchor (footnote ref, link, …).
-type Glyph = (char, Inline, Option<Anchor>);
+/// One unit carried through wrapping: a styled glyph (char + inline style + any
+/// navigation anchor), or — when [`Glyph::math`] is set — an *atomic* inline-math
+/// image occupying a fixed number of cells (its `ch` is a placeholder space the
+/// reader paints the equation raster over; it is unbreakable and never coalesced
+/// with neighbouring text).
+#[derive(Clone)]
+struct Glyph {
+    ch: char,
+    style: Inline,
+    anchor: Option<Anchor>,
+    /// `(inline-math id, reserved cell width, reserved cell height)` when this is an
+    /// atomic inline-math cell; `None` for an ordinary glyph. A height of 2 (a
+    /// fraction) makes its line reserve a blank spacer row below for the raster to hang
+    /// into (see [`emit_lines`]).
+    math: Option<(usize, u16, u16)>,
+}
+
+impl Glyph {
+    /// A plain text glyph.
+    fn text(ch: char, style: Inline, anchor: Option<Anchor>) -> Glyph {
+        Glyph {
+            ch,
+            style,
+            anchor,
+            math: None,
+        }
+    }
+
+    /// Display width in terminal cells: the reserved width for an inline-math atom,
+    /// else the glyph's own cell width (wide CJK = 2, combining = 0).
+    fn width(&self) -> usize {
+        match self.math {
+            Some((_, cols, _)) => usize::from(cols),
+            None => char_width(self.ch),
+        }
+    }
+
+    /// Whether this atom reserves more than one text row (a fraction), so its line
+    /// needs a blank spacer row below it.
+    fn is_tall_math(&self) -> bool {
+        matches!(self.math, Some((_, _, rows)) if rows > 1)
+    }
+}
 
 /// Soft hyphen (U+00AD): an invisible break opportunity inside a word. Dropped
 /// from the rendered text, but a real `-` is shown when a word breaks there.
@@ -25,10 +65,26 @@ struct Piece {
 }
 
 /// Display width (terminal cells) of a run of glyphs — the fill/justify metric.
-/// A wide CJK glyph is two cells, a combining mark none, so this is *not* the
-/// glyph count.
+/// A wide CJK glyph is two cells, a combining mark none, an inline-math atom its
+/// reserved width, so this is *not* the glyph count.
 fn cells_width(glyphs: &[Glyph]) -> usize {
-    glyphs.iter().map(|(c, _, _)| char_width(*c)).sum()
+    glyphs.iter().map(Glyph::width).sum()
+}
+
+/// The prefix leading a wrapped block's first line vs. its continuation lines
+/// (indent, quote bar, list marker + its hanging padding).
+pub(super) struct Prefix<'a> {
+    pub first: &'a str,
+    pub cont: &'a str,
+}
+
+/// The reader's per-id inline-math reservations: reserved cell width and height per
+/// section-local id (parallel slices). Empty ⇒ no graphical inline math on these spans
+/// (the Unicode fallback), e.g. a caption or a following continuous section.
+#[derive(Clone, Copy)]
+pub(super) struct InlineMathDims<'a> {
+    pub cols: &'a [u16],
+    pub rows: &'a [u16],
 }
 
 /// Word-wrap styled spans into display lines, with a prefix on the first line
@@ -37,13 +93,14 @@ fn cells_width(glyphs: &[Glyph]) -> usize {
 pub(super) fn wrap_spans(
     spans: &[Span],
     width: usize,
-    first_prefix: &str,
-    cont_prefix: &str,
+    prefix: Prefix,
     kind: LineKind,
     justify: bool,
+    math: InlineMathDims,
     out: &mut Vec<DisplayLine>,
 ) {
-    let words = flatten_to_words(spans);
+    let (first_prefix, cont_prefix) = (prefix.first, prefix.cont);
+    let words = flatten_to_words(spans, math);
     if words.is_empty() {
         return;
     }
@@ -69,29 +126,50 @@ fn avail(width: usize, first: &str, cont: &str, line: usize) -> usize {
 /// them join with no inserted space (matters for math emitted one span per
 /// glyph: `𝔼`,`(`,`X`,`)` must stay `𝔼(X)`, not `𝔼 ( X )`). Within a word, soft
 /// hyphens split it into break segments (the SHY itself is dropped).
-fn flatten_to_words(spans: &[Span]) -> Vec<Vec<Vec<Glyph>>> {
-    let chars = spans
-        .iter()
-        .flat_map(|s| s.text.chars().map(move |c| (c, s.style, s.anchor.clone())));
+///
+/// A span the reader rasterised to an inline equation ([`SpanMath::Raster`]) with
+/// a reserved width in `math_cols` becomes a single unbreakable atom glyph instead
+/// of its Unicode text; if no width is provided (e.g. a following continuous
+/// section, for which the reader draws no inline math), it falls back to its text.
+fn flatten_to_words(spans: &[Span], math: InlineMathDims) -> Vec<Vec<Vec<Glyph>>> {
     let mut words: Vec<Vec<Vec<Glyph>>> = Vec::new(); // word → segments → glyphs
     let mut segs: Vec<Vec<Glyph>> = vec![Vec::new()];
     let mut in_word = false;
-    for (c, st, an) in chars {
-        if c.is_whitespace() {
-            if in_word {
-                segs.retain(|s| !s.is_empty());
-                words.push(std::mem::take(&mut segs));
-                segs = vec![Vec::new()];
-                in_word = false;
-            }
-        } else if c == SOFT_HYPHEN {
-            // A break opportunity: start a new segment (ignore a leading SHY).
-            if in_word && !segs.last().is_none_or(Vec::is_empty) {
-                segs.push(Vec::new());
-            }
-        } else {
-            segs.last_mut().unwrap().push((c, st, an));
+    for s in spans {
+        // Graphical inline math: one atom glyph of its reserved cell width, glued to
+        // adjacent text (so `$x$.` doesn't wrap before the period), never broken.
+        if let Some(SpanMath::Raster { id, .. }) = &s.math
+            && let Some(&cols) = math.cols.get(*id)
+            && cols > 0
+        {
+            segs.last_mut().unwrap().push(Glyph {
+                ch: ' ',
+                style: s.style,
+                anchor: s.anchor.clone(),
+                math: Some((*id, cols, math.rows.get(*id).copied().unwrap_or(1).max(1))),
+            });
             in_word = true;
+            continue;
+        }
+        for c in s.text.chars() {
+            if c.is_whitespace() {
+                if in_word {
+                    segs.retain(|s| !s.is_empty());
+                    words.push(std::mem::take(&mut segs));
+                    segs = vec![Vec::new()];
+                    in_word = false;
+                }
+            } else if c == SOFT_HYPHEN {
+                // A break opportunity: start a new segment (ignore a leading SHY).
+                if in_word && !segs.last().is_none_or(Vec::is_empty) {
+                    segs.push(Vec::new());
+                }
+            } else {
+                segs.last_mut()
+                    .unwrap()
+                    .push(Glyph::text(c, s.style, s.anchor.clone()));
+                in_word = true;
+            }
         }
     }
     if in_word {
@@ -206,6 +284,7 @@ fn emit_lines(
                 style: Inline::default(),
                 fg: None,
                 anchor: None,
+                math: None,
             });
         }
         for (pi, piece) in line.iter().enumerate() {
@@ -220,53 +299,76 @@ fn emit_lines(
                     style: Inline::default(),
                     fg: None,
                     anchor: None,
+                    math: None,
                 });
             }
             push_word_runs(&piece.cells, &mut runs);
             if piece.hyphen {
-                let st = piece.cells.last().map(|(_, s, _)| *s).unwrap_or_default();
+                let st = piece.cells.last().map(|g| g.style).unwrap_or_default();
                 runs.push(Run {
                     text: "-".to_string(),
                     style: st,
                     fg: None,
                     anchor: None,
+                    math: None,
                 });
             }
         }
+        let tall_math = line.iter().any(|p| p.cells.iter().any(Glyph::is_tall_math));
         out.push(DisplayLine { runs, kind });
+        // A line carrying a two-row inline equation (a fraction) reserves a blank
+        // spacer row below it, so the raster hangs into empty space instead of over the
+        // next line of text (the reader paints the atom `rows` cells tall).
+        if tall_math {
+            out.push(DisplayLine {
+                runs: Vec::new(),
+                kind,
+            });
+        }
     }
 }
 
-/// Append one word's chars as runs, coalescing consecutive chars of equal style
+/// Append one word's glyphs as runs, coalescing consecutive chars of equal style
 /// *and* anchor (a word may mix styles — a bold glyph next to a normal one with
 /// no whitespace between source spans — or carry a navigation anchor on part of
-/// it, e.g. a footnote-ref superscript).
+/// it, e.g. a footnote-ref superscript). An inline-math atom always becomes its
+/// own run (its `text` is `cols` blank spaces the reader paints the equation
+/// over) and never coalesces with surrounding text.
 fn push_word_runs(word: &[Glyph], runs: &mut Vec<Run>) {
     let mut buf = String::new();
     let mut cur: Option<(Inline, Option<Anchor>)> = None;
-    for (c, st, an) in word {
-        let key = (*st, an.clone());
+    for g in word {
+        if let Some((id, cols, _rows)) = g.math {
+            flush_run(runs, &mut buf, &mut cur);
+            runs.push(Run {
+                text: " ".repeat(usize::from(cols)),
+                style: g.style,
+                anchor: g.anchor.clone(),
+                math: Some(id),
+                ..Default::default()
+            });
+            continue;
+        }
+        let key = (g.style, g.anchor.clone());
         if cur.as_ref() == Some(&key) {
-            buf.push(*c);
+            buf.push(g.ch);
         } else {
-            if let Some((s, a)) = cur.take() {
-                runs.push(Run {
-                    text: std::mem::take(&mut buf),
-                    style: s,
-                    fg: None,
-                    anchor: a,
-                });
-            }
-            buf.push(*c);
+            flush_run(runs, &mut buf, &mut cur);
+            buf.push(g.ch);
             cur = Some(key);
         }
     }
-    if let Some((s, a)) = cur {
+    flush_run(runs, &mut buf, &mut cur);
+}
+
+/// Flush the pending coalesced text (`buf` in style/anchor `cur`) as one run.
+fn flush_run(runs: &mut Vec<Run>, buf: &mut String, cur: &mut Option<(Inline, Option<Anchor>)>) {
+    if let Some((style, anchor)) = cur.take() {
         runs.push(Run {
-            text: buf,
-            style: s,
-            fg: None,
-            anchor: a,
+            text: std::mem::take(buf),
+            style,
+            anchor,
+            ..Default::default()
         });
     }
 }
@@ -315,11 +417,33 @@ fn stripped_suffix(prev: &Span, next: &Span) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{DisplayLine, LineKind, WrapOpts, wrap_blocks};
-    use delryn_model::{Anchor, Block, Inline, Span};
+    use super::super::{DisplayLine, LineKind, Run, WrapOpts, wrap_blocks};
+    use delryn_model::{Anchor, Block, Inline, Span, SpanMath};
 
     fn texts(lines: &[DisplayLine]) -> Vec<String> {
         lines.iter().map(DisplayLine::text).collect()
+    }
+
+    /// An inline-math run (Unicode `text`, a rasterised `id`) — the parser/reader
+    /// output the wrapper turns into an atom when a width is reserved for its `id`.
+    fn raster(text: &str, id: usize) -> Span {
+        Span {
+            text: text.into(),
+            style: Inline {
+                math: true,
+                ..Inline::default()
+            },
+            anchor: None,
+            math: Some(SpanMath::Raster { id, png: vec![] }),
+        }
+    }
+
+    fn atoms(lines: &[DisplayLine]) -> Vec<&Run> {
+        lines
+            .iter()
+            .flat_map(|l| &l.runs)
+            .filter(|r| r.math.is_some())
+            .collect()
     }
 
     fn para(s: &str) -> Block {
@@ -339,6 +463,7 @@ mod tests {
                 ..Default::default()
             },
             anchor: None,
+            math: None,
         }
     }
 
@@ -383,6 +508,7 @@ mod tests {
                 text: "7".to_string(),
                 style: Inline::default(),
                 anchor: Some(Anchor::Footnote("fn7".to_string())),
+                math: None,
             },
             Span::plain(" for details"),
         ];
@@ -401,6 +527,99 @@ mod tests {
         assert_eq!(anchored.len(), 1, "exactly the ref run is anchored");
         assert_eq!(anchored[0].0, "7");
         assert_eq!(anchored[0].1, &Anchor::Footnote("fn7".to_string()));
+    }
+
+    #[test]
+    fn inline_math_atom_reserves_cells_when_width_is_provided() {
+        // A rasterised inline-math run with a reserved width becomes ONE atom run of
+        // that many blank cells, carrying the inline-math id; the surrounding words
+        // are untouched, and the atom glues to them as a single wrap unit.
+        let block = para_spans(vec![
+            Span::plain("let "),
+            raster("x²", 0),
+            Span::plain(" be"),
+        ]);
+        let opts = WrapOpts {
+            width: 80,
+            inline_math_cols: &[3], // id 0 reserves 3 cells
+            ..Default::default()
+        };
+        let lines = wrap_blocks(&[block], &opts, &[]);
+        let atoms = atoms(&lines);
+        assert_eq!(atoms.len(), 1, "exactly one atom run");
+        assert_eq!(atoms[0].math, Some(0), "carries the inline-math id");
+        assert_eq!(
+            atoms[0].text, "   ",
+            "reserves 3 blank cells for the raster"
+        );
+        // The atom sits between the words (a gap space each side of its 3 cells),
+        // its blank cells standing in for the equation the reader paints over them.
+        assert_eq!(texts(&lines).join(""), "let     be");
+    }
+
+    #[test]
+    fn inline_math_falls_back_to_unicode_without_a_reserved_width() {
+        // With no reserved width (empty `inline_math_cols` — a following continuous
+        // section, which the reader doesn't draw inline math for), the rasterised run
+        // degrades to its Unicode text and produces no atom.
+        let block = para_spans(vec![
+            Span::plain("let "),
+            raster("x²", 0),
+            Span::plain(" be"),
+        ]);
+        let lines = wrap_blocks(&[block], &WrapOpts::default(), &[]);
+        assert!(atoms(&lines).is_empty(), "no atom without a reserved width");
+        assert_eq!(
+            texts(&lines).join(""),
+            "let x² be",
+            "shows the Unicode fallback"
+        );
+    }
+
+    #[test]
+    fn two_row_inline_math_reserves_a_spacer_line() {
+        // A rasterised inline-math atom reserving TWO rows (a fraction) makes its
+        // wrapped line reserve a blank spacer line below it, so the raster hangs into
+        // empty space instead of over the next line. A one-row atom inserts no spacer.
+        let mk = || {
+            para_spans(vec![
+                Span::plain("let "),
+                raster("½", 0),
+                Span::plain(" be"),
+            ])
+        };
+        let two_row = WrapOpts {
+            width: 80,
+            inline_math_cols: &[3],
+            inline_math_rows: &[2],
+            para_spacing: 0,
+            ..Default::default()
+        };
+        let lines = wrap_blocks(&[mk()], &two_row, &[]);
+        let atom_line = lines
+            .iter()
+            .position(|l| l.runs.iter().any(|r| r.math.is_some()))
+            .expect("a line carrying the atom");
+        assert!(
+            lines
+                .get(atom_line + 1)
+                .is_some_and(|l| l.text().trim().is_empty()),
+            "a blank spacer line follows the two-row atom: {:?}",
+            texts(&lines)
+        );
+
+        // One row (no `inline_math_rows`) → no spacer, a single line.
+        let one_row = WrapOpts {
+            width: 80,
+            inline_math_cols: &[3],
+            para_spacing: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            wrap_blocks(&[mk()], &one_row, &[]).len(),
+            1,
+            "one-row atom inserts no spacer"
+        );
     }
 
     #[test]

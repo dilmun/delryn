@@ -77,6 +77,16 @@ impl Reader {
                 } else {
                     &[]
                 };
+                // Mirror the display's inline-math atoms for the current section so a
+                // match's column/line lands where it shows (equations become blank
+                // atom cells, so they're not text-matched — same as the display).
+                // Other sections aren't reserved yet, so they wrap their Unicode
+                // fallback (searchable, at the cost of a rare off-by-one on jump).
+                let (inline_cols, inline_rows): (&[u16], &[u16]) = if s == self.section {
+                    (&self.images.inline_cols, &self.images.inline_rows)
+                } else {
+                    (&[], &[])
+                };
                 let lines = wrap_blocks(
                     &blocks,
                     &WrapOpts {
@@ -98,6 +108,8 @@ impl Reader {
                         // tidy must match the display so positions line up.
                         justify: false,
                         tidy_spacing: self.tidy_spacing,
+                        inline_math_cols: inline_cols,
+                        inline_math_rows: inline_rows,
                     },
                     &[],
                 );

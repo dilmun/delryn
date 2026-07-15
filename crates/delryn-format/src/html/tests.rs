@@ -552,6 +552,93 @@ fn display_math_img(blocks: &[Block]) -> Option<(&str, &str)> {
     })
 }
 
+/// A publisher display equation shipped as a plain `<img>` whose `alt` is just the
+/// file path (no math) — Springer's `_HTML.png` fallback — but wrapped in an
+/// `EquationContent` container. The container class is the math signal: it must become
+/// a `math`-flagged image carrying its `em` width (so the reader sizes it text-
+/// relatively / DPI-independently), NOT a plain figure normalised to the column.
+#[test]
+fn path_alt_equation_image_in_container_is_math_with_em_width() {
+    let html = r#"<html><body>
+        <div class="Equation NumberedEquation" id="Equ3">
+          <div class="EquationWrapper">
+            <div class="EquationContent">
+              <div class="MediaObject">
+                <img alt="../images/ch/Equ3_HTML.png"
+                     src="../images/ch/Equ3_HTML.png" style="width:27.08em"/>
+              </div>
+            </div>
+            <div class="EquationNumber">(2.2)</div>
+          </div>
+        </div>
+      </body></html>"#;
+    let blocks = super::parse_blocks(html);
+    let img = blocks.iter().find_map(|b| match b {
+        Block::Image {
+            src, math, width, ..
+        } => Some((src.as_str(), *math, *width)),
+        _ => None,
+    });
+    match img {
+        Some((src, math, width)) => {
+            assert!(
+                src.ends_with("Equ3_HTML.png"),
+                "the publisher raster: {src}"
+            );
+            assert!(
+                math,
+                "flagged as math (equation raster), not a plain figure"
+            );
+            assert_eq!(
+                width,
+                ImageWidth::Em(27.08),
+                "carries the authored text-relative em width"
+            );
+        }
+        None => panic!("expected a math image block, got {blocks:?}"),
+    }
+}
+
+/// The path-alt equation detection must NOT fire on a broad container that merely
+/// *contains* an equation among prose (a chapter/section div, visited on the way
+/// down) — that would swallow the surrounding text into one image. The prose must
+/// survive as paragraphs, with the equation as its own block.
+#[test]
+fn broad_container_with_prose_is_not_collapsed_to_one_equation() {
+    let html = r#"<html><body>
+        <div class="ChapterBody">
+          <p>Before the equation we say something.</p>
+          <div class="Equation" id="Equ9">
+            <div class="EquationContent"><div class="MediaObject">
+              <img alt="../images/ch/Equ9_HTML.png"
+                   src="../images/ch/Equ9_HTML.png" style="width:12.8em"/>
+            </div></div>
+          </div>
+          <p>After the equation we continue.</p>
+        </div>
+      </body></html>"#;
+    let blocks = super::parse_blocks(html);
+    let text: String = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Para { spans, .. } => {
+                Some(spans.iter().map(|s| s.text.as_str()).collect::<String>())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        text.contains("Before the equation") && text.contains("After the equation"),
+        "prose must survive around the equation, got blocks: {blocks:?}"
+    );
+    let math_imgs = blocks
+        .iter()
+        .filter(|b| matches!(b, Block::Image { math: true, .. }))
+        .count();
+    assert_eq!(math_imgs, 1, "exactly the one equation is a math image");
+}
+
 /// First `Block::Code`'s lines, if any.
 fn first_code(blocks: &[Block]) -> Option<&[String]> {
     blocks.iter().find_map(|b| match b {
@@ -571,8 +658,15 @@ fn parses_authored_image_width() {
     // The pixel `width` attribute when there's no CSS (bare number or `px`).
     assert_eq!(parse_img_width(Some("480"), None), ImageWidth::Px(480));
     assert_eq!(parse_img_width(Some("480px"), None), ImageWidth::Px(480));
-    // Context-dependent units and absent sizes fall back to Auto (normalized).
-    assert_eq!(parse_img_width(Some("3em"), None), ImageWidth::Auto);
+    // A font-relative `em`/`rem` width is kept — the publisher's text-relative size,
+    // the reliable DPI-independent hint for sizing equation rasters to the prose.
+    assert_eq!(parse_img_width(Some("7.88em"), None), ImageWidth::Em(7.88));
+    assert_eq!(
+        parse_img_width(None, Some("width:1.5rem")),
+        ImageWidth::Em(1.5)
+    );
+    // Other context-dependent units and absent sizes fall back to Auto (normalized).
+    assert_eq!(parse_img_width(Some("12pt"), None), ImageWidth::Auto);
     assert_eq!(parse_img_width(None, None), ImageWidth::Auto);
 }
 
@@ -740,17 +834,41 @@ fn ambiguous_variable_digit_left_flat() {
 }
 
 #[test]
-fn standalone_math_image_is_a_display_image() {
-    // EPUB display math: a math image (LaTeX `\[ … \]` in alt) on its own
-    // line renders as the image, with the Unicode as the (fallback) alt.
+fn standalone_latex_math_image_renders_via_latex() {
+    // EPUB display math: a math image with LaTeX (`\[ … \]`) in its alt on its own
+    // line becomes a Block::Math carrying the recovered (delimiter-stripped) LaTeX,
+    // so the reader renders it crisply with RaTeX rather than the publisher's PNG.
     let blocks = parse_blocks(
         r#"<html><body><p><img alt="\[\int_0^1 x\,dx\]" src="eq.png"/></p></body></html>"#,
     );
-    let (src, alt) = display_math_img(&blocks).expect("a display-math image");
-    assert_eq!(src, "eq.png", "renders the actual equation image");
-    // The alt is Unicode: \int → ∫, no raw LaTeX.
-    assert!(alt.contains('∫'), "unicode alt: {alt:?}");
-    assert!(!alt.contains("\\int"), "no raw LaTeX: {alt:?}");
+    assert_eq!(
+        first_math_latex(&blocks).as_deref(),
+        Some(r"\int_0^1 x\,dx"),
+        "display math image → Block::Math with the recovered LaTeX"
+    );
+    let uni = first_math(&blocks).expect("a math block");
+    assert!(
+        uni.contains('∫') && !uni.contains("\\int"),
+        "unicode alt: {uni:?}"
+    );
+}
+
+#[test]
+fn standalone_mathml_image_falls_back_to_the_publisher_image() {
+    // A math image whose alt is MathML (no LaTeX to re-render) keeps the publisher's
+    // equation image, with the Unicode transcription as the fallback alt.
+    let alt =
+        r#"<mml:math xmlns:mml="http://www.w3.org/1998/Math/MathML"><mml:mi>Σ</mml:mi></mml:math>"#
+            .replace('"', "&quot;");
+    let blocks = parse_blocks(&format!(
+        r#"<html><body><p><img alt="{alt}" src="e.png"/></p></body></html>"#
+    ));
+    let (src, alt_text) = display_math_img(&blocks).expect("a display-math image");
+    assert_eq!(src, "e.png", "no LaTeX → keeps the publisher image");
+    assert!(
+        alt_text.contains('Σ') && !alt_text.contains("<m"),
+        "unicode alt: {alt_text:?}"
+    );
 }
 
 #[test]
@@ -940,11 +1058,16 @@ fn native_math_retains_latex_source() {
     );
     assert_eq!(first_math_latex(&annotated).as_deref(), Some(r"\alpha"));
 
-    // Presentation-MathML-only math has no LaTeX to recover → None (Unicode only).
+    // Presentation-MathML-only math (no alttext/annotation) is transpiled to LaTeX so
+    // it can still render graphically instead of as lossy Unicode.
     let mathml = parse_blocks(
         r#"<html><body><math display="block"><msup><mi>x</mi><mn>2</mn></msup></math></body></html>"#,
     );
-    assert_eq!(first_math_latex(&mathml), None);
+    let latex = first_math_latex(&mathml).expect("MathML transpiled to LaTeX");
+    assert!(
+        latex.contains("x") && latex.contains("^{2}"),
+        "presentation MathML → LaTeX superscript: {latex}"
+    );
 }
 
 #[test]
@@ -964,6 +1087,210 @@ fn native_inline_mathml_stays_in_the_paragraph() {
         !text.contains("<m") && !text.contains("alttext"),
         "no tags: {text:?}"
     );
+}
+
+// ── Display-vs-inline math classification across publisher encodings ─────────
+// One test per real-world encoding, so the classifier stays publisher-agnostic
+// (regression guard for the survey in `docs/parsing.md`).
+
+/// Springer display equations carry **no** `display` attr — they use
+/// `displaystyle="true"` and sit in an `EquationContent` container. Must become a
+/// display Block::Math (RaTeX-rendered), not garbled inline Unicode.
+#[test]
+fn springer_displaystyle_math_is_a_display_block() {
+    let blocks = parse_blocks(
+        r#"<html><body><div class="EquationContent"><math displaystyle="true" alttext="$$P(A|B)={P(A\cap B) \over P(B)}$$"><mi>noise</mi></math></div><div class="EquationNumber">(2)</div></body></html>"#,
+    );
+    assert_eq!(
+        first_math_latex(&blocks).as_deref(),
+        Some(r"P(A|B)={P(A\cap B) \over P(B)}"),
+        "displaystyle → display Block::Math with stripped LaTeX"
+    );
+}
+
+/// Springer inline equations carry `display="inline"` and an `InlineEquation`
+/// container class — they must stay in the paragraph, never a display block.
+#[test]
+fn springer_inline_equation_stays_inline() {
+    let blocks = parse_blocks(
+        r#"<html><body><p>since <span class="InlineEquation"><math display="inline" alttext="$$P(B)>0$$"><mi>noise</mi></math></span> holds</p></body></html>"#,
+    );
+    assert!(
+        first_math(&blocks).is_none(),
+        "inline math is not a display block"
+    );
+    let t = block_text(&blocks);
+    assert!(
+        t.contains("since") && t.contains("holds"),
+        "stays in prose: {t:?}"
+    );
+}
+
+/// The `EquationContent`/`Equation` container class alone marks display, even with
+/// no `display`/`displaystyle` attr (older Springer / generic equation wrappers).
+#[test]
+fn equation_container_class_marks_display() {
+    let blocks = parse_blocks(
+        r#"<html><body><div class="Equation"><math alttext="x = 1"><mi>x</mi></math></div></body></html>"#,
+    );
+    assert_eq!(
+        first_math(&blocks),
+        Some("x = 1"),
+        "equation class → display block"
+    );
+}
+
+/// A MathJax-style equation image (`<img alt="$$…$$">`) inside an equation
+/// container renders via its recovered LaTeX (RaTeX), not the raster.
+#[test]
+fn mathjax_image_equation_renders_via_latex() {
+    let blocks = parse_blocks(
+        r#"<html><body><div class="EquationContent"><div class="MediaObject"><img alt="$$ \frac{a}{b} $$" src="Equ2.png"/></div></div></body></html>"#,
+    );
+    assert_eq!(
+        first_math_latex(&blocks).as_deref(),
+        Some(r"\frac{a}{b}"),
+        "equation-container image → Block::Math from the alt LaTeX"
+    );
+}
+
+/// JATS-derived markup: a `disp-formula` class is display, `inline-formula` inline.
+#[test]
+fn jats_formula_classes_classify() {
+    let disp = parse_blocks(
+        r#"<html><body><div class="disp-formula"><math alttext="a+b"><mi>a</mi></math></div></body></html>"#,
+    );
+    assert_eq!(first_math(&disp), Some("a+b"), "disp-formula → display");
+
+    let inline = parse_blocks(
+        r#"<html><body><p>see <span class="inline-formula"><math alttext="c"><mi>c</mi></math></span> here</p></body></html>"#,
+    );
+    assert!(first_math(&inline).is_none(), "inline-formula → inline");
+}
+
+/// A `\[…\]` (display) vs `\(…\)` (inline) delimiter decides when there's no class
+/// or attribute signal — the plain TeX/MathJax convention.
+#[test]
+fn tex_delimiter_decides_without_a_class() {
+    let disp =
+        parse_blocks(r#"<html><body><div><img alt="\[ x^2 \]" src="d.png"/></div></body></html>"#);
+    assert_eq!(
+        first_math_latex(&disp).as_deref(),
+        Some("x^2"),
+        "\\[…\\] → display"
+    );
+
+    let inline =
+        parse_blocks(r#"<html><body><p>a <img alt="\( y \)" src="i.png"/> b</p></body></html>"#);
+    assert!(
+        first_math(&inline).is_none() && display_math_img(&inline).is_none(),
+        "\\(…\\) → inline"
+    );
+}
+
+/// Wiley/For-Dummies encode math as `<img alt="math" src="eqN.png">` with the real
+/// MathML in a trailing HTML comment. Recover from the comment (not the bare
+/// `alt="math"`, which used to print as literal "[math]").
+#[test]
+fn wiley_comment_sourced_math_is_recovered() {
+    let mml = r#"<m:math xmlns:m="http://www.w3.org/1998/Math/MathML"><m:mi>A</m:mi><m:mo>&#8745;</m:mo><m:mi>B</m:mi></m:math>"#;
+    // Inline (mid-sentence) → Unicode from the comment, never "[math]".
+    let inline = parse_blocks(&format!(
+        r#"<html><body><p>count outcomes in <img alt="math" src="eq.png"/><!--{mml}--> twice.</p></body></html>"#
+    ));
+    let t = block_text(&inline);
+    assert!(t.contains('∩'), "recovered from the comment: {t:?}");
+    assert!(!t.contains("[math]"), "no bare marker leaks: {t:?}");
+
+    // Standalone → the publisher equation image (MathML has no LaTeX to re-render).
+    let disp = parse_blocks(&format!(
+        r#"<html><body><p><img alt="math" src="eq2.png"/><!--{mml}--></p></body></html>"#
+    ));
+    let (src, _) = display_math_img(&disp).expect("standalone comment-math → publisher image");
+    assert_eq!(src, "eq2.png");
+}
+
+/// With no class/attr/delimiter signal, a math node that is the sole content of a
+/// block element stands alone → display; the same math mid-sentence stays inline.
+#[test]
+fn standalone_math_is_display_but_mid_sentence_is_inline() {
+    let standalone = parse_blocks(
+        r#"<html><body><p><math alttext="E=mc^2"><mi>E</mi></math></p></body></html>"#,
+    );
+    assert_eq!(
+        first_math(&standalone),
+        Some("E=mc²"),
+        "sole content of <p> → display"
+    );
+
+    let inline = parse_blocks(
+        r#"<html><body><p>recall <math alttext="E=mc^2"><mi>E</mi></math> from before</p></body></html>"#,
+    );
+    assert!(first_math(&inline).is_none(), "mid-sentence → inline");
+}
+
+/// An empty marker element beside a lone equation (InDesign `<st>` story anchors,
+/// an empty `<a id>` link target) must NOT knock the equation off the display path.
+/// Packt / InDesign MathTools ship display equations as `<p><img …/><st></st></p>`;
+/// the empty `<st>` used to make the equation read as inline Unicode (deaf to the
+/// display Math-size knob) instead of the em-sized publisher raster.
+#[test]
+fn empty_marker_sibling_does_not_force_a_display_equation_inline() {
+    for sib in [
+        r#"<st c="7051"></st>"#,
+        r#"<a id="anchor"></a>"#,
+        "<span></span>",
+    ] {
+        let html = format!(
+            r#"<html><body><p><img src="image/98.png" alt="&lt;math display=&quot;block&quot;&gt;&lt;msub&gt;&lt;mi&gt;x&lt;/mi&gt;&lt;mi&gt;i&lt;/mi&gt;&lt;/msub&gt;&lt;/math&gt;" style="width:1.812em"/>{sib}</p></body></html>"#
+        );
+        let blocks = parse_blocks(&html);
+        let img = blocks.iter().find_map(|b| match b {
+            Block::Image {
+                src, math, width, ..
+            } => Some((src.as_str(), *math, *width)),
+            _ => None,
+        });
+        assert_eq!(
+            img,
+            Some(("image/98.png", true, ImageWidth::Em(1.812))),
+            "with sibling {sib:?}, the lone equation must be a math image, got {blocks:?}"
+        );
+    }
+}
+
+/// A container that wraps *several* display equations with no separating text must
+/// emit them all — the classifier recurses instead of collapsing to the first (which
+/// used to silently drop every equation after it).
+#[test]
+fn several_display_equations_in_one_container_all_render() {
+    // Two native <math display="block"> equations, side by side in one <div>.
+    let two = parse_blocks(
+        r#"<html><body><div><math display="block" alttext="a=1"><mi>a</mi></math><math display="block" alttext="b=2"><mi>b</mi></math></div></body></html>"#,
+    );
+    let latex: Vec<_> = two
+        .iter()
+        .filter_map(|b| match b {
+            Block::Math { latex, .. } => latex.as_deref(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        latex,
+        vec!["a=1", "b=2"],
+        "both equations render, got {two:?}"
+    );
+
+    // The equation-class variant: two `EquationContent` wrappers inside one
+    // `Equation` container — each is its own display block, none dropped.
+    let wrapped = parse_blocks(
+        r#"<html><body><div class="Equation"><div class="EquationContent"><math alttext="x=1"><mi>x</mi></math></div><div class="EquationContent"><math alttext="y=2"><mi>y</mi></math></div></div></body></html>"#,
+    );
+    let n = wrapped
+        .iter()
+        .filter(|b| matches!(b, Block::Math { .. }))
+        .count();
+    assert_eq!(n, 2, "both wrapped equations render, got {wrapped:?}");
 }
 
 /// The paragraph texts, in order (skips images/rules/etc.).

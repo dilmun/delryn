@@ -29,6 +29,23 @@ pub enum Anchor {
     Citation(String),
 }
 
+/// The graphical form of an inline math run, when the parser recovered LaTeX for
+/// it. `Span::text` always holds the Unicode approximation (the fallback); this
+/// says whether — and how — the reader renders it as a small image mid-line.
+///
+/// Flows: the parser emits [`SpanMath::Latex`]; the reader's graphical-math pass
+/// either rasterises it to [`SpanMath::Raster`] (when graphical math is on and the
+/// equation is short enough to sit in one text row) or leaves it `Latex`, in which
+/// case the Unicode `text` is shown — the fallback is never regressed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpanMath {
+    /// Inline math with a recovered LaTeX source, not (yet) rendered graphically.
+    Latex(String),
+    /// Rendered to a small themed raster: a section-local id (its draw/build key)
+    /// and the black-on-transparent PNG bytes (recoloured to the theme at build).
+    Raster { id: usize, png: Vec<u8> },
+}
+
 /// A run of text with uniform inline styling and an optional navigation anchor.
 #[derive(Debug, Clone)]
 pub struct Span {
@@ -36,6 +53,9 @@ pub struct Span {
     pub style: Inline,
     /// A navigable target (link / footnote / cross-ref / citation), if any.
     pub anchor: Option<Anchor>,
+    /// Graphical inline math, if this run is a math expression the parser kept a
+    /// LaTeX source for. `None` for ordinary text (the overwhelming majority).
+    pub math: Option<SpanMath>,
 }
 
 impl Span {
@@ -44,6 +64,7 @@ impl Span {
             text: text.into(),
             style: Inline::default(),
             anchor: None,
+            math: None,
         }
     }
 
@@ -53,6 +74,22 @@ impl Span {
             text: text.into(),
             style,
             anchor: Some(anchor),
+            math: None,
+        }
+    }
+
+    /// An inline math run: its Unicode approximation (the fallback shown when
+    /// graphical math is off or the equation is too tall) plus the recovered LaTeX
+    /// the reader rasterises. `style.math` is set so the math text fix-ups apply.
+    pub fn math(unicode: impl Into<String>, latex: impl Into<String>) -> Span {
+        Span {
+            text: unicode.into(),
+            style: Inline {
+                math: true,
+                ..Inline::default()
+            },
+            anchor: None,
+            math: Some(SpanMath::Latex(latex.into())),
         }
     }
 }
@@ -128,6 +165,10 @@ pub enum ImageWidth {
     Pct(f32),
     /// An absolute width in CSS pixels (from a px `width` attribute / CSS px).
     Px(u32),
+    /// A font-relative width in CSS `em` (the value is em units). The publisher's
+    /// *text-relative* size — DPI-independent and exact — which is the reliable way to
+    /// size an equation raster to the surrounding text (see the media sizing crate).
+    Em(f32),
     /// Full-bleed: fill the display pane, preserving aspect. For page-as-image
     /// formats (PDF), where each "image" is a whole page rather than an inline
     /// figure sized to a fraction of the column.

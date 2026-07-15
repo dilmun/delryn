@@ -44,6 +44,7 @@ fn flatten_inline_text(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) 
                 text: t.text.to_string(),
                 style,
                 anchor: None,
+                math: None,
             });
         }
     }
@@ -59,6 +60,7 @@ fn collect_inline_at(node: NodeRef<Node>, style: Inline, depth: u16, out: &mut V
             text: t.text.to_string(),
             style,
             anchor: None,
+            math: None,
         }),
         Node::Element(e) => {
             // Regenerated markers (footnote backref numbers, list item numbers)
@@ -108,15 +110,51 @@ fn collect_inline_at(node: NodeRef<Node>, style: Inline, depth: u16, out: &mut V
                 "img" => {
                     let alt = e.attr("alt").unwrap_or("");
                     let src = e.attr("src").unwrap_or("");
-                    let text = if let Some(g) = icon_glyph(alt, src) {
-                        // A small UI icon (check / tip / warning / remember / …)
-                        // shown as a themed glyph instead of "[tip]" text.
-                        g.to_string()
-                    } else if delryn_model::math::is_math(alt) {
-                        math_unicode(alt)
-                    } else if is_placeholder_alt(alt) {
-                        // Inline image with no useful alt (often math the converter
-                        // rasterised) — a quiet marker beats dumping "[images]".
+                    // A small UI icon (check / tip / warning / remember / …) → a
+                    // themed glyph instead of "[tip]" text.
+                    if let Some(g) = icon_glyph(alt, src) {
+                        out.push(Span {
+                            text: g.to_string(),
+                            style: Inline {
+                                italic: true,
+                                ..style
+                            },
+                            anchor: None,
+                            math: None,
+                        });
+                        return;
+                    }
+                    // Inline math source: LaTeX/MathML in the `alt` (MathJax-style),
+                    // or a trailing MathML/LaTeX comment (Wiley/For-Dummies ship it
+                    // there with a bare `alt="math"`, which otherwise printed as
+                    // "[math]"). Keep the recovered LaTeX (delimiter-stripped) so the
+                    // reader can render it graphically; MathML-only stays Unicode.
+                    let math_raw = e
+                        .attr("alt")
+                        .filter(|a| delryn_model::math::is_math(a))
+                        .map(str::to_string)
+                        .or_else(|| img_math_comment(node));
+                    if let Some(raw) = math_raw {
+                        let latex = (!delryn_model::math::is_mathml(&raw)).then(|| {
+                            delryn_model::SpanMath::Latex(delryn_model::math::strip_delimiters(
+                                &raw,
+                            ))
+                        });
+                        out.push(Span {
+                            text: math_unicode(&raw),
+                            style: Inline {
+                                italic: true,
+                                math: true,
+                                ..style
+                            },
+                            anchor: None,
+                            math: latex,
+                        });
+                        return;
+                    }
+                    // Any other inline image: a quiet marker for a useless alt (often
+                    // math the converter rasterised), else the alt label.
+                    let text = if is_placeholder_alt(alt) {
                         "▢".to_string()
                     } else {
                         img_label(e)
@@ -128,21 +166,33 @@ fn collect_inline_at(node: NodeRef<Node>, style: Inline, depth: u16, out: &mut V
                             ..style
                         },
                         anchor: None,
+                        math: None,
                     });
                     return;
                 }
-                // Native inline MathML → Unicode (block math is handled at the
-                // block level). Don't recurse, or the raw token text leaks out.
+                // Native inline math → Unicode approximation, plus the recovered
+                // LaTeX source (when the parser could get it) so the reader can
+                // rasterise it graphically. Don't recurse, or the raw token text
+                // leaks out. Block math is handled at the block level.
                 "math" => {
-                    out.push(Span {
-                        // Inline math stays Unicode for now (graphical inline math is
-                        // a follow-up); the recovered LaTeX source is unused here.
-                        text: native_math(node).0,
-                        style: Inline {
-                            math: true,
-                            ..style
+                    let (text, latex) = native_math(node);
+                    let mstyle = Inline {
+                        math: true,
+                        ..style
+                    };
+                    out.push(match latex {
+                        Some(latex) => Span {
+                            text,
+                            style: mstyle,
+                            anchor: None,
+                            math: Some(delryn_model::SpanMath::Latex(latex)),
                         },
-                        anchor: None,
+                        None => Span {
+                            text,
+                            style: mstyle,
+                            anchor: None,
+                            math: None,
+                        },
                     });
                     return;
                 }

@@ -13,7 +13,7 @@ mod sizing;
 
 pub use delryn_infra::config::{ImageFit, ImageMode};
 
-pub use builder::{BuiltImage, ImageBuilder, ImagePlan, ImgKey};
+pub use builder::{BuiltImage, ImageBuilder, ImagePlan, ImgKey, ImgSlot};
 pub use cover::{CoverImage, build_cover};
 pub use decode::{decode, image_dimensions};
 pub use kitty::{
