@@ -1,60 +1,119 @@
 <div align="center">
 
-# delryn
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
+    <img src="docs/logo-light.png" alt="" height="54" align="middle" />
+  </picture>
+  &nbsp;delryn
+</h1>
 
-**A fast, keyboard-driven terminal reader for EPUB · PDF · MOBI / AZW3 — with real graphics.**
+A fast, keyboard-driven terminal reader for EPUB, PDF, and MOBI / AZW3 — with real
+graphics: syntax-highlighted code, tables, inline figures, and graphical LaTeX math.
 
 [![CI](https://github.com/dilmun/delryn/actions/workflows/ci.yml/badge.svg)](https://github.com/dilmun/delryn/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
-[![Made with ratatui](https://img.shields.io/badge/TUI-ratatui-000?logo=rust)](https://ratatui.rs)
-[![Sponsor](https://img.shields.io/badge/support_this_project-pink?logo=github-sponsors)](https://github.com/sponsors/dilmun)
+[![Sponsor](https://img.shields.io/badge/sponsor-♥-ea4aaa?logo=github-sponsors&logoColor=white)](https://github.com/sponsors/dilmun)
 
-<img src="docs/screenshots/carousel.webp" alt="delryn cycling through its library and reader views" width="92%" />
+<br />
 
+<picture>
+  <source media="(prefers-color-scheme: dark)"  srcset="docs/screenshots/dark/hero.webp">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/light/hero.webp">
+  <img alt="delryn — a two-page spread with syntax-highlighted code and a live table of contents" src="docs/screenshots/dark/hero.webp" width="100%" />
+</picture>
+
+<sub>Syntax-highlighted code, a live table of contents, and a two-page spread — and it follows your terminal's light or dark theme.</sub>
+
+</div>
+
+<div align="right">
+<details>
+<summary>See more screenshots</summary>
+
+<div align="center">
+
+<br />
+
+<picture>
+  <source media="(prefers-color-scheme: dark)"  srcset="docs/screenshots/dark/tables.webp">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/light/tables.webp">
+  <img alt="Real tables and an inline figure in a two-page academic paper" src="docs/screenshots/dark/tables.webp" width="100%" />
+</picture>
+
+<sub><b>Tables &amp; figures</b> — real tables and inline diagrams, in a two-page spread</sub>
+
+<br /><br />
+
+<sub>Captured on <a href="https://ghostty.org">Ghostty</a>, which renders real inline graphics.</sub>
+
+</div>
+</details>
 </div>
 
 ---
 
-delryn reads your whole library from the terminal and renders what most TUI readers can't —
-**syntax-highlighted code, real tables, inline figures & diagrams, and graphical LaTeX math**,
-straight through the terminal's graphics protocol — alongside a full **library manager** with
-cover art, collections, ratings, and duplicate detection.
-
 ## Features
 
-- **Formats** — EPUB (reflowable), PDF (page-image), and MOBI / AZW3.
-- **Rich rendering** — syntax-highlighted code (syntect), tables, footnotes & cross-references, inline figures, and **graphical LaTeX math** (RaTeX → images).
-- **Reading** — continuous scroll or paged / page-flip; single column or **two-page spread**; **RTL (manga)** direction; per-chapter lock; distraction-free focus mode; jump-by-type (`w`/`b` across code / table / math / figure); vim motions with counts.
-- **PDF** — continuous page stacking, zoom / pan, fit modes (page / width / height), margin trim.
-- **Annotations** — bookmarks, colour highlights, and notes; a tabbed annotations browser; **vim-style visual selection** (`V`) to copy / highlight / note ranges; Markdown export.
-- **Search** — in-book **plain / regex / fuzzy**, with match navigation and history.
-- **Library** — multi-folder sources with background scanning; sections (Recent, Favorites, Currently Reading, Series, Duplicates); **collections / shelves**; ratings, reading status, tags; list / compact / **cover-grid** layouts; CSV export; statistics; **duplicate detection** (metadata + deep cover-hash).
-- **Metadata editor** with **Open Library** online lookup for details & cover art.
-- **9 built-in themes** (auto, dark, oled, high-contrast, solarized dark / light, dracula, gruvbox, light) + your own; theme-aware image recolour.
-- **Command palette** (`:`), configurable status bar, and full mouse support.
+**Formats &amp; rendering**
+- EPUB (reflowable), PDF (page-image), and MOBI / AZW3
+- Syntax-highlighted code (syntect), real tables, and footnotes &amp; cross-references
+- Inline figures &amp; diagrams, and graphical **LaTeX math** (RaTeX → images)
+- DPI-independent equation &amp; image sizing, with theme-aware image recolour
+
+**Reading**
+- Continuous scroll or paged / page-flip; single column or **two-page spread**
+- **RTL (manga)** direction, per-chapter lock, and a distraction-free focus mode
+- Jump by element type (code · table · math · figure); vim motions with counts
+- Code folding, plus fullscreen code and figure browsers
+
+**PDF**
+- Continuous page stacking, zoom / pan, fit modes (page / width / height), and margin trim
+
+**Annotations, search &amp; lookup**
+- Bookmarks, colour highlights, and notes, in a tabbed annotations browser
+- **Vim-style visual selection** to copy, highlight, or note a range; Markdown export
+- In-book search — **plain, regex, or fuzzy** — with match navigation and history
+- Word lookup — dictionary and Wikipedia, with translation
+
+**Library**
+- Multi-folder sources with background scanning
+- Sections (Recent, Favorites, Currently Reading, Series, Duplicates) and **collections / shelves**
+- Ratings, reading status, and tags; list, compact, or **cover-grid** layouts
+- CSV export, statistics, and **duplicate detection** (metadata + deep cover-hash)
+- Metadata editor with **Open Library** lookup for details and cover art
+
+**Interface**
+- 9 built-in themes (auto, dark, oled, high-contrast, solarized dark / light, dracula, gruvbox, light) plus custom TOML
+- Command palette (`:`), a configurable status bar, and full mouse support
+
+---
 
 ## Requirements
 
 delryn's text UI runs in any terminal, but **images, PDF pages, and graphical math need a
-terminal that speaks the Kitty graphics protocol**. delryn is currently **developed and tested
-on [Ghostty](https://ghostty.org)** — other Kitty-protocol terminals (Kitty, iTerm2, WezTerm)
-should work but **aren't verified yet; broader terminal support is planned**. Without a
-graphics-capable terminal, EPUB / MOBI text still reads fine, but figures fall back to
-placeholders, graphical math to a Unicode approximation, and **PDF won't open** (it renders as
-page images).
+terminal that speaks the Kitty graphics protocol.** Without one, EPUB / MOBI text still reads
+fine — figures fall back to placeholders, graphical math to a Unicode approximation, and PDF
+won't open.
 
-> **tmux / screen:** multiplexers intercept the graphics protocol, so images and PDF render
-> blank inside them — **run delryn outside tmux/screen** for now (passthrough support is planned).
+> [!IMPORTANT]
+> delryn is developed and tested on [Ghostty](https://ghostty.org). Other Kitty-protocol
+> terminals (Kitty, iTerm2, WezTerm) should work but aren't verified yet — broader terminal
+> support is planned.
 
-- **Terminal:** Ghostty (tested); other Kitty-graphics terminals should work.
-- **PDF** also needs **libpdfium** — bundled in the release tarballs; for source builds, see below.
+> [!NOTE]
+> **tmux / screen** intercept the graphics protocol, so images and PDF render blank inside
+> them — run delryn outside a multiplexer for now (passthrough is planned). **PDF** also needs
+> **libpdfium**, which is bundled in the release tarballs.
+
+---
 
 ## Install
 
-### From a release (recommended)
+### Prebuilt binaries
 
-Download the tarball for your platform from the [**Releases**](https://github.com/dilmun/delryn/releases)
+Download your platform's tarball from the [**Releases**](https://github.com/dilmun/delryn/releases)
 page — each bundles the matching `libpdfium`, so PDFs work out of the box:
 
 ```sh
@@ -63,11 +122,15 @@ cd delryn-<version>-<target>
 ./delryn
 ```
 
-Prebuilt targets: Linux `x86_64`, macOS `arm64` & `x86_64`. Each archive ships a `.sha256` to verify.
+Prebuilt targets: Linux `x86_64`, macOS `arm64` &amp; `x86_64`. Each archive ships a `.sha256` to verify.
+
+> [!NOTE]
+> **macOS Gatekeeper.** The binaries aren't notarized, so clear the quarantine flag once:
+> `xattr -d com.apple.quarantine ./delryn`
 
 ### From source
 
-Needs Rust **1.85+** (edition 2024):
+Requires Rust **1.85+** (edition 2024):
 
 ```sh
 git clone https://github.com/dilmun/delryn
@@ -78,6 +141,8 @@ cargo build --release
 
 For PDF support from a source build, place a `libpdfium` shared library beside the binary (or
 install one system-wide) — [`docs/RELEASING.md`](docs/RELEASING.md) notes the exact build delryn pins.
+
+---
 
 ## Usage
 
@@ -91,7 +156,9 @@ delryn --index               # build the full-text search index
 delryn --export-annotations  # dump all notes & bookmarks as Markdown to stdout
 ```
 
-### Key bindings
+---
+
+## Key bindings
 
 Vim-style and count-aware (`10j`, `50G`). Every screen shows its own legend in the status bar —
 the essentials:
@@ -114,7 +181,7 @@ the essentials:
 </details>
 
 <details>
-<summary><b>Reader — layout, modes & PDF</b></summary>
+<summary><b>Reader — layout, modes &amp; PDF</b></summary>
 
 | Key | Action |
 | --- | --- |
@@ -127,7 +194,7 @@ the essentials:
 </details>
 
 <details>
-<summary><b>Reader — annotations & selection</b></summary>
+<summary><b>Reader — annotations &amp; selection</b></summary>
 
 | Key | Action |
 | --- | --- |
@@ -153,25 +220,41 @@ the essentials:
 | `Delete` | move to trash (with confirm) |
 </details>
 
+---
+
 ## Configuration
 
 delryn reads `~/.config/delryn/config.toml` (TOML), but everything is also editable **live in the
 app** — press `;` for the Settings overlay, which writes the file on close. Highlights: theme,
-typography (margins, line & paragraph spacing, justify), reading mode & direction, image / math
+typography (margins, line &amp; paragraph spacing, justify), reading mode &amp; direction, image / math
 scaling, PDF trim, and a `[status]` block to compose the status bar (per-zone segment order,
 separator, clock). The same folder holds the library database, cover cache, and `themes/` for
 your own `*.toml` themes.
 
-## Contributing & releases
+---
+
+## Contributing &amp; releases
 
 Branch → PR → squash-merge, with the **PR title a [Conventional Commit](https://www.conventionalcommits.org)**.
 Releases are automated — merge the standing release PR to publish. The full workflow, the
 commit / version / changelog conventions, and the pipeline internals live in
 [**`docs/RELEASING.md`**](docs/RELEASING.md).
 
+Before pushing, run the same gate CI does:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+---
+
 ## License
 
-[MIT](LICENSE) © dilmun
+[MIT](LICENSE) © 2026 dilmun
+
+<sub>Built on ratatui, syntect, pdfium, RaTeX, and the epub / scraper / image crates — thank you to those projects.</sub>
 
 <div align="center">
 <br />
