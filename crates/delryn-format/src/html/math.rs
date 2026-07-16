@@ -128,16 +128,36 @@ pub(super) struct MathBlock {
 }
 
 /// Recover everything renderable from a math node (native `<math>` or math image),
-/// or the first math descendant of a container. Prefers a LaTeX source (for a crisp
-/// RaTeX render); keeps the image `src` only as a fallback when there's no LaTeX.
+/// or the first math descendant of a container. Prefers a reliable LaTeX source (for a
+/// crisp RaTeX render); otherwise the publisher raster — a math image's `src`, or a
+/// native `<math>`'s `altimg` when its LaTeX would only be *synthesized* from
+/// presentation MathML — and the Unicode approximation as the last resort.
 pub(super) fn recover_math_block(node: NodeRef<Node>) -> MathBlock {
     if let Some(e) = node.value().as_element() {
         if is_math_element(e) {
             let (unicode, latex) = native_math(node);
+            // A publisher equation raster the `<math>` ships alongside its MathML
+            // (the MathML `altimg` attribute), resolved like any image `src`.
+            let img_src = e
+                .attr("altimg")
+                .map(str::to_string)
+                .filter(|s| !s.trim().is_empty());
+            // Presentation-MathML-only equations that ship a raster: prefer the raster
+            // over the *synthesized* LaTeX. MathML-derived LaTeX is the least reliable
+            // source and RaTeX may reject it (e.g. an `<mover>` accent becomes
+            // `\overset{◌̄}{X}`, which the KaTeX subset can't parse), silently dropping
+            // the whole equation to a lossy Unicode approximation. The publisher raster
+            // is authoritative and rides the same ink-based sizing as any equation image.
+            // Authored LaTeX (`alttext`/`<annotation>`) is reliable, so it still wins.
+            let latex = if img_src.is_some() && !math_has_authored_latex(node) {
+                None
+            } else {
+                latex
+            };
             return MathBlock {
                 unicode,
                 latex,
-                img_src: None,
+                img_src,
                 width: delryn_model::ImageWidth::Auto,
             };
         }
@@ -453,6 +473,18 @@ pub(super) fn native_math(node: NodeRef<Node>) -> (String, Option<String>) {
         crate::mathml::to_unicode(&html),
         crate::mathml::to_latex(&html),
     )
+}
+
+/// Whether a `<math>` carries an *authored* LaTeX source — a non-empty `alttext`
+/// attribute or a TeX `<annotation>`. Those are reliable input for the graphical
+/// renderer; presentation MathML alone is only *synthesized* into LaTeX (less
+/// reliable), so a publisher raster is preferred over it when one exists.
+fn math_has_authored_latex(node: NodeRef<Node>) -> bool {
+    node.value()
+        .as_element()
+        .and_then(|e| e.attr("alttext"))
+        .is_some_and(|a| !a.trim().is_empty())
+        || annotation_tex(node).is_some()
 }
 
 /// The text of a `<math>`'s TeX `<annotation>`, if present.
