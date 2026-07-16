@@ -1293,6 +1293,63 @@ fn several_display_equations_in_one_container_all_render() {
     assert_eq!(n, 2, "both wrapped equations render, got {wrapped:?}");
 }
 
+/// A presentation-MathML display equation that ships a publisher raster (`<math
+/// altimg=…>` with empty `alttext`) renders as that raster — not the *synthesized*
+/// LaTeX, which RaTeX often can't parse (an `<mover>` accent becomes `\overset{◌̄}{X}`),
+/// silently dropping the equation to a lossy Unicode approximation. This is how
+/// LaTeXML/MathType EPUBs (e.g. Blitzstein & Hwang's *Introduction to Probability*)
+/// ship every equation.
+#[test]
+fn mathml_with_altimg_raster_renders_the_raster_not_synthesized_latex() {
+    // X̄ = 1 as presentation MathML (an `<mover>` accent) + a publisher raster.
+    let blocks = parse_blocks(
+        r#"<html><body><p><math xmlns="http://www.w3.org/1998/Math/MathML" altimg="../images/eq4141.jpg" alttext=""><mover><mi>X</mi><mo>&#772;</mo></mover><mo>=</mo><mn>1</mn></math></p></body></html>"#,
+    );
+    let (src, _alt) = display_math_img(&blocks)
+        .expect("presentation-MathML equation with altimg → publisher raster image");
+    assert_eq!(src, "../images/eq4141.jpg");
+    assert!(
+        first_math_latex(&blocks).is_none(),
+        "the fragile synthesized LaTeX must not be routed to RaTeX: {blocks:?}"
+    );
+}
+
+/// A `<math>` that ships a raster but *also* carries authored LaTeX (`alttext`) still
+/// renders via that LaTeX (crisp RaTeX) — authored LaTeX is reliable, so the raster
+/// preference is only for presentation-MathML-*only* equations.
+#[test]
+fn authored_alttext_still_wins_over_the_raster() {
+    let blocks = parse_blocks(
+        r#"<html><body><p><math altimg="../images/eq.jpg" alttext="x = 1"><mi>x</mi></math></p></body></html>"#,
+    );
+    assert_eq!(
+        first_math_latex(&blocks).as_deref(),
+        Some("x = 1"),
+        "authored alttext → Block::Math (RaTeX), not the raster: {blocks:?}"
+    );
+    assert!(
+        display_math_img(&blocks).is_none(),
+        "not routed to the raster image"
+    );
+}
+
+/// A presentation-MathML-only equation with *no* raster is unchanged: synthesized
+/// LaTeX still feeds RaTeX (graphical math for MathML-only books), never an image.
+#[test]
+fn mathml_only_without_raster_is_unchanged() {
+    let blocks = parse_blocks(
+        r#"<html><body><p><math xmlns="http://www.w3.org/1998/Math/MathML"><munderover><mo>&#8721;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><msup><mi>i</mi><mn>2</mn></msup></math></p></body></html>"#,
+    );
+    assert!(
+        display_math_img(&blocks).is_none(),
+        "no raster → not an image: {blocks:?}"
+    );
+    assert!(
+        first_math(&blocks).is_some(),
+        "still a Block::Math (synthesized LaTeX / Unicode): {blocks:?}"
+    );
+}
+
 /// The paragraph texts, in order (skips images/rules/etc.).
 fn para_texts(blocks: &[Block]) -> Vec<String> {
     blocks
