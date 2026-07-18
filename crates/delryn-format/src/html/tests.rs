@@ -584,20 +584,31 @@ fn path_alt_equation_image_in_container_is_math_with_em_width() {
         </div>
       </body></html>"#;
     let blocks = super::parse_blocks(html);
-    match first_math_item(&blocks).and_then(|i| i.picture.as_ref()) {
-        Some(pic) => {
+    // No MathML/LaTeX to typeset (the alt is a file path), so the publisher raster is the
+    // representation: a `math`-flagged image carrying its authored em width.
+    let img = blocks.iter().find_map(|b| match b {
+        Block::Image {
+            src, math, width, ..
+        } => Some((src.as_str(), *math, *width)),
+        _ => None,
+    });
+    match img {
+        Some((src, math, width)) => {
             assert!(
-                pic.src.ends_with("Equ3_HTML.png"),
-                "the publisher raster: {}",
-                pic.src
+                src.ends_with("Equ3_HTML.png"),
+                "the publisher raster: {src}"
+            );
+            assert!(
+                math,
+                "flagged as math (equation raster), not a plain figure"
             );
             assert_eq!(
-                pic.size,
-                delryn_model::PictureSize::Em(27.08),
+                width,
+                ImageWidth::Em(27.08),
                 "carries the authored text-relative em width"
             );
         }
-        None => panic!("expected a display-math block with a publisher picture, got {blocks:?}"),
+        None => panic!("expected a math image block, got {blocks:?}"),
     }
 }
 
@@ -636,9 +647,9 @@ fn broad_container_with_prose_is_not_collapsed_to_one_equation() {
     );
     let equations = blocks
         .iter()
-        .filter(|b| matches!(b, Block::Math { item } if item.picture.is_some()))
+        .filter(|b| matches!(b, Block::Image { math: true, .. }))
         .count();
-    assert_eq!(equations, 1, "exactly the one equation is a math block");
+    assert_eq!(equations, 1, "exactly the one equation is a math image");
 }
 
 /// First `Block::Code`'s lines, if any.

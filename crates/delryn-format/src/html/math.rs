@@ -116,6 +116,12 @@ pub(super) fn is_math_node(node: NodeRef<Node>) -> bool {
 /// signal `detect` (which reads only explicit `display`/`displaystyle` attributes) doesn't
 /// see. A node `detect` can't recover — rare, since the classifier deemed it math —
 /// degrades to a text-only item from its glyph text, so the never-blank floor still holds.
+// The math-recovery helpers call into the equation engine (`detect` / `to_nodes`), whose
+// large stack frames must NOT be inlined into the parser's recursive DOM walk — Rust
+// reserves a function's whole local space (inlined cold branches included) at every
+// recursion level, so inlining these would balloon each `walk`/`collect_inline` frame and
+// overflow the stack on deeply nested markup. `inline(never)` keeps them a plain call.
+#[inline(never)]
 pub(super) fn display_math_item(node: NodeRef<Node>) -> delryn_model::MathItem {
     let mut item = delryn_eqn::detect(node).unwrap_or_else(|| delryn_model::MathItem {
         display: true,
@@ -128,6 +134,52 @@ pub(super) fn display_math_item(node: NodeRef<Node>) -> delryn_model::MathItem {
     });
     item.display = true;
     item
+}
+
+/// Whether the recovered markup can be laid out by the typeset engine — the cheap,
+/// crisp, vector path. Checked at parse time so the *representation* is chosen up front:
+/// a typeset-able equation stays markup for the reader to render, while one the engine
+/// can't map falls to the publisher's raster instead of a broken vector attempt.
+#[inline(never)]
+pub(super) fn is_typesettable(item: &delryn_model::MathItem) -> bool {
+    item.typeset
+        .as_ref()
+        .is_some_and(|s| delryn_eqn::to_nodes(s).is_some())
+}
+
+/// Pick the model representation for a recovered display equation, most-efficient first:
+/// a **typeset-able** source → [`Block::Math`] (the reader lays it out as crisp vector type
+/// — no image to transmit); else the **publisher picture** → [`Block::Image`] emitted *here*
+/// so the format layer resolves its bytes (a reliable raster is better than a vector we
+/// can't build); else the Unicode floor as [`Block::Math`]; else nothing renderable.
+#[inline(never)]
+pub(super) fn display_math_block(item: delryn_model::MathItem) -> Option<Block> {
+    if is_typesettable(&item) {
+        return Some(Block::Math { item });
+    }
+    if let Some(pic) = item.picture {
+        return Some(Block::Image {
+            src: pic.src,
+            alt: item.text,
+            data: Vec::new(),
+            caption: Vec::new(),
+            math: true,
+            width: picture_width(pic.size),
+            ink: None,
+        });
+    }
+    (!item.text.trim().is_empty()).then_some(Block::Math { item })
+}
+
+/// Map a recovered picture's text-relative size hint to the model's authored image width,
+/// so a publisher equation raster scales to the prose (DPI-independent). `MeasureInk` has no
+/// authored size → `Auto`, and the reader ink-profiles it instead.
+fn picture_width(size: delryn_model::PictureSize) -> delryn_model::ImageWidth {
+    match size {
+        delryn_model::PictureSize::Em(w) => delryn_model::ImageWidth::Em(w),
+        delryn_model::PictureSize::Ex(w) => delryn_model::ImageWidth::Em(w * 0.5),
+        delryn_model::PictureSize::MeasureInk => delryn_model::ImageWidth::Auto,
+    }
 }
 
 /// A publisher equation shipped as a *plain* `<img>` — no math `alt`/comment, so

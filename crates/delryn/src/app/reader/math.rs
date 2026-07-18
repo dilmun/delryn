@@ -130,56 +130,22 @@ pub(crate) fn convert_math_blocks(blocks: &mut [Block]) {
         let Block::Math { item } = b else {
             continue;
         };
-        // Render down the ladder. A publisher picture needs its bytes resolved against the
-        // book's resources — which the inline-image pipeline does downstream — so here we
-        // resolve nothing (`|_| None`), and the ladder yields the crisp typeset raster or
-        // falls to text; on a fall we hand the picture (if any) to that pipeline.
-        match delryn_eqn::render(item, em_px, |_| None) {
-            delryn_eqn::Rendered::Typeset(raster) => {
-                let alt = std::mem::take(&mut item.text);
-                *b = Block::Image {
-                    src: String::new(),
-                    alt,
-                    data: raster.png,
-                    caption: Vec::new(),
-                    math: true,
-                    width: delryn_model::ImageWidth::Auto,
-                    // Path A: sized by its render em, not a measured ink profile.
-                    ink: None,
-                };
-            }
-            // No crisp typeset (MathML the engine can't lay out, unmapped markup, or a
-            // pure-picture equation): show the publisher's own raster if one exists — the
-            // image pipeline resolves its `src` to bytes and ink-profiles it — sized by its
-            // authored `em`. Absent a picture, the block stays `Math` and centres its floor.
-            delryn_eqn::Rendered::Text(_) | delryn_eqn::Rendered::Picture { .. } => {
-                // Only when a picture exists do we swap to an image (and consume the floor
-                // as its alt); with no picture the block stays `Math` with `item.text`
-                // intact, so it centres its Unicode floor — never blank.
-                if let Some(pic) = item.picture.take() {
-                    *b = Block::Image {
-                        src: pic.src,
-                        alt: std::mem::take(&mut item.text),
-                        data: Vec::new(),
-                        caption: Vec::new(),
-                        math: true,
-                        width: picture_width(pic.size),
-                        ink: None, // measured later, off-thread, by the reader
-                    };
-                }
-            }
+        // A `Block::Math` reaching here is typeset-able markup (the parser routed picture-
+        // backed equations it couldn't typeset to `Block::Image` already). Lay it out to a
+        // crisp raster; on the rare engine failure it stays `Block::Math` and centres its
+        // Unicode floor — never blank.
+        if let delryn_eqn::Rendered::Typeset(raster) = delryn_eqn::render(item, em_px, |_| None) {
+            *b = Block::Image {
+                src: String::new(),
+                alt: std::mem::take(&mut item.text),
+                data: raster.png,
+                caption: Vec::new(),
+                math: true,
+                width: delryn_model::ImageWidth::Auto,
+                // Path A: sized by its render em, not a measured ink profile.
+                ink: None,
+            };
         }
-    }
-}
-
-/// Map a recovered picture's text-relative size hint to the model's authored image width,
-/// so a publisher equation raster is scaled to the prose (DPI-independent) like any other.
-/// `MeasureInk` has no authored size → `Auto`, and the reader ink-profiles it instead.
-fn picture_width(size: delryn_model::PictureSize) -> delryn_model::ImageWidth {
-    match size {
-        delryn_model::PictureSize::Em(w) => delryn_model::ImageWidth::Em(w),
-        delryn_model::PictureSize::Ex(w) => delryn_model::ImageWidth::Em(w * 0.5),
-        delryn_model::PictureSize::MeasureInk => delryn_model::ImageWidth::Auto,
     }
 }
 

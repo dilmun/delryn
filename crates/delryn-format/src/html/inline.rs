@@ -27,8 +27,10 @@ pub(super) fn img_src(e: &scraper::node::Element) -> Option<String> {
 
 /// Maximum inline-nesting depth before the walk stops recursing and flattens the
 /// rest to text — guards against a stack overflow on pathological markup (e.g.
-/// thousands of nested `<span>`s). Real inline nesting is a few levels deep.
-const MAX_INLINE_DEPTH: u16 = 256;
+/// thousands of nested `<span>`s). Real inline nesting is a few levels deep; the
+/// bound is kept well under where the recursive walk's (debug-build) frames would
+/// exhaust a default thread stack.
+const MAX_INLINE_DEPTH: u16 = 128;
 
 pub(super) fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
     collect_inline_at(node, style, 0, out);
@@ -182,25 +184,32 @@ fn collect_inline_at(node: NodeRef<Node>, style: Inline, depth: u16, out: &mut V
 /// Recover an inline math occurrence via the universal detector, forcing `display = false`:
 /// inline runs sit mid-line, so a MathJax/MathML `display` attribute on the node (which the
 /// block classifier already routed elsewhere when it means block) never re-promotes it here.
+// Kept out-of-line: the equation engine's large frames must not inflate the recursive
+// inline walk's per-level stack (see the note in `math::display_math_item`).
+#[inline(never)]
 fn detect_inline(node: NodeRef<Node>) -> Option<delryn_model::MathItem> {
     let mut item = delryn_eqn::detect(node)?;
     item.display = false;
     Some(item)
 }
 
-/// Build an inline math span from a recovered [`MathItem`]: its Unicode floor as the run
-/// text (the fallback shown when graphical math is off or the equation is too tall), the
-/// item carried along for graphical rendering, tagged `math` so math-only text fix-ups apply.
+/// Build an inline math span from a recovered [`MathItem`]. Its Unicode floor is always the
+/// run text (the fallback). The recovered source rides along for graphical rendering **only
+/// when the engine can typeset it** — a publisher raster mid-line can't sit in the text flow,
+/// so a non-typeset-able inline equation stays the Unicode approximation rather than a broken
+/// image. Tagged `math` so math-only text fix-ups apply.
+#[inline(never)]
 fn inline_math_span(item: delryn_model::MathItem, style: Inline) -> Span {
+    let math = is_typesettable(&item).then(|| delryn_model::SpanMath::Source(item.clone()));
     Span {
-        text: item.text.clone(),
+        text: item.text,
         style: Inline {
             italic: true,
             math: true,
             ..style
         },
         anchor: None,
-        math: Some(delryn_model::SpanMath::Source(item)),
+        math,
     }
 }
 

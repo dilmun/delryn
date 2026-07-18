@@ -196,8 +196,10 @@ fn leading_text(node: NodeRef<Node>, max: usize) -> String {
 /// emits the remaining subtree as flat text. Real books nest a handful of levels
 /// deep; this only trips on pathological / malicious markup (thousands of nested
 /// `<div>`s), where unbounded recursion would overflow the stack and abort the
-/// process. No real content is lost below this bound.
-const MAX_BLOCK_DEPTH: u16 = 256;
+/// process. No real content is lost below this bound. Kept well under the point
+/// where the recursive walk's (debug-build, un-coalesced) frames would exhaust a
+/// default thread stack — the block and inline walks can each reach this depth.
+const MAX_BLOCK_DEPTH: u16 = 128;
 
 #[derive(Default, Clone)]
 struct Ctx {
@@ -362,11 +364,11 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             }
         }
         ElementRole::DisplayMath(item) => {
-            // Emit the recovered math as-is; the reader renders it down the never-blank
-            // ladder (typeset → publisher picture → Unicode floor). Skip only a truly
-            // empty recovery (no source and no floor), which carries nothing to show.
-            if item.has_graphics() || !item.text.trim().is_empty() {
-                out.push(Block::Math { item });
+            // Choose the most efficient renderable form up front: crisp vector type when the
+            // engine can map the markup, else the publisher's raster (bytes resolved by the
+            // format layer), else the Unicode floor. Nothing renderable → drop it.
+            if let Some(block) = display_math_block(item) {
+                out.push(block);
             }
         }
         ElementRole::Heading(level) => {
