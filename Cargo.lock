@@ -718,7 +718,10 @@ name = "delryn-eqn"
 version = "0.1.0"
 dependencies = [
  "ego-tree",
+ "ratex-layout",
  "ratex-parser",
+ "ratex-render",
+ "ratex-types",
  "scraper",
 ]
 
