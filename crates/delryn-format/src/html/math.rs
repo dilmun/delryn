@@ -147,14 +147,21 @@ pub(super) fn is_typesettable(item: &delryn_model::MathItem) -> bool {
         .is_some_and(|s| delryn_eqn::to_nodes(s).is_some())
 }
 
-/// Pick the model representation for a recovered display equation, most-efficient first:
-/// a **typeset-able** source → [`Block::Math`] (the reader lays it out as crisp vector type
-/// — no image to transmit); else the **publisher picture** → [`Block::Image`] emitted *here*
-/// so the format layer resolves its bytes (a reliable raster is better than a vector we
-/// can't build); else the Unicode floor as [`Block::Math`]; else nothing renderable.
+/// Pick the model representation for a recovered display equation, preferring the most
+/// efficient form that is also **reliable**:
+///
+/// 1. **Authored LaTeX** → [`Block::Math`]: RaTeX handles the author's exact TeX
+///    dependably, so the reader lays it out as crisp vector type (no image to transmit).
+/// 2. **A publisher picture** → [`Block::Image`] (bytes resolved by the format layer): the
+///    publisher's own rendering is authoritative and consistently sized. Structural-MathML
+///    typesetting is best-effort — it can pass `to_nodes` yet still fail to *lay out* — so
+///    when a raster exists it wins (a reliable image beats a vector that may not build).
+/// 3. **MathML with no picture** → [`Block::Math`]: typesetting is the only graphical path,
+///    so the reader attempts it (falling back to the Unicode floor if it can't build).
+/// 4. Otherwise the Unicode floor as [`Block::Math`], or nothing if even that is empty.
 #[inline(never)]
 pub(super) fn display_math_block(item: delryn_model::MathItem) -> Option<Block> {
-    if is_typesettable(&item) {
+    if matches!(item.typeset, Some(delryn_model::MarkupSource::Latex(_))) {
         return Some(Block::Math { item });
     }
     if let Some(pic) = item.picture {
@@ -168,7 +175,7 @@ pub(super) fn display_math_block(item: delryn_model::MathItem) -> Option<Block> 
             ink: None,
         });
     }
-    (!item.text.trim().is_empty()).then_some(Block::Math { item })
+    (item.typeset.is_some() || !item.text.trim().is_empty()).then_some(Block::Math { item })
 }
 
 /// Map a recovered picture's text-relative size hint to the model's authored image width,

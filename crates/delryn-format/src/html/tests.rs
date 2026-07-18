@@ -553,13 +553,23 @@ fn first_math_item(blocks: &[Block]) -> Option<&delryn_model::MathItem> {
     })
 }
 
-/// The `(publisher-picture src, Unicode floor)` of a display-math block that recovered a
-/// picture — the reader turns that picture into the equation image at render time.
+/// The `(publisher-picture src, Unicode floor)` of a display-math equation that ships a
+/// raster — whichever representation the parser chose: a `math`-flagged `Block::Image`
+/// (picture preferred over fragile MathML typeset) or a `Block::Math` still carrying the
+/// picture. Robust to that choice so the tests assert *the raster is recovered*, not how.
 fn display_math_img(blocks: &[Block]) -> Option<(&str, &str)> {
-    first_math_item(blocks).and_then(|item| {
-        item.picture
+    blocks.iter().find_map(|b| match b {
+        Block::Image {
+            src,
+            alt,
+            math: true,
+            ..
+        } => Some((src.as_str(), alt.as_str())),
+        Block::Math { item } => item
+            .picture
             .as_ref()
-            .map(|p| (p.src.as_str(), item.text.as_str()))
+            .map(|p| (p.src.as_str(), item.text.as_str())),
+        _ => None,
     })
 }
 
@@ -1268,12 +1278,19 @@ fn empty_marker_sibling_does_not_force_a_display_equation_inline() {
             r#"<html><body><p><img src="image/98.png" alt="&lt;math display=&quot;block&quot;&gt;&lt;msub&gt;&lt;mi&gt;x&lt;/mi&gt;&lt;mi&gt;i&lt;/mi&gt;&lt;/msub&gt;&lt;/math&gt;" style="width:1.812em"/>{sib}</p></body></html>"#
         );
         let blocks = parse_blocks(&html);
-        let pic = first_math_item(&blocks).and_then(|i| i.picture.as_ref());
+        // MathML that ships a raster prefers the raster (structural typeset is fragile), so
+        // the lone equation is a `math`-flagged image carrying its authored em width — not
+        // inline Unicode deaf to the display size knob.
+        let img = blocks.iter().find_map(|b| match b {
+            Block::Image {
+                src, math, width, ..
+            } => Some((src.as_str(), *math, *width)),
+            _ => None,
+        });
         assert_eq!(
-            pic.map(|p| (p.src.as_str(), p.size)),
-            Some(("image/98.png", delryn_model::PictureSize::Em(1.812))),
-            "with sibling {sib:?}, the lone equation must be a display-math block with the \
-             em-sized publisher picture, got {blocks:?}"
+            img,
+            Some(("image/98.png", true, ImageWidth::Em(1.812))),
+            "with sibling {sib:?}, the lone equation must be an em-sized math image, got {blocks:?}"
         );
     }
 }
