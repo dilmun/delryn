@@ -14,3 +14,5 @@ ratex-parser.workspace = true
 ratex-layout.workspace = true
 ratex-render.workspace = true
 ratex-types.workspace = true
+# Kitty graphics delivery: chunked base64 image transmits.
+base64.workspace = true

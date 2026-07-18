@@ -8,12 +8,14 @@
 //! It owns **detection + source recovery**; the render ladder (a separate concern) consumes
 //! the IR, trying `typeset` → `picture` → `text` so an equation can never render nothing.
 
+pub mod delivery;
 pub mod detect;
 pub mod ir;
 pub mod render;
 pub mod sizing;
 pub mod typeset;
 
+pub use delivery::{Deck, Target};
 pub use detect::detect;
 pub use ir::{MarkupSource, MathItem, PictureRef, PictureSize};
 pub use render::{Raster, Rendered, render};
