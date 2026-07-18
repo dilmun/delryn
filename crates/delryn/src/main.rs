@@ -127,10 +127,72 @@ fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
+    // Mute stray dependency stderr for the TUI's lifetime (see `StderrRedirect`).
+    let stderr_guard = StderrRedirect::for_tui();
     let result = run(&mut terminal, &mut app, sync);
+    // Restore stderr before anything else prints, so real errors reach the terminal.
+    drop(stderr_guard);
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
+}
+
+/// While alive, points the process's stderr (fd 2) at a log file, so a dependency's stray
+/// `eprintln!` — e.g. the equation engine's RaTeX font-loader diagnostics
+/// (`[ratex-unicode-font] found via builtin path: …`) — can't scribble into the
+/// alternate-screen TUI and desync ratatui's cell-diff renderer (which surfaces as torn text
+/// and garbled prose mid-scroll). Restored on drop, so any error or panic printed after we
+/// leave the TUI still reaches the real terminal.
+#[cfg(unix)]
+struct StderrRedirect {
+    saved: Option<i32>,
+}
+
+#[cfg(unix)]
+impl StderrRedirect {
+    fn for_tui() -> Self {
+        use std::os::fd::AsRawFd;
+        let Ok(file) = std::fs::File::create(std::env::temp_dir().join("delryn.log")) else {
+            return Self { saved: None };
+        };
+        // SAFETY: `dup`/`dup2` act on the process's own stderr. `dup` saves the original
+        // stderr so `drop` can restore it; `dup2` repoints fd 2 at the log file's open
+        // description. `file`'s own fd is closed at end of scope, but fd 2 is an independent
+        // descriptor for the same description, so the log stays writable via fd 2 until the
+        // guard restores the original.
+        unsafe {
+            let saved = libc::dup(libc::STDERR_FILENO);
+            if saved < 0 {
+                return Self { saved: None };
+            }
+            libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+            Self { saved: Some(saved) }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StderrRedirect {
+    fn drop(&mut self) {
+        if let Some(saved) = self.saved {
+            // SAFETY: `saved` is a live dup of the original stderr; restore it onto fd 2 and
+            // close the temporary dup.
+            unsafe {
+                libc::dup2(saved, libc::STDERR_FILENO);
+                libc::close(saved);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct StderrRedirect;
+
+#[cfg(not(unix))]
+impl StderrRedirect {
+    fn for_tui() -> Self {
+        Self
+    }
 }
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> {

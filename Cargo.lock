@@ -703,6 +703,7 @@ dependencies = [
  "delryn-render",
  "delryn-store",
  "image",
+ "libc",
  "lru",
  "ratatui",
  "ratatui-image",
