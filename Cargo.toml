@@ -55,6 +55,15 @@ delryn-render = { path = "crates/delryn-render" }
 delryn-library = { path = "crates/delryn-library" }
 delryn-eqn = { path = "crates/delryn-eqn" }
 
+# Debug builds keep the workspace crates unoptimized (fast incremental rebuilds,
+# fully debuggable) but compile DEPENDENCIES with optimization. The image pipeline —
+# `image` (decode / Lanczos3 resize / PNG encode), `pdfium-render`, and the `ratex-*`
+# math rasterizers — is 20–50× slower unoptimized, which made library covers and
+# equation rasters crawl in a `cargo run` / debug binary even though release was fine.
+# Dependencies rebuild rarely, so their one-time optimized compile is well worth it.
+[profile.dev.package."*"]
+opt-level = 2
+
 # Vendored ratatui-image patched to transmit Kitty images as PNG (f=100) rather
 # than raw RGBA (f=32), so large figures don't stall the terminal. See
 # vendor/ratatui-image/src/protocol/kitty.rs (delryn patch).
