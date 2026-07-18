@@ -714,6 +714,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "delryn-eqn"
+version = "0.1.0"
+dependencies = [
+ "ego-tree",
+ "scraper",
+]
+
+[[package]]
 name = "delryn-format"
 version = "0.1.0"
 dependencies = [

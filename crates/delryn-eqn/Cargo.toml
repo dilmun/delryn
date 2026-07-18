@@ -1,0 +1,10 @@
+[package]
+name = "delryn-eqn"
+version.workspace = true
+edition.workspace = true
+
+# Universal, encoding-agnostic equation recovery — the fresh replacement for the old
+# math paths (docs/MATH-RENDERING.md). Detection + source recovery only; no rendering.
+[dependencies]
+scraper.workspace = true
+ego-tree.workspace = true
