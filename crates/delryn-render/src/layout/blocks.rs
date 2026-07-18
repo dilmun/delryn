@@ -418,10 +418,14 @@ mod tests {
 
     #[test]
     fn math_centres_prerendered_unicode() {
-        // The parser resolves LaTeX/MathML to Unicode; layout only centres it.
+        // The parser resolves LaTeX/MathML to a Unicode floor; layout only centres it.
         let block = Block::Math {
-            unicode: "α + β".to_string(),
-            latex: None,
+            item: delryn_model::MathItem {
+                display: true,
+                typeset: None,
+                picture: None,
+                text: "α + β".to_string(),
+            },
         };
         let lines = texts(&wrap_blocks(&[block], &WrapOpts::default(), &[]));
         let joined = lines.join("\n");

@@ -1455,8 +1455,12 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
 
         let mut r = reader_with(vec![Block::Math {
-            unicode: "x".into(),
-            latex: Some("\\frac{x^2}{y}".into()),
+            item: delryn_model::MathItem {
+                display: true,
+                typeset: Some(delryn_model::MarkupSource::Latex("\\frac{x^2}{y}".into())),
+                picture: None,
+                text: "x".into(),
+            },
         }]);
         let dims = |r: &mut Reader| -> (u32, u32) {
             r.fetch_blocks(0)
@@ -1796,8 +1800,12 @@ mod tests {
     }
     fn math() -> Block {
         Block::Math {
-            unicode: r"\alpha".to_string(),
-            latex: None,
+            item: delryn_model::MathItem {
+                display: true,
+                typeset: None,
+                picture: None,
+                text: r"\alpha".to_string(),
+            },
         }
     }
 

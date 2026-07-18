@@ -171,6 +171,16 @@ fn harvest_mathml(node: NodeRef<Node>) -> Option<String> {
     {
         return serialize(node);
     }
+    // MathML serialized *into* an `<img alt="…">` (OOXML/DOCX → EPUB converters ship math
+    // this way): the markup is trapped in the attribute string, not a DOM subtree, so
+    // harvest it straight from the alt.
+    if let Some(e) = node.value().as_element()
+        && matches!(local(e.name()), "img" | "image")
+        && let Some(alt) = e.attr("alt")
+        && (alt.contains("<math") || alt.contains(":math"))
+    {
+        return Some(alt.to_string());
+    }
     // A <math> anywhere in the subtree (assistive-mml, hidden div, switch branch).
     for d in node.descendants() {
         if d.value()
@@ -516,6 +526,24 @@ mod tests {
         .expect("picture-only math (has math class)");
         assert!(item.typeset.is_none(), "no markup to typeset");
         assert_eq!(item.picture.map(|p| p.size), Some(PictureSize::Em(5.0)));
+    }
+
+    #[test]
+    fn mathml_serialized_into_img_alt_is_harvested() {
+        // OOXML/DOCX → EPUB: the MathML lives in the img `alt` (quotes escaped in the file,
+        // decoded by the parser), with the raster as the `src`.
+        let item = detect_first(
+            r#"<p class="equation"><img alt="<mml:math xmlns:mml='http://www.w3.org/1998/Math/MathML'><mml:mi>Σ</mml:mi></mml:math>" src="e.png"/></p>"#,
+            "img",
+        )
+        .expect("math image");
+        assert!(
+            matches!(item.typeset, Some(MarkupSource::PresentationMathml(ref s)) if s.contains(":mi")),
+            "MathML harvested from the alt: {:?}",
+            item.typeset
+        );
+        assert_eq!(item.picture.map(|p| p.src), Some("e.png".to_string()));
+        assert_eq!(item.text, "Σ", "floor transcribed from the alt MathML");
     }
 
     #[test]

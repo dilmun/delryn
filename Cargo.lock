@@ -693,6 +693,7 @@ dependencies = [
  "arboard",
  "chrono",
  "crossterm",
+ "delryn-eqn",
  "delryn-format",
  "delryn-infra",
  "delryn-library",
@@ -732,6 +733,7 @@ name = "delryn-format"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "delryn-eqn",
  "delryn-model",
  "ego-tree",
  "epub",

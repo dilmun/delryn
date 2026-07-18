@@ -130,28 +130,59 @@ pub(crate) fn convert_math_blocks(blocks: &mut [Block]) {
         return;
     }
     for b in blocks.iter_mut() {
-        let Block::Math {
-            unicode,
-            latex: Some(latex),
-        } = b
-        else {
+        let Block::Math { item } = b else {
             continue;
         };
-        let Some(png) = delryn_math::render(latex, delryn_math::Style::Display, em_px) else {
-            continue; // unrenderable → keep the Unicode `Block::Math`
-        };
-        let alt = std::mem::take(unicode);
-        *b = Block::Image {
-            src: String::new(),
-            alt,
-            data: png,
-            caption: Vec::new(),
-            math: true,
-            width: delryn_model::ImageWidth::Auto,
-            // Rendered LaTeX is Path A — sized by its render em, not a measured
-            // ink profile — so it needs no profiling.
-            ink: None,
-        };
+        // Render down the ladder. A publisher picture needs its bytes resolved against the
+        // book's resources — which the inline-image pipeline does downstream — so here we
+        // resolve nothing (`|_| None`), and the ladder yields the crisp typeset raster or
+        // falls to text; on a fall we hand the picture (if any) to that pipeline.
+        match delryn_eqn::render(item, em_px, |_| None) {
+            delryn_eqn::Rendered::Typeset(raster) => {
+                let alt = std::mem::take(&mut item.text);
+                *b = Block::Image {
+                    src: String::new(),
+                    alt,
+                    data: raster.png,
+                    caption: Vec::new(),
+                    math: true,
+                    width: delryn_model::ImageWidth::Auto,
+                    // Path A: sized by its render em, not a measured ink profile.
+                    ink: None,
+                };
+            }
+            // No crisp typeset (MathML the engine can't lay out, unmapped markup, or a
+            // pure-picture equation): show the publisher's own raster if one exists — the
+            // image pipeline resolves its `src` to bytes and ink-profiles it — sized by its
+            // authored `em`. Absent a picture, the block stays `Math` and centres its floor.
+            delryn_eqn::Rendered::Text(_) | delryn_eqn::Rendered::Picture { .. } => {
+                // Only when a picture exists do we swap to an image (and consume the floor
+                // as its alt); with no picture the block stays `Math` with `item.text`
+                // intact, so it centres its Unicode floor — never blank.
+                if let Some(pic) = item.picture.take() {
+                    *b = Block::Image {
+                        src: pic.src,
+                        alt: std::mem::take(&mut item.text),
+                        data: Vec::new(),
+                        caption: Vec::new(),
+                        math: true,
+                        width: picture_width(pic.size),
+                        ink: None, // measured later, off-thread, by the reader
+                    };
+                }
+            }
+        }
+    }
+}
+
+/// Map a recovered picture's text-relative size hint to the model's authored image width,
+/// so a publisher equation raster is scaled to the prose (DPI-independent) like any other.
+/// `MeasureInk` has no authored size → `Auto`, and the reader ink-profiles it instead.
+fn picture_width(size: delryn_model::PictureSize) -> delryn_model::ImageWidth {
+    match size {
+        delryn_model::PictureSize::Em(w) => delryn_model::ImageWidth::Em(w),
+        delryn_model::PictureSize::Ex(w) => delryn_model::ImageWidth::Em(w * 0.5),
+        delryn_model::PictureSize::MeasureInk => delryn_model::ImageWidth::Auto,
     }
 }
 
@@ -413,12 +444,20 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
 
         let math = || Block::Math {
-            unicode: "x²".to_string(),
-            latex: Some("x^2".to_string()),
+            item: delryn_model::MathItem {
+                display: true,
+                typeset: Some(delryn_model::MarkupSource::Latex("x^2".to_string())),
+                picture: None,
+                text: "x²".to_string(),
+            },
         };
-        let mathml_only = || Block::Math {
-            unicode: "α".to_string(),
-            latex: None,
+        let no_graphics = || Block::Math {
+            item: delryn_model::MathItem {
+                display: true,
+                typeset: None,
+                picture: None,
+                text: "α".to_string(),
+            },
         };
         EM_PX.store(40, Ordering::Relaxed);
 
@@ -433,7 +472,7 @@ mod tests {
 
         // On → LaTeX math becomes a themed image; a source-less one stays Unicode.
         ENABLED.store(true, Ordering::Relaxed);
-        let mut on = vec![math(), mathml_only()];
+        let mut on = vec![math(), no_graphics()];
         convert_math_blocks(&mut on);
         match &on[0] {
             Block::Image {

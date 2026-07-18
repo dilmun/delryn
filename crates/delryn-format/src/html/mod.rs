@@ -361,33 +361,12 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 });
             }
         }
-        ElementRole::DisplayMath(mb) => {
-            // Prefer delryn's crisp RaTeX render from the recovered LaTeX (Style::
-            // Display, no inline height gate). No LaTeX (MathML-only alt, or a bare
-            // equation image) → the publisher's rendered image; else the centred
-            // Unicode approximation. The fallback is never worse than before.
-            if let Some(latex) = mb.latex.filter(|l| !l.trim().is_empty()) {
-                out.push(Block::Math {
-                    unicode: mb.unicode,
-                    latex: Some(latex),
-                });
-            } else if let Some(src) = mb.img_src.filter(|s| !s.is_empty()) {
-                out.push(Block::Image {
-                    src,
-                    alt: mb.unicode,
-                    data: Vec::new(),
-                    caption: Vec::new(),
-                    math: true,
-                    // The raster's authored `em` width (its text-relative size) sizes it
-                    // to the prose — DPI-independent, so it never renders out of scale.
-                    width: mb.width,
-                    ink: None, // measured later, off-thread, by the reader
-                });
-            } else if !mb.unicode.trim().is_empty() {
-                out.push(Block::Math {
-                    unicode: mb.unicode,
-                    latex: None,
-                });
+        ElementRole::DisplayMath(item) => {
+            // Emit the recovered math as-is; the reader renders it down the never-blank
+            // ladder (typeset → publisher picture → Unicode floor). Skip only a truly
+            // empty recovery (no source and no floor), which carries nothing to show.
+            if item.has_graphics() || !item.text.trim().is_empty() {
+                out.push(Block::Math { item });
             }
         }
         ElementRole::Heading(level) => {

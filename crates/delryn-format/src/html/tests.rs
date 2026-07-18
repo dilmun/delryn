@@ -544,11 +544,22 @@ fn dpub_aria_roles_classify_ref_and_def() {
     );
 }
 
-/// The `(src, alt)` of a display-math image block, if any.
-fn display_math_img(blocks: &[Block]) -> Option<(&str, &str)> {
+/// The first display-math block's recovered [`MathItem`], if any. Display math is now
+/// `Block::Math { item }` for every encoding (the reader renders it down the ladder).
+fn first_math_item(blocks: &[Block]) -> Option<&delryn_model::MathItem> {
     blocks.iter().find_map(|b| match b {
-        Block::Image { src, alt, .. } => Some((src.as_str(), alt.as_str())),
+        Block::Math { item } => Some(item),
         _ => None,
+    })
+}
+
+/// The `(publisher-picture src, Unicode floor)` of a display-math block that recovered a
+/// picture — the reader turns that picture into the equation image at render time.
+fn display_math_img(blocks: &[Block]) -> Option<(&str, &str)> {
+    first_math_item(blocks).and_then(|item| {
+        item.picture
+            .as_ref()
+            .map(|p| (p.src.as_str(), item.text.as_str()))
     })
 }
 
@@ -573,29 +584,20 @@ fn path_alt_equation_image_in_container_is_math_with_em_width() {
         </div>
       </body></html>"#;
     let blocks = super::parse_blocks(html);
-    let img = blocks.iter().find_map(|b| match b {
-        Block::Image {
-            src, math, width, ..
-        } => Some((src.as_str(), *math, *width)),
-        _ => None,
-    });
-    match img {
-        Some((src, math, width)) => {
+    match first_math_item(&blocks).and_then(|i| i.picture.as_ref()) {
+        Some(pic) => {
             assert!(
-                src.ends_with("Equ3_HTML.png"),
-                "the publisher raster: {src}"
-            );
-            assert!(
-                math,
-                "flagged as math (equation raster), not a plain figure"
+                pic.src.ends_with("Equ3_HTML.png"),
+                "the publisher raster: {}",
+                pic.src
             );
             assert_eq!(
-                width,
-                ImageWidth::Em(27.08),
+                pic.size,
+                delryn_model::PictureSize::Em(27.08),
                 "carries the authored text-relative em width"
             );
         }
-        None => panic!("expected a math image block, got {blocks:?}"),
+        None => panic!("expected a display-math block with a publisher picture, got {blocks:?}"),
     }
 }
 
@@ -632,11 +634,11 @@ fn broad_container_with_prose_is_not_collapsed_to_one_equation() {
         text.contains("Before the equation") && text.contains("After the equation"),
         "prose must survive around the equation, got blocks: {blocks:?}"
     );
-    let math_imgs = blocks
+    let equations = blocks
         .iter()
-        .filter(|b| matches!(b, Block::Image { math: true, .. }))
+        .filter(|b| matches!(b, Block::Math { item } if item.picture.is_some()))
         .count();
-    assert_eq!(math_imgs, 1, "exactly the one equation is a math image");
+    assert_eq!(equations, 1, "exactly the one equation is a math block");
 }
 
 /// First `Block::Code`'s lines, if any.
@@ -986,20 +988,24 @@ fn plain_divs_are_not_code() {
     assert!(code_lines_of(&parse_blocks(xhtml)).is_none());
 }
 
-/// First `Block::Math`'s rendered text, if any.
+/// First `Block::Math`'s Unicode floor text, if any.
 fn first_math(blocks: &[Block]) -> Option<&str> {
     blocks.iter().find_map(|b| match b {
-        Block::Math { unicode, .. } => Some(unicode.as_str()),
+        Block::Math { item } => Some(item.text.as_str()),
         _ => None,
     })
 }
 
-/// The first `Block::Math`'s recovered LaTeX source (`None` when MathML-only).
+/// The first `Block::Math`'s recovered *authored* LaTeX source (`None` when the recovered
+/// typeset is MathML rather than LaTeX, or there is no typeset).
 fn first_math_latex(blocks: &[Block]) -> Option<String> {
     blocks
         .iter()
         .find_map(|b| match b {
-            Block::Math { latex, .. } => Some(latex.clone()),
+            Block::Math { item } => Some(match &item.typeset {
+                Some(delryn_model::MarkupSource::Latex(l)) => Some(l.clone()),
+                _ => None,
+            }),
             _ => None,
         })
         .flatten()
@@ -1058,15 +1064,21 @@ fn native_math_retains_latex_source() {
     );
     assert_eq!(first_math_latex(&annotated).as_deref(), Some(r"\alpha"));
 
-    // Presentation-MathML-only math (no alttext/annotation) is transpiled to LaTeX so
-    // it can still render graphically instead of as lossy Unicode.
+    // Presentation-MathML-only math (no alttext/annotation) keeps its MathML as the
+    // typeset source — the engine lays it out structurally (better than the fragile
+    // synthesized LaTeX the old path fed RaTeX), so no Latex source is exposed here.
     let mathml = parse_blocks(
         r#"<html><body><math display="block"><msup><mi>x</mi><mn>2</mn></msup></math></body></html>"#,
     );
-    let latex = first_math_latex(&mathml).expect("MathML transpiled to LaTeX");
+    let item = first_math_item(&mathml).expect("a display math block");
     assert!(
-        latex.contains("x") && latex.contains("^{2}"),
-        "presentation MathML → LaTeX superscript: {latex}"
+        matches!(&item.typeset, Some(delryn_model::MarkupSource::PresentationMathml(s)) if s.contains("msup")),
+        "presentation MathML kept as the typeset source: {:?}",
+        item.typeset
+    );
+    assert!(
+        first_math_latex(&mathml).is_none(),
+        "no synthesized LaTeX exposed"
     );
 }
 
@@ -1245,16 +1257,12 @@ fn empty_marker_sibling_does_not_force_a_display_equation_inline() {
             r#"<html><body><p><img src="image/98.png" alt="&lt;math display=&quot;block&quot;&gt;&lt;msub&gt;&lt;mi&gt;x&lt;/mi&gt;&lt;mi&gt;i&lt;/mi&gt;&lt;/msub&gt;&lt;/math&gt;" style="width:1.812em"/>{sib}</p></body></html>"#
         );
         let blocks = parse_blocks(&html);
-        let img = blocks.iter().find_map(|b| match b {
-            Block::Image {
-                src, math, width, ..
-            } => Some((src.as_str(), *math, *width)),
-            _ => None,
-        });
+        let pic = first_math_item(&blocks).and_then(|i| i.picture.as_ref());
         assert_eq!(
-            img,
-            Some(("image/98.png", true, ImageWidth::Em(1.812))),
-            "with sibling {sib:?}, the lone equation must be a math image, got {blocks:?}"
+            pic.map(|p| (p.src.as_str(), p.size)),
+            Some(("image/98.png", delryn_model::PictureSize::Em(1.812))),
+            "with sibling {sib:?}, the lone equation must be a display-math block with the \
+             em-sized publisher picture, got {blocks:?}"
         );
     }
 }
@@ -1271,7 +1279,10 @@ fn several_display_equations_in_one_container_all_render() {
     let latex: Vec<_> = two
         .iter()
         .filter_map(|b| match b {
-            Block::Math { latex, .. } => latex.as_deref(),
+            Block::Math { item } => match &item.typeset {
+                Some(delryn_model::MarkupSource::Latex(l)) => Some(l.as_str()),
+                _ => None,
+            },
             _ => None,
         })
         .collect();
@@ -1325,11 +1336,13 @@ fn authored_alttext_still_wins_over_the_raster() {
     assert_eq!(
         first_math_latex(&blocks).as_deref(),
         Some("x = 1"),
-        "authored alttext → Block::Math (RaTeX), not the raster: {blocks:?}"
+        "authored alttext is the typeset source (the ladder renders it first): {blocks:?}"
     );
+    // The raster is still recovered — but only as the ladder's fallback; authored LaTeX
+    // typesets first, so a good source never routes to the (possibly fragile) picture.
     assert!(
-        display_math_img(&blocks).is_none(),
-        "not routed to the raster image"
+        first_math_item(&blocks).is_some_and(|i| i.picture.is_some()),
+        "raster kept as the render fallback behind the authored LaTeX"
     );
 }
 

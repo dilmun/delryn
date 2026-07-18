@@ -20,8 +20,9 @@ pub(super) enum ElementRole {
     CodeBlock,
     /// Display (block) math — a native `<math>`, a rasterised equation image, or a
     /// math container the display classifier resolved to block-level. Carries the
-    /// recovered LaTeX / Unicode / image so the extractor renders without re-parsing.
-    DisplayMath(MathBlock),
+    /// recovered [`delryn_model::MathItem`] (every source: LaTeX / MathML / picture /
+    /// Unicode floor) so the reader renders it down the ladder without re-parsing.
+    DisplayMath(delryn_model::MathItem),
     Heading(u8),
     Paragraph,
     List {
@@ -69,16 +70,16 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
     //    container whose standalone content is a display equation (the usual case:
     //    the equation node sits inside a paragraph/div wrapper).
     if is_math_node(node) {
-        return ElementRole::DisplayMath(recover_math_block(node));
+        return ElementRole::DisplayMath(display_math_item(node));
     }
     if let Some(m) = standalone_math_node(node) {
-        return ElementRole::DisplayMath(recover_math_block(m));
+        return ElementRole::DisplayMath(display_math_item(m));
     }
     // A publisher equation shipped as a plain `<img>` (path/empty alt) inside a tight
     // display-equation container — the container class is the math signal, so it's an
     // equation raster (sized text-relatively), not a figure normalised to the column.
     if let Some(img) = equation_image_node(node) {
-        return ElementRole::DisplayMath(recover_math_block(img));
+        return ElementRole::DisplayMath(display_math_item(img));
     }
     // 4. Code listings (<pre>, styled container, or multi-line <code>).
     if is_code_block(e, node) {

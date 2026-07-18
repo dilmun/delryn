@@ -1,6 +1,8 @@
 //! Reflowable content model: the blocks and inline runs every format produces
 //! and every renderer consumes.
 
+use crate::math_ir::MathItem;
+
 /// Inline styling applied to a run of text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Inline {
@@ -218,14 +220,13 @@ pub enum Block {
         lang: Option<String>,
         lines: Vec<String>,
     },
-    /// Display (block-level) mathematics. `unicode` is the always-present Unicode
-    /// approximation the layout pass centres (see [`crate::math`]); `latex` is the
-    /// original LaTeX source when the parser could recover it (`alttext` /
-    /// `<annotation …tex>`), for the graphical-math renderer to rasterise — `None`
-    /// when only presentation MathML was available (Unicode only).
+    /// Display (block-level) mathematics, as the encoding-agnostic [`MathItem`] the
+    /// parser recovered (every source it could — LaTeX, MathML, a publisher picture,
+    /// and always a Unicode floor). The reader renders it down the never-blank ladder
+    /// (typeset → picture → text); until then, or with graphical math off, the layout
+    /// pass centres `item.text`.
     Math {
-        unicode: String,
-        latex: Option<String>,
+        item: MathItem,
     },
     /// A table: an optional header row, then body rows. Each cell is styled spans.
     Table {

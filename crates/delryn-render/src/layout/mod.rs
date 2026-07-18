@@ -218,7 +218,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                 emit_code(lang.as_deref(), lines, code_idx, width, opts, &mut out);
                 code_idx += 1;
             }
-            Block::Math { unicode, .. } => emit_math(unicode, width, &mut out),
+            Block::Math { item } => emit_math(&item.text, width, &mut out),
             Block::Table { header, rows } => {
                 wrap_table(header.as_deref(), rows, width, opts.table_wrap, &mut out)
             }
