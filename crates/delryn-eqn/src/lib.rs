@@ -13,6 +13,7 @@ pub mod detect;
 pub mod render;
 pub mod sizing;
 pub mod typeset;
+pub mod unicode;
 
 // The IR lives in the dependency-free model (it's pure data that flows parser → reader);
 // re-export it here so `delryn_eqn::MathItem` stays the ergonomic path for engine callers.

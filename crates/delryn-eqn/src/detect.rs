@@ -33,7 +33,16 @@ pub fn detect(node: NodeRef<Node>) -> Option<MathItem> {
         None => (None, None),
     };
     let picture = harvest_picture(node, el);
-    let text = harvest_unicode(node, el);
+
+    // The Unicode floor, polished to the best available approximation (so the never-blank
+    // rung reads well, not as raw glyph soup): the author's LaTeX transcribed, else the
+    // MathML transcribed, else the image's plain-text alt / bare token text.
+    let text = best_text(
+        node,
+        el,
+        authored_latex.as_deref(),
+        presentation.as_deref().or(content.as_deref()),
+    );
 
     // Best typeset source by fidelity: authored LaTeX > Presentation MathML > Content MathML.
     let typeset = authored_latex
@@ -280,8 +289,34 @@ fn parse_em_ex(v: &str) -> Option<PictureSize> {
     None
 }
 
+/// The Unicode floor, polished to the best available approximation. Authored LaTeX is
+/// transcribed by the model's LaTeX→Unicode pass (`x^2` → `x²`); MathML is transcribed
+/// structurally ([`crate::unicode`], `∑_{i=1}^{N} i²` → `∑ᵢ₌₁ᴺ i²`); absent both, the
+/// image's plain-text `alt` or the bare token text. Never leaks markup, never blank where
+/// anything is recoverable.
+fn best_text(
+    node: NodeRef<Node>,
+    el: &scraper::node::Element,
+    latex: Option<&str>,
+    mathml: Option<&str>,
+) -> String {
+    if let Some(l) = latex {
+        let u = delryn_model::math::latex_to_unicode(l);
+        if !u.trim().is_empty() {
+            return u;
+        }
+    }
+    if let Some(m) = mathml {
+        let u = crate::unicode::to_unicode(m);
+        if !u.trim().is_empty() {
+            return u;
+        }
+    }
+    harvest_unicode(node, el)
+}
+
 /// A best-effort Unicode floor for this occurrence: the math image's plain-text `alt`, or
-/// the concatenated glyph text of the markup. Always something; refined by the render layer.
+/// the concatenated glyph text of the markup. The last resort behind [`best_text`].
 fn harvest_unicode(node: NodeRef<Node>, el: &scraper::node::Element) -> String {
     if matches!(local(el.name()), "img" | "image")
         && let Some(alt) = el.attr("alt").map(str::trim)
@@ -502,6 +537,33 @@ mod tests {
             !item.text.trim().is_empty(),
             "a Unicode floor exists: {:?}",
             item.text
+        );
+    }
+
+    #[test]
+    fn floor_is_polished_from_latex_and_mathml() {
+        // Authored LaTeX → transcribed to Unicode (superscript), not the raw `x^2`.
+        let latex = detect_first(
+            r#"<math alttext="x^2"><mrow><mi>x</mi></mrow></math>"#,
+            "math",
+        )
+        .expect("math");
+        assert_eq!(
+            latex.text, "x²",
+            "LaTeX floor is transcribed: {:?}",
+            latex.text
+        );
+
+        // MathML-only → structurally transcribed (fraction bar + relation spacing).
+        let mathml = detect_first(
+            r#"<math><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>=</mo><mn>0.5</mn></math>"#,
+            "math",
+        )
+        .expect("math");
+        assert_eq!(
+            mathml.text, "1/2 = 0.5",
+            "MathML floor is transcribed: {:?}",
+            mathml.text
         );
     }
 }
