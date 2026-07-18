@@ -1,11 +1,18 @@
-//! The math IR: the single shape every encoding normalizes into, and the only thing the
-//! render ladder consumes. See `docs/MATH-RENDERING.md`.
+//! The math IR: the single shape every equation encoding normalizes into, carried
+//! parser → model → reader. The [`crate::math`] module holds the LaTeX→Unicode text
+//! heuristics; this holds the *structured* recovery the universal pipeline produces.
+//! See `docs/MATH-RENDERING.md`.
 //!
 //! One [`MathItem`] carries **every** render source recovered for one equation. The render
-//! ladder tries them in order — `typeset` (crisp) → `picture` (the publisher's own visual)
-//! → `text` (Unicode) — so an equation can never render nothing (the "never-blank" rule).
-//! The three are independent: a picture-only equation still renders; a recovered-markup
-//! equation that fails to typeset still falls to its picture, then its text.
+//! ladder (in `delryn-eqn`) tries them in order — `typeset` (crisp) → `picture` (the
+//! publisher's own visual) → `text` (Unicode) — so an equation can never render nothing
+//! (the "never-blank" rule). The three are independent: a picture-only equation still
+//! renders; a recovered-markup equation that fails to typeset still falls to its picture,
+//! then its text.
+//!
+//! These are **pure data** (no I/O, no engine types), so they belong in the dependency-free
+//! model: the parser fills a `MathItem`, the reader consumes it, and neither depends on the
+//! detection (scraper) or typeset (RaTeX) machinery.
 
 /// A recovered math occurrence, ready for the render ladder.
 #[derive(Debug, Clone, PartialEq)]

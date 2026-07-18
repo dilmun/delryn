@@ -10,14 +10,16 @@
 
 pub mod delivery;
 pub mod detect;
-pub mod ir;
 pub mod render;
 pub mod sizing;
 pub mod typeset;
 
+// The IR lives in the dependency-free model (it's pure data that flows parser → reader);
+// re-export it here so `delryn_eqn::MathItem` stays the ergonomic path for engine callers.
+pub use delryn_model::{MarkupSource, MathItem, PictureRef, PictureSize};
+
 pub use delivery::{Deck, Target};
 pub use detect::detect;
-pub use ir::{MarkupSource, MathItem, PictureRef, PictureSize};
 pub use render::{Raster, Rendered, render};
 pub use sizing::{Cell, Placement, em_text_px, fit_columns, size_picture, size_typeset};
 pub use typeset::to_nodes;

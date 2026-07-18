@@ -6,6 +6,9 @@ edition.workspace = true
 # Universal, encoding-agnostic equation recovery — the fresh replacement for the old
 # math paths (docs/MATH-RENDERING.md). Detection + source recovery only; no rendering.
 [dependencies]
+# The math IR (MathItem etc.) is a pure domain type and lives in the shared model, so
+# it can flow parser → model → reader; this crate is the engine that fills and consumes it.
+delryn-model = { workspace = true }
 scraper.workspace = true
 ego-tree.workspace = true
 # The typeset engine: recovered markup (LaTeX / Presentation MathML) is mapped into

@@ -718,6 +718,7 @@ name = "delryn-eqn"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "delryn-model",
  "ego-tree",
  "ratex-layout",
  "ratex-parser",

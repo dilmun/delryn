@@ -4,8 +4,8 @@
 //! Pure math (no I/O, no decoding), so it is exhaustively unit-testable. See
 //! `docs/MATH-RENDERING.md`.
 
-use crate::ir::PictureSize;
 use crate::render::Raster;
+use delryn_model::PictureSize;
 
 /// Terminal cell geometry, in pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]

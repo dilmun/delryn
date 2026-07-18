@@ -12,8 +12,8 @@ use ratex_render::{RenderOptions, render_to_png};
 use ratex_types::color::Color;
 use ratex_types::math_style::MathStyle;
 
-use crate::ir::{MarkupSource, MathItem, PictureSize};
 use crate::typeset::to_nodes;
+use delryn_model::{MarkupSource, MathItem, PictureSize};
 
 /// The chosen render for one equation. Each variant is a rung of the ladder; `Text` is the
 /// floor that always succeeds.
@@ -123,7 +123,7 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::PictureRef;
+    use delryn_model::PictureRef;
 
     fn item(typeset: Option<MarkupSource>, picture: Option<PictureRef>, text: &str) -> MathItem {
         MathItem {

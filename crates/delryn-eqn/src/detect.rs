@@ -7,7 +7,7 @@
 use ego_tree::NodeRef;
 use scraper::{ElementRef, Node};
 
-use crate::ir::{MarkupSource, MathItem, PictureRef, PictureSize};
+use delryn_model::{MarkupSource, MathItem, PictureRef, PictureSize};
 
 /// Detect and recover a math occurrence rooted at `node`, or `None` if it isn't math.
 /// Harvests the best of every encoding present and assembles a [`MathItem`] whose render

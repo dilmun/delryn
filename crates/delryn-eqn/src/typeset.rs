@@ -14,7 +14,7 @@ use ratex_parser::parse_node::{AtomFamily, Mode, ParseNode};
 use ratex_parser::parser::parse;
 use scraper::{Html, Node};
 
-use crate::ir::MarkupSource;
+use delryn_model::MarkupSource;
 
 /// Convert a recovered markup source into the engine's math tree, or `None` when it can't
 /// be built (→ the render ladder falls to the picture, then the Unicode floor).
