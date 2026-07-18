@@ -114,11 +114,10 @@ fn display_em_px(cell_h: u16, scale_pct: u16) -> u32 {
         as u32
 }
 
-/// Render every display equation with a recovered LaTeX source in `blocks` to a
-/// themed image (in place). A no-op when graphical math is off, and per-equation
-/// best-effort: a render failure leaves that `Block::Math` untouched (Unicode
-/// fallback). Runs off the main thread (the section loader) or once inline; cheap
-/// after the first render thanks to delryn-math's disk cache.
+/// Render every display equation in `blocks` down the engine ladder to a themed image (in
+/// place). A no-op when graphical math is off, and per-equation best-effort: a rung that
+/// can't render leaves that `Block::Math` untouched (Unicode floor). Runs off the main
+/// thread (the section loader) or once inline.
 pub(crate) fn convert_math_blocks(blocks: &mut [Block]) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;

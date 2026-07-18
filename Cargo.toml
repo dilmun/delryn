@@ -24,8 +24,8 @@ html2text = "0.17.1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 lru = "0.18.0"
 pdfium-render = "0.9.2"
-# RaTeX: pure-Rust LaTeX-math → PNG (KaTeX-coverage, tiny-skia raster, embedded
-# KaTeX fonts) — the graphical-math renderer, isolated behind `delryn-math`.
+# RaTeX: pure-Rust math typesetting → PNG (KaTeX coverage, tiny-skia raster, embedded
+# KaTeX fonts) — the typeset engine behind `delryn-eqn`'s render ladder.
 ratex-layout = "0.1.12"
 ratex-parser = "0.1.12"
 ratex-render = { version = "0.1.12", features = ["embed-fonts"] }
@@ -53,7 +53,6 @@ delryn-media = { path = "crates/delryn-media" }
 delryn-format = { path = "crates/delryn-format" }
 delryn-render = { path = "crates/delryn-render" }
 delryn-library = { path = "crates/delryn-library" }
-delryn-math = { path = "crates/delryn-math" }
 delryn-eqn = { path = "crates/delryn-eqn" }
 
 # Vendored ratatui-image patched to transmit Kitty images as PNG (f=100) rather

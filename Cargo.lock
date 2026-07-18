@@ -697,7 +697,6 @@ dependencies = [
  "delryn-format",
  "delryn-infra",
  "delryn-library",
- "delryn-math",
  "delryn-media",
  "delryn-model",
  "delryn-online",
@@ -763,17 +762,6 @@ dependencies = [
  "delryn-infra",
  "delryn-model",
  "delryn-store",
-]
-
-[[package]]
-name = "delryn-math"
-version = "0.1.0"
-dependencies = [
- "delryn-infra",
- "ratex-layout",
- "ratex-parser",
- "ratex-render",
- "ratex-types",
 ]
 
 [[package]]
