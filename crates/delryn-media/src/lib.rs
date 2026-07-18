@@ -14,7 +14,7 @@ mod sizing;
 pub use delryn_infra::config::{ImageFit, ImageMode};
 
 pub use builder::{BuiltImage, ImageBuilder, ImagePlan, ImgKey, ImgSlot};
-pub use cover::{CoverImage, build_cover};
+pub use cover::{CoverImage, build_cover, decode_cover, wrap_cover};
 pub use decode::{decode, image_dimensions};
 pub use kitty::{
     delete_image_seq, delete_placement_seq, detect_picker, place_image_seq, terminal_background,

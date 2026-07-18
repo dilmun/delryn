@@ -25,19 +25,33 @@ impl CoverImage {
 /// How much of a cover's shorter side becomes its corner radius (1/N).
 const COVER_CORNER_DIV: u32 = 18;
 
-/// Decode `bytes` and build a resize protocol for `picker`, capturing the source
-/// dimensions. The corners are rounded (transparent) so the cover reads as a card
-/// rather than a hard rectangle. `None` if the bytes aren't a decodable image.
-pub fn build_cover(picker: &Picker, bytes: &[u8]) -> Option<CoverImage> {
+/// The decode + rounded-corner step of a cover, split out so it can run **off the main
+/// thread** (its output is a plain `RgbaImage`, which is `Send` — unlike the terminal
+/// protocol). Returns the rounded RGBA plus the source dimensions, or `None` if the bytes
+/// aren't a decodable image. Pair with [`wrap_cover`] on the main thread.
+pub fn decode_cover(bytes: &[u8]) -> Option<(RgbaImage, (u32, u32))> {
     decode(bytes).map(|img| {
         let dims = (img.width(), img.height());
         let radius = dims.0.min(dims.1) / COVER_CORNER_DIV;
-        let rounded = DynamicImage::ImageRgba8(round_corners(&img, radius));
-        CoverImage {
-            proto: picker.new_resize_protocol(rounded),
-            dims,
-        }
+        (round_corners(&img, radius), dims)
     })
+}
+
+/// Wrap a [`decode_cover`] result into a terminal resize protocol for `picker`. Cheap (no
+/// decode), so it stays on the main thread where the `picker` lives.
+pub fn wrap_cover(picker: &Picker, rounded: RgbaImage, dims: (u32, u32)) -> CoverImage {
+    CoverImage {
+        proto: picker.new_resize_protocol(DynamicImage::ImageRgba8(rounded)),
+        dims,
+    }
+}
+
+/// Decode `bytes` and build a resize protocol for `picker`, capturing the source
+/// dimensions. The corners are rounded (transparent) so the cover reads as a card
+/// rather than a hard rectangle. `None` if the bytes aren't a decodable image. The
+/// synchronous convenience form of [`decode_cover`] + [`wrap_cover`].
+pub fn build_cover(picker: &Picker, bytes: &[u8]) -> Option<CoverImage> {
+    decode_cover(bytes).map(|(rounded, dims)| wrap_cover(picker, rounded, dims))
 }
 
 /// Return `img` as RGBA with its four corners rounded to `radius` px: pixels

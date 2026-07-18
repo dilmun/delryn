@@ -62,6 +62,7 @@ pub use reader::{
 mod image_view;
 pub use image_view::{Figure, ImageViewer};
 
+mod cover_loader;
 mod library;
 pub use library::{LibPane, LibView, SortKey};
 
@@ -286,6 +287,8 @@ pub struct App {
     session: Session,
     /// Library list, selection, sort, filter, and covers — see [`LibraryState`].
     pub library: LibraryState,
+    /// Background loader for library covers (load + decode off the render loop).
+    cover_loader: cover_loader::CoverLoader,
     /// Receiver for async Open Library results (search / cover), if a request
     /// from the editor's Online tab is in flight.
     pub online_rx: Option<Receiver<OnlineMsg>>,
@@ -456,6 +459,7 @@ impl App {
                 started: Some(Instant::now()),
             },
             library: LibraryState::default(),
+            cover_loader: cover_loader::CoverLoader::new(),
             online_rx: None,
             define_rx: None,
             dup_scan: None,
@@ -499,6 +503,7 @@ impl App {
                 started: None,
             },
             library: LibraryState::default(),
+            cover_loader: cover_loader::CoverLoader::new(),
             online_rx: None,
             define_rx: None,
             dup_scan: None,

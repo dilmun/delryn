@@ -108,7 +108,7 @@ pub(crate) fn render_grid(f: &mut Frame, area: Rect, app: &mut App, theme: Theme
 
     app.last_layout.grid_cols = cols;
     app.last_layout.visible_rows = rows_screen;
-    app.ensure_grid_covers(&paths, GRID_BUILD_PER_FRAME);
+    app.ensure_grid_covers(&paths);
     let mut book_hits: Vec<(usize, Rect)> = Vec::with_capacity(visible.len());
 
     for (i, path, title, marked) in &visible {

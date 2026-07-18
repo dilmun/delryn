@@ -264,7 +264,12 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         if app.poll_scan() {
             dirty = true;
         }
-        // Keep redrawing while the grid is still building visible covers.
+        // Wrap + cache any covers the background loader finished this frame, and keep
+        // redrawing while it's still loading visible/prefetched covers — so they pop in
+        // without blocking navigation on I/O + decode.
+        if app.poll_grid_covers() {
+            dirty = true;
+        }
         if app.lib_grid_pending() {
             dirty = true;
         }

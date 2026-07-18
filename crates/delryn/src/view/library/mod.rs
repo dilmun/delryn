@@ -22,9 +22,6 @@ use crate::theme::{Role, Theme};
 /// gets cramped, matching the reader's comfortable collapse.
 const MIN_LIST: u16 = 48;
 
-/// Cover protocols built per frame, so a screenful pops in over a few frames.
-const GRID_BUILD_PER_FRAME: usize = 2;
-
 // Sub-views; `render` orchestrates them. Shared helpers (`base`, `pane_block`,
 // `fmt_size`, `series_suffix`, `fmt_idx`) stay here and are called from children.
 mod books;

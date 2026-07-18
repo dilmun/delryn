@@ -458,34 +458,40 @@ impl App {
         true
     }
 
-    /// Build cover protocols for the visible grid `paths`, up to `limit` per
-    /// call so a screenful pops in over a few frames instead of freezing. Sets
-    /// `lib_grid_pending` while any visible cover is still unbuilt.
-    pub fn ensure_grid_covers(&mut self, paths: &[String], limit: usize) {
-        let mut built = 0;
-        let mut pending = false;
+    /// Queue the grid `paths` (visible **and** a prefetch margin) for background loading —
+    /// non-blocking, so navigation never waits on cover I/O + decode. Already-cached and
+    /// already-in-flight paths are skipped; [`poll_grid_covers`](Self::poll_grid_covers)
+    /// picks up the finished decodes. Sets `grid_pending` while any is still loading.
+    pub fn ensure_grid_covers(&mut self, paths: &[String]) {
         for path in paths {
-            if self.library.grid_covers.contains(path) {
-                continue;
+            if !self.library.grid_covers.contains(path) {
+                self.cover_loader.request(path);
             }
-            if built >= limit {
-                pending = true;
-                break;
-            }
-            let cover = match (&self.picker, load_cover_bytes(path)) {
-                (Some(picker), Some(bytes)) => media::build_cover(picker, &bytes),
+        }
+        self.library.grid_pending = self.cover_loader.pending();
+    }
+
+    /// Wrap and cache any covers the background loader finished this frame (the cheap
+    /// picker step, on the main thread). Returns whether anything landed (redraw). A bounded
+    /// LRU — an eviction frees its terminal image too, so image memory stays bounded.
+    pub fn poll_grid_covers(&mut self) -> bool {
+        let done = self.cover_loader.drain();
+        if done.is_empty() {
+            return false;
+        }
+        for (path, decoded) in done {
+            let cover = match (&self.picker, decoded) {
+                (Some(picker), Some((rgba, dims))) => Some(media::wrap_cover(picker, rgba, dims)),
                 _ => None,
             };
-            // Bounded LRU: an eviction must free its terminal image too, else
-            // image memory grows until the terminal blanks everything.
-            if let Some((_, Some(evicted))) = self.library.grid_covers.push(path.clone(), cover)
+            if let Some((_, Some(evicted))) = self.library.grid_covers.push(path, cover)
                 && let Some(id) = evicted.image_id()
             {
                 self.library.grid_deletes.push(id);
             }
-            built += 1;
         }
-        self.library.grid_pending = pending;
+        self.library.grid_pending = self.cover_loader.pending();
+        true
     }
 
     /// Whether the grid is still building visible covers (keeps the loop drawing).
