@@ -8,7 +8,6 @@ pub mod epub;
 pub mod epub_write;
 pub mod format;
 pub mod html;
-pub mod mathml;
 pub mod mobi;
 pub mod pdf;
 mod provenance;

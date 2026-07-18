@@ -1,6 +1,7 @@
-//! Math in the DOM: detect math classes, standalone math images, alt-text
-//! conversion, and the conservative exponent fix-up. Conversion of MathML text
-//! to Unicode lives in `crate::mathml`.
+//! Math in the DOM: the *structural* classification — detect math classes and elements,
+//! decide display vs inline, and find the standalone/container math node — plus the
+//! conservative exponent fix-up. Source *recovery* (node → the model's `MathItem`, every
+//! encoding) is delegated to `delryn_eqn::detect` via [`display_math_item`].
 
 use super::*;
 
@@ -58,15 +59,6 @@ pub(super) fn superscript_math_exponents(spans: &mut [Span]) {
             i += 1;
         }
         span.text = out;
-    }
-}
-
-/// Math source (LaTeX or MathML) → final Unicode for rendering.
-pub(super) fn math_unicode(alt: &str) -> String {
-    if delryn_model::math::is_mathml(alt) {
-        crate::mathml::to_unicode(alt)
-    } else {
-        delryn_model::math::latex_to_unicode(alt)
     }
 }
 
@@ -379,43 +371,6 @@ fn sibling_has_content(node: NodeRef<Node>) -> bool {
         Node::Element(e) => matches!(e.name(), "img" | "image" | "svg"),
         _ => false,
     })
-}
-
-/// Convert a native `<math>` element to `(Unicode, Option<LaTeX source>)`. Prefers
-/// the authored text equivalents (`alttext` / `<annotation encoding="…tex">`, which
-/// carry LaTeX and aren't otherwise rendered) — those also hand back the raw LaTeX
-/// for the graphical renderer — then falls back to walking the presentation MathML
-/// (Unicode only, no LaTeX to recover).
-pub(super) fn native_math(node: NodeRef<Node>) -> (String, Option<String>) {
-    let Some(e) = node.value().as_element() else {
-        return (String::new(), None);
-    };
-    // 1. alttext attribute (usually LaTeX, e.g. from LaTeXML / Springer).
-    if let Some(alt) = e.attr("alttext")
-        && !alt.trim().is_empty()
-    {
-        return (
-            delryn_model::math::latex_to_unicode(alt),
-            Some(delryn_model::math::strip_delimiters(alt)),
-        );
-    }
-    // 2. <annotation encoding="application/x-tex"> embedded LaTeX.
-    if let Some(tex) = annotation_tex(node) {
-        let unicode = delryn_model::math::latex_to_unicode(&tex);
-        return (unicode, Some(delryn_model::math::strip_delimiters(&tex)));
-    }
-    // 3. Presentation MathML only (no LaTeX equivalent): serialise the subtree, then
-    //    both transcode to Unicode (the fallback) *and* synthesise LaTeX from the tree
-    //    so the equation can still render graphically (RaTeX) instead of as lossy
-    //    Unicode — a render failure downstream falls back to that Unicode.
-    let Some(el) = scraper::ElementRef::wrap(node) else {
-        return (String::new(), None);
-    };
-    let html = el.html();
-    (
-        crate::mathml::to_unicode(&html),
-        crate::mathml::to_latex(&html),
-    )
 }
 
 /// The text of a `<math>`'s TeX `<annotation>`, if present.

@@ -31,18 +31,18 @@ pub enum Anchor {
     Citation(String),
 }
 
-/// The graphical form of an inline math run, when the parser recovered LaTeX for
-/// it. `Span::text` always holds the Unicode approximation (the fallback); this
-/// says whether — and how — the reader renders it as a small image mid-line.
+/// The graphical form of an inline math run. `Span::text` always holds the Unicode
+/// approximation (the fallback); this says whether — and how — the reader renders it as a
+/// small image mid-line.
 ///
-/// Flows: the parser emits [`SpanMath::Latex`]; the reader's graphical-math pass
-/// either rasterises it to [`SpanMath::Raster`] (when graphical math is on and the
-/// equation is short enough to sit in one text row) or leaves it `Latex`, in which
-/// case the Unicode `text` is shown — the fallback is never regressed.
+/// Flows: the parser emits [`SpanMath::Source`] (the recovered [`MathItem`]); the reader's
+/// graphical-math pass either renders it down the ladder to [`SpanMath::Raster`] (when
+/// graphical math is on and the equation is short enough to sit in a text row) or leaves it
+/// `Source`, in which case the Unicode `text` is shown — the fallback is never regressed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpanMath {
-    /// Inline math with a recovered LaTeX source, not (yet) rendered graphically.
-    Latex(String),
+    /// Inline math with its recovered sources, not (yet) rendered graphically.
+    Source(MathItem),
     /// Rendered to a small themed raster: a section-local id (its draw/build key)
     /// and the black-on-transparent PNG bytes (recoloured to the theme at build).
     Raster { id: usize, png: Vec<u8> },
@@ -80,18 +80,18 @@ impl Span {
         }
     }
 
-    /// An inline math run: its Unicode approximation (the fallback shown when
-    /// graphical math is off or the equation is too tall) plus the recovered LaTeX
-    /// the reader rasterises. `style.math` is set so the math text fix-ups apply.
-    pub fn math(unicode: impl Into<String>, latex: impl Into<String>) -> Span {
+    /// An inline math run from its recovered [`MathItem`]: `text` is the item's Unicode
+    /// floor (shown when graphical math is off or the equation is too tall), and the item
+    /// rides along for the reader to render. `style.math` is set so math text fix-ups apply.
+    pub fn math(item: MathItem) -> Span {
         Span {
-            text: unicode.into(),
+            text: item.text.clone(),
             style: Inline {
                 math: true,
                 ..Inline::default()
             },
             anchor: None,
-            math: Some(SpanMath::Latex(latex.into())),
+            math: Some(SpanMath::Source(item)),
         }
     }
 }

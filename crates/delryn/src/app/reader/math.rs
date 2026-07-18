@@ -1,18 +1,16 @@
-//! Graphical math: turn display equations into themed images.
+//! Graphical math: render the recovered [`delryn_model::MathItem`] to themed images.
 //!
-//! A [`Block::Math`] that kept its LaTeX source (see `delryn-format`) is rendered to
-//! a PNG by [`delryn_math`] and swapped for a `Block::Image { math: true }`, so it
-//! flows through the existing inline-image pipeline (indexing, row reservation,
-//! async build + theme recolour, draw) with no math-specific plumbing. Anything
-//! without a LaTeX source, or that fails to render, stays a `Block::Math` shown as
-//! the centred Unicode approximation — the fallback is never regressed.
+//! A [`Block::Math`] is rendered down the [`delryn_eqn`] ladder — its crisp typeset raster,
+//! else the publisher's own picture — and swapped for a `Block::Image { math: true }`, so it
+//! flows through the existing inline-image pipeline (indexing, row reservation, async build +
+//! theme recolour, draw) with no math-specific plumbing. Anything the ladder can't render
+//! graphically stays a `Block::Math` shown as the centred Unicode floor — never regressed.
 //!
-//! Whether graphical math is on (config **and** a graphics protocol) and the target
-//! em size (from the terminal cell height) live in two atomics the view keeps in
-//! sync each frame ([`Reader::sync_graphical_math`]); a change re-decodes the open
-//! sections so the switch is live. The conversion runs where blocks are decoded —
-//! the background section loader (off the main thread) and the inline fetch — and
-//! delryn-math disk-caches every render, so only the first-ever render costs anything.
+//! Whether graphical math is on (config **and** a graphics protocol) and the target em size
+//! (from the terminal cell height) live in two atomics the view keeps in sync each frame
+//! ([`Reader::sync_graphical_math`]); a change re-decodes the open sections so the switch is
+//! live. The conversion runs where blocks are decoded — the background section loader (off
+//! the main thread) and the inline fetch.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -186,20 +184,18 @@ fn picture_width(size: delryn_model::PictureSize) -> delryn_model::ImageWidth {
     }
 }
 
-/// Rasterise each **inline** math run in `blocks` that kept a LaTeX source
-/// ([`SpanMath::Latex`]) to a small themed image drawn mid-line, assigning each a
-/// section-local id and swapping it in place for [`SpanMath::Raster`]. A no-op
-/// unless graphical inline math is enabled (the master toggle **and** the
-/// `graphical_inline_math` opt-in); per-run best-effort — a render failure, a too-tall
-/// equation (a fraction / limit stack that would smear in one text row), or an
-/// undecodable raster leaves the run as `Latex`, so the wrapper shows its Unicode
-/// approximation (the fallback is never regressed).
+/// Render each **inline** math run in `blocks` that kept a source ([`SpanMath::Source`])
+/// down the engine's typeset rung to a small themed image drawn mid-line, assigning each a
+/// section-local id and swapping it in place for [`SpanMath::Raster`]. A no-op unless
+/// graphical inline math is enabled (the master toggle **and** the `graphical_inline_math`
+/// opt-in); per-run best-effort — a typeset failure, a too-tall equation (a fraction / limit
+/// stack that would smear in one text row), or an undecodable raster leaves the run as
+/// `Source`, so the wrapper shows its Unicode floor (the fallback is never regressed).
 ///
-/// Only top-level `Para`/`Heading` runs are rendered — the same runs the wrapper
-/// can reserve atom cells for; nested (callout/footnote/table/caption) inline math
-/// keeps its own id space the reader doesn't address, so it stays Unicode. Runs off
-/// the main thread at every decode site (after [`convert_math_blocks`]); cheap after
-/// the first render thanks to delryn-math's disk cache.
+/// Only top-level `Para`/`Heading` runs are rendered — the same runs the wrapper can reserve
+/// atom cells for; nested (callout/footnote/table/caption) inline math keeps its own id
+/// space the reader doesn't address, so it stays Unicode. Runs off the main thread at every
+/// decode site (after [`convert_math_blocks`]).
 pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
     if !INLINE_ENABLED.load(Ordering::Relaxed) {
         return; // inline math stays the natural Unicode approximation
@@ -215,20 +211,26 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
             _ => continue,
         };
         for span in spans.iter_mut() {
-            let Some(SpanMath::Latex(latex)) = &span.math else {
+            let Some(SpanMath::Source(item)) = &span.math else {
                 continue;
             };
-            let Some(png) = delryn_math::render(latex, delryn_math::Style::Inline, em_px) else {
-                continue; // unrenderable → keep the Unicode fallback
+            // Inline shows only the crisp typeset rung (a publisher picture mid-line would
+            // resolve out of the text flow); a non-typeset run keeps its Unicode floor.
+            let delryn_eqn::Rendered::Typeset(raster) = delryn_eqn::render(item, em_px, |_| None)
+            else {
+                continue;
             };
-            // Height gate: a single-line inline equation fits one text row; a tall
-            // stack (fraction, ∫/∑ with limits) would smear, so keep it Unicode.
-            let too_tall = crate::media::image_dimensions(&png)
+            // Height gate: a single-line inline equation fits one text row; a tall stack
+            // (fraction, ∫/∑ with limits) would smear, so keep it Unicode.
+            let too_tall = crate::media::image_dimensions(&raster.png)
                 .is_none_or(|(_, h)| h as f32 > INLINE_MAX_H_EM * em_px as f32);
             if too_tall {
                 continue;
             }
-            span.math = Some(SpanMath::Raster { id: next_id, png });
+            span.math = Some(SpanMath::Raster {
+                id: next_id,
+                png: raster.png,
+            });
             next_id += 1;
         }
     }
@@ -508,7 +510,12 @@ mod tests {
         let para = |latex: &str| Block::Para {
             spans: vec![
                 delryn_model::Span::plain("see "),
-                delryn_model::Span::math("approx", latex),
+                delryn_model::Span::math(delryn_model::MathItem {
+                    display: false,
+                    typeset: Some(delryn_model::MarkupSource::Latex(latex.to_string())),
+                    picture: None,
+                    text: "approx".to_string(),
+                }),
             ],
             indent: 0,
             quote: false,
@@ -526,8 +533,8 @@ mod tests {
         let mut off = vec![para("x^2")];
         convert_inline_math(&mut off);
         assert!(
-            matches!(math_of(&off[0]), Some(SpanMath::Latex(_))),
-            "off: inline math stays a LaTeX source"
+            matches!(math_of(&off[0]), Some(SpanMath::Source(_))),
+            "off: inline math stays a recovered source"
         );
 
         // On → a short equation rasterises to an atom; a tall fraction stays Unicode.
@@ -555,7 +562,7 @@ mod tests {
         let mut tall = vec![para("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}")];
         convert_inline_math(&mut tall);
         assert!(
-            matches!(math_of(&tall[0]), Some(SpanMath::Latex(_))),
+            matches!(math_of(&tall[0]), Some(SpanMath::Source(_))),
             "a too-tall stack keeps its Unicode fallback"
         );
 
