@@ -11,9 +11,11 @@
 pub mod detect;
 pub mod ir;
 pub mod render;
+pub mod sizing;
 pub mod typeset;
 
 pub use detect::detect;
 pub use ir::{MarkupSource, MathItem, PictureRef, PictureSize};
 pub use render::{Raster, Rendered, render};
+pub use sizing::{Cell, Placement, em_text_px, fit_columns, size_picture, size_typeset};
 pub use typeset::to_nodes;
