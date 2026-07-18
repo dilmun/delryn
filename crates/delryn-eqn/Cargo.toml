@@ -8,3 +8,6 @@ edition.workspace = true
 [dependencies]
 scraper.workspace = true
 ego-tree.workspace = true
+# The typeset engine's AST: recovered markup (LaTeX / Presentation MathML) is mapped
+# into ParseNodes and laid out by RaTeX (a from-scratch Rust engine, not a browser).
+ratex-parser.workspace = true

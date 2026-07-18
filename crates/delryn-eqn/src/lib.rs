@@ -10,6 +10,8 @@
 
 pub mod detect;
 pub mod ir;
+pub mod typeset;
 
 pub use detect::detect;
 pub use ir::{MarkupSource, MathItem, PictureRef, PictureSize};
+pub use typeset::to_nodes;
