@@ -73,15 +73,20 @@ const MAX_UPSCALE: f64 = 4.0;
 /// a page is scaled so its body glyphs hit this size, so they look consistent; tall
 /// operators (Σ, fractions) then extend above/below proportionally. The `math_scale`
 /// knob tunes on top (100% = this value). Adjust here if the default reads large/small.
-const EQ_TARGET_LINE_CELLS: f64 = 1.0;
+/// Set a touch above text (1.15×) so an equation reads as math — flowing with the prose but
+/// a hair larger — per the "natural, a little bigger like 1.1–1.2×" target. Must equal
+/// [`MATH_EM_CELLS`] so the ink-measured and authored-em paths render the same size.
+const EQ_TARGET_LINE_CELLS: f64 = 1.15;
 
 /// On-screen height, in text cells, of one authored CSS `em` for an equation raster
 /// sized by its publisher [`SizeHint::Em`] width. Set to the **text** em (matching the
 /// reader's `DISPLAY_EM_FACTOR`) so a publisher raster and a LaTeX equation delryn
 /// re-renders come out the same size — and the same size as the surrounding prose. The
 /// `math_scale` knob scales up from there. The *reliable* path: source pixels ignored,
-/// so a raster never renders out of scale regardless of its DPI.
-const MATH_EM_CELLS: f64 = 1.0;
+/// so a raster never renders out of scale regardless of its DPI. Kept equal to
+/// [`EQ_TARGET_LINE_CELLS`] (1.15×) so every equation — authored-em or ink-measured — flows
+/// at the same natural, slightly-larger-than-text size across the whole book.
+const MATH_EM_CELLS: f64 = 1.15;
 
 /// A display equation is capped to this fraction of the available rows, so a tall /
 /// multi-line one shrinks uniformly instead of dominating the page (a wide multi-line
@@ -96,8 +101,11 @@ const EQ_MAX_ROWS_FLOOR: f64 = 6.0;
 
 /// Ink-line count at or below which a monochrome line-art raster is taken to be an
 /// equation rather than a diagram (a genuine figure with many text rows reads as a
-/// figure). Only used by the classifier when there's no stronger signal.
-const ARRAY_MAX_LINES: u16 = 8;
+/// figure). Only used by the classifier when there's no stronger signal. Set generously so
+/// a **multi-line equation** (a stacked matrix / cases / big column vector) still sizes on
+/// the text-relative, book-unified equation path instead of falling to the figure path
+/// (a fraction of the column), which is what made equation sizes jump between sections.
+const ARRAY_MAX_LINES: u16 = 16;
 
 /// The most text rows an **inline** equation may occupy. A script-only equation is one
 /// row; a fraction / limit-stack (allowed through the reader's height gate) spans two,
