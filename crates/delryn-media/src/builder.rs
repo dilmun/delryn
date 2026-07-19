@@ -81,17 +81,29 @@ impl ImagePlan {
     }
 }
 
+/// The pixels a build starts from: either the encoded file (the worker decodes it) or an
+/// image the caller already decoded. Inline math decodes each distinct glyph on the main
+/// thread to measure its ink; handing that image straight to the worker avoids decoding
+/// the same JPEG a second time here.
+enum BuildSource {
+    Encoded(Vec<u8>),
+    Decoded(image::DynamicImage),
+}
+
 /// Decode, upscale-to-fill, and encode one image into a sliced protocol. This
 /// is the expensive step (RGBA encode), so it runs on the [`ImageBuilder`]
 /// worker.
 fn build_plan(
     picker: &Picker,
-    bytes: &[u8],
+    source: BuildSource,
     fit: FitBox,
     policy: RenderPolicy,
     spec: SizeSpec,
 ) -> Option<ImagePlan> {
-    let img = decode(bytes)?;
+    let img = match source {
+        BuildSource::Encoded(bytes) => decode(&bytes)?,
+        BuildSource::Decoded(img) => img,
+    };
     let (w, h) = img.dimensions();
     let fs = picker.font_size();
     let fit = FitBox {
@@ -203,7 +215,7 @@ fn resize_simd(img: &image::DynamicImage, dw: u32, dh: u32) -> image::DynamicIma
 /// A request to build one image's protocol off the main thread.
 struct BuildReq {
     key: ImgKey,
-    bytes: Vec<u8>,
+    source: BuildSource,
     spec: SizeSpec,
 }
 
@@ -300,10 +312,23 @@ impl ImageBuilder {
         self.current.store(section, Ordering::Relaxed);
     }
 
+    /// Queue a build from an encoded file (the worker decodes it) — figures, display
+    /// equations, page images.
     pub fn request(&self, key: ImgKey, bytes: Vec<u8>, spec: SizeSpec) {
+        self.enqueue(key, BuildSource::Encoded(bytes), spec);
+    }
+
+    /// Queue a build from an already-decoded image — inline math, whose pixels were just
+    /// decoded on the caller's side to measure ink, so the worker reuses them instead of
+    /// decoding the same JPEG twice.
+    pub fn request_decoded(&self, key: ImgKey, img: image::DynamicImage, spec: SizeSpec) {
+        self.enqueue(key, BuildSource::Decoded(img), spec);
+    }
+
+    fn enqueue(&self, key: ImgKey, source: BuildSource, spec: SizeSpec) {
         let (lock, cv) = &*self.shared;
         let mut lanes = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let req = BuildReq { key, bytes, spec };
+        let req = BuildReq { key, source, spec };
         match key.kind {
             ImgSlot::InlineMath => lanes.inline.push_back(req),
             ImgSlot::Figure => lanes.block.push_back(req),
@@ -376,7 +401,7 @@ fn build_loop(
             };
             BuiltImage {
                 key: k,
-                plan: build_plan(picker, &req.bytes, fit, k.policy, req.spec),
+                plan: build_plan(picker, req.source, fit, k.policy, req.spec),
                 stale: false,
             }
         };

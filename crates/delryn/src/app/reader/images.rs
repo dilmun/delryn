@@ -388,7 +388,9 @@ impl Reader {
         let mut section_inline = HashMap::new();
         let mut cols_by_id: Vec<u16> = Vec::new();
         let mut rows_by_id: Vec<u16> = Vec::new();
-        let mut requests: Vec<(ImgKey, Vec<u8>, media::SizeSpec)> = Vec::new();
+        // Inline builds carry the already-decoded image (decoded once here for ink), so the
+        // worker doesn't re-decode the JPEG.
+        let mut requests: Vec<(ImgKey, media::DynamicImage, media::SizeSpec)> = Vec::new();
         // Content-address the atoms: an inline image is keyed by *what it is*, not where it
         // occurs, so the same symbol repeated across the section (a book that ships ℝ as its
         // own tiny `<img>` uses it hundreds of times) is built and uploaded **once** and every
@@ -419,19 +421,32 @@ impl Reader {
                 };
                 // Cap distinct uploads per section; a new image past the cap degrades to text.
                 let capped = !distinct.contains(&key) && distinct.len() >= MAX_INLINE_ATOMS;
+                // Whether this atom still needs a protocol built (not cached / in-flight / failed).
+                let build_candidate = !capped
+                    && !self.images.cache.contains(&key)
+                    && !self.images.requested.contains(&key)
+                    && !self.images.failed.contains(&key);
+                // Decode the JPEG at most **once**: the same pixels feed the ink measurement
+                // *and* the build, so the worker doesn't decode the same glyph a second time.
+                // Skip it entirely when the ink is already cached and nothing needs building.
+                let ink_known = self.images.inline_ink.contains_key(&key.idx);
+                let decoded = if !capped && (!ink_known || build_candidate) {
+                    media::decode(png)
+                } else {
+                    None
+                };
                 // Size the atom on its measured **ink**, not its raw pixels, so every inline
-                // raster flows at the prose size regardless of the file's resolution (a book
-                // that ships each glyph at a different DPI otherwise renders them at wildly
-                // different sizes). The profile is cached by content-key, so a glyph repeated
-                // across the section is decoded and measured once.
-                let ink =
-                    if capped {
-                        None
-                    } else {
-                        *self.images.inline_ink.entry(key.idx).or_insert_with(|| {
-                            media::decode(png).as_ref().and_then(media::ink_profile)
-                        })
-                    };
+                // raster flows at the prose size regardless of the file's resolution. The
+                // profile is cached by content-key, so a repeated glyph is measured once.
+                let ink = if capped {
+                    None
+                } else {
+                    *self
+                        .images
+                        .inline_ink
+                        .entry(key.idx)
+                        .or_insert_with(|| decoded.as_ref().and_then(media::ink_profile))
+                };
                 let spec = media::SizeSpec {
                     inline: true,
                     math: true,
@@ -457,11 +472,10 @@ impl Reader {
                 if cols > 0 {
                     distinct.insert(key);
                     section_inline.insert(*id, key);
-                    if !self.images.cache.contains(&key)
-                        && !self.images.requested.contains(&key)
-                        && !self.images.failed.contains(&key)
-                    {
-                        requests.push((key, png.clone(), spec));
+                    // `build_candidate ⇒ decoded is Some` (we decoded above), so hand the
+                    // worker the already-decoded image; if the decode failed, skip the build.
+                    if build_candidate && let Some(img) = decoded {
+                        requests.push((key, img, spec));
                     }
                 }
             }
@@ -482,9 +496,9 @@ impl Reader {
         {
             self.images.cache.resize(cap);
         }
-        for (k, bytes, spec) in requests {
+        for (k, img, spec) in requests {
             self.images.requested.insert(k);
-            builder.request(k, bytes, spec);
+            builder.request_decoded(k, img, spec);
         }
     }
 
