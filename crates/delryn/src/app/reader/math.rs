@@ -101,9 +101,9 @@ fn inline_em_px(cell_h: u16) -> u32 {
 /// Rasterise display math at the **text em** — equation glyphs match the surrounding
 /// prose, so a single-line display equation sits at text height and reads as part of
 /// the page rather than dominating it. `100%` `math_scale` is therefore exactly text
-/// size (the floor — math is never smaller than the text); the knob scales up from
-/// there. Multi-line equations are additionally height-capped in the sizer
-/// (`EQ_MAX_ROWS_FRAC`) so a tall stack can't take over the page.
+/// size (the default); the knob scales up to 3× or down below text size, so a reader who
+/// finds equations too large can tune them down. Multi-line equations are additionally
+/// height-capped in the sizer (`EQ_MAX_ROWS_FRAC`) so a tall stack can't take over the page.
 const DISPLAY_EM_FACTOR: f32 = 1.0;
 
 /// The px-per-em to rasterise display equations at, for a terminal `cell_h` (px) and
@@ -237,11 +237,15 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
         }
         // A candidate equation: flagged display-math (a publisher raster *or* delryn's own
         // typeset render), or alt text that parses as math, or an uncaptioned auto-width
-        // image (captioned / explicitly sized graphics are figures). A photo that slips
-        // through profiles to `None` and is then sized as a figure.
+        // image whose alt is *not* a figure caption. A descriptive alt ("Figure 3.1: Two
+        // vectors…") marks a diagram — left unprofiled so it sizes as a figure, not blown up
+        // on the equation path (its large bbox has few ink lines, so it would otherwise be
+        // mistaken for a short equation and normalised to many rows).
         let candidate = *math
             || delryn_model::math::is_math(alt.as_str())
-            || (caption.is_empty() && matches!(*width, delryn_model::ImageWidth::Auto));
+            || (caption.is_empty()
+                && matches!(*width, delryn_model::ImageWidth::Auto)
+                && !delryn_model::math::looks_like_figure_caption(alt.as_str()));
         if !candidate {
             continue;
         }
@@ -386,16 +390,15 @@ impl Reader {
 mod tests {
     use super::*;
 
-    /// The rasterise em is the text em at the 100% floor (equation glyphs match the
-    /// prose), scaling linearly with the "Math size %" knob. The knob only enlarges
-    /// (the config floors it at 100), so display math is never smaller than the text.
+    /// The rasterise em is the text em at the 100% default (equation glyphs match the
+    /// prose), scaling linearly with the "Math size %" knob — down toward text size and
+    /// below, or up to the 300% max.
     #[test]
     fn display_em_px_is_text_relative() {
-        assert_eq!(display_em_px(20, 100), 20); // floor: exactly the text (cell) em
+        assert_eq!(display_em_px(20, 100), 20); // default: exactly the text (cell) em
         assert_eq!(display_em_px(20, 200), 40); // knob doubles it
         assert_eq!(display_em_px(20, 300), 60); // …up to the 300% max
-        // At the 100% floor a display equation is text-sized — never smaller.
-        assert_eq!(display_em_px(20, 100), 20, "the floor is exactly text size");
+        assert_eq!(display_em_px(20, 70), 14); // …and down below text size to tune large math down
     }
 
     /// With graphical math on, a display equation that kept its LaTeX source becomes
