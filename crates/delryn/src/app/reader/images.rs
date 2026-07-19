@@ -10,6 +10,22 @@ use super::*;
 use crate::app::IMAGE_CACHE_CAP;
 use crate::media::{ImageBuilder, ImagePlan, ImgKey};
 
+/// Cap on how many **distinct** inline-math images one section may upload. Identical images
+/// are deduped (a repeated symbol uploads once), so this only bounds genuinely-different
+/// inline equations — generous enough for any real page, low enough that a pathological book
+/// can't flood the terminal (extra ones fall back to their text floor).
+const MAX_INLINE_ATOMS: usize = 128;
+
+/// A content-address for an inline atom: a hash of its rendered bytes, so identical images
+/// (the same symbol repeated across a section) share one build, one upload, and one cache
+/// slot instead of one per occurrence.
+fn inline_content_key(png: &[u8]) -> usize {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    png.hash(&mut h);
+    h.finish() as usize
+}
+
 /// Map a block's authored width, math flag, and caption presence to the media
 /// layer's sizing intent. A caption is the reliable figure/table-vs-equation
 /// signal: figures and tables are captioned and normalize to the column band;
@@ -378,6 +394,13 @@ impl Reader {
         let mut cols_by_id: Vec<u16> = Vec::new();
         let mut rows_by_id: Vec<u16> = Vec::new();
         let mut requests: Vec<(ImgKey, Vec<u8>)> = Vec::new();
+        // Content-address the atoms: an inline image is keyed by *what it is*, not where it
+        // occurs, so the same symbol repeated across the section (a book that ships ℝ as its
+        // own tiny `<img>` uses it hundreds of times) is built and uploaded **once** and every
+        // occurrence places that single image. `distinct` also bounds how many unique inline
+        // images a section may upload — beyond the cap the extra ones fall back to their text
+        // floor (cols = 0), so a pathological page can never flood the terminal.
+        let mut distinct: std::collections::HashSet<ImgKey> = std::collections::HashSet::new();
         for block in &self.blocks {
             let spans = match block {
                 Block::Para { spans, .. } | Block::Heading { spans, .. } => spans,
@@ -390,7 +413,7 @@ impl Reader {
                 let key = ImgKey {
                     kind: media::ImgSlot::InlineMath,
                     section: self.section,
-                    idx: *id,
+                    idx: inline_content_key(png),
                     avail: geom.avail,
                     max_rows: geom.max_rows,
                     max_px: geom.max_px,
@@ -399,38 +422,46 @@ impl Reader {
                     fit_mode: geom.fit_mode,
                     policy: geom.policy,
                 };
+                // Cap distinct uploads per section; a new image past the cap degrades to text.
+                let capped = !distinct.contains(&key) && distinct.len() >= MAX_INLINE_ATOMS;
                 // The atom's reserved width *and height* — the same `target_cells` the
                 // build uses, so the wrapper's reservation (columns, and a spacer row
                 // for a two-row fraction) matches the drawn raster exactly.
-                let (cols, rows) = media::image_dimensions(png)
-                    .map(|(w, h)| media::target_cells(w, h, fit, spec))
-                    .unwrap_or((0, 1));
+                let (cols, rows) = if capped {
+                    (0, 1)
+                } else {
+                    media::image_dimensions(png)
+                        .map(|(w, h)| media::target_cells(w, h, fit, spec))
+                        .unwrap_or((0, 1))
+                };
                 if *id >= cols_by_id.len() {
                     cols_by_id.resize(*id + 1, 0);
                     rows_by_id.resize(*id + 1, 1);
                 }
                 cols_by_id[*id] = cols;
                 rows_by_id[*id] = rows;
-                section_inline.insert(*id, key);
-                if cols > 0
-                    && !self.images.cache.contains(&key)
-                    && !self.images.requested.contains(&key)
-                    && !self.images.failed.contains(&key)
-                {
-                    requests.push((key, png.clone()));
+                if cols > 0 {
+                    distinct.insert(key);
+                    section_inline.insert(*id, key);
+                    if !self.images.cache.contains(&key)
+                        && !self.images.requested.contains(&key)
+                        && !self.images.failed.contains(&key)
+                    {
+                        requests.push((key, png.clone()));
+                    }
                 }
             }
         }
         self.images.section_inline = section_inline;
         self.images.inline_cols = cols_by_id;
         self.images.inline_rows = rows_by_id;
-        // Grow the cache so the section's figures *and* inline equations all fit,
-        // keeping `IMAGE_CACHE_CAP` spare for neighbour prefetch (grow only).
+        // Grow the cache so the section's figures *and* its **distinct** inline equations all
+        // fit, keeping `IMAGE_CACHE_CAP` spare for neighbour prefetch (grow only).
         let needed = self
             .images
             .section_images
             .len()
-            .saturating_add(self.images.section_inline.len())
+            .saturating_add(distinct.len())
             .saturating_add(IMAGE_CACHE_CAP);
         if self.images.cache.cap().get() < needed
             && let Some(cap) = NonZeroUsize::new(needed)
