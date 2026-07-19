@@ -70,6 +70,44 @@ fn as_sub(arg: &str) -> String {
 fn as_sup(arg: &str) -> String {
     fallback_script(arg, false)
 }
+
+/// Whether an under/over script is a **decoration line/accent** (an underline, bar, hat,
+/// tilde, dot, or vector arrow), not a real limit — so `munder`/`mover` can drop it and keep
+/// the base. A terminal can't stack a rule; the matrix (double-underline) / vector (single
+/// underline or arrow) notation would otherwise leak as trailing `_`/`^` noise (`M____`).
+fn is_decoration(script: &str) -> bool {
+    let t = script.trim();
+    if t.is_empty() {
+        return false;
+    }
+    t.chars().all(|c| {
+        matches!(
+            c,
+            // underscore, hat, tilde; dashes/overline/macron; combining low/over/macron/
+            // double-low lines, tilde, hat, dots; vector arrows (spacing + combining).
+            '_' | '^'
+                | '~'
+                | '-'
+                | '–'
+                | '—'
+                | '―'
+                | '‾'
+                | '¯'
+                | '→'
+                | '\u{0332}'
+                | '\u{0333}'
+                | '\u{0305}'
+                | '\u{0304}'
+                | '\u{0331}'
+                | '\u{0303}'
+                | '\u{0302}'
+                | '\u{0307}'
+                | '\u{0308}'
+                | '\u{20D7}'
+                | '\u{20D6}'
+        )
+    })
+}
 fn fallback_script(arg: &str, sub: bool) -> String {
     let tight: String = arg.split_whitespace().collect();
     let mapped = if sub {
@@ -177,20 +215,55 @@ fn emit(node: NodeRef<Node>, depth: u16, out: &mut String) {
                         out.push_str(&op);
                     }
                 }
-                "msubsup" | "munderover" if kids.len() >= 3 => {
+                "msubsup" if kids.len() >= 3 => {
                     out.push_str(&part(kids[0], depth + 1));
                     out.push_str(&as_sub(&part(kids[1], depth + 1)));
                     out.push_str(&as_sup(&part(kids[2], depth + 1)));
                     out.push(' ');
                 }
-                "msub" | "munder" if kids.len() >= 2 => {
+                // Under- **and** over-script: keep real limits (a big operator's bounds),
+                // but drop a decoration line above/below (an underlined/overlined matrix or
+                // vector — a terminal can't stack a rule, so show just the symbol).
+                "munderover" if kids.len() >= 3 => {
+                    out.push_str(&part(kids[0], depth + 1));
+                    let under = part(kids[1], depth + 1);
+                    if !is_decoration(&under) {
+                        out.push_str(&as_sub(&under));
+                    }
+                    let over = part(kids[2], depth + 1);
+                    if !is_decoration(&over) {
+                        out.push_str(&as_sup(&over));
+                    }
+                    out.push(' ');
+                }
+                "msub" if kids.len() >= 2 => {
                     out.push_str(&part(kids[0], depth + 1));
                     out.push_str(&as_sub(&part(kids[1], depth + 1)));
                     out.push(' ');
                 }
-                "msup" | "mover" if kids.len() >= 2 => {
+                "msup" if kids.len() >= 2 => {
                     out.push_str(&part(kids[0], depth + 1));
                     out.push_str(&as_sup(&part(kids[1], depth + 1)));
+                    out.push(' ');
+                }
+                // `munder`/`mover` are also used for a bar/underline/vector accent — the
+                // matrix (double-underline) and vector (single) notation this pass was
+                // turning into trailing underscores (`M____`). Drop such a decoration and
+                // keep the base; treat a real script (a limit) as a sub/superscript.
+                "munder" if kids.len() >= 2 => {
+                    out.push_str(&part(kids[0], depth + 1));
+                    let under = part(kids[1], depth + 1);
+                    if !is_decoration(&under) {
+                        out.push_str(&as_sub(&under));
+                    }
+                    out.push(' ');
+                }
+                "mover" if kids.len() >= 2 => {
+                    out.push_str(&part(kids[0], depth + 1));
+                    let over = part(kids[1], depth + 1);
+                    if !is_decoration(&over) {
+                        out.push_str(&as_sup(&over));
+                    }
                     out.push(' ');
                 }
                 "mfrac" if kids.len() >= 2 => {
@@ -249,6 +322,37 @@ mod tests {
         let src = r#"<math xmlns="http://www.w3.org/1998/Math/MathML"><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><msup><mi>i</mi><mn>2</mn></msup></math>"#;
         let out = to_unicode(src);
         assert_eq!(out, "∑ᵢ₌₁ᴺ i²", "got: {out:?}");
+    }
+
+    /// A matrix/vector accent — an under/over decoration line — is dropped, keeping the
+    /// bare symbol instead of leaking trailing underscores (`M____`); a real limit stays.
+    #[test]
+    fn underline_and_vector_accents_are_dropped() {
+        // Double-underlined matrix M: nested munder with underline rules.
+        let m = r#"<math><munder><munder><mi>M</mi><mo>_</mo></munder><mo>_</mo></munder></math>"#;
+        assert_eq!(
+            to_unicode(m),
+            "M",
+            "double underline dropped, got: {:?}",
+            to_unicode(m)
+        );
+        // Single-underlined / arrow vector.
+        let v = r#"<math><munder><mi>v</mi><mo>_</mo></munder></math>"#;
+        assert_eq!(to_unicode(v), "v");
+        let a = r#"<math><mover><mi>a</mi><mo>→</mo></mover></math>"#;
+        assert_eq!(to_unicode(a), "a");
+        // A real limit under an operator is NOT a decoration — it stays a subscript.
+        let lim = r#"<math><munder><mo>lim</mo><mrow><mi>n</mi><mo>→</mo><mn>0</mn></mrow></munder></math>"#;
+        assert!(
+            to_unicode(lim).starts_with("lim"),
+            "got: {:?}",
+            to_unicode(lim)
+        );
+        assert!(
+            to_unicode(lim).contains('n'),
+            "limit kept: {:?}",
+            to_unicode(lim)
+        );
     }
 
     #[test]
