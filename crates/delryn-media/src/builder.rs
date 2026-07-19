@@ -1,8 +1,9 @@
 //! Off-thread worker that builds inline figure image protocols for the reader.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 use delryn_infra::config::ImageFit;
@@ -133,7 +134,12 @@ fn build_plan(
             // Bottom-align with a small descender gap so caps land on the text baseline.
             let descender = (0.14 * f64::from(fh)).round() as i64;
             let y = (i64::from(ch) - i64::from(f.draw_h) - descender).max(0);
-            image::imageops::overlay(&mut canvas, &glyph, 0, y);
+            // Centre the glyph in its (ceil'd) cell box so it doesn't butt against the
+            // preceding character — the book glues a symbol image straight onto the text
+            // (`… b ∈⟦ℝ⟧`), so a left-aligned glyph touched the `∈`. The slack is the
+            // rounding of one glyph's width to whole cells (a few px), split evenly.
+            let x = (i64::from(cw) - i64::from(f.draw_w)).max(0) / 2;
+            image::imageops::overlay(&mut canvas, &glyph, x, y);
             image::DynamicImage::ImageRgba8(canvas)
         }
         // Everything else (figures, display equations, pages): resize to exactly the target
@@ -179,82 +185,168 @@ pub struct BuiltImage {
 /// a fast-scroll backlog of flown-past sections doesn't delay the current one.
 const KEEP_RADIUS: usize = 3;
 
-/// Builds image protocols on a background thread so decoding/encoding never
+/// Worker-pool size: one per core less one (keep a core for the UI), at least two so
+/// the inline and block lanes can build concurrently, capped so a many-core machine
+/// doesn't spawn a wasteful number of encode threads.
+fn worker_count() -> usize {
+    thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(1).clamp(2, 6))
+        .unwrap_or(3)
+}
+
+/// Two work lanes so a mid-line glyph never waits behind the section's display
+/// equations: `remap_section_images` queues every block figure/equation *before*
+/// `remap_inline_math` queues the inline atoms, so on a single FIFO the tiny inline
+/// `ℝ` sat at the back behind dozens of big rasters. Separate lanes (with workers
+/// biased to each) let inline atoms build in parallel with block math and pop in first.
+struct Lanes {
+    /// Mid-line inline-math atoms (`ImgSlot::InlineMath`) — small, fast, latency-
+    /// sensitive (they gate reading the sentence).
+    inline: VecDeque<BuildReq>,
+    /// Block figures and display equations (`ImgSlot::Figure`) — larger, less urgent.
+    block: VecDeque<BuildReq>,
+    /// Set on drop so each worker's `wait` returns and the thread exits.
+    closed: bool,
+}
+
+impl Lanes {
+    /// Pull the next request, preferring `own` lane but stealing from the other when
+    /// idle so no worker sits idle while there's work anywhere.
+    fn take(&mut self, own_inline: bool) -> Option<BuildReq> {
+        if own_inline {
+            self.inline.pop_front().or_else(|| self.block.pop_front())
+        } else {
+            self.block.pop_front().or_else(|| self.inline.pop_front())
+        }
+    }
+}
+
+/// Builds image protocols on a pool of background threads so decoding/encoding never
 /// stalls scrolling. Send requests with [`request`], collect ready ones with
-/// [`poll`]. Keep the worker informed of the viewport via [`set_current`] so it
+/// [`poll`]. Keep the workers informed of the viewport via [`set_current`] so they
 /// can drop stale work.
 pub struct ImageBuilder {
-    req_tx: Sender<BuildReq>,
+    shared: Arc<(Mutex<Lanes>, Condvar)>,
     res_rx: Receiver<BuiltImage>,
     current: Arc<AtomicUsize>,
 }
 
 impl ImageBuilder {
     pub fn new(picker: Picker) -> ImageBuilder {
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<BuildReq>();
-        let (res_tx, res_rx) = std::sync::mpsc::channel::<BuiltImage>();
+        let shared = Arc::new((
+            Mutex::new(Lanes {
+                inline: VecDeque::new(),
+                block: VecDeque::new(),
+                closed: false,
+            }),
+            Condvar::new(),
+        ));
+        let (res_tx, res_rx) = channel::<BuiltImage>();
         let current = Arc::new(AtomicUsize::new(0));
-        let worker_current = Arc::clone(&current);
-        thread::spawn(move || {
-            while let Ok(req) = req_rx.recv() {
-                let k = req.key;
-                // Skip builds for sections the reader has already scrolled away
-                // from — they only delay the section now in view.
-                let cur = worker_current.load(Ordering::Relaxed);
-                if k.section.abs_diff(cur) > KEEP_RADIUS {
-                    if res_tx
-                        .send(BuiltImage {
-                            key: k,
-                            plan: None,
-                            stale: true,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                    continue;
-                }
-                // `fw`/`fh` are filled in by `build_plan` from the live font size.
-                let fit = FitBox {
-                    fw: 0,
-                    fh: 0,
-                    cols: k.avail,
-                    rows: k.max_rows,
-                    max_px: k.max_px,
-                    target_pct: k.target_pct,
-                    math_scale: k.math_scale,
-                    fit_mode: k.fit_mode,
-                };
-                let plan = build_plan(&picker, &req.bytes, fit, k.policy, req.spec);
-                if res_tx
-                    .send(BuiltImage {
-                        key: k,
-                        plan,
-                        stale: false,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
+        for i in 0..worker_count() {
+            let shared = Arc::clone(&shared);
+            let tx = res_tx.clone();
+            let cur = Arc::clone(&current);
+            let pk = picker.clone(); // Picker is cheap to clone (font metrics + protocol id)
+            // Alternate which lane each worker favours, so at least one always prefers
+            // inline and one prefers block — neither starves while the other drains.
+            let prefer_inline = i % 2 == 0;
+            thread::spawn(move || build_loop(&shared, &tx, &cur, &pk, prefer_inline));
+        }
         ImageBuilder {
-            req_tx,
+            shared,
             res_rx,
             current,
         }
     }
 
-    /// Tell the worker which section is in view, so it can drop stale builds.
+    /// Tell the workers which section is in view, so they can drop stale builds.
     pub fn set_current(&self, section: usize) {
         self.current.store(section, Ordering::Relaxed);
     }
 
     pub fn request(&self, key: ImgKey, bytes: Vec<u8>, spec: SizeSpec) {
-        let _ = self.req_tx.send(BuildReq { key, bytes, spec });
+        let (lock, cv) = &*self.shared;
+        let mut lanes = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let req = BuildReq { key, bytes, spec };
+        match key.kind {
+            ImgSlot::InlineMath => lanes.inline.push_back(req),
+            ImgSlot::Figure => lanes.block.push_back(req),
+        }
+        drop(lanes);
+        cv.notify_one();
     }
 
     pub fn poll(&self) -> impl Iterator<Item = BuiltImage> + '_ {
         self.res_rx.try_iter()
+    }
+}
+
+impl Drop for ImageBuilder {
+    fn drop(&mut self) {
+        let (lock, cv) = &*self.shared;
+        if let Ok(mut lanes) = lock.lock() {
+            lanes.closed = true;
+            cv.notify_all();
+        }
+    }
+}
+
+/// One pool worker: pull the next request (favouring `prefer_inline`'s lane), decode/
+/// encode it off the lock, and send the result. Exits when the builder is dropped.
+fn build_loop(
+    shared: &Arc<(Mutex<Lanes>, Condvar)>,
+    tx: &Sender<BuiltImage>,
+    current: &Arc<AtomicUsize>,
+    picker: &Picker,
+    prefer_inline: bool,
+) {
+    let (lock, cv) = &**shared;
+    loop {
+        // Wait for work, then take one request (releasing the lock before building).
+        let req = {
+            let mut lanes = lock.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                if lanes.closed {
+                    return;
+                }
+                if let Some(req) = lanes.take(prefer_inline) {
+                    break req;
+                }
+                lanes = cv.wait(lanes).unwrap_or_else(|e| e.into_inner());
+            }
+        };
+
+        let k = req.key;
+        // Skip builds for sections the reader has already scrolled away from — they
+        // only delay the section now in view.
+        let cur = current.load(Ordering::Relaxed);
+        let built = if k.section.abs_diff(cur) > KEEP_RADIUS {
+            BuiltImage {
+                key: k,
+                plan: None,
+                stale: true,
+            }
+        } else {
+            // `fw`/`fh` are filled in by `build_plan` from the live font size.
+            let fit = FitBox {
+                fw: 0,
+                fh: 0,
+                cols: k.avail,
+                rows: k.max_rows,
+                max_px: k.max_px,
+                target_pct: k.target_pct,
+                math_scale: k.math_scale,
+                fit_mode: k.fit_mode,
+            };
+            BuiltImage {
+                key: k,
+                plan: build_plan(picker, &req.bytes, fit, k.policy, req.spec),
+                stale: false,
+            }
+        };
+        if tx.send(built).is_err() {
+            return; // reader gone
+        }
     }
 }
