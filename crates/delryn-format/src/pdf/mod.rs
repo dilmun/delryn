@@ -15,7 +15,7 @@
 //! `DESIGN.md` §3 / the Phase 5 plan in `TODO.md`.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Result, anyhow};
 use pdfium_render::prelude::{
@@ -254,6 +254,11 @@ const COVER_WIDTH: i32 = 480;
 /// can't be opened or rasterized (e.g. PDFium unavailable), so the caller can
 /// fall back to a placeholder. Opens its own short-lived PDFium handle.
 pub fn render_cover(path: impl AsRef<Path>) -> Option<Vec<u8>> {
+    // PDFium is a single per-process binding and is not safe to call concurrently. The
+    // library cover loader now decodes on a thread pool, so serialise the rasterisation
+    // here — EPUB covers still decode in parallel; only PDF pages queue behind this lock.
+    static COVER_RENDER_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = COVER_RENDER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let doc = open_pdfium_doc(path.as_ref()).ok()?;
     rasterize_page_png_at(&doc, 0, COVER_WIDTH)
 }

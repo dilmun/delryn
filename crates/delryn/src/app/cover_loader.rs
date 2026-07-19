@@ -18,7 +18,7 @@
 //! the covers on screen are always at the front. One decode thread keeps it simple and
 //! PDFium-safe (PDFium is a single per-process binding, not safe to call concurrently).
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -29,61 +29,74 @@ use image::RgbaImage;
 /// the book had no decodable cover (cached as a negative so it isn't retried every frame).
 pub type DecodedCover = (RgbaImage, (u32, u32));
 
-/// Work shared with the decode thread.
+/// Decode threads in the pool. Reading + decoding + downscaling a cover is CPU-bound, so a
+/// few threads clear a screenful far faster than one. Kept small so the pool never starves
+/// the render thread. PDF cover rasterisation is serialised inside the PDF backend (PDFium
+/// isn't safe to call concurrently); EPUB covers decode fully in parallel.
+fn worker_count() -> usize {
+    thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(1).clamp(1, 4))
+        .unwrap_or(2)
+}
+
+/// Work shared with the decode threads.
 struct Queue {
     /// Paths still to decode, highest priority first (visible rows ahead of prefetch).
     /// Rebuilt every frame from the current viewport by [`CoverLoader::set_wanted`], so a
     /// held key never builds a backlog: rows scrolled past simply fall off the list.
     wanted: VecDeque<String>,
-    /// The path the worker is decoding right now, so a queue rebuild neither re-queues it
-    /// nor loses track of it (it still counts as pending).
-    decoding: Option<String>,
-    /// Set on drop so the worker's wait returns and the thread exits.
+    /// Paths a worker is decoding right now, so a queue rebuild neither re-queues one nor
+    /// loses track of it (each still counts as pending).
+    decoding: HashSet<String>,
+    /// Set on drop so the workers' waits return and the threads exit.
     closed: bool,
 }
 
-/// Loads + decodes book covers on a background thread; the main loop sets the wanted set
-/// each frame and drains finished decodes.
+/// Loads + decodes book covers on a pool of background threads; the main loop sets the
+/// wanted set each frame and drains finished decodes.
 pub struct CoverLoader {
     shared: Arc<(Mutex<Queue>, Condvar)>,
     res_rx: Receiver<(String, Option<DecodedCover>)>,
 }
 
 impl CoverLoader {
-    /// Spawn the worker. It lives for the process; dropping the loader sets `closed`, so the
-    /// worker's `wait` returns and the thread exits.
+    /// Spawn the worker pool. Threads live for the process; dropping the loader sets
+    /// `closed`, so each worker's `wait` returns and the thread exits.
     pub fn new() -> CoverLoader {
         let shared = Arc::new((
             Mutex::new(Queue {
                 wanted: VecDeque::new(),
-                decoding: None,
+                decoding: HashSet::new(),
                 closed: false,
             }),
             Condvar::new(),
         ));
         let (res_tx, res_rx) = channel::<(String, Option<DecodedCover>)>();
-        let worker = Arc::clone(&shared);
-        thread::spawn(move || decode_loop(&worker, &res_tx));
+        for _ in 0..worker_count() {
+            let worker = Arc::clone(&shared);
+            let tx = res_tx.clone();
+            thread::spawn(move || decode_loop(&worker, &tx));
+        }
         CoverLoader { shared, res_rx }
     }
 
     /// Set the covers wanted this frame, highest priority first (visible rows, then the
     /// prefetch margin), already filtered to those not yet cached. Replaces the queue
-    /// wholesale — rows no longer on/near screen are dropped — while preserving the one
-    /// in-flight decode. Cheap and non-blocking (holds the lock only to swap a small list).
+    /// wholesale — rows no longer on/near screen are dropped — while preserving the
+    /// in-flight decodes. Cheap and non-blocking (holds the lock only to swap a small list).
     pub fn set_wanted(&self, paths: &[String]) {
         let (lock, cv) = &*self.shared;
         let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
         q.wanted.clear();
         for p in paths {
-            // The in-flight path is already being handled — don't queue it twice.
-            if q.decoding.as_deref() == Some(p.as_str()) {
+            // Already being decoded — don't queue it twice.
+            if q.decoding.contains(p.as_str()) {
                 continue;
             }
             q.wanted.push_back(p.clone());
         }
         if !q.wanted.is_empty() {
-            cv.notify_one();
+            cv.notify_all();
         }
     }
 
@@ -92,7 +105,7 @@ impl CoverLoader {
     pub fn pending(&self) -> bool {
         let (lock, _) = &*self.shared;
         lock.lock()
-            .is_ok_and(|q| !q.wanted.is_empty() || q.decoding.is_some())
+            .is_ok_and(|q| !q.wanted.is_empty() || !q.decoding.is_empty())
     }
 
     /// Take all covers finished since the last call.
@@ -111,7 +124,7 @@ impl Drop for CoverLoader {
     }
 }
 
-/// The worker: take the highest-priority wanted path (waiting while the queue is empty),
+/// A worker: take the highest-priority wanted path (waiting while the queue is empty),
 /// decode it off the lock, and send the result. Exits when the loader is dropped.
 fn decode_loop(
     shared: &Arc<(Mutex<Queue>, Condvar)>,
@@ -131,7 +144,7 @@ fn decode_loop(
                 }
                 q = cv.wait(q).unwrap_or_else(|e| e.into_inner());
             };
-            q.decoding = Some(path.clone());
+            q.decoding.insert(path.clone());
             path
         };
 
@@ -141,7 +154,7 @@ fn decode_loop(
 
         {
             let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
-            q.decoding = None;
+            q.decoding.remove(&path);
         }
         if res_tx.send((path, decoded)).is_err() {
             return; // main side gone
