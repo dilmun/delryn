@@ -262,20 +262,22 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
         }
         GraphicKind::RenderedMath => cap.min(1.0),
         GraphicKind::EquationRaster => {
-            let s = if let SizeHint::Em(em_w) = spec.hint {
-                // Reliable path: the publisher's exact text-relative width. Scale so one
-                // authored em is MATH_EM_CELLS cells — derived from the *full* source
-                // width `w` (what the `em` measures), so the DPI drops out entirely and
-                // every equation flows at the prose size. Ink measurement not consulted.
-                f64::from(em_w) * MATH_EM_CELLS * fhf * knob / f64::from(w)
-            } else {
-                match spec.ink {
-                    // DPI-independent: bring one ink-line to the text-relative target,
-                    // shrinking a high-DPI raster and growing a low-DPI one alike.
-                    Some(p) => fhf * EQ_TARGET_LINE_CELLS * knob / f64::from(p.line_px),
-                    // Unprofiled: keep the legacy low-res boost (never shrinks).
-                    None => (EQUATION_MIN_LINES * fhf / bh).clamp(1.0, EQUATION_AUTO_MAX) * knob,
-                }
+            // The general pixel algorithm first — no publisher metadata: measure the raster's
+            // own ink and bring one glyph line to the text-relative target, scaling a too-big
+            // raster *down* and a too-small one *up*. Every equation — a publisher raster or
+            // delryn's own typeset render — is measured the same way, so both land at the
+            // same size and a tall matrix is normalised per-line instead of rendering at its
+            // native, oversized layout. DPI drops out (the measurement is on the pixels).
+            let s = match spec.ink {
+                Some(p) => fhf * EQ_TARGET_LINE_CELLS * knob / f64::from(p.line_px),
+                // No measurable ink (rare): fall back to the authored em width if the
+                // publisher gave one, else the legacy low-res boost (never shrinks).
+                None => match spec.hint {
+                    SizeHint::Em(em_w) => {
+                        f64::from(em_w) * MATH_EM_CELLS * fhf * knob / f64::from(w)
+                    }
+                    _ => (EQUATION_MIN_LINES * fhf / bh).clamp(1.0, EQUATION_AUTO_MAX) * knob,
+                },
             };
             let s = s.min(cap); // fit the column / viewport
             if s > 1.0 { s.min(MAX_UPSCALE) } else { s } // quality-cap enlargement only

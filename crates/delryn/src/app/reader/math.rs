@@ -201,17 +201,20 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
     }
 }
 
-/// Measure the ink profile of each **publisher** equation image in `blocks` (in
-/// place), so it can be sized to a text-relative height regardless of the file's DPI
-/// (see [`delryn_media::ink_profile`]). Runs right after [`convert_math_blocks`] at
-/// every decode site — off the main thread in the section loader — so the profile
-/// rides along on the block and both the up-front row estimate and the async build
-/// read it (they must agree). A no-op when graphical rendering is off (images then
-/// show as placeholders, so size is moot) or once a block is already profiled.
+/// Measure the ink profile of every equation image in `blocks` (in place), so it can be
+/// sized to a text-relative height by the general pixel algorithm — regardless of the
+/// file's DPI or how it was produced (see [`delryn_media::ink_profile`]). Runs right after
+/// [`convert_math_blocks`] at every decode site — off the main thread in the section loader
+/// — so the profile rides along on the block and both the up-front row estimate and the
+/// async build read it (they must agree). A no-op when graphical rendering is off (images
+/// then show as placeholders, so size is moot) or once a block is already profiled.
 ///
-/// delryn's *own* LaTeX renders (from [`convert_math_blocks`]) carry an empty `src`
-/// and are sized by their render em — they are skipped. A figure or photo that slips
-/// through the candidate gate profiles to `None` and is then sized as a figure.
+/// This measures delryn's **own** typeset renders (from [`convert_math_blocks`], empty
+/// `src`) the same as publisher rasters: both are normalised so one glyph line hits the
+/// text-relative target, so a re-typeset equation and a publisher raster come out the same
+/// size (and a tall matrix is scaled down per-line instead of rendering at its native,
+/// oversized layout). A figure or photo that slips through the candidate gate profiles to
+/// `None` and is then sized as a figure.
 pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
@@ -219,7 +222,7 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
     for b in blocks.iter_mut() {
         let Block::Image {
             math,
-            src,
+            src: _,
             data,
             alt,
             caption,
@@ -232,15 +235,10 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
         if data.is_empty() || ink.is_some() {
             continue; // no bytes, or already measured
         }
-        // delryn's own LaTeX render is flagged math with an empty src and is sized by
-        // its render em — leave it native, don't ink-normalise it.
-        if *math && src.is_empty() {
-            continue;
-        }
-        // A candidate publisher equation: flagged display-math, or alt text that
-        // parses as math, or an uncaptioned auto-width image (captioned / explicitly
-        // sized graphics are figures). A photo that slips through profiles to `None`
-        // and is then sized as a figure.
+        // A candidate equation: flagged display-math (a publisher raster *or* delryn's own
+        // typeset render), or alt text that parses as math, or an uncaptioned auto-width
+        // image (captioned / explicitly sized graphics are figures). A photo that slips
+        // through profiles to `None` and is then sized as a figure.
         let candidate = *math
             || delryn_model::math::is_math(alt.as_str())
             || (caption.is_empty() && matches!(*width, delryn_model::ImageWidth::Auto));
@@ -550,9 +548,10 @@ mod tests {
         buf
     }
 
-    /// The profiling pass measures publisher equation images — an uncaptioned raster
-    /// or a `math`-flagged `<img>` (real `src`) — while leaving captioned figures and
-    /// delryn's own LaTeX renders (`math`, empty `src`) untouched.
+    /// The profiling pass measures every equation image — an uncaptioned raster, a
+    /// `math`-flagged publisher `<img>` (real `src`), *and* delryn's own typeset render
+    /// (`math`, empty `src`) — so all are sized text-relative by the same pixel algorithm;
+    /// only captioned figures are left untouched.
     #[test]
     fn profiles_publisher_equation_images_only() {
         let _env = crate::test_env_guard();
@@ -580,8 +579,8 @@ mod tests {
             "off: not profiled"
         );
 
-        // On → both publisher equations are measured; the figure and delryn's own
-        // render are left alone.
+        // On → every equation is measured (publisher rasters *and* delryn's own render),
+        // so all size text-relative by the same pixel algorithm; only the figure is left.
         ENABLED.store(true, Ordering::Relaxed);
         profile_equation_images(&mut blocks, 0);
         let ink = |b: &Block| matches!(b, Block::Image { ink: Some(_), .. });
@@ -592,8 +591,8 @@ mod tests {
         );
         assert!(!ink(&blocks[2]), "captioned figure left unprofiled");
         assert!(
-            !ink(&blocks[3]),
-            "delryn's own render (empty src) left unprofiled"
+            ink(&blocks[3]),
+            "delryn's own render (empty src) is profiled too — sized like every equation"
         );
 
         ENABLED.store(false, Ordering::Relaxed); // don't leak to other tests
