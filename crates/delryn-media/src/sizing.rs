@@ -92,12 +92,15 @@ const MATH_EM_CELLS: f64 = 1.15;
 /// multi-line one shrinks uniformly instead of dominating the page (a wide multi-line
 /// equation otherwise fills the column width and, by its aspect, runs many rows tall).
 /// Single-line equations sit far under the cap and are untouched. Floored by
-/// [`EQ_MAX_ROWS_FLOOR`] so a short pane still shows a readable equation.
-const EQ_MAX_ROWS_FRAC: f64 = 0.28;
+/// [`EQ_MAX_ROWS_FLOOR`] so a short pane still shows a readable equation. Kept modest so an
+/// equation flows with the prose instead of taking over the page — the glyphs are already
+/// normalised to text size, so this only reins in the genuinely tall constructs (a big
+/// fraction, a stacked matrix) that would otherwise run many rows.
+const EQ_MAX_ROWS_FRAC: f64 = 0.16;
 
 /// Absolute floor (in text rows) for the [`EQ_MAX_ROWS_FRAC`] cap, so a small viewport
 /// doesn't shrink a multi-line equation to an illegible sliver.
-const EQ_MAX_ROWS_FLOOR: f64 = 6.0;
+const EQ_MAX_ROWS_FLOOR: f64 = 5.0;
 
 /// Ink-line count at or below which a monochrome line-art raster is taken to be an
 /// equation rather than a diagram (a genuine figure with many text rows reads as a

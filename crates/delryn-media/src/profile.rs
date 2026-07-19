@@ -58,11 +58,13 @@ const EM_QUANTILE: f32 = 0.90;
 /// is a glyph (base, cap, or subscript).
 const OPERATOR_EM_RATIO: f32 = 2.0;
 
-/// The most text ems tall one *counted* equation line can plausibly be. A monochrome
-/// line-drawing / illustration that slips past the sparse-ink gate spans far more than
-/// this per line, so it is rejected as a figure rather than normalised as a giant
-/// equation (its ink is not text).
-const MAX_EM_PER_LINE: f32 = 5.0;
+/// The most text ems tall one *counted* equation line can plausibly be — the backstop that
+/// keeps a monochrome line-drawing / illustration (whose ink spans far more than text per
+/// line) from being normalised as a giant equation. Generous: a real display line with a big
+/// integral/fraction and its limits runs ~5 ems, and a matrix row measured as one band can be
+/// taller still, so a tight bound wrongly rejected real multi-line equations and sent them to
+/// the exploded native path. A genuine sketch sits far above this (~20 ems/line).
+const MAX_EM_PER_LINE: f32 = 12.0;
 
 /// The measured ink geometry of an equation raster (mirrors `delryn_model::InkProfile`
 /// — this crate stays independent of the content model). Produced by [`ink_profile`].

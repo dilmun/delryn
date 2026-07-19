@@ -215,6 +215,14 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
 /// size (and a tall matrix is scaled down per-line instead of rendering at its native,
 /// oversized layout). A figure or photo that slips through the candidate gate profiles to
 /// `None` and is then sized as a figure.
+/// The file name of an image `src`, without directory or extension:
+/// `"images/Figure-3.1.jpg"` → `"Figure-3.1"`, so a figure-named file is recognised even
+/// when the alt is empty.
+fn file_stem(src: &str) -> &str {
+    let base = src.rsplit(['/', '\\']).next().unwrap_or(src);
+    base.rsplit_once('.').map_or(base, |(stem, _)| stem)
+}
+
 pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
@@ -222,7 +230,7 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
     for b in blocks.iter_mut() {
         let Block::Image {
             math,
-            src: _,
+            src,
             data,
             alt,
             caption,
@@ -237,15 +245,16 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
         }
         // A candidate equation: flagged display-math (a publisher raster *or* delryn's own
         // typeset render), or alt text that parses as math, or an uncaptioned auto-width
-        // image whose alt is *not* a figure caption. A descriptive alt ("Figure 3.1: Two
-        // vectors…") marks a diagram — left unprofiled so it sizes as a figure, not blown up
-        // on the equation path (its large bbox has few ink lines, so it would otherwise be
-        // mistaken for a short equation and normalised to many rows).
+        // image whose alt *and* filename are not a figure's. A descriptive alt ("Figure 3.1:
+        // Two vectors…") or a figure-named file ("Figure-3.1.jpg" — this book ships diagrams
+        // with an empty alt, so the filename is the only signal) marks a diagram: left
+        // unprofiled so it sizes as a figure, not blown up on the equation path (its large
+        // bbox has few ink lines, so it would otherwise be mistaken for a short equation).
+        let figure = delryn_model::math::looks_like_figure_caption(alt.as_str())
+            || delryn_model::math::looks_like_figure_caption(file_stem(src));
         let candidate = *math
             || delryn_model::math::is_math(alt.as_str())
-            || (caption.is_empty()
-                && matches!(*width, delryn_model::ImageWidth::Auto)
-                && !delryn_model::math::looks_like_figure_caption(alt.as_str()));
+            || (caption.is_empty() && matches!(*width, delryn_model::ImageWidth::Auto) && !figure);
         if !candidate {
             continue;
         }
