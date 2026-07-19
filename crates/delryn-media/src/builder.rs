@@ -116,7 +116,6 @@ fn build_plan(
     };
 
     let (fw, fh) = (fs.width.max(1) as u32, fs.height.max(1) as u32);
-    let lanczos = image::imageops::FilterType::Lanczos3;
     let img = match (spec.inline, spec.ink) {
         // Inline picture: draw the ink at its **exact** text-relative size on a transparent
         // whole-cell canvas, baseline-aligned. This is the one path that must not fill the
@@ -127,7 +126,7 @@ fn build_plan(
         // to the glyph before compositing so the canvas stays transparent.
         (true, Some(ink)) => {
             let f = crate::sizing::inline_fit(fit, ink, f64::from(fit.math_scale) / 100.0);
-            let glyph = img.resize_exact(f.draw_w.max(1), f.draw_h.max(1), lanczos);
+            let glyph = resize_simd(&img, f.draw_w.max(1), f.draw_h.max(1));
             let glyph = render_for_theme(&glyph, policy.tint, policy.mode).to_rgba8();
             let (cw, ch) = (u32::from(cols) * fw, u32::from(rows) * fh);
             let mut canvas = image::RgbaImage::from_pixel(cw, ch, image::Rgba([0, 0, 0, 0]));
@@ -142,13 +141,20 @@ fn build_plan(
             image::imageops::overlay(&mut canvas, &glyph, x, y);
             image::DynamicImage::ImageRgba8(canvas)
         }
-        // Everything else (figures, display equations, pages): resize to exactly the target
-        // cell box so the protocol fills (cols, rows) precisely. Lanczos3 is the highest-
-        // quality resampling filter for the text, equations, and line-art common in book
-        // figures — sharp on both the up-scaling of low-res figures and the down-scaling of
-        // oversized ones. The cost is paid once, off-thread, and the result is cached.
+        // Everything else (figures, display equations, pages): scale to fit the target cell
+        // box (aspect-preserving) so the protocol fills (cols, rows). The Lanczos3 kernel is
+        // the highest quality for the text, equations, and line-art common in book figures —
+        // sharp on both up-scaling low-res figures and down-scaling oversized ones — and the
+        // SIMD path keeps it cheap. The cost is paid once, off-thread, and the result cached.
         _ => {
-            let img = img.resize(u32::from(cols) * fw, u32::from(rows) * fh, lanczos);
+            let (bw, bh) = (u32::from(cols) * fw, u32::from(rows) * fh);
+            let (sw, sh) = img.dimensions();
+            // Aspect-preserving fit (what `image::resize` did), then an exact SIMD resize.
+            let scale =
+                (f64::from(bw) / f64::from(sw.max(1))).min(f64::from(bh) / f64::from(sh.max(1)));
+            let tw = (f64::from(sw) * scale).round().max(1.0) as u32;
+            let th = (f64::from(sh) * scale).round().max(1.0) as u32;
+            let img = resize_simd(&img, tw, th);
             // Adapt the graphic to the theme (recolour ink / flatten / invert) per mode.
             render_for_theme(&img, policy.tint, policy.mode)
         }
@@ -163,6 +169,35 @@ fn build_plan(
         cols: s.width,
         rows: s.height,
     })
+}
+
+/// Exact-size resize of `img` to `dw`×`dh` with a **SIMD** Lanczos3 convolution
+/// (`fast_image_resize` auto-detects SSE4.1/AVX2/NEON at runtime). Resize is the #2
+/// cost of a build after decode — measured 51–260µs with `image`'s scalar Lanczos3 on
+/// the book's rasters — and this is ~5× faster for the same kernel, so it stays sharp.
+/// Alpha is handled (premultiplied) so transparent inline glyphs resize cleanly. Falls
+/// back to `image`'s scalar resize if the SIMD path can't accept the buffer.
+fn resize_simd(img: &image::DynamicImage, dw: u32, dh: u32) -> image::DynamicImage {
+    use fast_image_resize::images::Image as FirImage;
+    use fast_image_resize::{PixelType, Resizer};
+
+    let (dw, dh) = (dw.max(1), dh.max(1));
+    let rgba = img.to_rgba8();
+    let (sw, sh) = rgba.dimensions();
+    let fallback = || img.resize_exact(dw, dh, image::imageops::FilterType::Lanczos3);
+
+    let Ok(src) = FirImage::from_vec_u8(sw, sh, rgba.into_raw(), PixelType::U8x4) else {
+        return fallback();
+    };
+    let mut dst = FirImage::new(dw, dh, PixelType::U8x4);
+    // Default `ResizeOptions` is `Convolution(Lanczos3)` with alpha handling on.
+    if Resizer::new().resize(&src, &mut dst, None).is_err() {
+        return fallback();
+    }
+    match image::RgbaImage::from_raw(dw, dh, dst.into_vec()) {
+        Some(buf) => image::DynamicImage::ImageRgba8(buf),
+        None => fallback(),
+    }
 }
 
 /// A request to build one image's protocol off the main thread.
