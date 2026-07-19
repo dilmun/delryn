@@ -43,6 +43,11 @@ pub enum Anchor {
 pub enum SpanMath {
     /// Inline math with its recovered sources, not (yet) rendered graphically.
     Source(MathItem),
+    /// An inline math **image** the publisher shipped as a tiny `<img>` (an equation or a
+    /// single symbol like ℝ, usually with an empty alt): its `src` and the bytes the loader
+    /// resolves from the archive (empty until then). The reader rasterises it into the same
+    /// inline-atom pipeline as [`Raster`], so it draws mid-line instead of as a placeholder.
+    Picture { src: String, data: Vec<u8> },
     /// Rendered to a small themed raster: a section-local id (its draw/build key)
     /// and the black-on-transparent PNG bytes (recoloured to the theme at build).
     Raster { id: usize, png: Vec<u8> },

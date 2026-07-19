@@ -149,26 +149,27 @@ pub(crate) fn convert_math_blocks(blocks: &mut [Block]) {
     }
 }
 
-/// Render each **inline** math run in `blocks` that kept a source ([`SpanMath::Source`])
-/// down the engine's typeset rung to a small themed image drawn mid-line, assigning each a
-/// section-local id and swapping it in place for [`SpanMath::Raster`]. A no-op unless
-/// graphical inline math is enabled (the master toggle **and** the `graphical_inline_math`
-/// opt-in); per-run best-effort — a typeset failure, a too-tall equation (a fraction / limit
-/// stack that would smear in one text row), or an undecodable raster leaves the run as
-/// `Source`, so the wrapper shows its Unicode floor (the fallback is never regressed).
+/// Render each **inline** math run in `blocks` to a small themed image drawn mid-line,
+/// assigning each a section-local id and swapping it in place for [`SpanMath::Raster`]. Two
+/// sources feed it:
+/// - [`SpanMath::Picture`] — a publisher inline **image** (a tiny `<img>` symbol/equation the
+///   loader resolved bytes for). The image *is* the render, so it's drawn whenever graphical
+///   math is on, replacing the ugly placeholder these books would otherwise show mid-prose.
+/// - [`SpanMath::Source`] — recovered LaTeX/MathML, typeset down the engine rung. This stays
+///   behind the `graphical_inline_math` opt-in (off by default), since its Unicode floor
+///   lines up with prose better than a raster when the source is recoverable.
 ///
-/// Only top-level `Para`/`Heading` runs are rendered — the same runs the wrapper can reserve
-/// atom cells for; nested (callout/footnote/table/caption) inline math keeps its own id
-/// space the reader doesn't address, so it stays Unicode. Runs off the main thread at every
-/// decode site (after [`convert_math_blocks`]).
+/// A no-op when graphical math is off. Per-run best-effort — an unresolved/undecodable/too-tall
+/// picture, or a typeset failure, leaves the run as-is so the wrapper shows its floor (never
+/// regressed). Only top-level `Para`/`Heading` runs are rendered — the same runs the wrapper
+/// reserves atom cells for; nested (callout/table/caption) inline math keeps its own id space
+/// the reader doesn't address. Runs off the main thread at every decode site.
 pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
-    if !INLINE_ENABLED.load(Ordering::Relaxed) {
-        return; // inline math stays the natural Unicode approximation
+    if !ENABLED.load(Ordering::Relaxed) {
+        return; // graphical math off entirely — inline math stays its Unicode floor
     }
+    let inline_typeset = INLINE_ENABLED.load(Ordering::Relaxed);
     let em_px = INLINE_EM_PX.load(Ordering::Relaxed);
-    if em_px == 0 {
-        return;
-    }
     let mut next_id = 0usize;
     for b in blocks.iter_mut() {
         let spans = match b {
@@ -176,27 +177,52 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
             _ => continue,
         };
         for span in spans.iter_mut() {
-            let Some(SpanMath::Source(item)) = &span.math else {
-                continue;
+            // Take the math out so we can produce the raster without a borrow tangle; restore
+            // the source when we don't convert, so the floor is never lost.
+            let png: Option<Vec<u8>> = match span.math.take() {
+                Some(SpanMath::Picture { src, data }) => {
+                    // The publisher image is the render. Draw a resolved, not-too-tall one (a
+                    // tall stacked picture would smear in a text row); else keep it a Picture
+                    // so its span-text floor shows.
+                    let ok = !data.is_empty()
+                        && crate::media::image_dimensions(&data)
+                            .is_some_and(|(w, h)| h <= w.saturating_mul(2));
+                    if ok {
+                        Some(data)
+                    } else {
+                        span.math = Some(SpanMath::Picture { src, data });
+                        None
+                    }
+                }
+                Some(SpanMath::Source(item)) => {
+                    // Typeset rung, opt-in only. A too-tall stack (a fraction / ∫∑ with limits)
+                    // that would smear in one row, or any failure, keeps the Unicode floor.
+                    let png = (inline_typeset && em_px != 0)
+                        .then(|| match delryn_eqn::render(&item, em_px, |_| None) {
+                            delryn_eqn::Rendered::Typeset(raster)
+                                if crate::media::image_dimensions(&raster.png).is_some_and(
+                                    |(_, h)| (h as f32) <= INLINE_MAX_H_EM * em_px as f32,
+                                ) =>
+                            {
+                                Some(raster.png)
+                            }
+                            _ => None,
+                        })
+                        .flatten();
+                    if png.is_none() {
+                        span.math = Some(SpanMath::Source(item));
+                    }
+                    png
+                }
+                other => {
+                    span.math = other;
+                    None
+                }
             };
-            // Inline shows only the crisp typeset rung (a publisher picture mid-line would
-            // resolve out of the text flow); a non-typeset run keeps its Unicode floor.
-            let delryn_eqn::Rendered::Typeset(raster) = delryn_eqn::render(item, em_px, |_| None)
-            else {
-                continue;
-            };
-            // Height gate: a single-line inline equation fits one text row; a tall stack
-            // (fraction, ∫/∑ with limits) would smear, so keep it Unicode.
-            let too_tall = crate::media::image_dimensions(&raster.png)
-                .is_none_or(|(_, h)| h as f32 > INLINE_MAX_H_EM * em_px as f32);
-            if too_tall {
-                continue;
+            if let Some(png) = png {
+                span.math = Some(SpanMath::Raster { id: next_id, png });
+                next_id += 1;
             }
-            span.math = Some(SpanMath::Raster {
-                id: next_id,
-                png: raster.png,
-            });
-            next_id += 1;
         }
     }
 }
@@ -520,9 +546,10 @@ mod tests {
             _ => unreachable!(),
         };
         INLINE_EM_PX.store(32, Ordering::Relaxed); // ~2× a 16px cell (the calib em)
+        ENABLED.store(true, Ordering::Relaxed); // graphical math on (the master gate)
 
-        // Off → no conversion (stays a LaTeX source span). Inline rasterising is
-        // gated on its own opt-in (`INLINE_ENABLED`), not the display master toggle.
+        // Off → no conversion (stays a LaTeX source span). Typeset inline math is gated on
+        // its own opt-in (`INLINE_ENABLED`) on top of the master toggle.
         INLINE_ENABLED.store(false, Ordering::Relaxed);
         let mut off = vec![para("x^2")];
         convert_inline_math(&mut off);
@@ -561,7 +588,69 @@ mod tests {
         );
 
         INLINE_ENABLED.store(false, Ordering::Relaxed); // don't leak to other tests
+        ENABLED.store(false, Ordering::Relaxed);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A publisher inline picture (a tiny `<img>` the loader resolved bytes for) is drawn
+    /// mid-line whenever graphical math is on — no typeset opt-in needed, because the image
+    /// *is* the render and its only alternative is a placeholder. Off, or unresolved, it stays
+    /// a `Picture` so its floor text shows.
+    #[test]
+    fn converts_inline_picture_to_raster() {
+        let para_pic = |data: Vec<u8>| Block::Para {
+            spans: vec![
+                delryn_model::Span::plain("see "),
+                delryn_model::Span {
+                    text: "▢".to_string(),
+                    style: delryn_model::Inline {
+                        math: true,
+                        ..Default::default()
+                    },
+                    anchor: None,
+                    math: Some(SpanMath::Picture {
+                        src: "images/r.jpg".to_string(),
+                        data,
+                    }),
+                },
+            ],
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let math_of = |b: &Block| match b {
+            Block::Para { spans, .. } => spans[1].math.clone(),
+            _ => unreachable!(),
+        };
+
+        // Master graphical math OFF → stays a Picture (the floor shows).
+        ENABLED.store(false, Ordering::Relaxed);
+        let mut off = vec![para_pic(equation_png())];
+        convert_inline_math(&mut off);
+        assert!(
+            matches!(math_of(&off[0]), Some(SpanMath::Picture { .. })),
+            "off: inline picture stays a picture"
+        );
+
+        // ON, typeset opt-in OFF → the resolved picture still rasterises (it needs no source).
+        ENABLED.store(true, Ordering::Relaxed);
+        INLINE_ENABLED.store(false, Ordering::Relaxed);
+        let mut on = vec![para_pic(equation_png())];
+        convert_inline_math(&mut on);
+        assert!(
+            matches!(math_of(&on[0]), Some(SpanMath::Raster { .. })),
+            "on: resolved inline picture rasterises to an atom"
+        );
+
+        // An unresolved picture (loader found no bytes) stays a Picture → floor.
+        let mut unresolved = vec![para_pic(Vec::new())];
+        convert_inline_math(&mut unresolved);
+        assert!(
+            matches!(math_of(&unresolved[0]), Some(SpanMath::Picture { .. })),
+            "unresolved inline picture keeps its floor"
+        );
+
+        ENABLED.store(false, Ordering::Relaxed);
     }
 
     /// A transparent PNG with one opaque ink band — a minimal publisher equation.

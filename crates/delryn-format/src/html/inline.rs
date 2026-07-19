@@ -134,8 +134,28 @@ fn collect_inline_at(node: NodeRef<Node>, style: Inline, depth: u16, out: &mut V
                         out.push(inline_math_span(item, style));
                         return;
                     }
-                    // Any other inline image: a quiet marker for a useless alt (often
-                    // math the converter rasterised), else the alt label.
+                    // An inline image with a useless alt (empty / generic) is almost always
+                    // a rasterised inline symbol or equation (ℝ, a small formula) the
+                    // converter couldn't give recoverable source. Carry its `src` as an
+                    // inline picture so the reader draws it mid-line (it resolves the bytes),
+                    // with the quiet marker kept as the fallback if it can't be rendered.
+                    if is_placeholder_alt(alt) && !src.is_empty() {
+                        out.push(Span {
+                            text: "▢".to_string(),
+                            style: Inline {
+                                italic: true,
+                                math: true,
+                                ..style
+                            },
+                            anchor: None,
+                            math: Some(delryn_model::SpanMath::Picture {
+                                src: src.to_string(),
+                                data: Vec::new(),
+                            }),
+                        });
+                        return;
+                    }
+                    // Any other inline image: a quiet marker for a useless alt, else the alt label.
                     let text = if is_placeholder_alt(alt) {
                         "▢".to_string()
                     } else {
