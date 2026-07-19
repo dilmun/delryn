@@ -273,21 +273,24 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
     unify_book_em(blocks, section);
 }
 
-/// Give the book's publisher equations one shared text em, so they all scale to the same
-/// on-screen size across the whole book. All display equations in a book share one font
-/// size, so unifying is correct — and it rescues the ones whose glyph measurement
-/// misreads. This section's ems join the book-wide pool ([`BOOK_EMS`]); the shared
-/// reference is drawn from **every** equation seen so far, then applied to this section.
+/// Clamp each equation's measured em toward the book's typical em, so a badly-measured
+/// outlier can't render far off — while every normally-measured equation keeps its **own**
+/// measurement and so normalises to exactly the text-relative target. This section's ems
+/// join the book-wide pool ([`BOOK_EMS`]); the typical em is drawn from **every** equation
+/// seen so far, then used as the clamp centre for this section.
 ///
-/// The reference is the pool's **upper-quartile (p75) em, not the median**, because the
-/// measurement only ever errs *low*: a fraction-heavy equation (`1/n Σ`, `x̄ ± Z(σ/√n)`)
-/// is mostly small numerator/denominator/limit glyphs, so its handful of full-height cap
-/// letters are a minority the cap-height estimate undershoots. Book-wide pooling plus the
-/// high quantile means even a section that is *entirely* such equations (a page of error
-/// metrics) is snapped up to the size the book's correctly-measured equations agree on,
-/// instead of being levelled to its own misreads (a per-section median did the latter —
-/// the whole page rendered oversized). Below a few samples the pool isn't meaningful yet,
-/// so each equation keeps its own measurement.
+/// Sizing each equation by its own em is what makes it DPI-independent — an equation shipped
+/// at a higher pixel resolution must not render larger. (An earlier version instead *forced*
+/// every equation to one shared em; that made displayed size track the raw raster resolution,
+/// which varies per image, so equations at different DPI came out at visibly different sizes.)
+///
+/// The clamp centre is the pool's **upper-quartile (p75) em, not the median**, because the
+/// measurement only ever errs *low*: a fraction-heavy equation (`1/n Σ`, `x̄ ± Z(σ/√n)`) is
+/// mostly small numerator/denominator/limit glyphs, so its handful of full-height cap letters
+/// are a minority the cap-height estimate undershoots. Biasing the centre high means a whole
+/// page of such undershot equations is clamped up toward the book's correctly-measured size
+/// rather than left oversized. Below a few samples the pool isn't meaningful yet, so each
+/// equation keeps its own measurement unclamped.
 fn unify_book_em(blocks: &mut [Block], section: usize) {
     let section_ems: Vec<f32> = blocks
         .iter()
@@ -317,10 +320,26 @@ fn unify_book_em(blocks: &mut [Block], section: usize) {
     }
     for b in blocks.iter_mut() {
         if let Block::Image { ink: Some(p), .. } = b {
-            p.line_px = reference;
+            // Per-equation normalisation: each raster is sized by its OWN measured em, so a
+            // well-measured equation lands at *exactly* the text-relative target — this is
+            // what keeps sizing DPI-independent (an equation shipped at a higher pixel
+            // resolution isn't rendered larger). Forcing every equation to one shared em did
+            // the opposite: it made displayed size track the raw raster resolution, so
+            // equations at different DPI came out at visibly different sizes. We only *clamp*
+            // a wildly out-of-range em toward the book's typical, so a single badly-measured
+            // outlier can't render far off; everything in-band keeps its own measurement.
+            p.line_px = p
+                .line_px
+                .clamp(reference * EM_CLAMP_LO, reference * EM_CLAMP_HI);
         }
     }
 }
+
+/// How far a single equation's measured em may sit from the book's typical em before it is
+/// clamped toward it — wide, so only a clearly mis-measured outlier is pulled in and every
+/// normally-measured equation keeps its own em (and so normalises to exactly the target).
+const EM_CLAMP_LO: f32 = 0.7;
+const EM_CLAMP_HI: f32 = 1.5;
 
 /// The shared equation em from a pool of measured ems: the **upper quartile** — biased
 /// high because the ink measurement only ever errs *low* (see [`unify_book_em`]) — so
