@@ -375,11 +375,6 @@ impl Reader {
     fn remap_inline_math(&mut self, builder: &ImageBuilder, picker: &Picker, geom: ImageGeom) {
         let fs = picker.font_size();
         let (fw, fh) = (fs.width, fs.height);
-        let spec = media::SizeSpec {
-            inline: true,
-            math: true,
-            ..Default::default()
-        };
         let fit = media::FitBox {
             fw,
             fh,
@@ -393,7 +388,7 @@ impl Reader {
         let mut section_inline = HashMap::new();
         let mut cols_by_id: Vec<u16> = Vec::new();
         let mut rows_by_id: Vec<u16> = Vec::new();
-        let mut requests: Vec<(ImgKey, Vec<u8>)> = Vec::new();
+        let mut requests: Vec<(ImgKey, Vec<u8>, media::SizeSpec)> = Vec::new();
         // Content-address the atoms: an inline image is keyed by *what it is*, not where it
         // occurs, so the same symbol repeated across the section (a book that ships ℝ as its
         // own tiny `<img>` uses it hundreds of times) is built and uploaded **once** and every
@@ -424,9 +419,28 @@ impl Reader {
                 };
                 // Cap distinct uploads per section; a new image past the cap degrades to text.
                 let capped = !distinct.contains(&key) && distinct.len() >= MAX_INLINE_ATOMS;
-                // The atom's reserved width *and height* — the same `target_cells` the
-                // build uses, so the wrapper's reservation (columns, and a spacer row
-                // for a two-row fraction) matches the drawn raster exactly.
+                // Size the atom on its measured **ink**, not its raw pixels, so every inline
+                // raster flows at the prose size regardless of the file's resolution (a book
+                // that ships each glyph at a different DPI otherwise renders them at wildly
+                // different sizes). The profile is cached by content-key, so a glyph repeated
+                // across the section is decoded and measured once.
+                let ink =
+                    if capped {
+                        None
+                    } else {
+                        *self.images.inline_ink.entry(key.idx).or_insert_with(|| {
+                            media::decode(png).as_ref().and_then(media::ink_profile)
+                        })
+                    };
+                let spec = media::SizeSpec {
+                    inline: true,
+                    math: true,
+                    ink,
+                    ..Default::default()
+                };
+                // The atom's reserved width *and height* — the same `target_cells` (and thus
+                // `inline_fit`) the build uses, so the wrapper's reservation (columns, and a
+                // spacer row for a two-row fraction) matches the drawn raster exactly.
                 let (cols, rows) = if capped {
                     (0, 1)
                 } else {
@@ -447,7 +461,7 @@ impl Reader {
                         && !self.images.requested.contains(&key)
                         && !self.images.failed.contains(&key)
                     {
-                        requests.push((key, png.clone()));
+                        requests.push((key, png.clone(), spec));
                     }
                 }
             }
@@ -468,7 +482,7 @@ impl Reader {
         {
             self.images.cache.resize(cap);
         }
-        for (k, bytes) in requests {
+        for (k, bytes, spec) in requests {
             self.images.requested.insert(k);
             builder.request(k, bytes, spec);
         }

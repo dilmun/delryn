@@ -114,19 +114,39 @@ fn build_plan(
         None => img,
     };
 
-    // Resize to exactly the target cell box in pixels so the protocol fills
-    // (cols, rows) precisely. Lanczos3 is the highest-quality resampling filter
-    // for the text, equations, and line-art common in book figures — sharp on
-    // both the up-scaling of low-res figures and the down-scaling of oversized
-    // ones, where the old bilinear (Triangle) filter left everything soft. The
-    // cost is paid once, off-thread, and the result is cached.
-    let img = img.resize(
-        cols as u32 * fs.width.max(1) as u32,
-        rows as u32 * fs.height.max(1) as u32,
-        image::imageops::FilterType::Lanczos3,
-    );
-    // Adapt the graphic to the theme (recolour ink / flatten / invert) per mode.
-    let img = render_for_theme(&img, policy.tint, policy.mode);
+    let (fw, fh) = (fs.width.max(1) as u32, fs.height.max(1) as u32);
+    let lanczos = image::imageops::FilterType::Lanczos3;
+    let img = match (spec.inline, spec.ink) {
+        // Inline picture: draw the ink at its **exact** text-relative size on a transparent
+        // whole-cell canvas, baseline-aligned. This is the one path that must not fill the
+        // ceil'd cell box — doing so fattens a single glyph like `ℝ` (its 1.4-cell ink ceils
+        // to 2 cells) and floats it at the top of the row. Instead the ink is scaled to the
+        // same pixels the layout reserved and seated on the text baseline, so every inline
+        // raster flows at the prose size and sits on the line. The theme recolour is applied
+        // to the glyph before compositing so the canvas stays transparent.
+        (true, Some(ink)) => {
+            let f = crate::sizing::inline_fit(fit, ink, f64::from(fit.math_scale) / 100.0);
+            let glyph = img.resize_exact(f.draw_w.max(1), f.draw_h.max(1), lanczos);
+            let glyph = render_for_theme(&glyph, policy.tint, policy.mode).to_rgba8();
+            let (cw, ch) = (u32::from(cols) * fw, u32::from(rows) * fh);
+            let mut canvas = image::RgbaImage::from_pixel(cw, ch, image::Rgba([0, 0, 0, 0]));
+            // Bottom-align with a small descender gap so caps land on the text baseline.
+            let descender = (0.14 * f64::from(fh)).round() as i64;
+            let y = (i64::from(ch) - i64::from(f.draw_h) - descender).max(0);
+            image::imageops::overlay(&mut canvas, &glyph, 0, y);
+            image::DynamicImage::ImageRgba8(canvas)
+        }
+        // Everything else (figures, display equations, pages): resize to exactly the target
+        // cell box so the protocol fills (cols, rows) precisely. Lanczos3 is the highest-
+        // quality resampling filter for the text, equations, and line-art common in book
+        // figures — sharp on both the up-scaling of low-res figures and the down-scaling of
+        // oversized ones. The cost is paid once, off-thread, and the result is cached.
+        _ => {
+            let img = img.resize(u32::from(cols) * fw, u32::from(rows) * fh, lanczos);
+            // Adapt the graphic to the theme (recolour ink / flatten / invert) per mode.
+            render_for_theme(&img, policy.tint, policy.mode)
+        }
+    };
     let size = ratatui::layout::Size::new(cols, rows);
     let proto =
         SlicedProtocol::new_with_resize(picker, img, size, ratatui_image::Resize::Fit(None))

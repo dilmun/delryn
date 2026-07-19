@@ -123,6 +123,16 @@ const INLINE_MAX_ROWS: u16 = 2;
 /// inline fractions (`\frac{1}{2}` ≈ 1.2 cells, a busy fraction ≈ 1.5 cells).
 const INLINE_ONE_ROW_MAX: f64 = 1.35;
 
+/// Displayed height, in text cells, of one **inline** picture's text em — the
+/// text-relative size a mid-line publisher glyph/expression raster (`ℝ`, `∈ S`, a short
+/// `{x ∈ ℝ : …}`) is normalised to from its measured ink [`InkProfile::line_px`]. Set to
+/// ~text cap-height so an inline symbol matches the surrounding prose (unlike a *display*
+/// equation, which sits a hair larger at [`EQ_TARGET_LINE_CELLS`]); this is the whole point
+/// of the ink path — every inline raster flows at the same size regardless of the file's
+/// resolution, instead of rendering at its raw native pixels. The `math_scale` knob tunes on
+/// top (100% = this value). Tall operators (Σ, a fraction bar) then extend proportionally.
+const INLINE_LINE_CELLS: f64 = 0.72;
+
 /// Fallback (unprofiled raster) only: the height in text lines a low-resolution
 /// equation is boosted *up* toward. Used when no [`InkProfile`] is available, so the
 /// DPI-independent path can't run; keeps the old boost-only behaviour as a floor.
@@ -227,9 +237,62 @@ fn classify(spec: SizeSpec, fit_mode: ImageFit) -> GraphicKind {
 /// build crops to the same bbox so displayed pixels match. The longest displayed side
 /// is finally capped to `fit.max_px`. Used by both the up-front row estimate and the
 /// background build, so the two always agree (no gap).
+/// The exact draw size and whole-cell footprint of an inline picture, from its ink.
+/// `draw_w`/`draw_h` are the ink's target pixels (the builder scales the cropped ink to
+/// exactly this, then letterboxes it onto a `cols`×`rows` transparent canvas), so the
+/// reserved cells and the drawn glyph always agree — a single glyph like `ℝ` is never
+/// fattened to fill a ceil'd cell.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct InlineFit {
+    pub cols: u16,
+    pub rows: u16,
+    pub draw_w: u32,
+    pub draw_h: u32,
+}
+
+/// Text-relative size for one inline math picture, from its measured ink. Brings one ink
+/// line to [`INLINE_LINE_CELLS`] (× the `math_scale` knob) so every inline raster flows at
+/// the prose size regardless of the file's resolution — the same ink normalisation display
+/// equations use, tuned to text size for mid-line flow — then bounds it to the inline row
+/// budget and the column width. Shared by the up-front reservation ([`target_cells`]) and
+/// the background build so the two never diverge.
+pub(crate) fn inline_fit(fit: FitBox, ink: InkProfile, knob: f64) -> InlineFit {
+    let (fwf, fhf) = (f64::from(fit.fw.max(1)), f64::from(fit.fh.max(1)));
+    let (bw, bh) = ink.bbox_dims();
+    let line = f64::from(ink.line_px).max(1.0);
+    // One ink line → the inline target; the whole ink scales with it.
+    let mut scale = INLINE_LINE_CELLS * fhf * knob / line;
+    // Never exceed the inline row budget (a tall fraction) …
+    let max_h = f64::from(INLINE_MAX_ROWS) * fhf;
+    if bh * scale > max_h {
+        scale = max_h / bh;
+    }
+    // … nor the column width (a long expression shrinks to fit, like any equation).
+    let max_w = f64::from(fit.cols.max(1)) * fwf;
+    if bw * scale > max_w {
+        scale = max_w / bw;
+    }
+    let draw_w = (bw * scale).round().max(1.0);
+    let draw_h = (bh * scale).round().max(1.0);
+    InlineFit {
+        cols: ((draw_w / fwf).ceil() as u16).clamp(1, fit.cols.max(1)),
+        rows: ((draw_h / fhf).ceil() as u16).clamp(1, INLINE_MAX_ROWS),
+        draw_w: draw_w as u32,
+        draw_h: draw_h as u32,
+    }
+}
+
 pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
     if w == 0 || h == 0 || fit.fw == 0 || fit.fh == 0 {
         return (1, 1);
+    }
+    // Inline picture with measured ink: exact text-relative size (own path so a repeated
+    // single glyph and a long expression both flow at the prose size, none fattened).
+    if spec.inline
+        && let Some(ink) = spec.ink
+    {
+        let f = inline_fit(fit, ink, f64::from(fit.math_scale) / 100.0);
+        return (f.cols, f.rows);
     }
     let (fwf, fhf) = (f64::from(fit.fw), f64::from(fit.fh));
     // Effective size: an equation is sized on its ink bbox (margins cropped away);
@@ -377,6 +440,19 @@ mod tests {
         SizeSpec {
             captioned: true,
             ..SizeSpec::default()
+        }
+    }
+
+    /// An inline glyph's ink: a `w`×`h` bbox measured as one line of `h` px — a single
+    /// symbol like `ℝ` (whole ink is one text line, no ascenders/descenders beyond it).
+    fn single_line_ink(w: u32, h: u32) -> InkProfile {
+        InkProfile {
+            x0: 0,
+            y0: 0,
+            x1: w,
+            y1: h,
+            line_px: h as f32,
+            line_count: 1,
         }
     }
 
@@ -728,6 +804,63 @@ mod tests {
             (5, 1),
             "40px wide at native = ceil(40/8) = 5 cols"
         );
+    }
+
+    /// The headline inline fix: a publisher inline glyph shipped at *any* resolution
+    /// renders at the same text-relative cap-height, drawn at its exact pixels (not
+    /// upscaled to fill a ceil'd cell). A single glyph (`ℝ`) whose ink is one line of
+    /// `line_px` normalises so that line lands at [`INLINE_LINE_CELLS`] cells, whatever
+    /// the file's DPI — the raw-pixel path used to render each at a different size.
+    #[test]
+    fn inline_picture_cap_height_is_resolution_independent() {
+        let cell_h = 16.0;
+        // A square glyph (ink bbox == one line) at 8/16/32/64 px source resolutions.
+        let heights: Vec<f64> = [8u32, 16, 32, 64]
+            .into_iter()
+            .map(|px| {
+                let f = inline_fit(fit(400, 40), single_line_ink(px, px), 1.0);
+                assert_eq!(f.rows, 1, "a one-line glyph stays one row ({px}px)");
+                // Aspect preserved: a square glyph draws square.
+                assert_eq!(f.draw_w, f.draw_h, "square glyph draws square ({px}px)");
+                f64::from(f.draw_h) / cell_h
+            })
+            .collect();
+        // Every resolution lands at the same cap-height, ≈ INLINE_LINE_CELLS.
+        for h in &heights {
+            assert!(
+                (h - INLINE_LINE_CELLS).abs() < 0.1,
+                "cap-height {h:.2} cell should track INLINE_LINE_CELLS {INLINE_LINE_CELLS}"
+            );
+        }
+        let spread = heights.iter().cloned().fold(0.0_f64, f64::max)
+            - heights.iter().cloned().fold(f64::MAX, f64::min);
+        assert!(
+            spread < 0.1,
+            "cap-heights consistent across DPI: spread {spread:.3}"
+        );
+    }
+
+    /// The `math_scale` knob scales an inline glyph up/down; a taller ink (a fraction)
+    /// keeps the same cap-height but occupies more rows.
+    #[test]
+    fn inline_picture_knob_and_rows() {
+        let base = inline_fit(fit(400, 40), single_line_ink(20, 20), 1.0);
+        let big = inline_fit(fit(400, 40), single_line_ink(20, 20), 1.5);
+        assert!(
+            big.draw_h > base.draw_h,
+            "knob 150% draws taller: {big:?} vs {base:?}"
+        );
+        // A two-line stack (line_px is one line; bbox two lines tall) → two rows.
+        let frac = InkProfile {
+            x0: 0,
+            y0: 0,
+            x1: 40,
+            y1: 40,
+            line_px: 18.0,
+            line_count: 2,
+        };
+        let f = inline_fit(fit(400, 40), frac, 1.0);
+        assert_eq!(f.rows, 2, "a two-line fraction spans two rows: {f:?}");
     }
 
     /// Inline sizing takes precedence over the `math`/`ink` signals: a spec flagged
