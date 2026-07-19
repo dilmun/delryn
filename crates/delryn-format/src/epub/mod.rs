@@ -98,22 +98,10 @@ fn load_blocks(doc: &mut EpubDoc<BufReader<File>>, index: usize) -> Result<Vec<B
             *data = bytes;
         }
     }
-    // Resolve inline math pictures (tiny `<img>` symbols/equations shipped mid-line) the
-    // same way, so the reader can draw them in the text flow instead of a placeholder. Only
-    // top-level paragraph/heading runs — the runs the reader's inline pipeline addresses.
-    for block in &mut blocks {
-        let (Block::Para { spans, .. } | Block::Heading { spans, .. }) = block else {
-            continue;
-        };
-        for span in spans.iter_mut() {
-            if let Some(delryn_model::SpanMath::Picture { src, data }) = &mut span.math
-                && data.is_empty()
-                && let Some(bytes) = resolve_image(doc, &dir, src)
-            {
-                *data = bytes;
-            }
-        }
-    }
+    // (Inline math pictures — tiny `<img>` symbols shipped mid-line — carry a `src` but are
+    // left unresolved: the reader's inline-picture rendering is disabled until the atom
+    // pipeline scales to books that ship hundreds of them, so resolving their bytes here
+    // would be wasted I/O on every section load. Re-add the resolution when re-enabling.)
     Ok(blocks)
 }
 

@@ -181,18 +181,15 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
             // the source when we don't convert, so the floor is never lost.
             let png: Option<Vec<u8>> = match span.math.take() {
                 Some(SpanMath::Picture { src, data }) => {
-                    // The publisher image is the render. Draw a resolved, not-too-tall one (a
-                    // tall stacked picture would smear in a text row); else keep it a Picture
-                    // so its span-text floor shows.
-                    let ok = !data.is_empty()
-                        && crate::media::image_dimensions(&data)
-                            .is_some_and(|(w, h)| h <= w.saturating_mul(2));
-                    if ok {
-                        Some(data)
-                    } else {
-                        span.math = Some(SpanMath::Picture { src, data });
-                        None
-                    }
+                    // Inline-picture rendering is disabled for now: a book that ships every
+                    // inline symbol (ℝ, …) as its own tiny `<img>` produces *hundreds* of
+                    // inline atoms per screen, and one Kitty raster placement per occurrence
+                    // floods the terminal — the screen corrupts and figures starve. Keep it a
+                    // Picture so its placeholder floor shows (no atom drawn), until the atom
+                    // pipeline dedups identical images and scales down the placements. The
+                    // model/format/loader plumbing stays, so re-enabling is a one-line change.
+                    span.math = Some(SpanMath::Picture { src, data });
+                    None
                 }
                 Some(SpanMath::Source(item)) => {
                     // Typeset rung, opt-in only. A too-tall stack (a fraction / ∫∑ with limits)
@@ -592,12 +589,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// A publisher inline picture (a tiny `<img>` the loader resolved bytes for) is drawn
-    /// mid-line whenever graphical math is on — no typeset opt-in needed, because the image
-    /// *is* the render and its only alternative is a placeholder. Off, or unresolved, it stays
-    /// a `Picture` so its floor text shows.
+    /// Inline-picture rendering is currently disabled (it doesn't yet scale to a book with
+    /// hundreds of inline symbol images), so a `Picture` span is left a `Picture` and shows
+    /// its placeholder floor — never converted to an atom that would flood the terminal.
     #[test]
-    fn converts_inline_picture_to_raster() {
+    fn inline_picture_stays_a_picture_while_disabled() {
         let para_pic = |data: Vec<u8>| Block::Para {
             spans: vec![
                 delryn_model::Span::plain("see "),
@@ -632,22 +628,15 @@ mod tests {
             "off: inline picture stays a picture"
         );
 
-        // ON, typeset opt-in OFF → the resolved picture still rasterises (it needs no source).
+        // ON, even with a resolved picture → still a Picture (rendering disabled), so its
+        // placeholder floor shows instead of a flood of atoms.
         ENABLED.store(true, Ordering::Relaxed);
         INLINE_ENABLED.store(false, Ordering::Relaxed);
         let mut on = vec![para_pic(equation_png())];
         convert_inline_math(&mut on);
         assert!(
-            matches!(math_of(&on[0]), Some(SpanMath::Raster { .. })),
-            "on: resolved inline picture rasterises to an atom"
-        );
-
-        // An unresolved picture (loader found no bytes) stays a Picture → floor.
-        let mut unresolved = vec![para_pic(Vec::new())];
-        convert_inline_math(&mut unresolved);
-        assert!(
-            matches!(math_of(&unresolved[0]), Some(SpanMath::Picture { .. })),
-            "unresolved inline picture keeps its floor"
+            matches!(math_of(&on[0]), Some(SpanMath::Picture { .. })),
+            "on: inline picture stays a picture (rendering disabled)"
         );
 
         ENABLED.store(false, Ordering::Relaxed);
