@@ -458,16 +458,20 @@ impl App {
         true
     }
 
-    /// Queue the grid `paths` (visible **and** a prefetch margin) for background loading —
-    /// non-blocking, so navigation never waits on cover I/O + decode. Already-cached and
-    /// already-in-flight paths are skipped; [`poll_grid_covers`](Self::poll_grid_covers)
-    /// picks up the finished decodes. Sets `grid_pending` while any is still loading.
+    /// Hand the grid `paths` (visible rows first, **then** a prefetch margin — the priority
+    /// order the loader decodes in) to the background loader — non-blocking, so navigation
+    /// never waits on cover I/O + decode. The list *replaces* the loader's queue each frame,
+    /// so a held j/k that flies past many rows drops them instead of piling up a backlog the
+    /// worker must grind through before it reaches the row you stopped on. Already-cached
+    /// paths (positive or negative) are filtered out; [`poll_grid_covers`](Self::poll_grid_covers)
+    /// picks up finished decodes. Sets `grid_pending` while any is still loading.
     pub fn ensure_grid_covers(&mut self, paths: &[String]) {
-        for path in paths {
-            if !self.library.grid_covers.contains(path) {
-                self.cover_loader.request(path);
-            }
-        }
+        let wanted: Vec<String> = paths
+            .iter()
+            .filter(|p| !self.library.grid_covers.contains(p.as_str()))
+            .cloned()
+            .collect();
+        self.cover_loader.set_wanted(&wanted);
         self.library.grid_pending = self.cover_loader.pending();
     }
 
