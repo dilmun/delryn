@@ -582,8 +582,11 @@ fn emit_paragraph(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
         // a URL) never match, so ordinary prose is untouched.
         if !ctx.quote
             && ctx.item_marker().is_none()
-            && let Some(kind) = leading_callout_kind(&spans)
+            && let Some((kind, prefix)) = leading_callout(&spans)
         {
+            // Strip the "Keyword:" prefix from the body — the callout's own label already
+            // announces the kind, so a leading "Note:" inside the box reads as a double note.
+            strip_leading_chars(&mut spans, prefix);
             out.push(Block::Callout {
                 kind,
                 title: None,
@@ -605,11 +608,13 @@ fn emit_paragraph(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
     }
 }
 
-/// The admonition kind when a paragraph opens with a keyword immediately followed by a
-/// colon (`Note:`, `Warning:`, `Hint:`); `None` for ordinary prose. Requires a single
-/// leading word before the first colon, so "Definition:", "f: D → ℝ", "http://…", and
-/// "Note that …" (no colon after the word) are all left as normal paragraphs.
-fn leading_callout_kind(spans: &[Span]) -> Option<CalloutKind> {
+/// The admonition kind and the length (in chars) of the leading `Keyword:` prefix (plus any
+/// following space) when a paragraph opens with a keyword immediately followed by a colon
+/// (`Note:`, `Warning:`, `Hint:`); `None` for ordinary prose. Requires a single leading word
+/// before the first colon, so "Definition:", "f: D → ℝ", "http://…", and "Note that …" (no
+/// colon after the word) are all left as normal paragraphs. The keyword/colon/space are ASCII,
+/// so the byte length is also the char length of the prefix.
+fn leading_callout(spans: &[Span]) -> Option<(CalloutKind, usize)> {
     let mut lead = String::new();
     for s in spans {
         lead.push_str(&s.text);
@@ -617,12 +622,16 @@ fn leading_callout_kind(spans: &[Span]) -> Option<CalloutKind> {
             break;
         }
     }
-    let (before, _) = lead.trim_start().split_once(':')?;
-    let word = before.trim();
+    let ws = lead.len() - lead.trim_start().len(); // leading whitespace bytes
+    let colon = lead[ws..].find(':')?;
+    let word = lead[ws..ws + colon].trim();
     if word.split_whitespace().count() != 1 {
         return None;
     }
-    CalloutKind::from_word(word)
+    let kind = CalloutKind::from_word(word)?;
+    let after = ws + colon + 1; // just past ':'
+    let trailing_ws = lead[after..].len() - lead[after..].trim_start().len();
+    Some((kind, after + trailing_ws))
 }
 
 fn list_item(
