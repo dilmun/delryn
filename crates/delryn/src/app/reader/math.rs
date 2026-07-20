@@ -181,18 +181,18 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
             // the source when we don't convert, so the floor is never lost.
             let png: Option<Vec<u8>> = match span.math.take() {
                 Some(SpanMath::Picture { src, data }) => {
-                    // The publisher image is the render. Draw a resolved, not-too-tall one (a
-                    // tall stacked picture would smear in a text row); else keep it a Picture
-                    // so its span-text floor shows. Identical images (the same ℝ repeated all
-                    // over the book) are deduped downstream by content, so this stays cheap.
-                    let ok = !data.is_empty()
-                        && crate::media::image_dimensions(&data)
-                            .is_some_and(|(w, h)| h <= w.saturating_mul(2));
-                    if ok {
-                        Some(data)
-                    } else {
+                    // The publisher marked this image inline (`class="inline"`) and the loader
+                    // resolved its bytes — so the image *is* the render: draw it. No aspect
+                    // gate — a narrow tall fraction (`1/n`) is exactly what we want, and the
+                    // ink-based sizing normalises it to the prose size (a centred multi-row
+                    // atom, bounded by `INLINE_MAX_ROWS`). An unresolved picture (no bytes)
+                    // keeps its `Picture` floor so its placeholder text shows. Identical images
+                    // (the same glyph repeated) are deduped downstream by content.
+                    if data.is_empty() {
                         span.math = Some(SpanMath::Picture { src, data });
                         None
+                    } else {
+                        Some(data)
                     }
                 }
                 Some(SpanMath::Source(item)) => {
