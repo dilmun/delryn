@@ -319,10 +319,12 @@ fn wrap_nested(
         table_wrap: opts.table_wrap,
         justify: false,
         tidy_spacing: opts.tidy_spacing,
-        // Nested inline math keeps its own id space (unaddressed by the reader's
-        // section-level reservation), so it degrades to Unicode like nested images.
-        inline_math_cols: &[],
-        inline_math_rows: &[],
+        // Inline math shares one id space across nested blocks (the reader's
+        // `convert_inline_math`/`remap_inline_math` recurse into callout/footnote bodies),
+        // so thread the section's reservations through — a note's fraction renders as a
+        // raster like top-level inline math instead of degrading to its Unicode floor.
+        inline_math_cols: opts.inline_math_cols,
+        inline_math_rows: opts.inline_math_rows,
     };
     for line in wrap_blocks(blocks, &inner, &[]) {
         let mut runs = Vec::with_capacity(line.runs.len() + 1);
