@@ -42,6 +42,13 @@ pub fn delete_placement_seq(id: u32) -> String {
     format!("\x1b_Ga=d,d=i,i={id}\x1b\\")
 }
 
+/// Kitty escape to delete **every** image and free all its data (`d=A`, no id).
+/// A blunt teardown for reader exit / a full restage, where individually tracking
+/// ids isn't worth it — leaves no resident image (and so no ghost) behind.
+pub fn delete_all_images_seq() -> String {
+    "\x1b_Ga=d,d=A\x1b\\".to_string()
+}
+
 // ── Direct Kitty image management (for full-page PDF rendering) ───────────────
 //
 // The unicode-placeholder path (inline figures) is for images that flow with

@@ -285,6 +285,13 @@ pub struct Reader {
     collapsed: HashSet<usize>,
     /// The active visual text selection (vim `V`), or `None` in normal reading.
     select: Option<Selection>,
+    /// Inline-image placement targets the view collects during render, drained by
+    /// `App::inline_escapes` and reconciled by the `InlineDeck`. `RefCell` so the
+    /// shared-borrow (`&self`) draw path can push into it.
+    inline_targets: std::cell::RefCell<Vec<crate::app::inline_deck::InlineTarget>>,
+    /// Set by `restage_visible_images`: the inline deck is cleared next frame so the
+    /// rebuilt images re-transmit instead of being assumed still resident.
+    inline_needs_clear: std::cell::Cell<bool>,
 }
 
 impl Reader {
@@ -390,6 +397,8 @@ impl Reader {
             overlay_occlude: None,
             collapsed: HashSet::new(),
             select: None,
+            inline_targets: std::cell::RefCell::new(Vec::new()),
+            inline_needs_clear: std::cell::Cell::new(false),
         };
         reader.prefetch_neighbors();
         Ok(reader)

@@ -9,7 +9,6 @@ use std::thread;
 use delryn_infra::config::ImageFit;
 use image::GenericImageView;
 use ratatui_image::picker::Picker;
-use ratatui_image::sliced::SlicedProtocol;
 
 use crate::decode::decode;
 use crate::recolor::{RenderPolicy, render_for_theme};
@@ -52,33 +51,18 @@ pub struct ImgKey {
     pub policy: RenderPolicy,
 }
 
-/// A built, ready-to-render inline image: a sliced protocol (so partial rows
-/// can be drawn as it scrolls past an edge) plus its exact cell size.
+/// A built, ready-to-place inline image: the themed PNG (the transmit payload)
+/// padded to whole cells, its pixel size (so a partially-visible image can be
+/// shown by cropping the matching source rows), and its exact cell footprint.
+/// Delivered by the [`crate::app`]-side `InlineDeck` via direct Kitty placement
+/// (transmit once, place, re-place on scroll) rather than a per-cell protocol.
 pub struct ImagePlan {
-    pub proto: SlicedProtocol,
+    /// The themed, whole-cell-padded PNG — placed 1:1 (no terminal rescaling).
+    pub png: Vec<u8>,
+    /// `png`'s pixel dimensions `(w, h)`, for source-cropping a clipped image.
+    pub px: (u32, u32),
     pub cols: u16,
     pub rows: u16,
-}
-
-impl ImagePlan {
-    /// The terminal image id (Kitty), if any — used to delete it on eviction.
-    pub fn image_id(&self) -> Option<u32> {
-        self.proto.image_id()
-    }
-
-    /// The Kitty upload sequence if this image hasn't been transmitted yet, so a
-    /// look-ahead page can be uploaded to the terminal *ahead* of display (no
-    /// first-render upload flash). `None` for non-Kitty protocols or once sent.
-    /// The caller MUST write the returned bytes to the terminal.
-    pub fn pretransmit(&self) -> Option<String> {
-        self.proto.pretransmit()
-    }
-
-    /// Whether this image still needs uploading to the terminal (non-consuming),
-    /// so the reader can keep the loop alive until look-ahead pages are uploaded.
-    pub fn needs_pretransmit(&self) -> bool {
-        self.proto.needs_pretransmit()
-    }
 }
 
 /// The pixels a build starts from: either the encoded file (the worker decodes it) or an
@@ -175,15 +159,35 @@ fn build_plan(
             render_for_theme(&img, policy.tint, policy.mode)
         }
     };
-    let size = ratatui::layout::Size::new(cols, rows);
-    let proto =
-        SlicedProtocol::new_with_resize(picker, img, size, ratatui_image::Resize::Fit(None))
-            .ok()?;
-    let s = proto.size();
+    // Place at the image's *fitted* cell size — ceil(px / cell), NOT the target box
+    // (cols, rows). The aspect-preserving resize above fits the image *within* the box,
+    // so it is generally shorter/narrower than the box in one axis; placing at the box
+    // (`a=p c=cols,r=rows`) would scale it to fill and stretch that axis. Pad the raster
+    // up to the exact whole-cell canvas (transparent margin at right/bottom) so the deck
+    // places it 1:1 — the terminal does no sub-cell rescaling, and an edge clip lands on
+    // whole cell rows. The inline path's canvas is already whole-cell, so this is a no-op
+    // there; the figure path's aspect-fit raster gets padded to its tight cell box.
+    let (pw, ph) = img.dimensions();
+    let (cell_w, cell_h) = (u32::from(fs.width.max(1)), u32::from(fs.height.max(1)));
+    let fit_cols = pw.div_ceil(cell_w).max(1);
+    let fit_rows = ph.div_ceil(cell_h).max(1);
+    let (pad_w, pad_h) = (fit_cols * cell_w, fit_rows * cell_h);
+    let rgba = if (pw, ph) == (pad_w, pad_h) {
+        img.into_rgba8()
+    } else {
+        let mut canvas = image::RgbaImage::from_pixel(pad_w, pad_h, image::Rgba([0, 0, 0, 0]));
+        image::imageops::replace(&mut canvas, &img.into_rgba8(), 0, 0);
+        canvas
+    };
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(rgba)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
     Some(ImagePlan {
-        proto,
-        cols: s.width,
-        rows: s.height,
+        png,
+        px: (pad_w, pad_h),
+        cols: fit_cols as u16,
+        rows: fit_rows as u16,
     })
 }
 

@@ -150,11 +150,10 @@ impl Reader {
                     if !is_current && self.images.cache.len() >= self.images.cache.cap().get() {
                         continue;
                     }
-                    if let Some((_, evicted)) = self.images.cache.push(done.key, plan)
-                        && let Some(id) = evicted.image_id()
-                    {
-                        self.pending_deletes.push(id);
-                    }
+                    // The `InlineDeck` owns the terminal image lifecycle now: it frees a
+                    // resident image when its key leaves the screen. So an eviction from
+                    // this LRU only drops the PNG payload — no `d=I` needed here.
+                    self.images.cache.push(done.key, plan);
                 }
                 None => {
                     self.images.failed.insert(done.key);
@@ -674,11 +673,21 @@ impl Reader {
         self.images.cache.peek(key)
     }
 
+    /// The cache key for the current section's figure `idx` (its deck identity).
+    pub fn image_key(&self, idx: usize) -> Option<ImgKey> {
+        self.images.section_images.get(&idx).copied()
+    }
+
     /// Look up a built plan for the current section's inline-math atom `id` — the
     /// small equation raster the reader paints over the atom's reserved cells.
     pub fn inline_math_plan(&self, id: usize) -> Option<&ImagePlan> {
         let key = self.images.section_inline.get(&id)?;
         self.images.cache.peek(key)
+    }
+
+    /// The cache key for the current section's inline-math atom `id` (its deck identity).
+    pub fn inline_math_key(&self, id: usize) -> Option<ImgKey> {
+        self.images.section_inline.get(&id).copied()
     }
 
     /// The current section's inline-math atom widths (by id), for the wrapper.
@@ -691,6 +700,35 @@ impl Reader {
     /// touch); `None` until it's built.
     pub fn image_plan_by_key(&self, key: &ImgKey) -> Option<&ImagePlan> {
         self.images.cache.peek(key)
+    }
+
+    /// The built PNG for a cache key — the `InlineDeck`'s transmit payload. `None`
+    /// until the background build lands (the deck retries next frame). Peek (no LRU
+    /// touch), cloned since the deck writes it to the terminal outside the borrow.
+    pub fn image_png(&self, key: ImgKey) -> Option<Vec<u8>> {
+        self.images.cache.peek(&key).map(|p| p.png.clone())
+    }
+
+    /// Record one inline-image placement target for this frame (the view collects them
+    /// during render; `App::inline_escapes` drains and reconciles them via the deck).
+    pub fn push_inline_target(&self, target: crate::app::inline_deck::InlineTarget) {
+        self.inline_targets.borrow_mut().push(target);
+    }
+
+    /// Drain this frame's collected inline-image targets.
+    pub fn take_inline_targets(&self) -> Vec<crate::app::inline_deck::InlineTarget> {
+        std::mem::take(&mut self.inline_targets.borrow_mut())
+    }
+
+    /// Start a fresh frame's inline-target collection (clears the previous frame's).
+    pub fn begin_inline_frame(&self) {
+        self.inline_targets.borrow_mut().clear();
+    }
+
+    /// Whether the inline deck must be fully cleared before this frame's placements
+    /// (a restage dropped the built PNGs, so the terminal images must re-transmit).
+    pub fn take_inline_clear(&self) -> bool {
+        self.inline_needs_clear.replace(false)
     }
 
     /// Drain terminal image ids that should be deleted (evicted from cache).
@@ -717,16 +755,27 @@ impl Reader {
             .copied()
             .collect();
         for k in keys {
-            if let Some(plan) = self.images.cache.pop(&k)
-                && let Some(id) = plan.image_id()
-            {
-                self.pending_deletes.push(id);
-            }
+            self.images.cache.pop(&k);
             self.images.requested.remove(&k);
             self.images.failed.remove(&k);
         }
+        // Free every terminal-resident image next frame (deck `clear`) so the rebuilt
+        // images re-transmit under fresh ids instead of being assumed still resident.
+        self.inline_needs_clear.set(true);
         // Force the next `sync_images` to re-remap this section (re-dispatching the
         // builds that were just dropped) even when nothing else changed.
+        self.images.images_key.0 = usize::MAX;
+    }
+
+    /// Drop every built image and its remap state — for leaving the reader. The
+    /// terminal-resident images are freed by the deck (it sees no targets / a clear).
+    pub fn evict_all_images(&mut self) {
+        self.images.cache.clear();
+        self.images.section_images.clear();
+        self.images.section_inline.clear();
+        self.images.following.clear();
+        self.images.requested.clear();
+        self.images.failed.clear();
         self.images.images_key.0 = usize::MAX;
     }
 

@@ -130,6 +130,8 @@ fn main() -> Result<()> {
     // Mute stray dependency stderr for the TUI's lifetime (see `StderrRedirect`).
     let stderr_guard = StderrRedirect::for_tui();
     let result = run(&mut terminal, &mut app, sync);
+    // Free every terminal-resident image (pages + inline) so none linger after exit.
+    let _ = execute!(io::stdout(), Print(delryn::media::delete_all_images_seq()));
     // Restore stderr before anything else prints, so real errors reach the terminal.
     drop(stderr_guard);
     let _ = execute!(io::stdout(), DisableMouseCapture);
@@ -405,7 +407,10 @@ fn draw(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()>
     // escapes writes the page temp files; emit them inside the synchronized frame
     // so a page appears atomically with the chrome.
     let t_build = Instant::now();
-    let escapes = app.page_escapes();
+    let mut escapes = app.page_escapes();
+    // Inline images (equation rasters + inline figures) place in the same synchronized
+    // frame as the PDF pages and chrome, so a maths page appears atomically.
+    escapes.extend(app.inline_escapes());
     let build_us = t_build.elapsed().as_micros();
     let esc_bytes: usize = escapes.iter().map(String::len).sum();
     let t_write = Instant::now();

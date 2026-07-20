@@ -9,9 +9,9 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use ratatui_image::picker::Picker;
-use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
 use crate::HighlightColor;
+use crate::app::inline_deck::InlineTarget;
 use crate::app::{
     App, Focus, HintKind, ImageGeom, PageTarget, PageView, PanRoom, Reader, Viewport, place_page,
     raster_width_for_crispness,
@@ -19,6 +19,7 @@ use crate::app::{
 use crate::config::{Config, ViewMode};
 use crate::layout::{DisplayLine, LineKind, Run};
 use crate::media::ImageBuilder;
+use crate::media::ImgKey;
 use crate::search::Matcher;
 use crate::theme::{Role, Theme};
 use crate::view::layout::{GUTTER_COLS, LayoutCtx, Placement};
@@ -303,24 +304,24 @@ fn render_content(
         }
     }
 
-    // Inline figures: each column shows the figures in its own slice. During a
-    // smooth scroll, keep already-uploaded images placed — placement is cheap and
-    // they scroll with the text — but defer a not-yet-transmitted image's first,
-    // heavy upload until motion settles, so it doesn't stutter the scroll. (The
-    // old blanket skip-while-scrolling made every visible figure vanish on j/k.)
+    // Collect this frame's inline-image placement targets (figures + equation rasters,
+    // plus cross-section figures in continuous/two-page flow). `App::inline_escapes`
+    // reconciles them via the `InlineDeck` (transmit once, place, re-place on scroll),
+    // so already-resident images just re-place cheaply and new ones upload paced — no
+    // per-cell compositing, no scroll ghosts.
     if images.is_some() {
-        let scrolling = reader.is_scrolling();
+        reader.begin_inline_frame();
         for placement in &plan.placements {
             if let Placement::Text(col) = placement {
-                draw_images_in(f, col.area, reader, col.scroll, scrolling);
-                draw_inline_math_in(f, col.area, reader, col.scroll, scrolling);
-                // Cross-section flow (continuous Center, or any two-page spread)
-                // joins following sections into this column; draw their figures too
-                // so a boundary figure fills the column instead of a blank gap. Each
-                // column shows a slice `col_offset` rows into the shared buffer.
+                collect_image_targets(col.area, reader, col.scroll);
+                collect_inline_math_targets(col.area, reader, col.scroll);
+                // Cross-section flow (continuous Center, or any two-page spread) joins
+                // following sections into this column; collect their figures too so a
+                // boundary figure fills the column instead of a blank gap. Each column
+                // shows a slice `col_offset` rows into the shared buffer.
                 if reader.reflow_flows() {
                     let col_offset = col.scroll.saturating_sub(reader.scroll);
-                    draw_following_images(f, col.area, reader, scrolling, col_offset);
+                    collect_following_image_targets(col.area, reader, col_offset);
                 }
             }
         }
@@ -355,51 +356,28 @@ fn draw_hint_badges(f: &mut Frame, area: Rect, reader: &Reader, top: usize, them
     }
 }
 
-/// Draw the *following* sections' figures in this text column — the anchor's are
-/// placed by [`draw_images_in`] from `reader.lines`; these come from the joined
-/// buffer. `col_offset` is how many buffer rows into the buffer this column starts
-/// (0 for the left/only column, one column-height for the two-page right column),
-/// so a figure at buffer row `row` lands at screen row `row - col_offset` here.
-fn draw_following_images(
-    f: &mut Frame,
-    area: Rect,
-    reader: &Reader,
-    scrolling: bool,
-    col_offset: usize,
-) {
+/// Collect the *following* sections' figure placement targets for this text column —
+/// the anchor's come from [`collect_image_targets`] over `reader.lines`; these come from
+/// the joined continuous buffer. `col_offset` is how many buffer rows into the buffer
+/// this column starts (0 for the left/only column, one column-height for the two-page
+/// right column), so a figure at buffer row `row` lands at screen row `row - col_offset`.
+fn collect_following_image_targets(area: Rect, reader: &Reader, col_offset: usize) {
     for (row, key) in reader.continuous_following_images() {
-        // Signed: a figure whose top scrolled above this column's top (or that spans
-        // the spread boundary from the left column) renders with a negative `y` so the
-        // Kitty slice clips its top — it shows *partially* instead of vanishing.
-        let screen_row = row as isize - col_offset as isize;
-        if screen_row >= area.height as isize {
-            continue; // entirely below this column
-        }
         let Some(plan) = reader.image_plan_by_key(&key) else {
             continue; // not built yet — the reserved rows stay blank this frame
         };
-        if screen_row + plan.rows as isize <= 0 {
-            continue; // entirely above this column (fully clipped off the top)
+        let (cols, rows, px) = (plan.cols, plan.rows, plan.px);
+        // Signed `y`: a figure whose top scrolled above this column's top (or that spans
+        // the spread boundary from the left column) gets a negative `y`, so `inline_target`
+        // source-crops its top — it shows *partially* instead of vanishing.
+        let x = (area.width.saturating_sub(cols) / 2) as i16;
+        let y = (row as isize - col_offset as isize) as i16;
+        if inline_occluded(reader, area, x, y, cols, rows) {
+            continue;
         }
-        if scrolling && plan.needs_pretransmit() {
-            continue; // defer a first heavy upload to the settle frame
+        if let Some(t) = inline_target(key, cols, rows, px, x, y, area) {
+            reader.push_inline_target(t);
         }
-        let x = (area.width.saturating_sub(plan.cols) / 2) as i16;
-        let y = screen_row as i16;
-        if let Some(o) = reader.overlay_occlude {
-            let img_left = area.x.saturating_add(x.max(0) as u16);
-            let img_right = area
-                .x
-                .saturating_add((x + plan.cols as i16).clamp(0, area.width as i16) as u16);
-            let img_top = area.y.saturating_add(y.max(0) as u16);
-            let img_bottom = area
-                .y
-                .saturating_add((y + plan.rows as i16).clamp(0, area.height as i16) as u16);
-            if img_left < o.right() && img_right > o.x && img_top < o.bottom() && img_bottom > o.y {
-                continue;
-            }
-        }
-        f.render_widget(SlicedImage::new(&plan.proto, SignedPosition { x, y }), area);
     }
 }
 
@@ -602,11 +580,11 @@ fn align_page(area: Rect, cols: u16, rows: u16, align: PageAlign) -> (u16, u16) 
     (x, y)
 }
 
-/// Draw the ready figure images that intersect `[top, top+height)` of the line
-/// flow into `area`, centered. Uses a sliced protocol with a signed vertical
-/// offset so an image scrolling past either edge shows its visible slice
-/// (rather than appearing/vanishing whole).
-fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize, scrolling: bool) {
+/// Collect placement targets for the ready figure images intersecting
+/// `[top, top+height)` of the line flow into `area`, centered. A signed vertical
+/// offset lets `inline_target` source-crop an image scrolling past either edge so it
+/// shows its visible slice rather than appearing/vanishing whole.
+fn collect_image_targets(area: Rect, reader: &Reader, top: usize) {
     let view_end = top + area.height as usize;
     let lines = &reader.lines;
     let mut i = 0;
@@ -625,52 +603,30 @@ fn draw_images_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize, scroll
         if end <= top || start >= view_end {
             continue;
         }
-        let Some(plan) = reader.image_plan(idx) else {
-            continue;
+        let (Some(key), Some(plan)) = (reader.image_key(idx), reader.image_plan(idx)) else {
+            continue; // not built yet — the reserved rows stay blank this frame
         };
-        // Rendering an un-transmitted image uploads it (heavy); defer that to the
-        // frame the scroll settles so it doesn't stutter motion. Already-uploaded
-        // images only get re-placed here, so they stay on screen while scrolling.
-        if scrolling && plan.needs_pretransmit() {
+        let (cols, rows, px) = (plan.cols, plan.rows, plan.px);
+        let x = (area.width.saturating_sub(cols) / 2) as i16;
+        let y = start as i16 - top as i16; // negative when the top scrolled off
+        if inline_occluded(reader, area, x, y, cols, rows) {
             continue;
         }
-
-        let x = (area.width.saturating_sub(plan.cols) / 2) as i16;
-        let y = start as i16 - top as i16; // negative when the top scrolled off
-
-        // Terminal graphics draw *above* the text layer, so an inline image that
-        // overlaps an open popup would paint over it. Skip any image whose cell
-        // rect intersects the overlay region; images entirely clear of it still
-        // render (the popup just sits beside them).
-        if let Some(o) = reader.overlay_occlude {
-            let img_left = area.x.saturating_add(x.max(0) as u16);
-            let img_right = area
-                .x
-                .saturating_add((x + plan.cols as i16).clamp(0, area.width as i16) as u16);
-            let img_top = area.y.saturating_add(y.max(0) as u16);
-            let img_bottom = area
-                .y
-                .saturating_add((y + plan.rows as i16).clamp(0, area.height as i16) as u16);
-            let h_overlap = img_left < o.right() && img_right > o.x;
-            let v_overlap = img_top < o.bottom() && img_bottom > o.y;
-            if h_overlap && v_overlap {
-                continue;
-            }
+        if let Some(t) = inline_target(key, cols, rows, px, x, y, area) {
+            reader.push_inline_target(t);
         }
-
-        f.render_widget(SlicedImage::new(&plan.proto, SignedPosition { x, y }), area);
     }
 }
 
-/// Draw the ready inline-math equation rasters over the atom runs in the visible
-/// slice of `reader.lines`, painting each small image over the blank cells the
-/// wrapper reserved for it. Runs after the text so the raster covers those cells.
-/// Placement is mid-line: `x` is the atom's column within the text (the summed
-/// display width of the preceding runs), `y` its line's screen row. A one-row atom
-/// covers only its line; a two-row fraction hangs into the blank spacer row the
-/// wrapper reserved below (ratatui clips a raster that runs past the pane). Only the
-/// anchor section's atoms exist (a following continuous section shows its Unicode).
-fn draw_inline_math_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize, scrolling: bool) {
+/// Collect placement targets for the ready inline-math equation rasters over the atom
+/// runs in the visible slice of `reader.lines`. Each small image is placed over the
+/// blank cells the wrapper reserved for it. Placement is mid-line: `x` is the atom's
+/// column within the text (the summed display width of the preceding runs), `y` its
+/// line's screen row. A one-row atom covers only its line; a multi-row fraction is
+/// centred on the text row, hanging into the blank spacer rows the wrapper reserved
+/// above and below. Only the anchor section's atoms exist (a following continuous
+/// section shows its Unicode floor until it becomes the anchor).
+fn collect_inline_math_targets(area: Rect, reader: &Reader, top: usize) {
     use unicode_width::UnicodeWidthStr;
     let start = top.min(reader.lines.len());
     let end = (top + area.height as usize).min(reader.lines.len());
@@ -679,20 +635,20 @@ fn draw_inline_math_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize, s
         let mut col = 0usize;
         for run in &line.runs {
             if let Some(id) = run.math
-                && let Some(plan) = reader.inline_math_plan(id)
-                // Defer a not-yet-uploaded raster's heavy first transmit until the
-                // scroll settles, exactly like `draw_images_in` (the reserved cells
-                // stay blank one frame rather than stuttering the scroll).
-                && !(scrolling && plan.needs_pretransmit())
+                && let Some(key) = reader.inline_math_key(id)
+                && let Some(plan) = reader.image_plan_by_key(&key)
             {
+                let (cols, rows, px) = (plan.cols, plan.rows, plan.px);
                 let x = col as i16;
-                // A multi-row atom (a fraction) is centred on the text row: it paints
-                // `rows` cells tall starting `(rows-1)/2` rows *above* this line, into the
-                // spacer rows the wrapper reserved above and below. A 1-row atom starts here.
-                let above = ((plan.rows.saturating_sub(1)) / 2) as i16;
+                // A multi-row atom (a fraction) is centred on the text row: its top sits
+                // `(rows-1)/2` rows *above* this line, in the spacer rows the wrapper
+                // reserved above and below. A 1-row atom starts on this line.
+                let above = ((rows.saturating_sub(1)) / 2) as i16;
                 let y = (i - top) as i16 - above;
-                if !inline_math_occluded(reader, area, x, y, plan.cols, plan.rows) {
-                    f.render_widget(SlicedImage::new(&plan.proto, SignedPosition { x, y }), area);
+                if !inline_occluded(reader, area, x, y, cols, rows)
+                    && let Some(t) = inline_target(key, cols, rows, px, x, y, area)
+                {
+                    reader.push_inline_target(t);
                 }
             }
             col += UnicodeWidthStr::width(run.text.as_str());
@@ -700,11 +656,50 @@ fn draw_inline_math_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize, s
     }
 }
 
-/// Whether an inline-math atom at cell offset `(x, y)` of `area`, spanning `cols`×
-/// `rows` cells, overlaps an open popup's occlusion rect — terminal graphics draw
-/// above the cell layer, so an atom over a popup would paint on top of it. Mirrors the
-/// figure occlusion guard.
-fn inline_math_occluded(reader: &Reader, area: Rect, x: i16, y: i16, cols: u16, rows: u16) -> bool {
+/// Build an [`InlineTarget`] for an image of `cols`×`rows` cells (pixel size `px`)
+/// whose top-left sits at column-relative cell `(x, y)` of `area`. Returns `None` when
+/// the image is entirely clipped off an edge. A vertically-clipped image carries a
+/// **source-pixel crop** so its visible cell-rows show the matching image rows (the
+/// raster is whole-cell-padded, so a crop lands on exact rows). Horizontal clipping is
+/// not cropped — inline atoms fit within the column and figures are centred, so `x ≥ 0`
+/// and the width fits in practice.
+fn inline_target(
+    key: ImgKey,
+    cols: u16,
+    rows: u16,
+    px: (u32, u32),
+    x: i16,
+    y: i16,
+    area: Rect,
+) -> Option<InlineTarget> {
+    let rows_i = rows as i16;
+    let r0 = (-y).max(0); // image cell-rows clipped off the top
+    let r1 = rows_i.min(area.height as i16 - y); // one past the last visible row
+    if r1 <= r0 || x >= area.width as i16 {
+        return None;
+    }
+    let vis_rows = (r1 - r0) as u16;
+    let x0 = x.max(0) as u16;
+    let vis_cols = cols.min(area.width.saturating_sub(x0));
+    if vis_cols == 0 {
+        return None;
+    }
+    let rect = Rect::new(area.x + x0, area.y + (y + r0) as u16, vis_cols, vis_rows);
+    let crop = (r0 != 0 || r1 != rows_i).then(|| {
+        let (pw, ph) = px;
+        let per_row = ph as f32 / f32::from(rows.max(1));
+        let cy = (r0 as f32 * per_row).round() as u32;
+        let ch =
+            ((vis_rows as f32 * per_row).round() as u32).clamp(1, ph.saturating_sub(cy).max(1));
+        (0, cy, pw, ch)
+    });
+    Some(InlineTarget { key, rect, crop })
+}
+
+/// Whether an image at cell offset `(x, y)` of `area`, spanning `cols`×`rows` cells,
+/// overlaps an open popup's occlusion rect — terminal graphics draw above the cell
+/// layer, so an image over a popup would paint on top of it.
+fn inline_occluded(reader: &Reader, area: Rect, x: i16, y: i16, cols: u16, rows: u16) -> bool {
     let Some(o) = reader.overlay_occlude else {
         return false;
     };
