@@ -26,6 +26,24 @@ fn inline_content_key(png: &[u8]) -> usize {
     h.finish() as usize
 }
 
+/// How far a single inline equation's measured em may sit from the section median before it
+/// is clamped toward it. Tighter than the display-equation band ([`EM_CLAMP_*`]): the inline
+/// ink measurement is noisier (subscripts/superscripts/fractions throw the per-image
+/// cap-height off), and this book — like most — sets all its math at one size, so pulling
+/// outliers close to the median is what makes inline equations flow at a consistent size.
+const INLINE_EM_CLAMP_LO: f32 = 0.82;
+const INLINE_EM_CLAMP_HI: f32 = 1.20;
+
+/// The median of `vals` (sorted in place); `None` if empty. Robust to the per-image em
+/// measurement noise, so one bad reading can't move the section's normalisation size.
+fn median(vals: &mut [f32]) -> Option<f32> {
+    if vals.is_empty() {
+        return None;
+    }
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(vals[vals.len() / 2])
+}
+
 /// Map a block's authored width, math flag, and caption presence to the media
 /// layer's sizing intent. A caption is the reliable figure/table-vs-equation
 /// signal: figures and tables are captioned and normalize to the column band;
@@ -397,58 +415,106 @@ impl Reader {
         // occurrence places that single image. `distinct` also bounds how many unique inline
         // images a section may upload — beyond the cap the extra ones fall back to their text
         // floor (cols = 0), so a pathological page can never flood the terminal.
-        let mut distinct: std::collections::HashSet<ImgKey> = std::collections::HashSet::new();
-        // Collect every run (recursing into callout/footnote bodies, so a note's inline math
-        // is sized/built too), then process — the borrow of `self.blocks` (via the slices)
-        // stays disjoint from the `self.images` we mutate below.
+        // Collect every atom run (recursing into callout/footnote bodies, so a note's inline
+        // math is sized/built too). The borrow of `self.blocks` (via the slices) stays
+        // disjoint from the `self.images` we read/mutate below.
         let mut runs: Vec<&[delryn_model::Span]> = Vec::new();
         for block in &self.blocks {
             block.collect_span_runs(&mut runs);
         }
+        let section = self.section;
+        let key_for = |ck: usize| ImgKey {
+            kind: media::ImgSlot::InlineMath,
+            section,
+            idx: ck,
+            avail: geom.avail,
+            max_rows: geom.max_rows,
+            max_px: geom.max_px,
+            target_pct: geom.width_pct,
+            math_scale: geom.math_scale,
+            fit_mode: geom.fit_mode,
+            policy: geom.policy,
+        };
+
+        // Pass 1 — measure each **distinct** atom's ink once (decoding the JPEG at most once,
+        // cached by content-key), collect the section's measured ems, and keep the decoded
+        // image for any atom that still needs building (so the worker never re-decodes it).
+        // `order` is the first-seen order, for the distinct-upload cap.
+        let mut ems: Vec<f32> = Vec::new();
+        let mut order: Vec<usize> = Vec::new();
+        let mut pending: HashMap<usize, (ImgKey, media::DynamicImage)> = HashMap::new();
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for spans in &runs {
+            for span in *spans {
+                let Some(delryn_model::SpanMath::Raster { png, .. }) = &span.math else {
+                    continue;
+                };
+                let ck = inline_content_key(png);
+                if !seen.insert(ck) {
+                    continue; // distinct only
+                }
+                order.push(ck);
+                let key = key_for(ck);
+                let need_build = !self.images.cache.contains(&key)
+                    && !self.images.requested.contains(&key)
+                    && !self.images.failed.contains(&key);
+                let need_ink = !self.images.inline_ink.contains_key(&ck);
+                let decoded = if need_ink || need_build {
+                    media::decode(png)
+                } else {
+                    None
+                };
+                let ink = *self
+                    .images
+                    .inline_ink
+                    .entry(ck)
+                    .or_insert_with(|| decoded.as_ref().and_then(media::ink_profile));
+                if let Some(p) = ink {
+                    ems.push(p.line_px);
+                }
+                if need_build && let Some(img) = decoded {
+                    pending.insert(ck, (key, img));
+                }
+            }
+        }
+        // Robust section em: the median of the distinct atoms' measured ems. The whole book is
+        // set at one font size, so one normalisation em is correct; the median shrugs off the
+        // per-image ink-measurement noise (a `lim` stack measures too tall, a fraction too
+        // short) that otherwise makes lone equations render huge or tiny. Each atom's own em is
+        // then *clamped* toward it (Pass 2), so a well-measured equation keeps its exact size
+        // while an outlier is reined in. Needs a few samples to be meaningful.
+        let section_em = (ems.len() >= 3).then(|| median(&mut ems)).flatten();
+
+        // Pass 2 — reserve cells and dispatch builds, sizing each atom against the section em.
+        let cap: std::collections::HashSet<usize> =
+            order.iter().take(MAX_INLINE_ATOMS).copied().collect();
         for spans in &runs {
             for span in *spans {
                 let Some(delryn_model::SpanMath::Raster { id, png }) = &span.math else {
                     continue;
                 };
-                let key = ImgKey {
-                    kind: media::ImgSlot::InlineMath,
-                    section: self.section,
-                    idx: inline_content_key(png),
-                    avail: geom.avail,
-                    max_rows: geom.max_rows,
-                    max_px: geom.max_px,
-                    target_pct: geom.width_pct,
-                    math_scale: geom.math_scale,
-                    fit_mode: geom.fit_mode,
-                    policy: geom.policy,
-                };
-                // Cap distinct uploads per section; a new image past the cap degrades to text.
-                let capped = !distinct.contains(&key) && distinct.len() >= MAX_INLINE_ATOMS;
-                // Whether this atom still needs a protocol built (not cached / in-flight / failed).
-                let build_candidate = !capped
-                    && !self.images.cache.contains(&key)
-                    && !self.images.requested.contains(&key)
-                    && !self.images.failed.contains(&key);
-                // Decode the JPEG at most **once**: the same pixels feed the ink measurement
-                // *and* the build, so the worker doesn't decode the same glyph a second time.
-                // Skip it entirely when the ink is already cached and nothing needs building.
-                let ink_known = self.images.inline_ink.contains_key(&key.idx);
-                let decoded = if !capped && (!ink_known || build_candidate) {
-                    media::decode(png)
-                } else {
-                    None
-                };
-                // Size the atom on its measured **ink**, not its raw pixels, so every inline
-                // raster flows at the prose size regardless of the file's resolution. The
-                // profile is cached by content-key, so a repeated glyph is measured once.
+                let ck = inline_content_key(png);
+                let capped = !cap.contains(&ck);
+                // Size on the measured ink, but with the em clamped toward the section median
+                // so every inline equation flows at the same prose size regardless of the
+                // per-image measurement noise. Keep each raster's own ink bbox (a fraction is
+                // still taller than a symbol) and DPI (the clamp only reins in outliers).
                 let ink = if capped {
                     None
                 } else {
-                    *self
-                        .images
+                    self.images
                         .inline_ink
-                        .entry(key.idx)
-                        .or_insert_with(|| decoded.as_ref().and_then(media::ink_profile))
+                        .get(&ck)
+                        .copied()
+                        .flatten()
+                        .map(|mut p| {
+                            if let Some(em) = section_em {
+                                p.line_px = p
+                                    .line_px
+                                    .clamp(em * INLINE_EM_CLAMP_LO, em * INLINE_EM_CLAMP_HI);
+                            }
+                            p
+                        })
                 };
                 let spec = media::SizeSpec {
                     inline: true,
@@ -457,8 +523,8 @@ impl Reader {
                     ..Default::default()
                 };
                 // The atom's reserved width *and height* — the same `target_cells` (and thus
-                // `inline_fit`) the build uses, so the wrapper's reservation (columns, and a
-                // spacer row for a two-row fraction) matches the drawn raster exactly.
+                // `inline_fit`) the build uses, so the wrapper's reservation (columns, and the
+                // spacer rows for a centred fraction) matches the drawn raster exactly.
                 let (cols, rows) = if capped {
                     (0, 1)
                 } else {
@@ -473,16 +539,16 @@ impl Reader {
                 cols_by_id[*id] = cols;
                 rows_by_id[*id] = rows;
                 if cols > 0 {
-                    distinct.insert(key);
-                    section_inline.insert(*id, key);
-                    // `build_candidate ⇒ decoded is Some` (we decoded above), so hand the
-                    // worker the already-decoded image; if the decode failed, skip the build.
-                    if build_candidate && let Some(img) = decoded {
-                        requests.push((key, img, spec));
+                    section_inline.insert(*id, key_for(ck));
+                    // Hand the worker the already-decoded image kept in Pass 1 (once per
+                    // distinct atom — later occurrences find it already taken).
+                    if let Some((k, img)) = pending.remove(&ck) {
+                        requests.push((k, img, spec));
                     }
                 }
             }
         }
+        let distinct_count = cap.len();
         self.images.section_inline = section_inline;
         self.images.inline_cols = cols_by_id;
         self.images.inline_rows = rows_by_id;
@@ -492,7 +558,7 @@ impl Reader {
             .images
             .section_images
             .len()
-            .saturating_add(distinct.len())
+            .saturating_add(distinct_count)
             .saturating_add(IMAGE_CACHE_CAP);
         if self.images.cache.cap().get() < needed
             && let Some(cap) = NonZeroUsize::new(needed)
