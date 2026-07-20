@@ -12,9 +12,12 @@ use crate::media::{ImageBuilder, ImagePlan, ImgKey};
 
 /// Cap on how many **distinct** inline-math images one section may upload. Identical images
 /// are deduped (a repeated symbol uploads once), so this only bounds genuinely-different
-/// inline equations — generous enough for any real page, low enough that a pathological book
-/// can't flood the terminal (extra ones fall back to their text floor).
-const MAX_INLINE_ATOMS: usize = 128;
+/// inline equations. A dense math chapter legitimately has hundreds (this book runs ~320–500
+/// distinct per chapter, every symbol a separate image), so the cap is generous — high enough
+/// that a real book never loses equations, still a backstop against a truly pathological file.
+/// Off-screen atoms build in the background pool and only upload when scrolled into view, so
+/// the cost scales with what's read, not the raw count. Extras past the cap fall back to text.
+const MAX_INLINE_ATOMS: usize = 1024;
 
 /// A content-address for an inline atom: a hash of its rendered bytes, so identical images
 /// (the same symbol repeated across a section) share one build, one upload, and one cache
