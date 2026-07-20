@@ -686,7 +686,11 @@ fn draw_inline_math_in(f: &mut Frame, area: Rect, reader: &Reader, top: usize, s
                 && !(scrolling && plan.needs_pretransmit())
             {
                 let x = col as i16;
-                let y = (i - top) as i16;
+                // A multi-row atom (a fraction) is centred on the text row: it paints
+                // `rows` cells tall starting `(rows-1)/2` rows *above* this line, into the
+                // spacer rows the wrapper reserved above and below. A 1-row atom starts here.
+                let above = ((plan.rows.saturating_sub(1)) / 2) as i16;
+                let y = (i - top) as i16 - above;
                 if !inline_math_occluded(reader, area, x, y, plan.cols, plan.rows) {
                     f.render_widget(SlicedImage::new(&plan.proto, SignedPosition { x, y }), area);
                 }

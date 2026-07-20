@@ -130,26 +130,30 @@ fn build_plan(
     let (fw, fh) = (fs.width.max(1) as u32, fs.height.max(1) as u32);
     let img = match (spec.inline, spec.ink) {
         // Inline picture: draw the ink at its **exact** text-relative size on a transparent
-        // whole-cell canvas, baseline-aligned. This is the one path that must not fill the
-        // ceil'd cell box — doing so fattens a single glyph like `ℝ` (its 1.4-cell ink ceils
-        // to 2 cells) and floats it at the top of the row. Instead the ink is scaled to the
-        // same pixels the layout reserved and seated on the text baseline, so every inline
-        // raster flows at the prose size and sits on the line. The theme recolour is applied
-        // to the glyph before compositing so the canvas stays transparent.
+        // whole-cell canvas, centred on the text row's optical axis. This is the one path that
+        // must not fill the ceil'd cell box — doing so fattens a single glyph like `ℝ` (its
+        // 1.4-cell ink ceils to 2 cells). Instead the ink is scaled to the same pixels the
+        // layout reserved and centred on the line, so every inline raster flows at the prose
+        // size and sits level with the text. The theme recolour is applied to the glyph before
+        // compositing so the canvas stays transparent.
         (true, Some(ink)) => {
             let f = crate::sizing::inline_fit(fit, ink, f64::from(fit.math_scale) / 100.0);
             let glyph = resize_simd(&img, f.draw_w.max(1), f.draw_h.max(1));
             let glyph = render_for_theme(&glyph, policy.tint, policy.mode).to_rgba8();
             let (cw, ch) = (u32::from(cols) * fw, u32::from(rows) * fh);
             let mut canvas = image::RgbaImage::from_pixel(cw, ch, image::Rgba([0, 0, 0, 0]));
-            // Bottom-align with a small descender gap so caps land on the text baseline.
-            let descender = (0.14 * f64::from(fh)).round() as i64;
-            let y = (i64::from(ch) - i64::from(f.draw_h) - descender).max(0);
-            // Centre the glyph in its (ceil'd) cell box so it doesn't butt against the
-            // preceding character — the book glues a symbol image straight onto the text
-            // (`… b ∈⟦ℝ⟧`), so a left-aligned glyph touched the `∈`. The slack is the
-            // rounding of one glyph's width to whole cells (a few px), split evenly.
+            // Place the ink's centre on the **text row's** optical axis so it sits level with
+            // the prose (a symbol on the line, a fraction's bar straddling it) rather than
+            // hanging low. The text row is the middle of the canvas: `(rows-1)/2` spacer rows
+            // sit above it (and as many below), reserved by the wrapper. Horizontally centre
+            // so a symbol like ∈ doesn't butt against the preceding character (the book glues
+            // a symbol image straight onto text: `… b ∈⟦ℝ⟧`).
+            let half = i64::from((rows - 1) / 2); // spacer rows above the text row
+            let text_top = half * i64::from(fh);
+            let axis = text_top + (f64::from(fh) * INLINE_AXIS).round() as i64;
             let x = (i64::from(cw) - i64::from(f.draw_w)).max(0) / 2;
+            let y = (axis - i64::from(f.draw_h) / 2)
+                .clamp(0, (i64::from(ch) - i64::from(f.draw_h)).max(0));
             image::imageops::overlay(&mut canvas, &glyph, x, y);
             image::DynamicImage::ImageRgba8(canvas)
         }
@@ -231,6 +235,13 @@ pub struct BuiltImage {
 /// Sections farther than this from the current one are skipped by the worker, so
 /// a fast-scroll backlog of flown-past sections doesn't delay the current one.
 const KEEP_RADIUS: usize = 3;
+
+/// The text's optical centre within a cell, as a fraction of the cell height from the top —
+/// an inline equation's own vertical centre is placed here (on the text row) so the symbol,
+/// or a fraction's bar, sits level with the prose instead of hanging low. Text caps sit
+/// slightly above the geometric cell centre, so this is a touch under 0.5. **Tune this one
+/// value** if inline math reads a hair high (lower it) or low (raise it) against the text.
+const INLINE_AXIS: f64 = 0.40;
 
 /// Worker-pool size: one per core less one (keep a core for the UI), at least two so
 /// the inline and block lanes can build concurrently, capped so a many-core machine

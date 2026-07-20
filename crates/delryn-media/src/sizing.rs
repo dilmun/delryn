@@ -274,9 +274,20 @@ pub(crate) fn inline_fit(fit: FitBox, ink: InkProfile, knob: f64) -> InlineFit {
     }
     let draw_w = (bw * scale).round().max(1.0);
     let draw_h = (bh * scale).round().max(1.0);
+    // Ink cell height (a script-only symbol is 1, a fraction 2). A multi-cell equation
+    // reserves an **odd** canvas centred on the text row — one spacer row above and one
+    // below — so its bar straddles the line of text instead of hanging under it (the
+    // builder centres the ink in this canvas, and the reader draws it starting `(rows-1)/2`
+    // rows above the text line). A single-cell symbol needs no spacer.
+    let ink_rows = ((draw_h / fhf).ceil() as u16).clamp(1, INLINE_MAX_ROWS);
+    let rows = if ink_rows <= 1 {
+        1
+    } else {
+        2 * (ink_rows / 2) + 1
+    };
     InlineFit {
         cols: ((draw_w / fwf).ceil() as u16).clamp(1, fit.cols.max(1)),
-        rows: ((draw_h / fhf).ceil() as u16).clamp(1, INLINE_MAX_ROWS),
+        rows,
         draw_w: draw_w as u32,
         draw_h: draw_h as u32,
     }
@@ -850,7 +861,9 @@ mod tests {
             big.draw_h > base.draw_h,
             "knob 150% draws taller: {big:?} vs {base:?}"
         );
-        // A two-line stack (line_px is one line; bbox two lines tall) → two rows.
+        // A two-line stack (line_px is one line; bbox two lines tall) reserves an **odd**
+        // canvas centred on the text row — 3 cells (one spacer above, the text row, one
+        // below) so its bar straddles the line instead of hanging under it.
         let frac = InkProfile {
             x0: 0,
             y0: 0,
@@ -860,7 +873,12 @@ mod tests {
             line_count: 2,
         };
         let f = inline_fit(fit(400, 40), frac, 1.0);
-        assert_eq!(f.rows, 2, "a two-line fraction spans two rows: {f:?}");
+        assert_eq!(
+            f.rows, 3,
+            "a two-line fraction centres in a 3-row canvas: {f:?}"
+        );
+        // Its ink spans more than one cell (fh = 16) — a genuine two-line stack.
+        assert!(f.draw_h > 16, "…with more than one cell of ink: {f:?}");
     }
 
     /// Inline sizing takes precedence over the `math`/`ink` signals: a spec flagged
