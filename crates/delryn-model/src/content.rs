@@ -295,6 +295,38 @@ impl Block {
         let id_digits = digits(id);
         !id_digits.is_empty() && id_digits == digits(target)
     }
+
+    /// Apply `f` to every run collection (Para/Heading spans) in this block **and any
+    /// nested block bodies** (callouts, footnotes), depth-first. Inline-span passes
+    /// (resolving picture bytes, rasterising inline math, sizing atoms) use this so they
+    /// reach spans inside a callout/footnote, not only top-level paragraphs.
+    pub fn for_each_spans_mut(&mut self, f: &mut impl FnMut(&mut Vec<Span>)) {
+        match self {
+            Block::Para { spans, .. } | Block::Heading { spans, .. } => f(spans),
+            Block::Callout { blocks, .. } | Block::Footnote { blocks, .. } => {
+                for b in blocks.iter_mut() {
+                    b.for_each_spans_mut(f);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect a borrow of every run collection (Para/Heading spans) in this block and any
+    /// nested block bodies (callouts, footnotes) into `out`, depth-first — the shared-borrow
+    /// counterpart of [`for_each_spans_mut`], returning slices (nameable lifetime) so a caller
+    /// can stash them and iterate while mutating a *different* field of its own state.
+    pub fn collect_span_runs<'a>(&'a self, out: &mut Vec<&'a [Span]>) {
+        match self {
+            Block::Para { spans, .. } | Block::Heading { spans, .. } => out.push(spans),
+            Block::Callout { blocks, .. } | Block::Footnote { blocks, .. } => {
+                for b in blocks.iter() {
+                    b.collect_span_runs(out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Find the footnote definition a reference points at, among `blocks`. Scans the

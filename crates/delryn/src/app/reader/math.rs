@@ -161,9 +161,9 @@ pub(crate) fn convert_math_blocks(blocks: &mut [Block]) {
 ///
 /// A no-op when graphical math is off. Per-run best-effort — an unresolved/undecodable/too-tall
 /// picture, or a typeset failure, leaves the run as-is so the wrapper shows its floor (never
-/// regressed). Only top-level `Para`/`Heading` runs are rendered — the same runs the wrapper
-/// reserves atom cells for; nested (callout/table/caption) inline math keeps its own id space
-/// the reader doesn't address. Runs off the main thread at every decode site.
+/// regressed). Every `Para`/`Heading` run is rendered, including those nested in a callout or
+/// footnote body (via [`Block::for_each_spans_mut`]) — one `id` space the wrapper reserves
+/// atom cells for and the draw addresses. Runs off the main thread at every decode site.
 pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
     if !ENABLED.load(Ordering::Relaxed) {
         return; // graphical math off entirely — inline math stays its Unicode floor
@@ -171,11 +171,10 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
     let inline_typeset = INLINE_ENABLED.load(Ordering::Relaxed);
     let em_px = INLINE_EM_PX.load(Ordering::Relaxed);
     let mut next_id = 0usize;
-    for b in blocks.iter_mut() {
-        let spans = match b {
-            Block::Para { spans, .. } | Block::Heading { spans, .. } => spans,
-            _ => continue,
-        };
+    // Rasterise inline math in every run, recursing into callout/footnote bodies (via
+    // `for_each_spans_mut`) so a note's inline equations render too. One `id` space across
+    // all of them — the wrapper reserves cells and the draw addresses atoms by this id.
+    let mut rasterise = |spans: &mut Vec<delryn_model::Span>| {
         for span in spans.iter_mut() {
             // Take the math out so we can produce the raster without a borrow tangle; restore
             // the source when we don't convert, so the floor is never lost.
@@ -225,6 +224,9 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
                 next_id += 1;
             }
         }
+    };
+    for b in blocks.iter_mut() {
+        b.for_each_spans_mut(&mut rasterise);
     }
 }
 

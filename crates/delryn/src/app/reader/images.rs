@@ -398,12 +398,15 @@ impl Reader {
         // images a section may upload — beyond the cap the extra ones fall back to their text
         // floor (cols = 0), so a pathological page can never flood the terminal.
         let mut distinct: std::collections::HashSet<ImgKey> = std::collections::HashSet::new();
+        // Collect every run (recursing into callout/footnote bodies, so a note's inline math
+        // is sized/built too), then process — the borrow of `self.blocks` (via the slices)
+        // stays disjoint from the `self.images` we mutate below.
+        let mut runs: Vec<&[delryn_model::Span]> = Vec::new();
         for block in &self.blocks {
-            let spans = match block {
-                Block::Para { spans, .. } | Block::Heading { spans, .. } => spans,
-                _ => continue,
-            };
-            for span in spans {
+            block.collect_span_runs(&mut runs);
+        }
+        for spans in &runs {
+            for span in *spans {
                 let Some(delryn_model::SpanMath::Raster { id, png }) = &span.math else {
                     continue;
                 };
