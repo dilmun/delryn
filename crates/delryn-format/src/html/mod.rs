@@ -574,6 +574,28 @@ fn emit_paragraph(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
     let mut spans = inline_spans(node);
     if spans.iter().any(|s| !s.text.trim().is_empty()) {
         superscript_math_exponents(&mut spans);
+        // A paragraph that opens with an admonition keyword *immediately* followed by a
+        // colon ("Note:", "Warning:", "Hint:") is an inline callout — the reliable content
+        // signal publishers use for boxed asides (`<p class="box">`) and inline notes alike.
+        // Promote it to a styled Callout (note/tip/warning border + label) instead of leaving
+        // it as plain bold text. Multi-word or non-keyword leads ("Definition:", "f: D → ℝ",
+        // a URL) never match, so ordinary prose is untouched.
+        if !ctx.quote
+            && ctx.item_marker().is_none()
+            && let Some(kind) = leading_callout_kind(&spans)
+        {
+            out.push(Block::Callout {
+                kind,
+                title: None,
+                blocks: vec![Block::Para {
+                    spans,
+                    indent: 0,
+                    quote: false,
+                    marker: None,
+                }],
+            });
+            return;
+        }
         out.push(Block::Para {
             spans,
             indent: ctx.indent,
@@ -581,6 +603,26 @@ fn emit_paragraph(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             marker: ctx.item_marker(),
         });
     }
+}
+
+/// The admonition kind when a paragraph opens with a keyword immediately followed by a
+/// colon (`Note:`, `Warning:`, `Hint:`); `None` for ordinary prose. Requires a single
+/// leading word before the first colon, so "Definition:", "f: D → ℝ", "http://…", and
+/// "Note that …" (no colon after the word) are all left as normal paragraphs.
+fn leading_callout_kind(spans: &[Span]) -> Option<CalloutKind> {
+    let mut lead = String::new();
+    for s in spans {
+        lead.push_str(&s.text);
+        if lead.len() >= 32 {
+            break;
+        }
+    }
+    let (before, _) = lead.trim_start().split_once(':')?;
+    let word = before.trim();
+    if word.split_whitespace().count() != 1 {
+        return None;
+    }
+    CalloutKind::from_word(word)
 }
 
 fn list_item(
