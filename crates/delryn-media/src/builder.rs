@@ -1,6 +1,7 @@
 //! Off-thread worker that builds inline figure image protocols for the reader.
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
@@ -12,7 +13,7 @@ use ratatui_image::picker::Picker;
 
 use crate::decode::decode;
 use crate::recolor::{RenderPolicy, render_for_theme};
-use crate::sizing::{FitBox, SizeSpec, target_cells};
+use crate::sizing::{FitBox, SizeHint, SizeSpec, target_cells};
 
 /// Which per-section index space a built image belongs to, so a figure's `idx` and
 /// an inline equation's `id` — both section-local and both starting at 0 — never
@@ -63,6 +64,98 @@ pub struct ImagePlan {
     pub px: (u32, u32),
     pub cols: u16,
     pub rows: u16,
+}
+
+/// Persistent (disk) cache of built rasters, so reopening a book doesn't rebuild every
+/// equation from scratch (the 2–4 s reopen). Content-addressed by the *full* sizing key —
+/// image bytes + geometry + the measured em + theme — so a byte-identical render is served
+/// straight from disk (no decode, resize, recolour, or PNG re-encode). The cache dir is
+/// version-stamped ([`VERSION`]); a change to the build/sizing pipeline just misses the old
+/// entries rather than serving a stale size.
+mod raster_cache {
+    use std::hash::{Hash, Hasher};
+    use std::path::{Path, PathBuf};
+
+    use super::{FitBox, ImagePlan, RenderPolicy, SizeHint, SizeSpec};
+
+    /// Bump when the build/sizing pipeline changes so a raster would differ — old entries
+    /// (under the previous version dir) are then simply ignored.
+    pub const VERSION: u32 = 1;
+
+    /// The cache key for a build: everything that determines the resulting raster.
+    pub fn key(bytes: &[u8], fit: &FitBox, spec: &SizeSpec, policy: &RenderPolicy) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut h);
+        (
+            fit.fw,
+            fit.fh,
+            fit.cols,
+            fit.rows,
+            fit.max_px,
+            fit.target_pct,
+            fit.math_scale,
+        )
+            .hash(&mut h);
+        fit.fit_mode.hash(&mut h);
+        (spec.math, spec.captioned, spec.alt_math, spec.inline).hash(&mut h);
+        match spec.hint {
+            SizeHint::Auto => 0u8.hash(&mut h),
+            SizeHint::Pct(p) => (1u8, p.to_bits()).hash(&mut h),
+            SizeHint::Px(px) => (2u8, px).hash(&mut h),
+            SizeHint::Em(e) => (3u8, e.to_bits()).hash(&mut h),
+            SizeHint::Full => 4u8.hash(&mut h),
+        }
+        if let Some(p) = &spec.ink {
+            (p.x0, p.y0, p.x1, p.y1, p.line_count).hash(&mut h);
+            p.line_px.to_bits().hash(&mut h); // f32 → bits so the measured em keys exactly
+        }
+        policy.hash(&mut h); // theme tint + adaptation mode
+        h.finish()
+    }
+
+    fn entry_path(dir: &Path, key: u64) -> PathBuf {
+        dir.join(format!("{key:016x}.raster"))
+    }
+
+    /// A cached raster, or `None` on miss / unreadable / truncated.
+    /// Layout: `[cols u16][rows u16][pw u32][ph u32][png_len u32][png…]`, little-endian.
+    pub fn load(dir: &Path, key: u64) -> Option<ImagePlan> {
+        let data = std::fs::read(entry_path(dir, key)).ok()?;
+        if data.len() < 16 {
+            return None;
+        }
+        let cols = u16::from_le_bytes([data[0], data[1]]);
+        let rows = u16::from_le_bytes([data[2], data[3]]);
+        let pw = u32::from_le_bytes(data[4..8].try_into().ok()?);
+        let ph = u32::from_le_bytes(data[8..12].try_into().ok()?);
+        let len = u32::from_le_bytes(data[12..16].try_into().ok()?) as usize;
+        let png = data.get(16..16 + len)?.to_vec();
+        Some(ImagePlan {
+            png,
+            px: (pw, ph),
+            cols,
+            rows,
+        })
+    }
+
+    /// Write a built raster to the cache (best-effort — a failure just means a rebuild next
+    /// time). Written to a temp file then renamed, so a concurrent reader never sees a
+    /// partial entry (rename is atomic on the same filesystem).
+    pub fn store(dir: &Path, key: u64, plan: &ImagePlan) {
+        let mut data = Vec::with_capacity(plan.png.len() + 16);
+        data.extend(plan.cols.to_le_bytes());
+        data.extend(plan.rows.to_le_bytes());
+        data.extend(plan.px.0.to_le_bytes());
+        data.extend(plan.px.1.to_le_bytes());
+        data.extend((plan.png.len() as u32).to_le_bytes());
+        data.extend(&plan.png);
+        let mut tid = std::collections::hash_map::DefaultHasher::new();
+        std::thread::current().id().hash(&mut tid);
+        let tmp = dir.join(format!("{key:016x}.{:x}.tmp", tid.finish()));
+        if std::fs::write(&tmp, &data).is_ok() {
+            let _ = std::fs::rename(&tmp, entry_path(dir, key));
+        }
+    }
 }
 
 /// Decode, size, theme, and PNG-encode one image into a placeable raster. This is the
@@ -280,8 +373,20 @@ pub struct ImageBuilder {
     current: Arc<AtomicUsize>,
 }
 
+/// The default persistent raster-cache root, `<config>/rasters`, for [`ImageBuilder::new`].
+pub fn raster_cache_dir() -> Option<PathBuf> {
+    Some(delryn_infra::paths::config_dir().join("rasters"))
+}
+
 impl ImageBuilder {
-    pub fn new(picker: Picker) -> ImageBuilder {
+    /// `cache_root` is the persistent raster-cache directory (typically
+    /// `<config>/rasters`); `None` disables disk caching. A version subdirectory is
+    /// created under it so a pipeline change invalidates old entries cleanly.
+    pub fn new(picker: Picker, cache_root: Option<PathBuf>) -> ImageBuilder {
+        let cache_dir = cache_root.and_then(|root| {
+            let dir = root.join(format!("v{}", raster_cache::VERSION));
+            std::fs::create_dir_all(&dir).ok().map(|()| dir)
+        });
         let shared = Arc::new((
             Mutex::new(Lanes {
                 inline: VecDeque::new(),
@@ -297,10 +402,11 @@ impl ImageBuilder {
             let tx = res_tx.clone();
             let cur = Arc::clone(&current);
             let pk = picker.clone(); // Picker is cheap to clone (font metrics + protocol id)
+            let cache = cache_dir.clone();
             // Alternate which lane each worker favours, so at least one always prefers
             // inline and one prefers block — neither starves while the other drains.
             let prefer_inline = i % 2 == 0;
-            thread::spawn(move || build_loop(&shared, &tx, &cur, &pk, prefer_inline));
+            thread::spawn(move || build_loop(&shared, &tx, &cur, &pk, prefer_inline, cache));
         }
         ImageBuilder {
             shared,
@@ -351,6 +457,7 @@ fn build_loop(
     current: &Arc<AtomicUsize>,
     picker: &Picker,
     prefer_inline: bool,
+    cache: Option<PathBuf>,
 ) {
     let (lock, cv) = &**shared;
     loop {
@@ -379,10 +486,13 @@ fn build_loop(
                 stale: true,
             }
         } else {
-            // `fw`/`fh` are filled in by `build_plan` from the live font size.
+            // Fill the cell size from the live font *here* (build_plan re-fills it too), so
+            // the disk-cache key captures it — a font/zoom change must not serve a raster
+            // built for a different cell size.
+            let fs = picker.font_size();
             let fit = FitBox {
-                fw: 0,
-                fh: 0,
+                fw: fs.width,
+                fh: fs.height,
                 cols: k.avail,
                 rows: k.max_rows,
                 max_px: k.max_px,
@@ -390,14 +500,62 @@ fn build_loop(
                 math_scale: k.math_scale,
                 fit_mode: k.fit_mode,
             };
+            // Serve from the persistent cache if a byte-identical render was built before
+            // (any prior open of this or another book); else build it and cache the result.
+            let plan = if let Some(dir) = cache.as_deref() {
+                let ckey = raster_cache::key(&req.bytes, &fit, &req.spec, &k.policy);
+                if let Some(hit) = raster_cache::load(dir, ckey) {
+                    Some(hit)
+                } else {
+                    let built = build_plan(picker, &req.bytes, fit, k.policy, req.spec);
+                    if let Some(ref pl) = built {
+                        raster_cache::store(dir, ckey, pl);
+                    }
+                    built
+                }
+            } else {
+                build_plan(picker, &req.bytes, fit, k.policy, req.spec)
+            };
             BuiltImage {
                 key: k,
-                plan: build_plan(picker, &req.bytes, fit, k.policy, req.spec),
+                plan,
                 stale: false,
             }
         };
         if tx.send(built).is_err() {
             return; // reader gone
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raster_cache_round_trips() {
+        // A temp dir, never the real cache (test hygiene).
+        let dir = std::env::temp_dir().join(format!("delryn_rc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = ImagePlan {
+            png: vec![9, 8, 7, 6, 5, 4],
+            px: (48, 22),
+            cols: 5,
+            rows: 2,
+        };
+        raster_cache::store(&dir, 0xDEAD_BEEF, &plan);
+        let hit = raster_cache::load(&dir, 0xDEAD_BEEF).expect("cached raster loads back");
+        assert_eq!(hit.png, plan.png, "png round-trips");
+        assert_eq!(hit.px, plan.px, "pixel size round-trips");
+        assert_eq!(
+            (hit.cols, hit.rows),
+            (plan.cols, plan.rows),
+            "cell size round-trips"
+        );
+        assert!(
+            raster_cache::load(&dir, 0x1234).is_none(),
+            "a different key misses"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

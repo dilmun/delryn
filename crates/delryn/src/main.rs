@@ -116,7 +116,9 @@ fn main() -> Result<()> {
     // prune) so the library appears instantly and refreshes as the scan lands.
     app.start_scan_startup();
     // Spawn the background image builder from the detected protocol.
-    app.image_builder = picker.clone().map(delryn::media::ImageBuilder::new);
+    app.image_builder = picker
+        .clone()
+        .map(|p| delryn::media::ImageBuilder::new(p, delryn::media::raster_cache_dir()));
     app.picker = picker;
 
     // Synchronized output (DEC 2026) can be toggled off for terminals that

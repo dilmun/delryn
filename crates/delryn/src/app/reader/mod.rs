@@ -2514,7 +2514,8 @@ mod tests {
         // A small cache so the bound clearly bites: spare = 10 with an empty cache.
         r.images.cache.resize(NonZeroUsize::new(10).unwrap());
 
-        let builder = crate::media::ImageBuilder::new(ratatui_image::picker::Picker::halfblocks());
+        let builder =
+            crate::media::ImageBuilder::new(ratatui_image::picker::Picker::halfblocks(), None);
         let geom = ImageGeom {
             avail: 40,
             max_rows: 40,
