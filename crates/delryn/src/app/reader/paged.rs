@@ -410,6 +410,7 @@ impl Reader {
             }
         }
         self.scroll_pending = 0;
+        self.repaint_after_page_flip();
     }
 
     /// Flip to the previous page boundary, flowing into the previous chapter's
@@ -426,6 +427,18 @@ impl Reader {
             self.snap_to_page();
         }
         self.scroll_pending = 0;
+        self.repaint_after_page_flip();
+    }
+
+    /// A reflowable page-snap flip jumps the scroll a whole page, so every inline equation
+    /// moves at once. Kitty images composite above the cell grid and don't survive the
+    /// cell-diff across a jump that big (the previous page's rasters would linger as residue),
+    /// so force a full repaint — as a code fold does. A paged *image* (PDF) manages its pages
+    /// through the [`PageDeck`](crate::app::page_deck), which handles this itself, so skip it.
+    fn repaint_after_page_flip(&mut self) {
+        if !self.is_paged_image() {
+            self.request_repaint();
+        }
     }
 
     /// Flip `pages` pages at once (a count-prefixed `j`/`k`, e.g. `10j`). For a
