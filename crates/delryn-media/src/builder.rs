@@ -66,24 +66,26 @@ pub struct ImagePlan {
     pub rows: u16,
 }
 
-/// Persistent (disk) cache of built rasters, so reopening a book doesn't rebuild every
-/// equation from scratch (the 2–4 s reopen). Content-addressed by the *full* sizing key —
-/// image bytes + geometry + the measured em + theme — so a byte-identical render is served
-/// straight from disk (no decode, resize, recolour, or PNG re-encode). The cache dir is
-/// version-stamped ([`VERSION`]); a change to the build/sizing pipeline just misses the old
+/// Persistent (disk) cache of built raster **geometry**, so reopening a book doesn't
+/// re-decode + re-resize every equation (the 2–4 s reopen), and switching theme reuses the
+/// geometry instead of rebuilding. Content-addressed by the sizing key — image bytes +
+/// geometry + the measured em — but deliberately **not** the theme policy, since the theme
+/// recolour is the cheap [`finish_theme`] tail applied after a load. The cache dir is
+/// version-stamped ([`VERSION`]); a change to the decode/sizing pipeline just misses the old
 /// entries rather than serving a stale size.
-mod raster_cache {
+mod geo_cache {
     use std::hash::{Hash, Hasher};
     use std::path::{Path, PathBuf};
 
-    use super::{FitBox, ImagePlan, RenderPolicy, SizeHint, SizeSpec};
+    use super::{FitBox, Geometry, SizeHint, SizeSpec};
 
-    /// Bump when the build/sizing pipeline changes so a raster would differ — old entries
-    /// (under the previous version dir) are then simply ignored.
-    pub const VERSION: u32 = 1;
+    /// Bump when the decode/sizing pipeline changes so the geometry would differ — old
+    /// entries (under the previous version dir) are then simply ignored.
+    pub const VERSION: u32 = 2;
 
-    /// The cache key for a build: everything that determines the resulting raster.
-    pub fn key(bytes: &[u8], fit: &FitBox, spec: &SizeSpec, policy: &RenderPolicy) -> u64 {
+    /// The cache key for a build's geometry: everything that determines the *pre-theme*
+    /// raster. The render policy is excluded on purpose (theme is applied after a load).
+    pub fn key(bytes: &[u8], fit: &FitBox, spec: &SizeSpec) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         bytes.hash(&mut h);
         (
@@ -109,46 +111,59 @@ mod raster_cache {
             (p.x0, p.y0, p.x1, p.y1, p.line_count).hash(&mut h);
             p.line_px.to_bits().hash(&mut h); // f32 → bits so the measured em keys exactly
         }
-        policy.hash(&mut h); // theme tint + adaptation mode
         h.finish()
     }
 
     fn entry_path(dir: &Path, key: u64) -> PathBuf {
-        dir.join(format!("{key:016x}.raster"))
+        dir.join(format!("{key:016x}.geo"))
     }
 
-    /// A cached raster, or `None` on miss / unreadable / truncated.
-    /// Layout: `[cols u16][rows u16][pw u32][ph u32][png_len u32][png…]`, little-endian.
-    pub fn load(dir: &Path, key: u64) -> Option<ImagePlan> {
+    /// Cached geometry, or `None` on miss / unreadable / truncated. Layout:
+    /// `[tag u8][cols u16][rows u16][png_len u32][png…]`, little-endian; `tag` 0 = inline
+    /// glyph (with `cols`/`rows`), 1 = figure. The PNG holds the pre-theme RGBA pixels.
+    pub fn load(dir: &Path, key: u64) -> Option<Geometry> {
         let data = std::fs::read(entry_path(dir, key)).ok()?;
-        if data.len() < 16 {
+        if data.len() < 9 {
             return None;
         }
-        let cols = u16::from_le_bytes([data[0], data[1]]);
-        let rows = u16::from_le_bytes([data[2], data[3]]);
-        let pw = u32::from_le_bytes(data[4..8].try_into().ok()?);
-        let ph = u32::from_le_bytes(data[8..12].try_into().ok()?);
-        let len = u32::from_le_bytes(data[12..16].try_into().ok()?) as usize;
-        let png = data.get(16..16 + len)?.to_vec();
-        Some(ImagePlan {
-            png,
-            px: (pw, ph),
-            cols,
-            rows,
-        })
+        let tag = data[0];
+        let cols = u16::from_le_bytes([data[1], data[2]]);
+        let rows = u16::from_le_bytes([data[3], data[4]]);
+        let len = u32::from_le_bytes(data[5..9].try_into().ok()?) as usize;
+        let png = data.get(9..9 + len)?;
+        let img = super::decode(png)?.into_rgba8();
+        match tag {
+            0 => Some(Geometry::Inline {
+                glyph: img,
+                cols,
+                rows,
+            }),
+            1 => Some(Geometry::Figure { img }),
+            _ => None,
+        }
     }
 
-    /// Write a built raster to the cache (best-effort — a failure just means a rebuild next
+    /// Write built geometry to the cache (best-effort — a failure just means a rebuild next
     /// time). Written to a temp file then renamed, so a concurrent reader never sees a
     /// partial entry (rename is atomic on the same filesystem).
-    pub fn store(dir: &Path, key: u64, plan: &ImagePlan) {
-        let mut data = Vec::with_capacity(plan.png.len() + 16);
-        data.extend(plan.cols.to_le_bytes());
-        data.extend(plan.rows.to_le_bytes());
-        data.extend(plan.px.0.to_le_bytes());
-        data.extend(plan.px.1.to_le_bytes());
-        data.extend((plan.png.len() as u32).to_le_bytes());
-        data.extend(&plan.png);
+    pub fn store(dir: &Path, key: u64, geo: &Geometry) {
+        let (tag, cols, rows, img) = match geo {
+            Geometry::Inline { glyph, cols, rows } => (0u8, *cols, *rows, glyph),
+            Geometry::Figure { img } => (1u8, 0u16, 0u16, img),
+        };
+        let mut png = Vec::new();
+        if image::DynamicImage::ImageRgba8(img.clone())
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .is_err()
+        {
+            return;
+        }
+        let mut data = Vec::with_capacity(png.len() + 9);
+        data.push(tag);
+        data.extend(cols.to_le_bytes());
+        data.extend(rows.to_le_bytes());
+        data.extend((png.len() as u32).to_le_bytes());
+        data.extend(&png);
         let mut tid = std::collections::hash_map::DefaultHasher::new();
         std::thread::current().id().hash(&mut tid);
         let tmp = dir.join(format!("{key:016x}.{:x}.tmp", tid.finish()));
@@ -158,15 +173,27 @@ mod raster_cache {
     }
 }
 
-/// Decode, size, theme, and PNG-encode one image into a placeable raster. This is the
-/// expensive step (decode + PNG re-encode), so it runs on the [`ImageBuilder`] worker.
-fn build_plan(
-    picker: &Picker,
-    bytes: &[u8],
-    fit: FitBox,
-    policy: RenderPolicy,
-    spec: SizeSpec,
-) -> Option<ImagePlan> {
+/// The theme-independent result of decoding + sizing one image: the expensive work (JPEG
+/// decode, ink crop, Lanczos resize) done, but held **before** the theme recolour. A theme
+/// change reuses this and re-runs only the cheap [`finish_theme`] recolour + encode instead
+/// of rebuilding from scratch — so switching theme (and re-inverting figures) doesn't stall
+/// on a full rebuild of every equation. Cached (disk) keyed *without* the render policy.
+enum Geometry {
+    /// Inline atom: the resized ink glyph (pre-recolour) plus the whole-cell canvas it is
+    /// centred into (`cols`×`rows`; the current font size fixes the pixels at finish time).
+    Inline {
+        glyph: image::RgbaImage,
+        cols: u16,
+        rows: u16,
+    },
+    /// Figure / display equation / page: the aspect-fitted raster (pre-recolour, pre-pad).
+    Figure { img: image::RgbaImage },
+}
+
+/// Decode + size one image up to (but not including) the theme recolour — the expensive part
+/// of a build (decode + Lanczos resize). Theme-independent, so its result is cached and
+/// shared across every theme.
+fn build_geometry(picker: &Picker, bytes: &[u8], fit: FitBox, spec: SizeSpec) -> Option<Geometry> {
     let img = decode(bytes)?;
     let (w, h) = img.dimensions();
     let fs = picker.font_size();
@@ -191,72 +218,91 @@ fn build_plan(
         None => img,
     };
 
-    let (fw, fh) = (fs.width.max(1) as u32, fs.height.max(1) as u32);
-    let img = match (spec.inline, spec.ink) {
-        // Inline picture: draw the ink at its **exact** text-relative size on a transparent
-        // whole-cell canvas, centred on the text row's optical axis. This is the one path that
-        // must not fill the ceil'd cell box — doing so fattens a single glyph like `ℝ` (its
-        // 1.4-cell ink ceils to 2 cells). Instead the ink is scaled to the same pixels the
-        // layout reserved and centred on the line, so every inline raster flows at the prose
-        // size and sits level with the text. The theme recolour is applied to the glyph before
-        // compositing so the canvas stays transparent.
+    match (spec.inline, spec.ink) {
+        // Inline picture: scale the ink to its **exact** text-relative pixels (the same
+        // pixels the layout reserved) so a single glyph like `ℝ` is never fattened to a
+        // ceil'd cell. Kept un-recoloured here; [`finish_theme`] tints it and centres it on
+        // the text row's optical axis of a transparent whole-cell canvas.
         (true, Some(ink)) => {
             let f = crate::sizing::inline_fit(fit, ink, f64::from(fit.math_scale) / 100.0);
-            let glyph = resize_simd(&img, f.draw_w.max(1), f.draw_h.max(1));
-            let glyph = render_for_theme(&glyph, policy.tint, policy.mode).to_rgba8();
-            let (cw, ch) = (u32::from(cols) * fw, u32::from(rows) * fh);
-            let mut canvas = image::RgbaImage::from_pixel(cw, ch, image::Rgba([0, 0, 0, 0]));
-            // Place the ink's centre on the **text row's** optical axis so it sits level with
-            // the prose (a symbol on the line, a fraction's bar straddling it) rather than
-            // hanging low. The text row is the middle of the canvas: `(rows-1)/2` spacer rows
-            // sit above it (and as many below), reserved by the wrapper. Horizontally centre
-            // so a symbol like ∈ doesn't butt against the preceding character (the book glues
-            // a symbol image straight onto text: `… b ∈⟦ℝ⟧`).
-            let half = i64::from((rows - 1) / 2); // spacer rows above the text row
-            let text_top = half * i64::from(fh);
-            let axis = text_top + (f64::from(fh) * INLINE_AXIS).round() as i64;
-            let x = (i64::from(cw) - i64::from(f.draw_w)).max(0) / 2;
-            let y = (axis - i64::from(f.draw_h) / 2)
-                .clamp(0, (i64::from(ch) - i64::from(f.draw_h)).max(0));
-            image::imageops::overlay(&mut canvas, &glyph, x, y);
-            image::DynamicImage::ImageRgba8(canvas)
+            let glyph = resize_simd(&img, f.draw_w.max(1), f.draw_h.max(1)).into_rgba8();
+            Some(Geometry::Inline { glyph, cols, rows })
         }
-        // Everything else (figures, display equations, pages): scale to fit the target cell
-        // box (aspect-preserving) so the protocol fills (cols, rows). The Lanczos3 kernel is
-        // the highest quality for the text, equations, and line-art common in book figures —
-        // sharp on both up-scaling low-res figures and down-scaling oversized ones — and the
-        // SIMD path keeps it cheap. The cost is paid once, off-thread, and the result cached.
+        // Everything else (figures, display equations, pages): aspect-preserving fit into the
+        // target cell box. The Lanczos3 SIMD kernel is the highest quality for the text,
+        // equations, and line-art common in book figures. [`finish_theme`] applies the theme
+        // adaptation (recolour / flatten / invert) and the whole-cell pad.
         _ => {
+            let (fw, fh) = (fs.width.max(1) as u32, fs.height.max(1) as u32);
             let (bw, bh) = (u32::from(cols) * fw, u32::from(rows) * fh);
             let (sw, sh) = img.dimensions();
-            // Aspect-preserving fit (what `image::resize` did), then an exact SIMD resize.
             let scale =
                 (f64::from(bw) / f64::from(sw.max(1))).min(f64::from(bh) / f64::from(sh.max(1)));
             let tw = (f64::from(sw) * scale).round().max(1.0) as u32;
             let th = (f64::from(sh) * scale).round().max(1.0) as u32;
-            let img = resize_simd(&img, tw, th);
-            // Adapt the graphic to the theme (recolour ink / flatten / invert) per mode.
-            render_for_theme(&img, policy.tint, policy.mode)
+            let img = resize_simd(&img, tw, th).into_rgba8();
+            Some(Geometry::Figure { img })
         }
+    }
+}
+
+/// Recolour a [`Geometry`] to the active theme and PNG-encode it into a placeable raster —
+/// the cheap tail of a build (no decode, no Lanczos), re-run alone on a theme change. `cell`
+/// is the terminal cell size `(w, h)` in px. The recolour + composite here is byte-for-byte
+/// what the old single-pass build did (same order: recolour the glyph, then composite); only
+/// the decode + resize is split out ahead of it into the cached [`Geometry`], and a PNG
+/// round-trip through the disk cache is lossless for RGBA — so the split is behaviour-
+/// preserving.
+fn finish_theme(geo: Geometry, policy: RenderPolicy, cell: (u16, u16)) -> Option<ImagePlan> {
+    let (cell_w, cell_h) = (u32::from(cell.0.max(1)), u32::from(cell.1.max(1)));
+    let themed = match geo {
+        Geometry::Inline { glyph, cols, rows } => {
+            // Recolour the glyph to the theme ink, then centre it on the text row's optical
+            // axis of a transparent whole-cell canvas: the text row is the canvas middle,
+            // with `(rows-1)/2` spacer rows above it (and as many below) reserved by the
+            // wrapper, so a symbol sits on the line and a fraction's bar straddles it rather
+            // than hanging low. Horizontally centred so a symbol like ∈ doesn't butt against
+            // the preceding character.
+            let glyph = render_for_theme(
+                &image::DynamicImage::ImageRgba8(glyph),
+                policy.tint,
+                policy.mode,
+            )
+            .to_rgba8();
+            let (draw_w, draw_h) = glyph.dimensions();
+            let (cw, ch) = (u32::from(cols) * cell_w, u32::from(rows) * cell_h);
+            let mut canvas = image::RgbaImage::from_pixel(cw, ch, image::Rgba([0, 0, 0, 0]));
+            let half = i64::from((rows - 1) / 2); // spacer rows above the text row
+            let text_top = half * i64::from(cell_h);
+            let axis = text_top + (f64::from(cell_h) * INLINE_AXIS).round() as i64;
+            let x = (i64::from(cw) - i64::from(draw_w)).max(0) / 2;
+            let y =
+                (axis - i64::from(draw_h) / 2).clamp(0, (i64::from(ch) - i64::from(draw_h)).max(0));
+            image::imageops::overlay(&mut canvas, &glyph, x, y);
+            canvas
+        }
+        // Adapt the graphic to the theme (recolour ink / flatten / invert) per mode.
+        Geometry::Figure { img } => render_for_theme(
+            &image::DynamicImage::ImageRgba8(img),
+            policy.tint,
+            policy.mode,
+        )
+        .to_rgba8(),
     };
-    // Place at the image's *fitted* cell size — ceil(px / cell), NOT the target box
-    // (cols, rows). The aspect-preserving resize above fits the image *within* the box,
-    // so it is generally shorter/narrower than the box in one axis; placing at the box
-    // (`a=p c=cols,r=rows`) would scale it to fill and stretch that axis. Pad the raster
-    // up to the exact whole-cell canvas (transparent margin at right/bottom) so the deck
-    // places it 1:1 — the terminal does no sub-cell rescaling, and an edge clip lands on
-    // whole cell rows. The inline path's canvas is already whole-cell, so this is a no-op
-    // there; the figure path's aspect-fit raster gets padded to its tight cell box.
-    let (pw, ph) = img.dimensions();
-    let (cell_w, cell_h) = (u32::from(fs.width.max(1)), u32::from(fs.height.max(1)));
+    // Place at the raster's *fitted* cell size — ceil(px / cell). The aspect-preserving fit
+    // above leaves the figure shorter/narrower than its box in one axis; placing at the box
+    // would stretch it. Pad up to the exact whole-cell canvas (transparent margin at
+    // right/bottom) so the deck places it 1:1 — the terminal does no sub-cell rescaling. The
+    // inline canvas is already whole-cell, so this is a no-op there.
+    let (pw, ph) = themed.dimensions();
     let fit_cols = pw.div_ceil(cell_w).max(1);
     let fit_rows = ph.div_ceil(cell_h).max(1);
     let (pad_w, pad_h) = (fit_cols * cell_w, fit_rows * cell_h);
     let rgba = if (pw, ph) == (pad_w, pad_h) {
-        img.into_rgba8()
+        themed
     } else {
         let mut canvas = image::RgbaImage::from_pixel(pad_w, pad_h, image::Rgba([0, 0, 0, 0]));
-        image::imageops::replace(&mut canvas, &img.into_rgba8(), 0, 0);
+        image::imageops::replace(&mut canvas, &themed, 0, 0);
         canvas
     };
     let mut png = Vec::new();
@@ -269,6 +315,20 @@ fn build_plan(
         cols: fit_cols as u16,
         rows: fit_rows as u16,
     })
+}
+
+/// Decode, size, theme, and PNG-encode one image into a placeable raster — [`build_geometry`]
+/// then [`finish_theme`], for the non-cached path and tests.
+fn build_plan(
+    picker: &Picker,
+    bytes: &[u8],
+    fit: FitBox,
+    policy: RenderPolicy,
+    spec: SizeSpec,
+) -> Option<ImagePlan> {
+    let fs = picker.font_size();
+    let geo = build_geometry(picker, bytes, fit, spec)?;
+    finish_theme(geo, policy, (fs.width, fs.height))
 }
 
 /// Exact-size resize of `img` to `dw`×`dh` with a **SIMD** Lanczos3 convolution
@@ -384,7 +444,7 @@ impl ImageBuilder {
     /// created under it so a pipeline change invalidates old entries cleanly.
     pub fn new(picker: Picker, cache_root: Option<PathBuf>) -> ImageBuilder {
         let cache_dir = cache_root.and_then(|root| {
-            let dir = root.join(format!("v{}", raster_cache::VERSION));
+            let dir = root.join(format!("v{}", geo_cache::VERSION));
             std::fs::create_dir_all(&dir).ok().map(|()| dir)
         });
         let shared = Arc::new((
@@ -500,19 +560,20 @@ fn build_loop(
                 math_scale: k.math_scale,
                 fit_mode: k.fit_mode,
             };
-            // Serve from the persistent cache if a byte-identical render was built before
-            // (any prior open of this or another book); else build it and cache the result.
+            // Serve the geometry (decode + resize) from the persistent cache if it was built
+            // before — for this theme, another theme, or another book — else build and cache
+            // it; then apply the cheap theme recolour. A theme change thus reuses the cached
+            // geometry and only re-runs `finish_theme`, instead of rebuilding every equation.
             let plan = if let Some(dir) = cache.as_deref() {
-                let ckey = raster_cache::key(&req.bytes, &fit, &req.spec, &k.policy);
-                if let Some(hit) = raster_cache::load(dir, ckey) {
-                    Some(hit)
-                } else {
-                    let built = build_plan(picker, &req.bytes, fit, k.policy, req.spec);
-                    if let Some(ref pl) = built {
-                        raster_cache::store(dir, ckey, pl);
+                let gkey = geo_cache::key(&req.bytes, &fit, &req.spec);
+                let geo = geo_cache::load(dir, gkey).or_else(|| {
+                    let built = build_geometry(picker, &req.bytes, fit, req.spec);
+                    if let Some(ref g) = built {
+                        geo_cache::store(dir, gkey, g);
                     }
                     built
-                }
+                });
+                geo.and_then(|g| finish_theme(g, k.policy, (fs.width, fs.height)))
             } else {
                 build_plan(picker, &req.bytes, fit, k.policy, req.spec)
             };
@@ -531,31 +592,90 @@ fn build_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recolor::Ink;
+    use delryn_infra::config::ImageMode;
+
+    fn plain_policy() -> RenderPolicy {
+        RenderPolicy {
+            tint: Ink {
+                ink: [0, 0, 0],
+                paper: [255, 255, 255],
+            },
+            mode: ImageMode::default(),
+        }
+    }
 
     #[test]
-    fn raster_cache_round_trips() {
+    fn geo_cache_round_trips() {
         // A temp dir, never the real cache (test hygiene).
-        let dir = std::env::temp_dir().join(format!("delryn_rc_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("delryn_gc_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let plan = ImagePlan {
-            png: vec![9, 8, 7, 6, 5, 4],
-            px: (48, 22),
-            cols: 5,
-            rows: 2,
+
+        // Inline glyph geometry: a tiny RGBA image plus its whole-cell canvas footprint.
+        let glyph = image::RgbaImage::from_fn(3, 2, |x, y| {
+            image::Rgba([x as u8 * 40, y as u8 * 40, 7, 200])
+        });
+        let geo = Geometry::Inline {
+            glyph: glyph.clone(),
+            cols: 4,
+            rows: 3,
         };
-        raster_cache::store(&dir, 0xDEAD_BEEF, &plan);
-        let hit = raster_cache::load(&dir, 0xDEAD_BEEF).expect("cached raster loads back");
-        assert_eq!(hit.png, plan.png, "png round-trips");
-        assert_eq!(hit.px, plan.px, "pixel size round-trips");
-        assert_eq!(
-            (hit.cols, hit.rows),
-            (plan.cols, plan.rows),
-            "cell size round-trips"
+        geo_cache::store(&dir, 0xABCD_1234, &geo);
+        match geo_cache::load(&dir, 0xABCD_1234).expect("geometry loads back") {
+            Geometry::Inline {
+                glyph: got,
+                cols,
+                rows,
+            } => {
+                assert_eq!((cols, rows), (4, 3), "cell footprint round-trips");
+                assert_eq!(
+                    got.dimensions(),
+                    glyph.dimensions(),
+                    "glyph dims round-trip"
+                );
+                assert_eq!(
+                    got.into_raw(),
+                    glyph.into_raw(),
+                    "pixels round-trip (PNG lossless)"
+                );
+            }
+            Geometry::Figure { .. } => panic!("expected an inline geometry"),
+        }
+
+        // Figure geometry round-trips under the figure tag.
+        let img = image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]));
+        geo_cache::store(&dir, 0x5, &Geometry::Figure { img });
+        assert!(
+            matches!(geo_cache::load(&dir, 0x5), Some(Geometry::Figure { .. })),
+            "figure tag round-trips"
         );
         assert!(
-            raster_cache::load(&dir, 0x1234).is_none(),
+            geo_cache::load(&dir, 0x999).is_none(),
             "a different key misses"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn finish_theme_inline_canvas_is_whole_cell() {
+        // An inline glyph is centred onto a transparent canvas sized exactly to its reserved
+        // cell footprint (cols×cell_w by rows×cell_h) — no sub-cell padding, placed 1:1.
+        let glyph = image::RgbaImage::from_pixel(10, 15, image::Rgba([0, 0, 0, 255]));
+        let geo = Geometry::Inline {
+            glyph,
+            cols: 3,
+            rows: 3,
+        };
+        let plan = finish_theme(geo, plain_policy(), (8, 16)).expect("finishes");
+        assert_eq!(
+            plan.px,
+            (3 * 8, 3 * 16),
+            "canvas is cols*cell_w by rows*cell_h"
+        );
+        assert_eq!(
+            (plan.cols, plan.rows),
+            (3, 3),
+            "reports its whole-cell footprint"
+        );
     }
 }
