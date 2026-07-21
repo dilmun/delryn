@@ -67,26 +67,27 @@ impl Default for SizeSpec {
 /// figure grow enough to be readable and consistent with its neighbours.
 const MAX_UPSCALE: f64 = 4.0;
 
-/// Target displayed height, in text cells, of one equation's **text em** — the
-/// text-relative size a publisher equation raster is normalised to (per the measured
-/// glyph em [`InkProfile::line_px`]), independent of the file's DPI. Every equation on
-/// a page is scaled so its body glyphs hit this size, so they look consistent; tall
-/// operators (Σ, fractions) then extend above/below proportionally. The `math_scale`
-/// knob tunes on top (100% = this value). Adjust here if the default reads large/small.
-/// Set a touch above text (1.15×) so an equation reads as math — flowing with the prose but
-/// a hair larger — per the "natural, a little bigger like 1.1–1.2×" target. Must equal
-/// [`MATH_EM_CELLS`] so the ink-measured and authored-em paths render the same size.
-const EQ_TARGET_LINE_CELLS: f64 = 1.15;
+/// Target displayed height, in text cells, of one **display** equation's text em — the
+/// text-relative size a publisher equation raster is normalised to (per the measured glyph
+/// em [`InkProfile::line_px`]), independent of the file's DPI. Every equation on a page is
+/// scaled so its body glyphs hit this size, so they look consistent; tall operators (Σ,
+/// fractions) then extend above/below proportionally. The `math_scale` knob tunes on top
+/// (100% = this value).
+///
+/// A display equation sits **a touch larger than prose** (×1.25) so a centred formula reads
+/// as its own block without dominating — expressed as a multiple of the prose-matched inline
+/// target [`INLINE_LINE_CELLS`] so the relationship is exact. (The earlier `1.15` was a
+/// miscalibration: `1.15` *cells* is ×1.6 the `0.72`-cell prose, not ×1.15 — which is why a
+/// tall multi-row equation dominated the page.) Must equal [`MATH_EM_CELLS`] so the
+/// ink-measured and authored-em paths render the same size.
+const EQ_TARGET_LINE_CELLS: f64 = INLINE_LINE_CELLS * 1.25;
 
-/// On-screen height, in text cells, of one authored CSS `em` for an equation raster
-/// sized by its publisher [`SizeHint::Em`] width. Set to the **text** em (matching the
-/// reader's `DISPLAY_EM_FACTOR`) so a publisher raster and a LaTeX equation delryn
-/// re-renders come out the same size — and the same size as the surrounding prose. The
-/// `math_scale` knob scales up from there. The *reliable* path: source pixels ignored,
-/// so a raster never renders out of scale regardless of its DPI. Kept equal to
-/// [`EQ_TARGET_LINE_CELLS`] (1.15×) so every equation — authored-em or ink-measured — flows
-/// at the same natural, slightly-larger-than-text size across the whole book.
-const MATH_EM_CELLS: f64 = 1.15;
+/// On-screen height, in text cells, of one authored CSS `em` for an equation raster sized by
+/// its publisher [`SizeHint::Em`] width. Kept equal to [`EQ_TARGET_LINE_CELLS`] so a
+/// publisher raster, a LaTeX equation delryn re-renders, and the authored-em path all render
+/// at the same size across the book. The *reliable* path: source pixels ignored, so a raster
+/// never renders out of scale regardless of its DPI; the `math_scale` knob scales from here.
+const MATH_EM_CELLS: f64 = EQ_TARGET_LINE_CELLS;
 
 /// A display equation is capped to this fraction of the available rows, so a tall /
 /// multi-line one shrinks uniformly instead of dominating the page (a wide multi-line
@@ -374,6 +375,13 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
                 .min(1.0)
         }
         GraphicKind::RenderedMath => cap.min(1.0),
+        // Faithful: show the equation at the **publisher's own resolution** — its native
+        // pixels (1:1), only shrunk to fit the column (`cap`), never upscaled. This is the
+        // "as the author intended" knob; the ink normalisation is skipped. Handled in the
+        // equation arm (not routed to `Figure`) so a small equation shows small — never blown
+        // up to the figure's column share. The height cap below still bounds a tall one to the
+        // viewport so it can't take over the screen.
+        GraphicKind::EquationRaster if fit.fit_mode == ImageFit::Faithful => cap.min(1.0),
         GraphicKind::EquationRaster => {
             // The general pixel algorithm first — no publisher metadata: measure the raster's
             // own ink and bring one glyph line to the text-relative target, scaling a too-big
@@ -912,8 +920,9 @@ mod tests {
     /// than shrinking to a sliver. A compact symbol is untouched.
     #[test]
     fn wide_or_tall_inline_equation_uses_display_sizing() {
-        // Wide (aspect 12.5 ≥ INLINE_DISPLAY_ASPECT): fills the 60-col column instead of
-        // the ~40 cols the compact inline cap-height would give.
+        // Wide (aspect 12.5 ≥ INLINE_DISPLAY_ASPECT): sized on the display target (~50 cols
+        // of the 60-col column), clearly larger than the ~40 cols the compact inline
+        // cap-height would give — so it reads as a display equation, not a squashed sliver.
         let wide = InkProfile {
             x0: 0,
             y0: 0,
@@ -924,8 +933,8 @@ mod tests {
         };
         let f = inline_fit(fit(60, 40), wide, 1.0);
         assert!(
-            f.cols >= 55,
-            "a wide inline equation fills the column: {f:?}"
+            f.cols >= 48,
+            "a wide inline equation uses display sizing, well past the ~40-col compact size: {f:?}"
         );
 
         // Tall stack (3 ink lines): rises past the 2-row inline budget, not squashed.
