@@ -32,12 +32,6 @@ pub struct ImageState {
     /// Reserved rows per image index, estimated up front so reflow doesn't wait
     /// on the background build.
     pub rows_estimate: Vec<u16>,
-    /// Measured ink profile per inline-image **content-key** (the same key
-    /// `remap_inline_math` content-addresses atoms by). Each distinct inline picture is
-    /// decoded and measured once; re-layouts reuse it so a glyph repeated hundreds of
-    /// times costs one decode. `Some(None)` = measured, no ink (rare — a colourful/dense
-    /// inline graphic); absent = not yet measured.
-    pub inline_ink: HashMap<usize, Option<media::InkProfile>>,
     /// (section, avail-cols, max-rows, max-px, width-pct, eq-scale, fit-mode) the
     /// estimates are for — a change re-remaps so a live sizing-config change takes
     /// effect without leaving the section.
@@ -72,7 +66,6 @@ impl Default for ImageState {
             inline_cols: Vec::new(),
             inline_rows: Vec::new(),
             rows_estimate: Vec::new(),
-            inline_ink: HashMap::new(),
             images_key: (usize::MAX, 0, 0, 0, 0, 0, media::ImageFit::default()),
             policy: media::RenderPolicy {
                 tint: media::Ink {

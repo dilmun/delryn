@@ -48,9 +48,15 @@ pub enum SpanMath {
     /// resolves from the archive (empty until then). The reader rasterises it into the same
     /// inline-atom pipeline as [`Raster`], so it draws mid-line instead of as a placeholder.
     Picture { src: String, data: Vec<u8> },
-    /// Rendered to a small themed raster: a section-local id (its draw/build key)
-    /// and the black-on-transparent PNG bytes (recoloured to the theme at build).
-    Raster { id: usize, png: Vec<u8> },
+    /// Rendered to a small themed raster: a section-local id (its draw/build key),
+    /// the black-on-transparent PNG bytes (recoloured to the theme at build), and the
+    /// measured ink profile — measured once at load time (off the main thread) so the
+    /// reader's sizing pass reads it without decoding the image on the render thread.
+    Raster {
+        id: usize,
+        png: Vec<u8>,
+        ink: Option<InkProfile>,
+    },
 }
 
 /// A run of text with uniform inline styling and an optional navigation anchor.

@@ -12,7 +12,7 @@
 //! live. The conversion runs where blocks are decoded — the background section loader (off
 //! the main thread) and the inline fetch.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -171,6 +171,11 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
     let inline_typeset = INLINE_ENABLED.load(Ordering::Relaxed);
     let em_px = INLINE_EM_PX.load(Ordering::Relaxed);
     let mut next_id = 0usize;
+    // Measure each distinct raster's ink **here** (at load, off the main thread for a
+    // prefetched section) so the reader's sizing pass reads it from the span instead of
+    // decoding on the render thread — deduped by content, so a glyph repeated hundreds
+    // of times (ℝ) is decoded once.
+    let mut ink_cache: HashMap<u64, Option<delryn_model::InkProfile>> = HashMap::new();
     // Rasterise inline math in every run, recursing into callout/footnote bodies (via
     // `for_each_spans_mut`) so a note's inline equations render too. One `id` space across
     // all of them — the wrapper reserves cells and the draw addresses atoms by this id.
@@ -220,7 +225,14 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
                 }
             };
             if let Some(png) = png {
-                span.math = Some(SpanMath::Raster { id: next_id, png });
+                let ink = *ink_cache
+                    .entry(inline_hash(&png))
+                    .or_insert_with(|| inline_ink_of(&png));
+                span.math = Some(SpanMath::Raster {
+                    id: next_id,
+                    png,
+                    ink,
+                });
                 next_id += 1;
             }
         }
@@ -228,6 +240,31 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
     for b in blocks.iter_mut() {
         b.for_each_spans_mut(&mut rasterise);
     }
+}
+
+/// Content hash of an inline raster's PNG bytes — to measure its ink once per distinct
+/// image (a book that ships ℝ as its own tiny `<img>` reuses it hundreds of times).
+fn inline_hash(png: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    png.hash(&mut h);
+    h.finish()
+}
+
+/// Measure one inline raster's ink profile (decodes the image). Called from
+/// [`convert_inline_math`] at load time — off the main thread for a prefetched section —
+/// so the reader's sizing pass reads it from the span instead of decoding on the render
+/// thread. The dependency-free model profile mirrors [`delryn_media::ink_profile`].
+fn inline_ink_of(png: &[u8]) -> Option<delryn_model::InkProfile> {
+    let img = crate::media::decode(png)?;
+    crate::media::ink_profile(&img).map(|p| delryn_model::InkProfile {
+        x0: p.x0,
+        y0: p.y0,
+        x1: p.x1,
+        y1: p.y1,
+        line_px: p.line_px,
+        line_count: p.line_count,
+    })
 }
 
 /// Measure the ink profile of every equation image in `blocks` (in place), so it can be
@@ -566,7 +603,7 @@ mod tests {
         let mut short = vec![para("x^2")];
         convert_inline_math(&mut short);
         match math_of(&short[0]) {
-            Some(SpanMath::Raster { id, png }) => {
+            Some(SpanMath::Raster { id, png, .. }) => {
                 assert_eq!(id, 0, "first inline equation gets id 0");
                 assert!(!png.is_empty(), "carries the rendered PNG bytes");
             }

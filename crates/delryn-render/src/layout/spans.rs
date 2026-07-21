@@ -442,7 +442,11 @@ mod tests {
                 ..Inline::default()
             },
             anchor: None,
-            math: Some(SpanMath::Raster { id, png: vec![] }),
+            math: Some(SpanMath::Raster {
+                id,
+                png: vec![],
+                ink: None,
+            }),
         }
     }
 

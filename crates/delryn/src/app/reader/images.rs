@@ -408,9 +408,10 @@ impl Reader {
         let mut section_inline = HashMap::new();
         let mut cols_by_id: Vec<u16> = Vec::new();
         let mut rows_by_id: Vec<u16> = Vec::new();
-        // Inline builds carry the already-decoded image (decoded once here for ink), so the
-        // worker doesn't re-decode the JPEG.
-        let mut requests: Vec<(ImgKey, media::DynamicImage, media::SizeSpec)> = Vec::new();
+        // Inline build requests: the PNG bytes (the worker decodes them off-thread). Ink
+        // was already measured at load time (on the span), so the render thread never
+        // decodes an inline image here.
+        let mut requests: Vec<(ImgKey, Vec<u8>, media::SizeSpec)> = Vec::new();
         // Content-address the atoms: an inline image is keyed by *what it is*, not where it
         // occurs, so the same symbol repeated across the section (a book that ships ℝ as its
         // own tiny `<img>` uses it hundreds of times) is built and uploaded **once** and every
@@ -438,17 +439,16 @@ impl Reader {
             policy: geom.policy,
         };
 
-        // Pass 1 — measure each **distinct** atom's ink once (decoding the JPEG at most once,
-        // cached by content-key), collect the section's measured ems, and keep the decoded
-        // image for any atom that still needs building (so the worker never re-decodes it).
-        // `order` is the first-seen order, for the distinct-upload cap.
+        // Pass 1 — gather each **distinct** atom's ink (measured off-thread at load, carried
+        // on the span — no decode here) and the section's ems. `order` is the first-seen
+        // order, for the distinct-upload cap.
         let mut ems: Vec<f32> = Vec::new();
         let mut order: Vec<usize> = Vec::new();
-        let mut pending: HashMap<usize, (ImgKey, media::DynamicImage)> = HashMap::new();
+        let mut ink_by_ck: HashMap<usize, Option<media::InkProfile>> = HashMap::new();
         let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for spans in &runs {
             for span in *spans {
-                let Some(delryn_model::SpanMath::Raster { png, .. }) = &span.math else {
+                let Some(delryn_model::SpanMath::Raster { png, ink, .. }) = &span.math else {
                     continue;
                 };
                 let ck = inline_content_key(png);
@@ -456,27 +456,19 @@ impl Reader {
                     continue; // distinct only
                 }
                 order.push(ck);
-                let key = key_for(ck);
-                let need_build = !self.images.cache.contains(&key)
-                    && !self.images.requested.contains(&key)
-                    && !self.images.failed.contains(&key);
-                let need_ink = !self.images.inline_ink.contains_key(&ck);
-                let decoded = if need_ink || need_build {
-                    media::decode(png)
-                } else {
-                    None
-                };
-                let ink = *self
-                    .images
-                    .inline_ink
-                    .entry(ck)
-                    .or_insert_with(|| decoded.as_ref().and_then(media::ink_profile));
-                if let Some(p) = ink {
+                // Cross the crate boundary: the model's dependency-free profile → media's.
+                let media_ink = ink.map(|p| media::InkProfile {
+                    x0: p.x0,
+                    y0: p.y0,
+                    x1: p.x1,
+                    y1: p.y1,
+                    line_px: p.line_px,
+                    line_count: p.line_count,
+                });
+                if let Some(p) = media_ink {
                     ems.push(p.line_px);
                 }
-                if need_build && let Some(img) = decoded {
-                    pending.insert(ck, (key, img));
-                }
+                ink_by_ck.insert(ck, media_ink);
             }
         }
         // Robust section em: the median of the distinct atoms' measured ems. The whole book is
@@ -490,9 +482,10 @@ impl Reader {
         // Pass 2 — reserve cells and dispatch builds, sizing each atom against the section em.
         let cap: std::collections::HashSet<usize> =
             order.iter().take(MAX_INLINE_ATOMS).copied().collect();
+        let mut dispatched: std::collections::HashSet<ImgKey> = std::collections::HashSet::new();
         for spans in &runs {
             for span in *spans {
-                let Some(delryn_model::SpanMath::Raster { id, png }) = &span.math else {
+                let Some(delryn_model::SpanMath::Raster { id, png, .. }) = &span.math else {
                     continue;
                 };
                 let ck = inline_content_key(png);
@@ -504,19 +497,14 @@ impl Reader {
                 let ink = if capped {
                     None
                 } else {
-                    self.images
-                        .inline_ink
-                        .get(&ck)
-                        .copied()
-                        .flatten()
-                        .map(|mut p| {
-                            if let Some(em) = section_em {
-                                p.line_px = p
-                                    .line_px
-                                    .clamp(em * INLINE_EM_CLAMP_LO, em * INLINE_EM_CLAMP_HI);
-                            }
-                            p
-                        })
+                    ink_by_ck.get(&ck).copied().flatten().map(|mut p| {
+                        if let Some(em) = section_em {
+                            p.line_px = p
+                                .line_px
+                                .clamp(em * INLINE_EM_CLAMP_LO, em * INLINE_EM_CLAMP_HI);
+                        }
+                        p
+                    })
                 };
                 let spec = media::SizeSpec {
                     inline: true,
@@ -541,11 +529,16 @@ impl Reader {
                 cols_by_id[*id] = cols;
                 rows_by_id[*id] = rows;
                 if cols > 0 {
-                    section_inline.insert(*id, key_for(ck));
-                    // Hand the worker the already-decoded image kept in Pass 1 (once per
-                    // distinct atom — later occurrences find it already taken).
-                    if let Some((k, img)) = pending.remove(&ck) {
-                        requests.push((k, img, spec));
+                    let key = key_for(ck);
+                    section_inline.insert(*id, key);
+                    // Queue the build once per distinct atom (later occurrences find it already
+                    // queued / cached / failed). The worker decodes the PNG off the main thread.
+                    if !self.images.cache.contains(&key)
+                        && !self.images.requested.contains(&key)
+                        && !self.images.failed.contains(&key)
+                        && dispatched.insert(key)
+                    {
+                        requests.push((key, png.clone(), spec));
                     }
                 }
             }
@@ -567,9 +560,9 @@ impl Reader {
         {
             self.images.cache.resize(cap);
         }
-        for (k, img, spec) in requests {
+        for (k, bytes, spec) in requests {
             self.images.requested.insert(k);
-            builder.request_decoded(k, img, spec);
+            builder.request(k, bytes, spec);
         }
     }
 
