@@ -464,7 +464,7 @@ impl Reader {
     /// section's code blocks (matches `LineKind::Code`) — used to pre-select it in
     /// the code viewer. `None` if none is in view.
     pub fn current_code_index(&self) -> Option<usize> {
-        let center = self.scroll + self.viewport_lines / 2;
+        let center = self.scroll.saturating_add(self.viewport_lines / 2);
         self.lines
             .iter()
             .enumerate()
@@ -497,8 +497,14 @@ impl Reader {
     fn visible_image_targets(&self) -> (HashSet<usize>, HashSet<usize>) {
         let mut figures = HashSet::new();
         let mut inline = HashSet::new();
+        // `scroll` is transiently `usize::MAX` after scrolling up past a section top (clamped
+        // to the bottom next draw), so add saturating — `scroll + span` would otherwise
+        // overflow and panic. A `MAX` start clamps to `len`, giving an empty (no-op) range.
         let start = self.scroll.min(self.lines.len());
-        let end = (self.scroll + self.visible_span()).min(self.lines.len());
+        let end = self
+            .scroll
+            .saturating_add(self.visible_span())
+            .min(self.lines.len());
         for line in &self.lines[start..end] {
             if let LineKind::Image(idx) = line.kind {
                 figures.insert(idx);
@@ -516,7 +522,7 @@ impl Reader {
     /// visible area (both spread columns), so `F` reaches a right-column block, not
     /// only the left one.
     pub fn fold_target(&self) -> Option<usize> {
-        let center = self.scroll + self.visible_span() / 2;
+        let center = self.scroll.saturating_add(self.visible_span() / 2);
         self.lines
             .iter()
             .enumerate()
@@ -532,7 +538,7 @@ impl Reader {
     /// order (left spread column before right), capped at 9 so each gets a `1..=9`
     /// badge. Shared by the `F`/`I` pick-modes.
     fn visible_elements(&self, kind: HintKind) -> Vec<usize> {
-        let end = self.scroll + self.visible_span();
+        let end = self.scroll.saturating_add(self.visible_span());
         let mut out: Vec<usize> = Vec::new();
         for line in self.lines.iter().skip(self.scroll).take(end - self.scroll) {
             let idx = match (kind, line.kind) {

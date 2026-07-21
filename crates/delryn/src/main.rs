@@ -132,6 +132,18 @@ fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
+    // ratatui's panic hook restores raw mode + the alt screen, but not the app-specific
+    // mouse capture or resident images — so a crash would leave the terminal streaming mouse
+    // escapes into the shell. Chain a hook that takes those down first, then defers to it.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(
+            io::stdout(),
+            Print(delryn::media::delete_all_images_seq()),
+            DisableMouseCapture
+        );
+        prev_hook(info);
+    }));
     // Mute stray dependency stderr for the TUI's lifetime (see `StderrRedirect`).
     let stderr_guard = StderrRedirect::for_tui();
     let result = run(&mut terminal, &mut app, sync);
