@@ -27,6 +27,7 @@ mod continuous;
 mod crisp;
 mod elements;
 mod images;
+pub(crate) mod ink_cache;
 pub(crate) mod math;
 pub use images::ImageGeom;
 mod page_stack;

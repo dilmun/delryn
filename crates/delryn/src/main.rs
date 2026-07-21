@@ -115,6 +115,9 @@ fn main() -> Result<()> {
     // Index the configured folders in the background (incremental + dead-entry
     // prune) so the library appears instantly and refreshes as the scan lands.
     app.start_scan_startup();
+    // Persist measured equation-image ink profiles, so reopening a book reads them from
+    // disk instead of re-decoding every equation on the main thread (the open freeze).
+    delryn::app::reader_ink_cache_set_dir(delryn::media::raster_cache_dir());
     // Spawn the background image builder from the detected protocol.
     app.image_builder = picker
         .clone()

@@ -86,6 +86,15 @@ use page_deck::PageDeck;
 pub(crate) mod inline_deck;
 use inline_deck::InlineDeck;
 
+/// Point the reader's persistent equation-image ink-profile cache at `<root>/ink-vN`
+/// (typically `<config>/rasters`). Call once at startup, before any book opens, so the
+/// background section loader and the start-section decode both consult it. `None` (or a
+/// create failure) leaves ink caching off. Thin re-export so the binary can reach the
+/// otherwise crate-private reader module.
+pub fn reader_ink_cache_set_dir(root: Option<std::path::PathBuf>) {
+    reader::ink_cache::set_dir(root);
+}
+
 /// How long the library selection must hold still before the detail-pane cover
 /// is (re)built, so holding j/k stays smooth.
 const COVER_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(110);

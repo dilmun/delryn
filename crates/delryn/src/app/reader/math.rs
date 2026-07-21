@@ -202,8 +202,9 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
     // Measure each distinct raster's ink **here** (at load, off the main thread for a
     // prefetched section) so the reader's sizing pass reads it from the span instead of
     // decoding on the render thread — deduped by content, so a glyph repeated hundreds
-    // of times (ℝ) is decoded once.
-    let mut ink_cache: HashMap<u64, Option<delryn_model::InkProfile>> = HashMap::new();
+    // of times (ℝ) is decoded once. Backed by the persistent [`ink_cache`], so a reopen
+    // reads the profile from disk rather than decoding the image again.
+    let mut ink_memo: HashMap<u64, Option<delryn_model::InkProfile>> = HashMap::new();
     // Rasterise inline math in every run, recursing into callout/footnote bodies (via
     // `for_each_spans_mut`) so a note's inline equations render too. One `id` space across
     // all of them — the wrapper reserves cells and the draw addresses atoms by this id.
@@ -253,9 +254,14 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
                 }
             };
             if let Some(png) = png {
-                let ink = *ink_cache
-                    .entry(inline_hash(&png))
-                    .or_insert_with(|| inline_ink_of(&png));
+                let h = super::ink_cache::hash(&png);
+                let ink = *ink_memo.entry(h).or_insert_with(|| {
+                    super::ink_cache::lookup(h).unwrap_or_else(|| {
+                        let p = inline_ink_of(&png);
+                        super::ink_cache::store(h, p);
+                        p
+                    })
+                });
                 span.math = Some(SpanMath::Raster {
                     id: next_id,
                     png,
@@ -268,15 +274,6 @@ pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
     for b in blocks.iter_mut() {
         b.for_each_spans_mut(&mut rasterise);
     }
-}
-
-/// Content hash of an inline raster's PNG bytes — to measure its ink once per distinct
-/// image (a book that ships ℝ as its own tiny `<img>` reuses it hundreds of times).
-fn inline_hash(png: &[u8]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    png.hash(&mut h);
-    h.finish()
 }
 
 /// Measure one inline raster's ink profile (decodes the image). Called from
@@ -352,17 +349,24 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
         if !candidate {
             continue;
         }
-        let Some(img) = crate::media::decode(data) else {
-            continue;
+        let key = super::ink_cache::hash(data);
+        *ink = if let Some(cached) = super::ink_cache::lookup(key) {
+            cached // served from disk — no decode
+        } else {
+            let Some(img) = crate::media::decode(data) else {
+                continue; // decode failure (rare) — leave unmeasured, don't cache
+            };
+            let profile = crate::media::ink_profile(&img).map(|p| delryn_model::InkProfile {
+                x0: p.x0,
+                y0: p.y0,
+                x1: p.x1,
+                y1: p.y1,
+                line_px: p.line_px,
+                line_count: p.line_count,
+            });
+            super::ink_cache::store(key, profile);
+            profile
         };
-        *ink = crate::media::ink_profile(&img).map(|p| delryn_model::InkProfile {
-            x0: p.x0,
-            y0: p.y0,
-            x1: p.x1,
-            y1: p.y1,
-            line_px: p.line_px,
-            line_count: p.line_count,
-        });
     }
     unify_book_em(blocks, section);
 }
