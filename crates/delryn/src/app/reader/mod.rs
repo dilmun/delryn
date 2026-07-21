@@ -221,9 +221,6 @@ pub struct Reader {
     pub search: SearchState,
     /// Decoded section blocks + the background loader (cache, channels, worker).
     sections: SectionCache,
-    /// Terminal image ids evicted from the cache, to be deleted from the
-    /// terminal by the main loop.
-    pending_deletes: Vec<u32>,
     /// Text queued to be copied to the system clipboard by the main loop.
     pending_clipboard: Option<String>,
     /// An external link the user activated, awaiting the app's open-in-browser
@@ -374,7 +371,6 @@ impl Reader {
             nav: NavState::default(),
             search: SearchState::default(),
             sections,
-            pending_deletes: Vec::new(),
             pending_clipboard: None,
             pending_open: None,
             flash: None,

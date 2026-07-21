@@ -704,11 +704,6 @@ impl Reader {
         self.inline_needs_clear.replace(false)
     }
 
-    /// Drain terminal image ids that should be deleted (evicted from cache).
-    pub fn take_image_deletes(&mut self) -> Vec<u32> {
-        std::mem::take(&mut self.pending_deletes)
-    }
-
     /// Returning from the full-screen image viewer: drop the current section's
     /// cached image protocols (freeing their terminal ids) and invalidate the remap
     /// key so `sync_images` rebuilds them with **fresh** ids and re-transmits.

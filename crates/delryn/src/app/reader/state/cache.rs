@@ -49,8 +49,8 @@ impl SectionCache {
                 let msg = if index.abs_diff(cur) > LOADER_RADIUS {
                     (index, None) // stale: reader moved on; leave it re-requestable
                 } else {
-                    // Render display math to images here, off the main thread
-                    // (disk-cached), so the section arrives ready to wrap.
+                    // Parse the section and rasterise/measure its math here, off the main
+                    // thread, so the section arrives ready to wrap.
                     let mut blocks = loader.load(index);
                     crate::app::reader::math::convert_math_blocks(&mut blocks);
                     crate::app::reader::math::convert_inline_math(&mut blocks);

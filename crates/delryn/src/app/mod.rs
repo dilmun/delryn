@@ -593,14 +593,12 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// Terminal image ids to delete: covers evicted from the library grid cache,
-    /// images evicted from the reader's cache, and figures the image viewer has
-    /// finished with (superseded while open, or its last image once closed).
+    /// Terminal image ids to delete: covers evicted from the library grid cache, and
+    /// figures the image viewer has finished with (superseded while open, or its last
+    /// image once closed). The reader's inline/figure images are freed by the InlineDeck
+    /// directly (it emits `d=I` when an image leaves the screen), not through this queue.
     pub fn take_image_deletes(&mut self) -> Vec<u32> {
         let mut ids = std::mem::take(&mut self.library.grid_deletes);
-        if let Some(r) = self.reader.as_mut() {
-            ids.extend(r.take_image_deletes());
-        }
         // The open viewer frees each figure it moves off (mode toggle / navigation);
         // a closed viewer's last image is carried across the drop in this queue.
         if let Overlay::ImageView(v) = &mut self.overlay {
