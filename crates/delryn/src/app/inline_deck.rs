@@ -87,11 +87,6 @@ impl InlineDeck {
             return Vec::new();
         }
         let now: HashSet<ImgKey> = targets.iter().map(|t| t.key).collect();
-        let was: HashMap<ImgKey, (Rect, Option<Crop>)> = self
-            .shown
-            .iter()
-            .map(|t| (t.key, (t.rect, t.crop)))
-            .collect();
         let mut out = Vec::new();
 
         // Free every resident image no longer on screen (data + placements), so a
@@ -106,19 +101,23 @@ impl InlineDeck {
             out.push(media::delete_image_seq(id));
             self.resident.remove(&k);
         }
+        // Clear the placements of every still-resident image before re-placing them below
+        // (`d=i` keeps the image *data* resident — no re-transmit). An image reused at many
+        // spots is placed once per occurrence with a distinct placement id; clearing first
+        // means a changed set / changed positions can't leave stale placements behind.
+        for id in self.resident.values() {
+            out.push(media::delete_placement_seq(*id));
+        }
 
-        // Place each target: an already-resident image is re-placed only if it moved; a
-        // new one is transmitted (capped per frame) then placed. A not-yet-built image is
-        // skipped this frame and retried the next.
+        // Place each target. The SAME image at several spots needs a DISTINCT placement id
+        // per occurrence — otherwise every placement shares `p=0` and only the last shows
+        // (the repeated-symbol drop-out). A not-yet-resident image is transmitted first
+        // (capped per frame); a not-yet-built one is skipped and retried next frame.
         let mut placed = Vec::with_capacity(targets.len());
         let mut new_uploads = 0usize;
+        let mut placement: HashMap<u32, u32> = HashMap::new(); // image id → next placement id
         for t in targets {
             let id = if let Some(&id) = self.resident.get(&t.key) {
-                if was.get(&t.key) == Some(&(t.rect, t.crop)) {
-                    placed.push(*t); // already placed exactly here — nothing to emit
-                    continue;
-                }
-                out.push(media::delete_placement_seq(id)); // moved: drop old placement, keep data
                 id
             } else {
                 if new_uploads >= Self::NEW_UPLOADS_PER_FRAME {
@@ -135,6 +134,8 @@ impl InlineDeck {
                 new_uploads += 1;
                 id
             };
+            let p = placement.entry(id).or_insert(0);
+            *p += 1;
             // `place_image_seq` takes 1-based cell coords.
             out.push(media::place_image_seq(
                 id,
@@ -143,6 +144,7 @@ impl InlineDeck {
                 t.rect.width,
                 t.rect.height,
                 t.crop,
+                *p,
             ));
             placed.push(*t);
         }
@@ -246,5 +248,40 @@ mod tests {
         let transmits = out.iter().filter(|e| e.contains("a=t")).count();
         assert_eq!(transmits, InlineDeck::NEW_UPLOADS_PER_FRAME, "capped");
         assert!(deck.deferred(), "flags more work pending");
+    }
+
+    #[test]
+    fn same_image_at_many_spots_gets_distinct_placements() {
+        // A symbol reused across a page (`ℝ`) is one cached image placed at several
+        // spots at once. Each occurrence must get its own placement id — otherwise they
+        // all collapse onto `p=0` and only the last shows (the repeated-symbol drop-out).
+        let mut deck = InlineDeck::default();
+        let k = key(0);
+        let a = InlineTarget {
+            key: k,
+            rect: Rect::new(1, 1, 1, 1),
+            crop: None,
+        };
+        let b = InlineTarget {
+            key: k,
+            rect: Rect::new(5, 1, 1, 1),
+            crop: None,
+        };
+        let c = InlineTarget {
+            key: k,
+            rect: Rect::new(9, 1, 1, 1),
+            crop: None,
+        };
+        let out = deck.render(&[a, b, c], |_| Some(vec![1]));
+        // Transmitted once …
+        assert_eq!(
+            out.iter().filter(|e| e.contains("a=t")).count(),
+            1,
+            "one transmit for the shared image"
+        );
+        // … placed three times, each with a distinct placement id, so all three show.
+        assert!(out.iter().any(|e| e.contains("p=1")), "placement p=1");
+        assert!(out.iter().any(|e| e.contains("p=2")), "placement p=2");
+        assert!(out.iter().any(|e| e.contains("p=3")), "placement p=3");
     }
 }

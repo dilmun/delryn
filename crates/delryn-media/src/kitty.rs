@@ -105,12 +105,14 @@ pub fn transmit_file_seq(id: u32, path: &str) -> String {
 /// box). This is how page zoom/pan places a sub-window of the full page raster.
 /// `None` shows the whole image (byte-identical to the un-cropped placement).
 ///
-/// Deliberately **no placement id** (`p=`): placements key on the
-/// (image-id, placement-id) pair, so two images sharing a placement id make the
-/// second delete the first (the two-page spread's left page went blank). Without
-/// `p=`, each image gets its own placement and they coexist — the approach the
-/// reference kitty PDF viewer (`termpdf.py`) uses. The cursor is saved/restored
-/// (`\x1b7`/`\x1b8`) so the surrounding TUI is undisturbed.
+/// Placements key on the `(image-id, placement-id)` pair. `placement = 0` omits `p=`
+/// (the default placement): fine when every placed image has a **distinct** id (the PDF
+/// pages of a spread), where sharing the default placement id would make the second image
+/// delete the first (the left page went blank). When the **same** image is placed at many
+/// spots at once — an inline symbol like `ℝ` reused across a page — each occurrence needs
+/// its **own non-zero `placement`** id, or they all share `p=0` and every placement but the
+/// last is overwritten. The cursor is saved/restored (`\x1b7`/`\x1b8`) so the surrounding
+/// TUI is undisturbed.
 pub fn place_image_seq(
     id: u32,
     col: u16,
@@ -118,12 +120,18 @@ pub fn place_image_seq(
     cols: u16,
     rows: u16,
     crop: Option<(u32, u32, u32, u32)>,
+    placement: u32,
 ) -> String {
     let src = match crop {
         Some((x, y, w, h)) => format!(",x={x},y={y},w={w},h={h}"),
         None => String::new(),
     };
-    format!("\x1b7\x1b[{row};{col}H\x1b_Ga=p,i={id},c={cols},r={rows}{src},q=2\x1b\\\x1b8")
+    let pid = if placement > 0 {
+        format!(",p={placement}")
+    } else {
+        String::new()
+    };
+    format!("\x1b7\x1b[{row};{col}H\x1b_Ga=p,i={id}{pid},c={cols},r={rows}{src},q=2\x1b\\\x1b8")
 }
 
 #[cfg(test)]

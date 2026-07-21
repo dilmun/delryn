@@ -228,6 +228,7 @@ impl PageDeck {
                 t.rect.width,
                 t.rect.height,
                 t.crop,
+                0, // pages have distinct image ids; the default placement is fine
             ));
         }
         self.shown = targets.to_vec();
