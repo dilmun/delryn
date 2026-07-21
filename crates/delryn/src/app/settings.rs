@@ -113,7 +113,7 @@ impl SettingItem {
             SettingItem::StatusClock => "Clock",
             SettingItem::ImageMaxPx => "Max resolution (px)",
             SettingItem::ImageWidthPct => "Figure width %",
-            SettingItem::ImageFit => "Figure sizing",
+            SettingItem::ImageFit => "Image & equation sizing",
             SettingItem::ImageMode => "Image mode",
             SettingItem::GraphicalMath => "Graphical math",
             SettingItem::GraphicalInlineMath => "Graphical inline math",
@@ -185,7 +185,11 @@ impl SettingItem {
                 }
             }
             SettingItem::ImageWidthPct => format!("{}%", c.image_width_pct),
-            SettingItem::ImageFit => c.image_fit.label().to_string(),
+            SettingItem::ImageFit => match c.image_fit {
+                crate::config::ImageFit::Fit => "normalized",
+                crate::config::ImageFit::Faithful => "publisher size",
+            }
+            .to_string(),
             SettingItem::ImageMode => c.image_mode.label().to_string(),
             SettingItem::GraphicalMath => onoff(c.graphical_math),
             SettingItem::GraphicalInlineMath => onoff(c.graphical_inline_math),

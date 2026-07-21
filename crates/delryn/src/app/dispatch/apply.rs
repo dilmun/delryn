@@ -105,22 +105,6 @@ impl App {
                 reader.flash = Some(format!("mode: {}", mode.label()));
                 save = true;
             }
-            Action::CycleImageFit => {
-                // Toggle normalized ↔ publisher-native image/equation sizing. It's part of the
-                // image remap key, so the current section rebuilds at the new size next frame
-                // (viewport-first); persist it as a global default, like the theme.
-                self.config.image_fit = self.config.image_fit.next();
-                let native = self.config.image_fit == crate::config::ImageFit::Faithful;
-                reader.flash = Some(
-                    if native {
-                        "images: publisher size"
-                    } else {
-                        "images: normalized"
-                    }
-                    .to_string(),
-                );
-                self.config.save();
-            }
             Action::ToggleFocus => self.config.focus_mode = !self.config.focus_mode,
             // `]` widens the text (less margin), `[` narrows it (more margin).
             Action::WidthUp => {

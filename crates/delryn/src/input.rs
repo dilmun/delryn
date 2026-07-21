@@ -57,9 +57,6 @@ pub enum Action {
     CycleView,
     CycleTheme,
     CycleReadingMode,
-    /// Toggle image/equation sizing between normalized (delryn's consistent size) and
-    /// faithful (the publisher's own resolution / authored size).
-    CycleImageFit,
     ToggleFocus,
     WidthDown,
     WidthUp,
@@ -187,7 +184,6 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('w') => Action::NextElement,
         KeyCode::Char('b') if !ctrl => Action::PrevElement,
         KeyCode::Char('p') => Action::TogglePaged,
-        KeyCode::Char('i') => Action::CycleImageFit,
         KeyCode::Char('e') => Action::NextAnchor,
         KeyCode::Char('E') => Action::PrevAnchor,
         KeyCode::Esc => Action::ClearAnchor,
