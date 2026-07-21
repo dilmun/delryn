@@ -382,14 +382,17 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
         // viewport so it can't take over the screen.
         GraphicKind::EquationRaster if fit.fit_mode == ImageFit::Faithful => cap.min(1.0),
         GraphicKind::EquationRaster => {
-            // The general pixel algorithm first — no publisher metadata: measure the raster's
-            // own ink and bring one glyph line to the text-relative target, scaling a too-big
-            // raster *down* and a too-small one *up*. Every equation — a publisher raster or
-            // delryn's own typeset render — is measured the same way, so both land at the
-            // same size and a tall matrix is normalised per-line instead of rendering at its
-            // native, oversized layout. DPI drops out (the measurement is on the pixels).
+            // Measure the raster's own ink and bring one glyph line to the text-relative
+            // target, so an *oversized* raster (higher-DPI than the rest) shrinks to match.
             let s = match spec.ink {
-                Some(p) => fhf * EQ_TARGET_LINE_CELLS * knob / f64::from(p.line_px),
+                // Cap *enlargement* at the publisher's native size scaled by the knob (native
+                // is scale 1.0, so native × knob = `knob`). An equation is never blown up past
+                // how it was authored: a matrix's small element em gives a large `s` that would
+                // otherwise enlarge the whole tall matrix and explode it — instead it renders
+                // at native (`s = knob`, i.e. native at the default 100%), consistent with its
+                // neighbours and with Faithful mode. Only a *too-big* raster (`s < knob`) is
+                // shrunk toward the target. "Math size %" scales the book up from native.
+                Some(p) => (fhf * EQ_TARGET_LINE_CELLS * knob / f64::from(p.line_px)).min(knob),
                 // No measurable ink (rare): fall back to the authored em width if the
                 // publisher gave one, else the legacy low-res boost (never shrinks).
                 None => match spec.hint {
@@ -400,7 +403,7 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
                 },
             };
             let s = s.min(cap); // fit the column / viewport
-            if s > 1.0 { s.min(MAX_UPSCALE) } else { s } // quality-cap enlargement only
+            if s > 1.0 { s.min(MAX_UPSCALE) } else { s } // quality-cap the fallback boost
         }
         GraphicKind::Figure => {
             // The display width the figure should occupy: a consistent fraction of

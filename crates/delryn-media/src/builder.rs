@@ -84,8 +84,9 @@ mod geo_cache {
     /// **constants** (e.g. `EQ_TARGET_LINE_CELLS`) aren't in [`key`], so a change to them
     /// must bump this or a stale-sized raster is served from disk. (v3: display-equation
     /// target lowered from 1.15 to 0.9 cells. v4: per-equation em, not one forced median.
-    /// v5: display target dropped to prose size.)
-    pub const VERSION: u32 = 5;
+    /// v5: display target dropped to prose size. v6: cap equation enlargement at native
+    /// size so matrices don't explode.)
+    pub const VERSION: u32 = 6;
 
     /// The cache key for a build's geometry: everything that determines the *pre-theme*
     /// raster. The render policy is excluded on purpose (theme is applied after a load).
