@@ -29,24 +29,6 @@ fn inline_content_key(png: &[u8]) -> usize {
     h.finish() as usize
 }
 
-/// How far a single inline equation's measured em may sit from the section median before it
-/// is clamped toward it. Tighter than the display-equation band ([`EM_CLAMP_*`]): the inline
-/// ink measurement is noisier (subscripts/superscripts/fractions throw the per-image
-/// cap-height off), and this book — like most — sets all its math at one size, so pulling
-/// outliers close to the median is what makes inline equations flow at a consistent size.
-const INLINE_EM_CLAMP_LO: f32 = 0.82;
-const INLINE_EM_CLAMP_HI: f32 = 1.20;
-
-/// The median of `vals` (sorted in place); `None` if empty. Robust to the per-image em
-/// measurement noise, so one bad reading can't move the section's normalisation size.
-fn median(vals: &mut [f32]) -> Option<f32> {
-    if vals.is_empty() {
-        return None;
-    }
-    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    Some(vals[vals.len() / 2])
-}
-
 /// Map a block's authored width, math flag, and caption presence to the media
 /// layer's sizing intent. A caption is the reliable figure/table-vs-equation
 /// signal: figures and tables are captioned and normalize to the column band;
@@ -471,13 +453,12 @@ impl Reader {
                 ink_by_ck.insert(ck, media_ink);
             }
         }
-        // Robust section em: the median of the distinct atoms' measured ems. The whole book is
-        // set at one font size, so one normalisation em is correct; the median shrugs off the
-        // per-image ink-measurement noise (a `lim` stack measures too tall, a fraction too
-        // short) that otherwise makes lone equations render huge or tiny. Each atom's own em is
-        // then *clamped* toward it (Pass 2), so a well-measured equation keeps its exact size
-        // while an outlier is reined in. Needs a few samples to be meaningful.
-        let section_em = (ems.len() >= 3).then(|| median(&mut ems)).flatten();
+        // The book's one inline em: pool this section's atom ems book-wide and take the
+        // robust median — the SAME uniform, no-clamp model the display equations use, just
+        // its own (smaller) em. Inline math is one font size across the book, so one em is
+        // correct; every atom is then normalised by it (Pass 2), so all inline equations flow
+        // at the same size regardless of the per-image cap-height noise. `None` early on.
+        let book_em = crate::app::reader::math::book_inline_em(section, ems);
 
         // Pass 2 — reserve cells and dispatch builds, sizing each atom against the section em.
         let cap: std::collections::HashSet<usize> =
@@ -490,18 +471,17 @@ impl Reader {
                 };
                 let ck = inline_content_key(png);
                 let capped = !cap.contains(&ck);
-                // Size on the measured ink, but with the em clamped toward the section median
-                // so every inline equation flows at the same prose size regardless of the
-                // per-image measurement noise. Keep each raster's own ink bbox (a fraction is
-                // still taller than a symbol) and DPI (the clamp only reins in outliers).
+                // Normalise every atom by the book's one inline em (uniform, no clamp), so all
+                // inline equations flow at the same size — a fraction-heavy atom that
+                // under-measures and a bracket-connected one that over-measures both size to
+                // the book em, like the display path. Each raster keeps its own ink bbox (a
+                // fraction is still taller than a symbol) so it renders at its true height.
                 let ink = if capped {
                     None
                 } else {
                     ink_by_ck.get(&ck).copied().flatten().map(|mut p| {
-                        if let Some(em) = section_em {
-                            p.line_px = p
-                                .line_px
-                                .clamp(em * INLINE_EM_CLAMP_LO, em * INLINE_EM_CLAMP_HI);
+                        if let Some(em) = book_em {
+                            p.line_px = em;
                         }
                         p
                     })

@@ -31,6 +31,13 @@ use super::Reader;
 /// its rasters carry their own resolution and must not be sized by the previous book.
 static BOOK_EMS: Mutex<BTreeMap<usize, Vec<f32>>> = Mutex::new(BTreeMap::new());
 
+/// The book-wide pool of **inline** equation ems — a *separate* font size from the display
+/// equations, since publishers set inline math a touch smaller so it flows with the prose.
+/// Pooled per section and medianed exactly like [`BOOK_EMS`], so every inline equation is
+/// sized by the book's one inline em (see [`book_inline_em`]) — the same uniform, no-clamp
+/// model as the display path, just its own em. Reset per book.
+static BOOK_INLINE_EMS: Mutex<BTreeMap<usize, Vec<f32>>> = Mutex::new(BTreeMap::new());
+
 /// The book-wide reference em in effect (×100; `0` = unset), and a generation that ticks
 /// only when it *shifts meaningfully*. Early on — before the pool has enough correctly-
 /// measured equations — the reference can move as sections load; a section baked against
@@ -54,8 +61,29 @@ pub(crate) fn reset_book_ems() {
     if let Ok(mut pool) = BOOK_EMS.lock() {
         pool.clear();
     }
+    if let Ok(mut pool) = BOOK_INLINE_EMS.lock() {
+        pool.clear();
+    }
     BOOK_REF.store(0, Ordering::Relaxed);
     BOOK_REF_SEEN.store(BOOK_REF_GEN.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
+/// The book's one **inline** equation em: pool this section's measured atom ems book-wide
+/// and return the robust median — the size every inline equation is normalised to, exactly
+/// as [`unify_book_em`] does for display equations (a separate em, since inline math is set
+/// smaller). `None` below a few samples, where the pool isn't yet meaningful.
+pub(crate) fn book_inline_em(section: usize, section_ems: Vec<f32>) -> Option<f32> {
+    let Ok(mut pool) = BOOK_INLINE_EMS.lock() else {
+        return None;
+    };
+    if section_ems.is_empty() {
+        pool.remove(&section);
+    } else {
+        pool.insert(section, section_ems);
+    }
+    let all: Vec<f32> = pool.values().flatten().copied().collect();
+    drop(pool);
+    book_reference(&all)
 }
 
 /// Whether display equations are rendered graphically (config on + graphics
@@ -339,24 +367,21 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
     unify_book_em(blocks, section);
 }
 
-/// Clamp each equation's measured em toward the book's typical em, so a badly-measured
-/// outlier can't render far off — while every normally-measured equation keeps its **own**
-/// measurement and so normalises to exactly the text-relative target. This section's ems
-/// join the book-wide pool ([`BOOK_EMS`]); the typical em is drawn from **every** equation
-/// seen so far, then used as the clamp centre for this section.
+/// Set every equation in the book to **one** em — the book's typical glyph size. A book
+/// renders all its equations at a single font size, so there is one correct em; sizing each
+/// equation by its *own* measured em instead only ever injects the measurement's noise,
+/// because the cap-height estimate is unreliable per-equation: a fraction- or superscript-
+/// heavy equation undershoots (its many small glyphs collapse the operator cut), and a
+/// bracket-connected matrix — measured as a single tall component — overshoots. Measured
+/// across the whole book, though, the noise averages out: the pool's **median** ([`BOOK_EMS`]
+/// → [`book_reference`]) is the robust centre the correctly-measured equations agree on.
 ///
-/// Sizing each equation by its own em is what makes it DPI-independent — an equation shipped
-/// at a higher pixel resolution must not render larger. (An earlier version instead *forced*
-/// every equation to one shared em; that made displayed size track the raw raster resolution,
-/// which varies per image, so equations at different DPI came out at visibly different sizes.)
-///
-/// The clamp centre is the pool's **upper-quartile (p75) em, not the median**, because the
-/// measurement only ever errs *low*: a fraction-heavy equation (`1/n Σ`, `x̄ ± Z(σ/√n)`) is
-/// mostly small numerator/denominator/limit glyphs, so its handful of full-height cap letters
-/// are a minority the cap-height estimate undershoots. Biasing the centre high means a whole
-/// page of such undershot equations is clamped up toward the book's correctly-measured size
-/// rather than left oversized. Below a few samples the pool isn't meaningful yet, so each
-/// equation keeps its own measurement unclamped.
+/// So this pools this section's ems book-wide and assigns that one median em to every
+/// equation. Each raster is then scaled by the same factor, so its own glyphs land at the
+/// text target and it renders at its true proportional height — uniform sizing with no
+/// per-equation guesswork and no clamp. (This assumes the book is single-DPI, which real
+/// EPUB toolchains are: all equations are rasterised at one resolution.) Below a few samples
+/// the pool isn't meaningful yet, so each equation keeps its own measurement.
 fn unify_book_em(blocks: &mut [Block], section: usize) {
     let section_ems: Vec<f32> = blocks
         .iter()
@@ -386,38 +411,31 @@ fn unify_book_em(blocks: &mut [Block], section: usize) {
     }
     for b in blocks.iter_mut() {
         if let Block::Image { ink: Some(p), .. } = b {
-            // Per-equation normalisation: each raster is sized by its OWN measured em, so a
-            // well-measured equation lands at *exactly* the text-relative target — this is
-            // what keeps sizing DPI-independent (an equation shipped at a higher pixel
-            // resolution isn't rendered larger). Forcing every equation to one shared em did
-            // the opposite: it made displayed size track the raw raster resolution, so
-            // equations at different DPI came out at visibly different sizes. We only *clamp*
-            // a wildly out-of-range em toward the book's typical, so a single badly-measured
-            // outlier can't render far off; everything in-band keeps its own measurement.
-            p.line_px = p
-                .line_px
-                .clamp(reference * EM_CLAMP_LO, reference * EM_CLAMP_HI);
+            // Assign the book's one em to every equation. The per-equation cap-height
+            // measurement is unreliable (a fraction/superscript-heavy equation undershoots,
+            // a bracket-connected matrix overshoots), but the book is single-DPI so there is
+            // one true em — the robust pool median. Sizing every raster by it makes each
+            // equation's glyphs land at the text target and render at its true proportional
+            // height, so sizes are uniform across the book with no per-equation guesswork.
+            p.line_px = reference;
         }
     }
 }
 
-/// How far a single equation's measured em may sit from the book's typical em before it is
-/// clamped toward it — wide, so only a clearly mis-measured outlier is pulled in and every
-/// normally-measured equation keeps its own em (and so normalises to exactly the target).
-const EM_CLAMP_LO: f32 = 0.7;
-const EM_CLAMP_HI: f32 = 1.5;
-
-/// The shared equation em from a pool of measured ems: the **upper quartile** — biased
-/// high because the ink measurement only ever errs *low* (see [`unify_book_em`]) — so
-/// undershooting equations are levelled *up* to the size the correctly-measured majority
-/// agree on. `None` below a few samples, where the pool isn't yet meaningful.
+/// The book's one equation em, from a pool of measured ems: the **median** — the robust
+/// centre of the cluster the correctly-measured equations agree on, unmoved by the
+/// mis-measured minority that errs both ways (a fraction-heavy equation undershoots; a
+/// bracket-connected matrix, measured as one component, overshoots). Every equation in a
+/// book is set at one font size, so this single value is the book's true glyph em; the
+/// reader sizes every equation by it (see [`unify_book_em`]). `None` below a few samples,
+/// where the pool isn't yet meaningful.
 fn book_reference(ems: &[f32]) -> Option<f32> {
     if ems.len() < 3 {
         return None;
     }
     let mut sorted = ems.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    Some(sorted[(sorted.len() * 3) / 4])
+    Some(sorted[sorted.len() / 2])
 }
 
 impl Reader {
@@ -762,18 +780,15 @@ mod tests {
         ENABLED.store(false, Ordering::Relaxed); // don't leak to other tests
     }
 
-    /// The shared reference is the pool's upper quartile, so a mis-measured (undershot)
-    /// equation is levelled *up* to what the correctly-measured majority agree on — not
-    /// the median, which a page of uniformly-undershot equations would drag down.
+    /// The shared reference is the pool **median** — the robust centre of the cluster the
+    /// correctly-measured equations agree on, unmoved by the mis-measured minority that
+    /// errs *both* ways (an undershot fraction; an overshot bracket-connected matrix).
     #[test]
-    fn book_reference_biases_to_the_upper_quartile() {
-        // Three well-measured (~20px) equations and one undershot outlier (6px).
-        assert_eq!(book_reference(&[20.0, 21.0, 19.0, 6.0]), Some(21.0));
-        // A whole page of undershot metrics next to the book's correct ones snaps up.
-        assert_eq!(
-            book_reference(&[17.0, 17.0, 18.0, 24.0, 24.0, 24.0, 24.0]),
-            Some(24.0)
-        );
+    fn book_reference_is_the_robust_median() {
+        // Well-measured (~20px) equations with outliers on both sides: median ignores them.
+        assert_eq!(book_reference(&[6.0, 19.0, 20.0, 21.0, 90.0]), Some(20.0));
+        // A low outlier alone doesn't drag the centre down.
+        assert_eq!(book_reference(&[20.0, 21.0, 19.0, 6.0]), Some(20.0));
         // Below a few samples the pool isn't meaningful yet.
         assert_eq!(book_reference(&[20.0, 20.0]), None);
     }

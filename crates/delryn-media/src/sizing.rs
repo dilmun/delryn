@@ -116,6 +116,25 @@ const ARRAY_MAX_LINES: u16 = 16;
 /// stays the Unicode fallback.
 const INLINE_MAX_ROWS: u16 = 2;
 
+/// A publisher "inline" equation image this wide (ink bbox width ÷ height) — or with an
+/// ink stack this tall (see [`INLINE_STACK_LINES`]) — is really a *display* equation the
+/// book merely tagged inline (a wide matrix product, a full derivation). Sized at the
+/// compact inline cap-height it collapses to a sliver once shrunk to the column, so above
+/// this threshold it is sized like a **block** equation instead (fills the column at the
+/// display target over a generous row budget). A genuine mid-line fragment — a symbol, a
+/// short fraction — stays below it and keeps the text-matching inline size.
+const INLINE_DISPLAY_ASPECT: f64 = 5.0;
+
+/// An inline equation whose ink is at least this many lines tall is a stacked display
+/// equation (a bracketed matrix, a `cases`), sized like a block equation regardless of
+/// its width so it reads at full size rather than being squashed into two rows.
+const INLINE_STACK_LINES: u16 = 3;
+
+/// Row budget for an inline equation promoted to **display** sizing (see
+/// [`INLINE_DISPLAY_ASPECT`]) — generous enough for a tall bracketed matrix to render at
+/// its natural, readable height on its own line rather than being squashed.
+const INLINE_STACK_MAX_ROWS: u16 = 6;
+
 /// Natural height (in text cells) at or below which an inline equation stays **one**
 /// row — a script-only equation (`xᵢ²`, `√2`) or a compact stack that shrinks cleanly
 /// into a single cell. Above it (a real two-line fraction) the equation keeps native
@@ -185,13 +204,18 @@ enum GraphicKind {
 /// alt text that parses as math ⇒ equation; a caption ⇒ figure; else the measured
 /// ink — sparse line-art with few lines ⇒ equation, anything denser or unprofiled ⇒
 /// figure.
-fn classify(spec: SizeSpec, fit_mode: ImageFit) -> GraphicKind {
+fn classify(spec: SizeSpec) -> GraphicKind {
     if matches!(spec.hint, SizeHint::Full) {
         return GraphicKind::Page;
     }
     if spec.inline {
         return GraphicKind::InlineMath;
     }
+    // Equations are told apart from figures FIRST, and the same way in every fit mode: an
+    // equation is always sized text-relative (it has no meaningful authored size), so the
+    // faithful/fit mode only ever affects how a *figure* is sized — never whether a graphic
+    // is an equation. (This is the fix for equations exploding to native size in faithful
+    // mode: they were short-circuited to `Figure` before the ink check ran.)
     if spec.math {
         // A publisher equation raster (profiled ink, or an authored `em` width — either
         // gives a text-relative size) is normalised; an unprofiled one with no size hint
@@ -202,15 +226,17 @@ fn classify(spec: SizeSpec, fit_mode: ImageFit) -> GraphicKind {
             None => GraphicKind::RenderedMath,
         };
     }
-    if fit_mode != ImageFit::Fit {
-        return GraphicKind::Figure;
-    }
     if spec.alt_math {
         return GraphicKind::EquationRaster;
     }
+    // A caption marks a figure/table — equations are never captioned.
     if spec.captioned {
         return GraphicKind::Figure;
     }
+    // The one heuristic that tells an unlabelled publisher equation raster from a figure:
+    // sparse line-art (few ink lines) is an equation; a dense diagram / photo, or an
+    // unprofiled image, is a figure. Applied in both fit modes so equation sizing stays
+    // consistent (a figure the profiler left unmeasured has `ink = None` and falls through).
     match spec.ink {
         Some(p) if p.line_count <= ARRAY_MAX_LINES => GraphicKind::EquationRaster,
         _ => GraphicKind::Figure,
@@ -260,26 +286,36 @@ pub(crate) fn inline_fit(fit: FitBox, ink: InkProfile, knob: f64) -> InlineFit {
     let (fwf, fhf) = (f64::from(fit.fw.max(1)), f64::from(fit.fh.max(1)));
     let (bw, bh) = ink.bbox_dims();
     let line = f64::from(ink.line_px).max(1.0);
-    // One ink line → the inline target; the whole ink scales with it.
-    let mut scale = INLINE_LINE_CELLS * fhf * knob / line;
-    // Never exceed the inline row budget (a tall fraction) …
-    let max_h = f64::from(INLINE_MAX_ROWS) * fhf;
+    // A wide matrix product or a tall stack the publisher tagged "inline" is really a
+    // display equation: size it like a block equation (the larger display target over a
+    // generous row budget) so it fills the column and reads at full size instead of
+    // shrinking to a sliver. A genuine mid-line fragment keeps the text-matching size.
+    let display = bw >= bh * INLINE_DISPLAY_ASPECT || ink.line_count >= INLINE_STACK_LINES;
+    let (target, max_rows) = if display {
+        (EQ_TARGET_LINE_CELLS, INLINE_STACK_MAX_ROWS)
+    } else {
+        (INLINE_LINE_CELLS, INLINE_MAX_ROWS)
+    };
+    // One ink line → the target; the whole ink scales with it.
+    let mut scale = target * fhf * knob / line;
+    // Never exceed the row budget (a tall fraction / a display stack) …
+    let max_h = f64::from(max_rows) * fhf;
     if bh * scale > max_h {
         scale = max_h / bh;
     }
-    // … nor the column width (a long expression shrinks to fit, like any equation).
+    // … nor the column width (a long expression fills the column, like any equation).
     let max_w = f64::from(fit.cols.max(1)) * fwf;
     if bw * scale > max_w {
         scale = max_w / bw;
     }
     let draw_w = (bw * scale).round().max(1.0);
     let draw_h = (bh * scale).round().max(1.0);
-    // Ink cell height (a script-only symbol is 1, a fraction 2). A multi-cell equation
-    // reserves an **odd** canvas centred on the text row — one spacer row above and one
-    // below — so its bar straddles the line of text instead of hanging under it (the
-    // builder centres the ink in this canvas, and the reader draws it starting `(rows-1)/2`
-    // rows above the text line). A single-cell symbol needs no spacer.
-    let ink_rows = ((draw_h / fhf).ceil() as u16).clamp(1, INLINE_MAX_ROWS);
+    // Ink cell height (a script-only symbol is 1, a fraction 2, a display stack more). A
+    // multi-cell equation reserves an **odd** canvas centred on the text row — equal spacer
+    // rows above and below — so its bar straddles the line of text instead of hanging under
+    // it (the builder centres the ink in this canvas, and the reader draws it starting
+    // `(rows-1)/2` rows above the text line). A single-cell symbol needs no spacer.
+    let ink_rows = ((draw_h / fhf).ceil() as u16).clamp(1, max_rows);
     let rows = if ink_rows <= 1 {
         1
     } else {
@@ -317,7 +353,7 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
     let cap = (f64::from(fit.cols) * fwf / bw).min(f64::from(fit.rows) * fhf / bh);
     let knob = f64::from(fit.math_scale) / 100.0;
 
-    let kind = classify(spec, fit.fit_mode);
+    let kind = classify(spec);
     let mut scale = match kind {
         GraphicKind::Page => cap,
         // Sized by its render em, shown **native** (like RenderedMath) so the base
@@ -673,30 +709,20 @@ mod tests {
             math: true,
             ..eq(100, 16, 16.0, 1)
         };
-        assert_eq!(classify(page, ImageFit::Fit), GraphicKind::Page);
-        assert_eq!(classify(math, ImageFit::Fit), GraphicKind::RenderedMath);
-        assert_eq!(classify(pub_eq, ImageFit::Fit), GraphicKind::EquationRaster);
-        assert_eq!(classify(alt, ImageFit::Fit), GraphicKind::EquationRaster);
-        assert_eq!(classify(fig(), ImageFit::Fit), GraphicKind::Figure);
+        assert_eq!(classify(page), GraphicKind::Page);
+        assert_eq!(classify(math), GraphicKind::RenderedMath);
+        assert_eq!(classify(pub_eq), GraphicKind::EquationRaster);
+        assert_eq!(classify(alt), GraphicKind::EquationRaster);
+        assert_eq!(classify(fig()), GraphicKind::Figure);
         // Ink line-art with few lines is an equation; many lines reads as a figure.
-        assert_eq!(
-            classify(eq(100, 16, 16.0, 1), ImageFit::Fit),
-            GraphicKind::EquationRaster
-        );
-        assert_eq!(
-            classify(eq(100, 400, 16.0, 20), ImageFit::Fit),
-            GraphicKind::Figure
-        );
-        // Faithful mode never treats a graphic as an equation (authored width wins).
-        assert_eq!(
-            classify(eq(100, 16, 16.0, 1), ImageFit::Faithful),
-            GraphicKind::Figure
-        );
+        assert_eq!(classify(eq(100, 16, 16.0, 1)), GraphicKind::EquationRaster);
+        assert_eq!(classify(eq(100, 400, 16.0, 20)), GraphicKind::Figure);
+        // An equation is classified the same in EVERY fit mode — sized text-relative, never
+        // as a figure at authored/native size (the faithful-mode "explode" bug). Fit mode
+        // only affects how a *figure* is sized, so classification no longer takes it.
+        assert_eq!(classify(eq(100, 16, 16.0, 1)), GraphicKind::EquationRaster);
         // Unprofiled + uncaptioned + no math signal ⇒ a figure, not an equation.
-        assert_eq!(
-            classify(SizeSpec::default(), ImageFit::Fit),
-            GraphicKind::Figure
-        );
+        assert_eq!(classify(SizeSpec::default()), GraphicKind::Figure);
     }
 
     /// An uncaptioned graphic with no ink profile (a photo the profiler declined) is
@@ -881,6 +907,47 @@ mod tests {
         assert!(f.draw_h > 16, "…with more than one cell of ink: {f:?}");
     }
 
+    /// A wide matrix product or a tall stack the publisher tagged "inline" is really a
+    /// display equation: it fills the column and rises past the 2-row inline budget rather
+    /// than shrinking to a sliver. A compact symbol is untouched.
+    #[test]
+    fn wide_or_tall_inline_equation_uses_display_sizing() {
+        // Wide (aspect 12.5 ≥ INLINE_DISPLAY_ASPECT): fills the 60-col column instead of
+        // the ~40 cols the compact inline cap-height would give.
+        let wide = InkProfile {
+            x0: 0,
+            y0: 0,
+            x1: 500,
+            y1: 40,
+            line_px: 18.0,
+            line_count: 2,
+        };
+        let f = inline_fit(fit(60, 40), wide, 1.0);
+        assert!(
+            f.cols >= 55,
+            "a wide inline equation fills the column: {f:?}"
+        );
+
+        // Tall stack (3 ink lines): rises past the 2-row inline budget, not squashed.
+        let stack = InkProfile {
+            x0: 0,
+            y0: 0,
+            x1: 200,
+            y1: 90,
+            line_px: 14.0,
+            line_count: 3,
+        };
+        let g = inline_fit(fit(60, 40), stack, 1.0);
+        assert!(
+            g.rows > INLINE_MAX_ROWS + 1,
+            "a 3-line stack is not squashed into two rows: {g:?}"
+        );
+
+        // A compact symbol is unaffected: one line → one row, text-matching size.
+        let s = inline_fit(fit(60, 40), single_line_ink(16, 16), 1.0);
+        assert_eq!(s.rows, 1, "a symbol stays one row: {s:?}");
+    }
+
     /// Inline sizing takes precedence over the `math`/`ink` signals: a spec flagged
     /// both inline and (publisher) equation still classifies as one-row inline math.
     #[test]
@@ -889,7 +956,7 @@ mod tests {
             inline: true,
             ..eq(100, 32, 32.0, 1)
         };
-        assert_eq!(classify(spec, ImageFit::Fit), GraphicKind::InlineMath);
+        assert_eq!(classify(spec), GraphicKind::InlineMath);
     }
 
     #[test]
