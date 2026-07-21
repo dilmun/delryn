@@ -83,8 +83,9 @@ mod geo_cache {
     /// entries (under the previous version dir) are then simply ignored. The sizing
     /// **constants** (e.g. `EQ_TARGET_LINE_CELLS`) aren't in [`key`], so a change to them
     /// must bump this or a stale-sized raster is served from disk. (v3: display-equation
-    /// target lowered from 1.15 to 0.9 cells. v4: per-equation em, not one forced median.)
-    pub const VERSION: u32 = 4;
+    /// target lowered from 1.15 to 0.9 cells. v4: per-equation em, not one forced median.
+    /// v5: display target dropped to prose size.)
+    pub const VERSION: u32 = 5;
 
     /// The cache key for a build's geometry: everything that determines the *pre-theme*
     /// raster. The render policy is excluded on purpose (theme is applied after a load).

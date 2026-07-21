@@ -74,13 +74,12 @@ const MAX_UPSCALE: f64 = 4.0;
 /// fractions) then extend above/below proportionally. The `math_scale` knob tunes on top
 /// (100% = this value).
 ///
-/// A display equation sits **a touch larger than prose** (×1.25) so a centred formula reads
-/// as its own block without dominating — expressed as a multiple of the prose-matched inline
-/// target [`INLINE_LINE_CELLS`] so the relationship is exact. (The earlier `1.15` was a
-/// miscalibration: `1.15` *cells* is ×1.6 the `0.72`-cell prose, not ×1.15 — which is why a
-/// tall multi-row equation dominated the page.) Must equal [`MATH_EM_CELLS`] so the
-/// ink-measured and authored-em paths render the same size.
-const EQ_TARGET_LINE_CELLS: f64 = INLINE_LINE_CELLS * 1.25;
+/// A display equation's glyphs match **prose size** by default (×1.0 the prose-matched inline
+/// target [`INLINE_LINE_CELLS`]), so a centred formula reads at the same size as the
+/// surrounding text rather than towering over it. The user scales up from here with the "Math
+/// size %" knob ([`FitBox::math_scale`]) if they want display math larger. Must equal
+/// [`MATH_EM_CELLS`] so the ink-measured and authored-em paths render the same size.
+const EQ_TARGET_LINE_CELLS: f64 = INLINE_LINE_CELLS;
 
 /// On-screen height, in text cells, of one authored CSS `em` for an equation raster sized by
 /// its publisher [`SizeHint::Em`] width. Kept equal to [`EQ_TARGET_LINE_CELLS`] so a
@@ -915,14 +914,14 @@ mod tests {
         assert!(f.draw_h > 16, "…with more than one cell of ink: {f:?}");
     }
 
-    /// A wide matrix product or a tall stack the publisher tagged "inline" is really a
-    /// display equation: it fills the column and rises past the 2-row inline budget rather
-    /// than shrinking to a sliver. A compact symbol is untouched.
+    /// An inline equation renders at prose glyph size — a wide one isn't blown up to a giant
+    /// block, a tall stack rises past the 2-row inline budget rather than being squashed, and
+    /// a compact symbol stays one row.
     #[test]
     fn wide_or_tall_inline_equation_uses_display_sizing() {
-        // Wide (aspect 12.5 ≥ INLINE_DISPLAY_ASPECT): sized on the display target (~50 cols
-        // of the 60-col column), clearly larger than the ~40 cols the compact inline
-        // cap-height would give — so it reads as a display equation, not a squashed sliver.
+        // Wide (aspect 12.5): sized at the prose glyph em like all inline math, bounded by the
+        // column — for this 500×40 ink that's ~40 of the 60 cols. Not squashed to a sliver,
+        // not enlarged into a block that towers over the line.
         let wide = InkProfile {
             x0: 0,
             y0: 0,
@@ -933,8 +932,8 @@ mod tests {
         };
         let f = inline_fit(fit(60, 40), wide, 1.0);
         assert!(
-            f.cols >= 48,
-            "a wide inline equation uses display sizing, well past the ~40-col compact size: {f:?}"
+            (34..=44).contains(&f.cols),
+            "a wide inline equation renders at prose scale, not blown up: {f:?}"
         );
 
         // Tall stack (3 ink lines): rises past the 2-row inline budget, not squashed.
