@@ -726,7 +726,16 @@ impl App {
     /// direct-placement analogue of [`Self::page_escapes`]. Leaving the reader frees
     /// every inline image (so no ghost survives into the library / a PDF).
     pub fn inline_escapes(&mut self) -> Vec<String> {
-        if self.mode != Mode::Reader {
+        // Leaving the reader, or a popup is up: Kitty images draw *above* the cell grid, so
+        // an inline image would render over the popup — and a rebuild while it's open (e.g.
+        // toggling image sizing, which re-places every equation) corrupts it. Take the inline
+        // images down, like the PDF page (`in_pdf`); they re-place when the reader is shown
+        // again / the popup closes (the overlay toggle forces a full repaint). Still drain the
+        // frame's targets so they don't accumulate behind the popup.
+        if self.mode != Mode::Reader || self.any_overlay_open() {
+            if let Some(r) = self.reader.as_ref() {
+                let _ = r.take_inline_targets();
+            }
             return if self.inline_deck.is_empty() {
                 Vec::new()
             } else {

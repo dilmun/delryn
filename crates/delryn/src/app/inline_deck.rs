@@ -162,6 +162,7 @@ impl InlineDeck {
             .collect();
         self.resident.clear();
         self.shown.clear();
+        self.deferred = false; // nothing left to upload — don't keep the loop redrawing
         out
     }
 }
