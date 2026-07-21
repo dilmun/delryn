@@ -481,14 +481,31 @@ impl ImageBuilder {
     }
 
     /// Queue a build from an encoded file (the worker decodes it) — figures, display
-    /// equations, inline math, page images.
+    /// equations, inline math, page images. `priority` puts it at the **front** of its lane
+    /// (for images in the current viewport), so on a theme change the on-screen equations
+    /// re-tint before the section's off-screen rest (this book ships every symbol as its own
+    /// image, so a section holds thousands of tiny rasters).
     pub fn request(&self, key: ImgKey, bytes: Vec<u8>, spec: SizeSpec) {
+        self.enqueue(key, bytes, spec, false);
+    }
+
+    /// Queue a viewport build ahead of the section's off-screen backlog (see [`request`]).
+    pub fn request_priority(&self, key: ImgKey, bytes: Vec<u8>, spec: SizeSpec) {
+        self.enqueue(key, bytes, spec, true);
+    }
+
+    fn enqueue(&self, key: ImgKey, bytes: Vec<u8>, spec: SizeSpec, priority: bool) {
         let (lock, cv) = &*self.shared;
         let mut lanes = lock.lock().unwrap_or_else(|e| e.into_inner());
         let req = BuildReq { key, bytes, spec };
-        match key.kind {
-            ImgSlot::InlineMath => lanes.inline.push_back(req),
-            ImgSlot::Figure => lanes.block.push_back(req),
+        let lane = match key.kind {
+            ImgSlot::InlineMath => &mut lanes.inline,
+            ImgSlot::Figure => &mut lanes.block,
+        };
+        if priority {
+            lane.push_front(req);
+        } else {
+            lane.push_back(req);
         }
         drop(lanes);
         cv.notify_one();

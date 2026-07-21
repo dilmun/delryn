@@ -488,6 +488,30 @@ impl Reader {
         self.viewport_lines * cols
     }
 
+    /// The section-local figure `idx`s and inline-atom `id`s currently in the viewport
+    /// (both spread columns), read from the wrapped lines. Used to build the on-screen
+    /// equations before the section's off-screen rest on a theme/knob change — the layout
+    /// is unchanged there, so `self.lines` still says what's visible. Empty before the first
+    /// wrap. (On a *section* change the lines are the previous section's, so the caller skips
+    /// this and lets the natural top-of-section index order carry the priority.)
+    fn visible_image_targets(&self) -> (HashSet<usize>, HashSet<usize>) {
+        let mut figures = HashSet::new();
+        let mut inline = HashSet::new();
+        let start = self.scroll.min(self.lines.len());
+        let end = (self.scroll + self.visible_span()).min(self.lines.len());
+        for line in &self.lines[start..end] {
+            if let LineKind::Image(idx) = line.kind {
+                figures.insert(idx);
+            }
+            for run in &line.runs {
+                if let Some(id) = run.math {
+                    inline.insert(id);
+                }
+            }
+        }
+        (figures, inline)
+    }
+
     /// The code block a fold toggle acts on: the one nearest the centre of the whole
     /// visible area (both spread columns), so `F` reaches a right-column block, not
     /// only the left one.

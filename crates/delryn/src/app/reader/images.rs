@@ -155,10 +155,20 @@ impl Reader {
             geom.fit_mode,
         );
         if self.images.images_key != key || self.images.policy != geom.policy {
+            // Build what's on screen first. On a theme/knob change the section is unchanged,
+            // so the wrapped lines still say what's visible — prioritise those so the current
+            // view re-tints before the section's thousands of off-screen rasters. On a section
+            // change the lines are stale (previous section), so skip it: navigation resets to
+            // the section top, which the natural index-order dispatch already builds first.
+            let (vis_figures, vis_inline) = if self.images.images_key.0 == self.section {
+                self.visible_image_targets()
+            } else {
+                (HashSet::new(), HashSet::new())
+            };
             self.images.images_key = key;
             self.images.policy = geom.policy;
-            self.remap_section_images(builder, picker, geom);
-            self.remap_inline_math(builder, picker, geom);
+            self.remap_section_images(builder, picker, geom, &vis_figures);
+            self.remap_inline_math(builder, picker, geom, &vis_inline);
         }
 
         // 4. Pre-build neighbouring sections' images once the current one is ready.
@@ -263,8 +273,15 @@ impl Reader {
     }
 
     /// Map the current section's images to cache keys, estimate their rows for
-    /// reflow, and request builds for any not already cached/in-flight/failed.
-    fn remap_section_images(&mut self, builder: &ImageBuilder, picker: &Picker, geom: ImageGeom) {
+    /// reflow, and request builds for any not already cached/in-flight/failed. Figures whose
+    /// `idx` is in `visible` (on screen) are dispatched at the front of the build queue.
+    fn remap_section_images(
+        &mut self,
+        builder: &ImageBuilder,
+        picker: &Picker,
+        geom: ImageGeom,
+        visible: &HashSet<usize>,
+    ) {
         // A failed build is only blacklisted until the next remap (section change,
         // resize, theme/mode toggle): clear it so a *transient* failure (e.g. the
         // protocol upload losing under load) recovers on its own instead of
@@ -360,7 +377,11 @@ impl Reader {
         }
         for (k, bytes, spec) in requests {
             self.images.requested.insert(k);
-            builder.request(k, bytes, spec);
+            if visible.contains(&k.idx) {
+                builder.request_priority(k, bytes, spec);
+            } else {
+                builder.request(k, bytes, spec);
+            }
         }
     }
 
@@ -374,7 +395,13 @@ impl Reader {
     /// wrapper's atom reservation, and the draw all agree. Called right after
     /// `remap_section_images` (which sized the cache to the figures); this grows it
     /// again to fit the inline equations too.
-    fn remap_inline_math(&mut self, builder: &ImageBuilder, picker: &Picker, geom: ImageGeom) {
+    fn remap_inline_math(
+        &mut self,
+        builder: &ImageBuilder,
+        picker: &Picker,
+        geom: ImageGeom,
+        visible_ids: &HashSet<usize>,
+    ) {
         let fs = picker.font_size();
         let (fw, fh) = (fs.width, fs.height);
         let fit = media::FitBox {
@@ -428,12 +455,20 @@ impl Reader {
         let mut order: Vec<usize> = Vec::new();
         let mut ink_by_ck: HashMap<usize, Option<media::InkProfile>> = HashMap::new();
         let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        // The distinct atoms with at least one occurrence on screen — dispatched first so the
+        // viewport re-tints ahead of the section's off-screen atoms. An atom's build is keyed
+        // by content (`ck`), but visibility is per occurrence (`id`), so any visible `id`
+        // marks its `ck` visible.
+        let mut visible_cks: HashSet<usize> = HashSet::new();
         for spans in &runs {
             for span in *spans {
-                let Some(delryn_model::SpanMath::Raster { png, ink, .. }) = &span.math else {
+                let Some(delryn_model::SpanMath::Raster { id, png, ink }) = &span.math else {
                     continue;
                 };
                 let ck = inline_content_key(png);
+                if visible_ids.contains(id) {
+                    visible_cks.insert(ck);
+                }
                 if !seen.insert(ck) {
                     continue; // distinct only
                 }
@@ -542,7 +577,11 @@ impl Reader {
         }
         for (k, bytes, spec) in requests {
             self.images.requested.insert(k);
-            builder.request(k, bytes, spec);
+            if visible_cks.contains(&k.idx) {
+                builder.request_priority(k, bytes, spec);
+            } else {
+                builder.request(k, bytes, spec);
+            }
         }
     }
 
