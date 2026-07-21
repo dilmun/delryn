@@ -54,6 +54,15 @@ static BOOK_REF_SEEN: AtomicU32 = AtomicU32::new(0);
 /// measurement jitter never churns the section cache.
 const BOOK_REF_SHIFT: f32 = 0.06;
 
+/// Keep an equation's **own** measured em (per-equation normalisation) while its ratio to
+/// the book median stays inside `[EM_KEEP_LO, EM_KEEP_HI]`. Outside it the measurement is
+/// physically implausible for a single font — a broken read (a matrix's brackets fused into
+/// one tall component, or a JPEG-fragmented glyph) — so the equation falls back to the median
+/// instead. Measured across this book the real glyph em clusters ~0.7–1.15× the median, so
+/// this band keeps the genuine variance and rejects only the outliers.
+const EM_KEEP_LO: f32 = 0.6;
+const EM_KEEP_HI: f32 = 1.6;
+
 /// Forget the accumulated equation ems, so one book's measurements never size another's.
 /// Called when a book is opened; also re-syncs the reaction generation so a fresh book
 /// doesn't spuriously drop its cache on the first frame.
@@ -371,21 +380,20 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
     unify_book_em(blocks, section);
 }
 
-/// Set every equation in the book to **one** em — the book's typical glyph size. A book
-/// renders all its equations at a single font size, so there is one correct em; sizing each
-/// equation by its *own* measured em instead only ever injects the measurement's noise,
-/// because the cap-height estimate is unreliable per-equation: a fraction- or superscript-
-/// heavy equation undershoots (its many small glyphs collapse the operator cut), and a
-/// bracket-connected matrix — measured as a single tall component — overshoots. Measured
-/// across the whole book, though, the noise averages out: the pool's **median** ([`BOOK_EMS`]
-/// → [`book_reference`]) is the robust centre the correctly-measured equations agree on.
+/// Normalise each equation to its **own** measured glyph em, so every equation renders at the
+/// same text-relative glyph size — the goal being on-screen *consistency* regardless of the
+/// resolution the publisher rasterised each one at. This book is **not** single-DPI: measured
+/// across all its equations the glyph em genuinely spans ~15–23px, so forcing one book-wide em
+/// (the earlier model) can't make them consistent — an equation the publisher rendered larger
+/// would still render larger. Per-equation sizing fixes that: each raster is scaled so its own
+/// glyphs hit the text target.
 ///
-/// So this pools this section's ems book-wide and assigns that one median em to every
-/// equation. Each raster is then scaled by the same factor, so its own glyphs land at the
-/// text target and it renders at its true proportional height — uniform sizing with no
-/// per-equation guesswork and no clamp. (This assumes the book is single-DPI, which real
-/// EPUB toolchains are: all equations are rasterised at one resolution.) Below a few samples
-/// the pool isn't meaningful yet, so each equation keeps its own measurement.
+/// The catch is measurement noise (a fraction-heavy equation undershoots; a bracket-connected
+/// matrix, measured as one tall component, overshoots). So this pools the book's ems for a
+/// robust **median** ([`BOOK_EMS`] → [`book_reference`]) and keeps each equation's own em only
+/// while it's *plausible* for a single font — within [`EM_KEEP_LO`, `EM_KEEP_HI`]× the median.
+/// A measurement outside that band is a broken read, so that equation falls back to the median.
+/// Below a few samples the pool isn't meaningful yet, so each equation keeps its own value.
 fn unify_book_em(blocks: &mut [Block], section: usize) {
     let section_ems: Vec<f32> = blocks
         .iter()
@@ -415,13 +423,17 @@ fn unify_book_em(blocks: &mut [Block], section: usize) {
     }
     for b in blocks.iter_mut() {
         if let Block::Image { ink: Some(p), .. } = b {
-            // Assign the book's one em to every equation. The per-equation cap-height
-            // measurement is unreliable (a fraction/superscript-heavy equation undershoots,
-            // a bracket-connected matrix overshoots), but the book is single-DPI so there is
-            // one true em — the robust pool median. Sizing every raster by it makes each
-            // equation's glyphs land at the text target and render at its true proportional
-            // height, so sizes are uniform across the book with no per-equation guesswork.
-            p.line_px = reference;
+            // Per-equation normalisation: keep each equation's *own* measured em, so a raster
+            // the publisher rendered at a different resolution lands at the same text-relative
+            // glyph size as the rest — the book is NOT single-DPI (measured across all its
+            // equations the glyph em genuinely spans ~15–23px). Forcing one em can't fix that:
+            // an equation with bigger native glyphs would render bigger. Fall back to the book
+            // median only when the measurement is physically implausible for one font (outside
+            // [`EM_KEEP_LO`, `EM_KEEP_HI`]×) — a broken read (fused brackets / JPEG fragments).
+            let ratio = p.line_px / reference;
+            if !(EM_KEEP_LO..=EM_KEEP_HI).contains(&ratio) {
+                p.line_px = reference;
+            }
         }
     }
 }
