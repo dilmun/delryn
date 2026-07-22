@@ -173,8 +173,14 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
     let mut img_idx = 0usize;
     let mut code_idx = 0usize;
     let mut footnote_idx = 0usize;
+    // Set when a block consumed the *next* block as its trailing label — an equation
+    // number rendered on the equation's own row, not stranded on a line below.
+    let mut skip_next = false;
 
-    for block in blocks {
+    for (bi, block) in blocks.iter().enumerate() {
+        if std::mem::take(&mut skip_next) {
+            continue;
+        }
         let is_item = matches!(
             block,
             Block::Para {
@@ -210,15 +216,38 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                 opts,
                 &mut out,
             ),
-            Block::Image { alt, caption, .. } => {
-                emit_image(alt, caption, img_idx, image_rows, width, &mut out);
+            Block::Image {
+                alt, caption, math, ..
+            } => {
+                // A math equation raster directly followed by a lone equation-number
+                // paragraph ("Eq. 4") renders that number right-aligned on the
+                // equation's last row instead of stranded on its own line below.
+                let number = if *math {
+                    blocks.get(bi + 1).and_then(equation_number_para)
+                } else {
+                    None
+                };
+                emit_image(
+                    alt,
+                    caption,
+                    img_idx,
+                    image_rows,
+                    width,
+                    number.as_deref(),
+                    &mut out,
+                );
                 img_idx += 1;
+                skip_next = number.is_some();
             }
             Block::Code { lang, lines } => {
                 emit_code(lang.as_deref(), lines, code_idx, width, opts, &mut out);
                 code_idx += 1;
             }
-            Block::Math { item } => emit_math(&item.text, width, &mut out),
+            Block::Math { item } => {
+                let number = blocks.get(bi + 1).and_then(equation_number_para);
+                emit_math(&item.text, width, number.as_deref(), &mut out);
+                skip_next = number.is_some();
+            }
             Block::Table { header, rows } => {
                 wrap_table(header.as_deref(), rows, width, opts.table_wrap, &mut out)
             }
@@ -260,6 +289,48 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
         }
     }
     spaced
+}
+
+/// The equation-number label of `block` when it is a paragraph that is *solely* a
+/// number ("Eq. 4", "Equation 3.2") — the InDesign/Packt caption naming a display
+/// equation. Whitespace-normalised. `None` for anything else, so ordinary prose
+/// after an equation (even one opening "Eq. 4 shows…") is never consumed.
+fn equation_number_para(block: &Block) -> Option<String> {
+    let Block::Para {
+        spans,
+        marker: None,
+        ..
+    } = block
+    else {
+        return None;
+    };
+    let text = spans
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    is_equation_number(&text).then_some(text)
+}
+
+/// Whether `text` is exactly an equation-number label: `Eq`/`Eqn`/`Equation`, an
+/// optional dot, then a number (`4`, `3.2`, `12`, `(7)`). A strict full-string match
+/// so a sentence beginning "Eq. 4 …" is never mistaken for a bare label.
+fn is_equation_number(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    let Some(rest) = lower
+        .strip_prefix("equation")
+        .or_else(|| lower.strip_prefix("eqn"))
+        .or_else(|| lower.strip_prefix("eq"))
+    else {
+        return false;
+    };
+    let rest = rest.trim_start_matches(['.', ' ']);
+    rest.starts_with(|c: char| c.is_ascii_digit())
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '–' | '(' | ')'))
 }
 
 /// Greedy line packing — the one word-wrap algorithm shared by every wrapper.

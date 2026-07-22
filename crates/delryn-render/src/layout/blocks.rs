@@ -95,17 +95,27 @@ pub(super) fn emit_image(
     img_idx: usize,
     image_rows: &[u16],
     width: usize,
+    number: Option<&str>,
     out: &mut Vec<DisplayLine>,
 ) {
     // The reader pre-computes each image's height; reserve exactly that many
     // blank rows. Zero rows → no image support → show a text placeholder.
     let rows = image_rows.get(img_idx).copied().unwrap_or(0);
     if rows > 0 {
-        for _ in 0..rows {
-            out.push(DisplayLine {
+        for r in 0..rows {
+            let mut line = DisplayLine {
                 runs: Vec::new(),
                 kind: LineKind::Image(img_idx),
-            });
+            };
+            // An equation number rides right-aligned on the equation's last row, as
+            // in standard math typesetting. The raster is centred and narrower than
+            // the column, so a label at the right margin clears it.
+            if r + 1 == rows
+                && let Some(num) = number
+            {
+                push_right_aligned(&mut line, num, width);
+            }
+            out.push(line);
         }
     } else {
         let label = if alt.is_empty() {
@@ -123,6 +133,15 @@ pub(super) fn emit_image(
             }],
             kind: LineKind::Body,
         });
+        // No image protocol: still surface the equation number so it isn't lost.
+        if let Some(num) = number {
+            let mut line = DisplayLine {
+                runs: Vec::new(),
+                kind: LineKind::Body,
+            };
+            push_right_aligned(&mut line, num, width);
+            out.push(line);
+        }
     }
     // A blank line sets the caption off from the picture instead of letting it
     // hug the bottom edge (only when there's actually an image above it).
@@ -174,6 +193,19 @@ pub(super) fn emit_image(
     }
 }
 
+/// Right-align `text` within `width` on an otherwise-empty display line — leading
+/// pad, then the text ending at the right margin. Used for equation numbers.
+fn push_right_aligned(line: &mut DisplayLine, text: &str, width: usize) {
+    let pad = width.saturating_sub(display_width(text));
+    line.runs.push(Run {
+        text: format!("{}{text}", " ".repeat(pad)),
+        style: Inline::default(),
+        fg: None,
+        anchor: None,
+        math: None,
+    });
+}
+
 /// Left-pad a display line so its content is centred within `width` (the wrapper
 /// already kept each line ≤ `width`). Used for figure captions.
 fn center_line(line: &mut DisplayLine, width: usize) {
@@ -195,13 +227,33 @@ fn center_line(line: &mut DisplayLine, width: usize) {
 
 /// Display math: `tex` is already Unicode (the parser resolved LaTeX/MathML);
 /// just centre each line.
-pub(super) fn emit_math(tex: &str, width: usize, out: &mut Vec<DisplayLine>) {
-    for line in tex.lines() {
+pub(super) fn emit_math(tex: &str, width: usize, number: Option<&str>, out: &mut Vec<DisplayLine>) {
+    let raw: Vec<&str> = tex.lines().collect();
+    let last = raw.len().saturating_sub(1);
+    // The equation number sits flush-right on the equation's last line when it fits
+    // beside the centred equation; a wide equation drops the number to its own
+    // right-aligned line below so it is never lost.
+    let fits_last = !raw.is_empty()
+        && number.is_some_and(|num| {
+            let text = raw[last].trim_end();
+            let pad = width.saturating_sub(display_width(text)) / 2;
+            pad + display_width(text) + 1 + display_width(num) <= width
+        });
+    for (i, line) in raw.iter().enumerate() {
         let text = line.trim_end();
         let pad = width.saturating_sub(display_width(text)) / 2;
+        let mut s = format!("{}{text}", " ".repeat(pad));
+        if i == last
+            && fits_last
+            && let Some(num) = number
+        {
+            let gap = width.saturating_sub(display_width(&s) + display_width(num));
+            s.push_str(&" ".repeat(gap));
+            s.push_str(num);
+        }
         out.push(DisplayLine {
             runs: vec![Run {
-                text: format!("{}{text}", " ".repeat(pad)),
+                text: s,
                 style: Inline {
                     italic: true,
                     ..Inline::default()
@@ -212,6 +264,14 @@ pub(super) fn emit_math(tex: &str, width: usize, out: &mut Vec<DisplayLine>) {
             }],
             kind: LineKind::Math,
         });
+    }
+    if let Some(num) = number.filter(|_| !fits_last) {
+        let mut line = DisplayLine {
+            runs: Vec::new(),
+            kind: LineKind::Math,
+        };
+        push_right_aligned(&mut line, num, width);
+        out.push(line);
     }
 }
 
@@ -436,6 +496,95 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.starts_with(' ')),
             "centred: {lines:?}"
+        );
+    }
+
+    fn display_math(text: &str) -> Block {
+        Block::Math {
+            item: delryn_model::MathItem {
+                display: true,
+                typeset: None,
+                picture: None,
+                text: text.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn equation_number_rides_on_the_last_image_row() {
+        // A math equation raster (2 reserved rows) followed by a lone "Eq. 4"
+        // paragraph: the number rides right-aligned on the equation's last row, not
+        // stranded on its own line below.
+        let eq = Block::Image {
+            src: "eq.png".into(),
+            alt: "a·b".into(),
+            data: Vec::new(),
+            caption: Vec::new(),
+            math: true,
+            width: delryn_model::ImageWidth::Auto,
+            ink: None,
+        };
+        let opts = WrapOpts {
+            width: 40,
+            ..Default::default()
+        };
+        let lines = wrap_blocks(&[eq, para("Eq. 4")], &opts, &[2]);
+        let img: Vec<&DisplayLine> = lines
+            .iter()
+            .filter(|l| matches!(l.kind, LineKind::Image(_)))
+            .collect();
+        assert_eq!(img.len(), 2, "two reserved image rows");
+        let last = img[1].text();
+        assert!(
+            last.trim_end().ends_with("Eq. 4"),
+            "number rides the last row: {last:?}"
+        );
+        assert!(last.starts_with(' '), "right-aligned: {last:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|l| matches!(l.kind, LineKind::Body) && l.text().trim() == "Eq. 4"),
+            "not also stranded as a separate line",
+        );
+    }
+
+    #[test]
+    fn equation_number_flushes_right_on_the_math_last_line() {
+        let opts = WrapOpts {
+            width: 40,
+            ..Default::default()
+        };
+        let lines = wrap_blocks(&[display_math("x = 1"), para("Eq. 5")], &opts, &[]);
+        let math: Vec<String> = lines
+            .iter()
+            .filter(|l| matches!(l.kind, LineKind::Math))
+            .map(DisplayLine::text)
+            .collect();
+        assert_eq!(math.len(), 1, "equation + number share one line: {math:?}");
+        assert!(math[0].contains("x = 1"), "{math:?}");
+        assert!(
+            math[0].trim_end().ends_with("Eq. 5"),
+            "number flush-right: {math:?}"
+        );
+        assert!(
+            !texts(&lines).iter().any(|l| l.trim() == "Eq. 5"),
+            "not a separate line",
+        );
+    }
+
+    #[test]
+    fn prose_after_an_equation_is_not_consumed_as_a_number() {
+        // "Eq. 4 shows…" opens with a label but is a sentence — it must render
+        // normally, never be swallowed as the equation's number.
+        let opts = WrapOpts {
+            width: 60,
+            ..Default::default()
+        };
+        let prose = "Eq. 4 shows the inner product of two vectors.";
+        let lines = wrap_blocks(&[display_math("x = 1"), para(prose)], &opts, &[]);
+        assert!(
+            texts(&lines).join("\n").contains(prose),
+            "prose paragraph still rendered in full",
         );
     }
 
