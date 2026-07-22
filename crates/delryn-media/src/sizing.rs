@@ -116,22 +116,22 @@ const ARRAY_MAX_LINES: u16 = 16;
 const INLINE_MAX_ROWS: u16 = 2;
 
 /// A publisher "inline" equation image this wide (ink bbox width ÷ height) — or with an
-/// ink stack this tall (see [`INLINE_STACK_LINES`]) — is really a *display* equation the
-/// book merely tagged inline (a wide matrix product, a full derivation). Sized at the
-/// compact inline cap-height it collapses to a sliver once shrunk to the column, so above
-/// this threshold it is sized like a **block** equation instead (fills the column at the
-/// display target over a generous row budget). A genuine mid-line fragment — a symbol, a
-/// short fraction — stays below it and keeps the text-matching inline size.
+/// ink stack this tall (see [`INLINE_STACK_LINES`]) — is really a multi-row construct the
+/// book merely tagged inline (a wide matrix product, a full derivation). It sizes to the same
+/// prose glyph em as every inline atom, but gets the taller [`INLINE_STACK_MAX_ROWS`] row
+/// budget instead of the mid-line two rows, so it spans its natural number of rows rather than
+/// being squashed. A genuine mid-line fragment — a symbol, a short fraction — stays below it.
 const INLINE_DISPLAY_ASPECT: f64 = 5.0;
 
-/// An inline equation whose ink is at least this many lines tall is a stacked display
-/// equation (a bracketed matrix, a `cases`), sized like a block equation regardless of
-/// its width so it reads at full size rather than being squashed into two rows.
+/// An inline equation whose ink is at least this many lines tall (a bracketed matrix, a
+/// `cases`) gets the taller [`INLINE_STACK_MAX_ROWS`] row budget regardless of its width, so
+/// it spans its rows rather than being squashed into two. Its glyph size is unchanged.
 const INLINE_STACK_LINES: u16 = 3;
 
-/// Row budget for an inline equation promoted to **display** sizing (see
-/// [`INLINE_DISPLAY_ASPECT`]) — generous enough for a tall bracketed matrix to render at
-/// its natural, readable height on its own line rather than being squashed.
+/// Row budget for a multi-row inline equation (see [`INLINE_DISPLAY_ASPECT`] /
+/// [`INLINE_STACK_LINES`]) — generous enough for a tall bracketed matrix to render at its
+/// natural height on its own line rather than being squashed. Only the row count differs from
+/// a mid-line atom; the glyph size is the same book-wide scale.
 const INLINE_STACK_MAX_ROWS: u16 = 6;
 
 /// Natural height (in text cells) at or below which an inline equation stays **one**
@@ -141,12 +141,12 @@ const INLINE_STACK_MAX_ROWS: u16 = 6;
 /// inline fractions (`\frac{1}{2}` ≈ 1.2 cells, a busy fraction ≈ 1.5 cells).
 const INLINE_ONE_ROW_MAX: f64 = 1.35;
 
-/// Displayed height, in text cells, of one **inline** picture's text em — the
-/// text-relative size a mid-line publisher glyph/expression raster (`ℝ`, `∈ S`, a short
-/// `{x ∈ ℝ : …}`) is normalised to from its measured ink [`InkProfile::line_px`]. Set to
-/// ~text cap-height so an inline symbol matches the surrounding prose (unlike a *display*
-/// equation, which sits a hair larger at [`EQ_TARGET_LINE_CELLS`]); this is the whole point
-/// of the ink path — every inline raster flows at the same size regardless of the file's
+/// Displayed height, in text cells, of one equation's text em — the text-relative size a
+/// publisher raster is normalised to from the book-wide reference ink [`InkProfile::line_px`].
+/// Set to ~text cap-height so equation glyphs match the surrounding prose. Both the inline and
+/// display paths use this one value ([`EQ_TARGET_LINE_CELLS`] is defined equal to it), so
+/// inline math and display equations render at the same prose glyph size — the whole point of
+/// the ink path is that every raster flows at the same size regardless of the file's
 /// resolution, instead of rendering at its raw native pixels. The `math_scale` knob tunes on
 /// top (100% = this value). Tall operators (Σ, a fraction bar) then extend proportionally.
 const INLINE_LINE_CELLS: f64 = 0.72;
@@ -248,12 +248,13 @@ fn classify(spec: SizeSpec) -> GraphicKind {
 /// - **Page** (`SizeHint::Full`): fills the `cols`×`rows` pane, preserving aspect.
 /// - **Rendered math** (`spec.math`): already sized by its render em — shown native,
 ///   only shrunk to fit the column.
-/// - **Equation raster**: normalised so one ink-line is [`EQ_TARGET_LINE_CELLS`]
-///   text cells tall (from the measured [`InkProfile`]) — *bidirectional*, so a
-///   high-DPI raster shrinks and a low-DPI one grows (enlargement quality-capped),
-///   the same text-relative size in every book. An unprofiled one falls back to the
-///   legacy low-res boost. A multi-line array scales proportionally; all are bounded
-///   to fit the column.
+/// - **Equation raster**: sized by ONE book-wide scale — `line_px` is the book's reference
+///   em (`unify_book_em`), the same for every equation, so a single factor maps the
+///   publisher's source pixels to the terminal cell size and brings the typical equation to
+///   [`EQ_TARGET_LINE_CELLS`] text cells. Every equation scales by the same amount, so the
+///   publisher's relative proportions are preserved (a multi-line matrix stays proportional,
+///   never enlarged independently). The factor tracks display DPI through the cell height. An
+///   unprofiled one falls back to the legacy low-res boost; all are bounded to fit the column.
 /// - **Figure**: normalised to `target_pct`% of the column in `Fit`, or the authored
 ///   width in `Faithful` — enlarged up to [`MAX_UPSCALE`], never past the box.
 ///
@@ -285,18 +286,18 @@ pub(crate) fn inline_fit(fit: FitBox, ink: InkProfile, knob: f64) -> InlineFit {
     let (fwf, fhf) = (f64::from(fit.fw.max(1)), f64::from(fit.fh.max(1)));
     let (bw, bh) = ink.bbox_dims();
     let line = f64::from(ink.line_px).max(1.0);
-    // A wide matrix product or a tall stack the publisher tagged "inline" is really a
-    // display equation: size it like a block equation (the larger display target over a
-    // generous row budget) so it fills the column and reads at full size instead of
-    // shrinking to a sliver. A genuine mid-line fragment keeps the text-matching size.
-    let display = bw >= bh * INLINE_DISPLAY_ASPECT || ink.line_count >= INLINE_STACK_LINES;
-    let (target, max_rows) = if display {
-        (EQ_TARGET_LINE_CELLS, INLINE_STACK_MAX_ROWS)
+    // Every inline atom sizes to the same prose glyph em ([`INLINE_LINE_CELLS`]) — one scale
+    // for the whole book, like the display path. A wide matrix or a tall stack the publisher
+    // tagged "inline" only needs a **taller row budget** (it spans several rows, not one)
+    // rather than being squashed into the mid-line two-row budget; it is not enlarged.
+    let tall = bw >= bh * INLINE_DISPLAY_ASPECT || ink.line_count >= INLINE_STACK_LINES;
+    let max_rows = if tall {
+        INLINE_STACK_MAX_ROWS
     } else {
-        (INLINE_LINE_CELLS, INLINE_MAX_ROWS)
+        INLINE_MAX_ROWS
     };
-    // One ink line → the target; the whole ink scales with it.
-    let mut scale = target * fhf * knob / line;
+    // One ink line → the prose target; the whole ink scales with it.
+    let mut scale = INLINE_LINE_CELLS * fhf * knob / line;
     // Never exceed the row budget (a tall fraction / a display stack) …
     let max_h = f64::from(max_rows) * fhf;
     if bh * scale > max_h {

@@ -488,11 +488,12 @@ impl Reader {
                 ink_by_ck.insert(ck, media_ink);
             }
         }
-        // The book's one inline em: pool this section's atom ems book-wide and take the
-        // robust median — the SAME uniform, no-clamp model the display equations use, just
-        // its own (smaller) em. Inline math is one font size across the book, so one em is
-        // correct; every atom is then normalised by it (Pass 2), so all inline equations flow
-        // at the same size regardless of the per-image cap-height noise. `None` early on.
+        // The book's one inline reference em: pool this section's atom ems book-wide and take
+        // the robust median — the SAME uniform, one-scale model the display equations use.
+        // Inline atoms are rasterised at their own (usually smaller) source resolution than
+        // display equations, so they get their own median; but both normalise to the same
+        // prose target (Pass 2), so inline math and display equations render at the same glyph
+        // size, consistent regardless of the per-image cap-height noise. `None` early on.
         let book_em = crate::app::reader::math::book_inline_em(section, ems);
 
         // Pass 2 — reserve cells and dispatch builds, sizing each atom against the section em.
