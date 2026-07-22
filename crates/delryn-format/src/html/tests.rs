@@ -200,6 +200,42 @@ fn table_with_thead_splits_header_and_rows() {
 }
 
 #[test]
+fn springer_table_caption_is_one_line_not_two_stacked_paras() {
+    // Springer/publisher shape: a caption wrapper holding a `CaptionNumber` span
+    // ("Table 3.") plus a `SimplePara` title. Walked generically these stack as two
+    // spaced paragraphs, stranding the number on its own wasted row. They must merge
+    // into a single caption line — with a space the source omitted (`</span><p>`).
+    let blocks = parse_blocks(
+        r#"<html><body><div class="Table" id="Tab3">
+             <div class="Caption"><div class="CaptionContent">
+               <span class="CaptionNumber">Table 3.</span>
+               <p class="SimplePara">Classification report of each phases</p>
+             </div></div>
+             <table><tr><td>Text</td><td>Accuracy</td></tr></table>
+           </div></body></html>"#,
+    );
+    // Exactly one caption paragraph, reading as one line, above the table.
+    let caps: Vec<&Block> = blocks
+        .iter()
+        .filter(|b| {
+            matches!(b, Block::Para { spans, .. }
+                if spans.iter().map(|s| s.text.as_str()).collect::<String>().contains("Table 3."))
+        })
+        .collect();
+    assert_eq!(caps.len(), 1, "number + title collapse to a single caption block");
+    let Block::Para { spans, .. } = caps[0] else {
+        unreachable!()
+    };
+    let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+    assert_eq!(
+        text.split_whitespace().collect::<Vec<_>>().join(" "),
+        "Table 3. Classification report of each phases",
+        "joined with the space the source left out"
+    );
+    first_table(&blocks); // the table itself still parses (panics if missing)
+}
+
+#[test]
 fn header_inferred_from_all_th_first_row() {
     // No <thead>, but the first row is all <th>.
     let blocks = parse_blocks(

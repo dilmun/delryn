@@ -42,6 +42,12 @@ pub(super) enum ElementRole {
     Table,
     /// A stray `<td>`/`<th>` outside a recognised table → degrade to a paragraph.
     Cell,
+    /// A publisher caption wrapper (`<div class="Caption">` / `class="CaptionContent"`
+    /// / `<p class="…Caption">`). Springer et al. mark a table/figure caption up as a
+    /// number *span* plus a title *paragraph*; walked generically those stack as two
+    /// spaced blocks, so the number lands on its own wasted line. This role merges the
+    /// pieces into one caption line.
+    Caption,
     /// Anything else: a generic container to recurse into.
     Container,
 }
@@ -89,6 +95,7 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
     match name {
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => ElementRole::Heading(name.as_bytes()[1] - b'0'),
         "figure" => ElementRole::Figure,
+        "p" if is_caption(e) => ElementRole::Caption,
         "p" => ElementRole::Paragraph,
         "ul" | "ol" => ElementRole::List {
             ordered: name == "ol",
@@ -112,8 +119,18 @@ pub(super) fn classify(e: &scraper::node::Element, node: NodeRef<Node>) -> Eleme
         // instead of `<figure>`/`<figcaption>`). Merge so the caption renders
         // centred beneath the image, like a real figure.
         "div" | "section" if is_figure_container(e, node) => ElementRole::Figure,
+        "div" | "section" if is_caption(e) => ElementRole::Caption,
         _ => ElementRole::Container,
     }
+}
+
+/// Whether an element is a caption wrapper — its own class carries `caption`
+/// (`Caption` / `CaptionContent` / `…Caption`). Mirrors the caption marker
+/// [`is_figure_container`] looks for, so table and standalone captions are read
+/// the same way figure captions already are.
+fn is_caption(e: &scraper::node::Element) -> bool {
+    e.attr("class")
+        .is_some_and(|c| c.to_ascii_lowercase().contains("caption"))
 }
 
 /// Whether a `<div>`/`<section>` is a single-image figure wrapper whose caption
