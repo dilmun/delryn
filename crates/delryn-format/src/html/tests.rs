@@ -1314,19 +1314,19 @@ fn empty_marker_sibling_does_not_force_a_display_equation_inline() {
             r#"<html><body><p><img src="image/98.png" alt="&lt;math display=&quot;block&quot;&gt;&lt;msub&gt;&lt;mi&gt;x&lt;/mi&gt;&lt;mi&gt;i&lt;/mi&gt;&lt;/msub&gt;&lt;/math&gt;" style="width:1.812em"/>{sib}</p></body></html>"#
         );
         let blocks = parse_blocks(&html);
-        // MathML that ships a raster prefers the raster (structural typeset is fragile), so
-        // the lone equation is a `math`-flagged image carrying its authored em width — not
-        // inline Unicode deaf to the display size knob.
-        let img = blocks.iter().find_map(|b| match b {
-            Block::Image {
-                src, math, width, ..
-            } => Some((src.as_str(), *math, *width)),
-            _ => None,
+        // The lone equation stays on the DISPLAY path (an empty `<st>`/`<a>` sibling must not
+        // make it read as inline Unicode). Its MathML (x_i) is mappable, so it typesets — a
+        // `Block::Math` carrying the source, with the publisher raster + its authored em width
+        // kept as the render fallback.
+        let item = first_math_item(&blocks).unwrap_or_else(|| {
+            panic!("with sibling {sib:?}, expected a display Block::Math, got {blocks:?}")
         });
+        assert!(item.display, "on the display path, not inline: {item:?}");
+        assert!(item.typeset.is_some(), "typesets: {item:?}");
         assert_eq!(
-            img,
-            Some(("image/98.png", true, ImageWidth::Em(1.812))),
-            "with sibling {sib:?}, the lone equation must be an em-sized math image, got {blocks:?}"
+            item.picture.as_ref().map(|p| (p.src.as_str(), p.size)),
+            Some(("image/98.png", delryn_model::PictureSize::Em(1.812))),
+            "raster + authored em kept as the fallback with sibling {sib:?}"
         );
     }
 }
@@ -1368,24 +1368,48 @@ fn several_display_equations_in_one_container_all_render() {
     assert_eq!(n, 2, "both wrapped equations render, got {wrapped:?}");
 }
 
-/// A presentation-MathML display equation that ships a publisher raster (`<math
-/// altimg=…>` with empty `alttext`) renders as that raster — not the *synthesized*
-/// LaTeX, which RaTeX often can't parse (an `<mover>` accent becomes `\overset{◌̄}{X}`),
-/// silently dropping the equation to a lossy Unicode approximation. This is how
-/// LaTeXML/MathType EPUBs (e.g. Blitzstein & Hwang's *Introduction to Probability*)
-/// ship every equation.
+/// A presentation-MathML display equation the engine **cannot** map (an `<mover>` accent) +
+/// a publisher raster (`<math altimg=…>` with empty `alttext`) falls back to that raster —
+/// typesetting isn't possible, so the reliable image wins. This is how LaTeXML/MathType
+/// EPUBs (e.g. Blitzstein & Hwang's *Introduction to Probability*) ship equations whose
+/// structure the engine doesn't yet lay out.
 #[test]
-fn mathml_with_altimg_raster_renders_the_raster_not_synthesized_latex() {
-    // X̄ = 1 as presentation MathML (an `<mover>` accent) + a publisher raster.
+fn unmappable_mathml_with_altimg_falls_back_to_the_raster() {
+    // X̄ = 1 as presentation MathML (an `<mover>` accent to_nodes doesn't map) + a raster.
     let blocks = parse_blocks(
         r#"<html><body><p><math xmlns="http://www.w3.org/1998/Math/MathML" altimg="../images/eq4141.jpg" alttext=""><mover><mi>X</mi><mo>&#772;</mo></mover><mo>=</mo><mn>1</mn></math></p></body></html>"#,
     );
     let (src, _alt) = display_math_img(&blocks)
-        .expect("presentation-MathML equation with altimg → publisher raster image");
+        .expect("unmappable presentation-MathML with altimg → publisher raster image");
     assert_eq!(src, "../images/eq4141.jpg");
     assert!(
         first_math_latex(&blocks).is_none(),
         "the fragile synthesized LaTeX must not be routed to RaTeX: {blocks:?}"
+    );
+}
+
+/// A presentation-MathML display equation the engine **can** map (`<mi>Y</mi><mo>=</mo>…`) +
+/// an `altimg` raster **typesets** via RaTeX (crisp vector at prose size) instead of using
+/// the low-resolution JPG — those equation JPGs are too low-DPI to ink-measure reliably, so
+/// they render inconsistently. The raster is retained only as the render ladder's fallback.
+#[test]
+fn mappable_mathml_with_altimg_typesets_and_keeps_the_raster_as_fallback() {
+    // Y = aX + b: plain mi/mo presentation MathML the engine maps, plus a publisher raster.
+    let blocks = parse_blocks(
+        r#"<html><body><p><math xmlns="http://www.w3.org/1998/Math/MathML" altimg="../images/eq5926.jpg" alttext=""><mi>Y</mi><mo>=</mo><mi>a</mi><mi>X</mi><mo>+</mo><mi>b</mi></math></p></body></html>"#,
+    );
+    // Typeset (a `Block::Math` carrying the source), NOT flattened to a raster image.
+    let item = first_math_item(&blocks).expect("mappable MathML → Block::Math (typeset)");
+    assert!(item.typeset.is_some(), "carries a typeset source: {item:?}");
+    assert!(
+        !blocks.iter().any(|b| matches!(b, Block::Image { .. })),
+        "mappable MathML must not also become a raster image: {blocks:?}"
+    );
+    // The raster is kept as the ladder's fallback (for a layout failure at render).
+    assert_eq!(
+        item.picture.as_ref().map(|p| p.src.as_str()),
+        Some("../images/eq5926.jpg"),
+        "raster retained as the render fallback: {item:?}"
     );
 }
 

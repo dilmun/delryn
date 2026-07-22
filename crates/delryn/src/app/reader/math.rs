@@ -158,21 +158,46 @@ pub(crate) fn convert_math_blocks(blocks: &mut [Block]) {
         let Block::Math { item } = b else {
             continue;
         };
-        // A `Block::Math` reaching here is typeset-able markup (the parser routed picture-
-        // backed equations it couldn't typeset to `Block::Image` already). Lay it out to a
-        // crisp raster; on the rare engine failure it stays `Block::Math` and centres its
-        // Unicode floor — never blank.
-        if let delryn_eqn::Rendered::Typeset(raster) = delryn_eqn::render(item, em_px, |_| None) {
-            *b = Block::Image {
-                src: String::new(),
-                alt: std::mem::take(&mut item.text),
-                data: raster.png,
-                caption: Vec::new(),
-                math: true,
-                width: delryn_model::ImageWidth::Auto,
-                // Path A: sized by its render em, not a measured ink profile.
-                ink: None,
-            };
+        // A `Block::Math` here is typeset-able markup. Render it down the ladder: a crisp
+        // RaTeX raster (Path A, sized by its render em); else the publisher picture the parser
+        // kept as a fallback (the loader resolved its bytes onto the ref) — ink-sized like any
+        // publisher equation; else it stays `Block::Math` and centres its Unicode floor —
+        // never blank.
+        match delryn_eqn::render(item, em_px, |_| None) {
+            delryn_eqn::Rendered::Typeset(raster) => {
+                *b = Block::Image {
+                    src: String::new(),
+                    alt: std::mem::take(&mut item.text),
+                    data: raster.png,
+                    caption: Vec::new(),
+                    math: true,
+                    width: delryn_model::ImageWidth::Auto,
+                    // Path A: sized by its render em, not a measured ink profile.
+                    ink: None,
+                };
+            }
+            delryn_eqn::Rendered::Picture { png, size } => {
+                let width = match size {
+                    delryn_model::PictureSize::Em(w) => delryn_model::ImageWidth::Em(w),
+                    delryn_model::PictureSize::Ex(w) => delryn_model::ImageWidth::Em(w * 0.5),
+                    delryn_model::PictureSize::MeasureInk => delryn_model::ImageWidth::Auto,
+                };
+                let src = item
+                    .picture
+                    .as_ref()
+                    .map(|p| p.src.clone())
+                    .unwrap_or_default();
+                *b = Block::Image {
+                    src,
+                    alt: std::mem::take(&mut item.text),
+                    data: png,
+                    caption: Vec::new(),
+                    math: true,
+                    width,
+                    ink: None,
+                };
+            }
+            delryn_eqn::Rendered::Text(_) => {} // leave `Block::Math` → Unicode floor
         }
     }
 }

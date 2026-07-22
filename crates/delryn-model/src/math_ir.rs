@@ -62,6 +62,10 @@ pub struct PictureRef {
     pub src: String,
     /// How to size it relative to the text (never from the file's raw pixel resolution).
     pub size: PictureSize,
+    /// The picture's bytes once resolved against the book's resources (empty until the
+    /// loader fills them). Lets a typeset equation fall back to its publisher raster
+    /// through the render ladder without a second resolution pass.
+    pub data: Vec<u8>,
 }
 
 /// Text-relative sizing for a picture. A CSS `em`/`ex` width is exact and DPI-independent;

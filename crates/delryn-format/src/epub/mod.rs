@@ -134,6 +134,18 @@ fn load_blocks(doc: &mut EpubDoc<BufReader<File>>, index: usize) -> Result<Vec<B
             }
         });
     }
+    // Resolve the publisher picture of a *typeset-able* equation (`Block::Math` that also
+    // shipped an `altimg`/raster), so a typeset failure can fall back to that image through
+    // the render ladder instead of dropping to Unicode.
+    for block in &mut blocks {
+        if let Block::Math { item } = block
+            && let Some(pic) = item.picture.as_mut()
+            && pic.data.is_empty()
+            && let Some(bytes) = resolve_image(doc, &dir, &pic.src)
+        {
+            pic.data = bytes;
+        }
+    }
     Ok(blocks)
 }
 

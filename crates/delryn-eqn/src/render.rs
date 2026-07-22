@@ -54,15 +54,21 @@ pub fn render(
     {
         return Rendered::Typeset(raster);
     }
-    // B) Picture — the publisher's own visual, kept as the fallback.
-    if let Some(pic) = &item.picture
-        && let Some(png) = resolve_picture(&pic.src)
-        && !png.is_empty()
-    {
-        return Rendered::Picture {
-            png,
-            size: pic.size,
+    // B) Picture — the publisher's own visual, kept as the fallback. Prefer bytes already
+    // resolved onto the ref (the loader fills them for typeset-able equations); otherwise
+    // resolve by src.
+    if let Some(pic) = &item.picture {
+        let png = if pic.data.is_empty() {
+            resolve_picture(&pic.src).unwrap_or_default()
+        } else {
+            pic.data.clone()
         };
+        if !png.is_empty() {
+            return Rendered::Picture {
+                png,
+                size: pic.size,
+            };
+        }
     }
     // C) Text — the Unicode floor, always available.
     Rendered::Text(item.text.clone())
@@ -165,6 +171,7 @@ mod tests {
             Some(PictureRef {
                 src: "eq.png".into(),
                 size: PictureSize::Em(3.0),
+                data: Vec::new(),
             }),
             "table",
         );
@@ -189,9 +196,34 @@ mod tests {
             Some(PictureRef {
                 src: "missing.png".into(),
                 size: PictureSize::MeasureInk,
+                data: Vec::new(),
             }),
             "x + 1",
         );
         assert_eq!(render(&it2, 40, |_| None), Rendered::Text("x + 1".into()));
+    }
+
+    #[test]
+    fn picture_bytes_on_the_ref_are_used_without_the_resolver() {
+        // The loader resolves a typeset-able equation's picture onto the ref; an unmapped
+        // markup then falls back to those bytes even with a no-op resolver.
+        let it = item(
+            Some(MarkupSource::PresentationMathml(
+                "<math><mtable><mtr><mtd><mn>1</mn></mtd></mtr></mtable></math>".into(),
+            )),
+            Some(PictureRef {
+                src: "eq.png".into(),
+                size: PictureSize::Em(2.0),
+                data: vec![9, 8, 7],
+            }),
+            "table",
+        );
+        match render(&it, 40, |_| None) {
+            Rendered::Picture { png, size } => {
+                assert_eq!(png, vec![9, 8, 7]);
+                assert_eq!(size, PictureSize::Em(2.0));
+            }
+            other => panic!("expected the ref's picture bytes, got {other:?}"),
+        }
     }
 }
