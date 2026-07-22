@@ -88,15 +88,14 @@ const EQ_TARGET_LINE_CELLS: f64 = INLINE_LINE_CELLS;
 /// never renders out of scale regardless of its DPI; the `math_scale` knob scales from here.
 const MATH_EM_CELLS: f64 = EQ_TARGET_LINE_CELLS;
 
-/// A display equation is capped to this fraction of the available rows, so a tall /
-/// multi-line one shrinks uniformly instead of dominating the page (a wide multi-line
-/// equation otherwise fills the column width and, by its aspect, runs many rows tall).
-/// Single-line equations sit far under the cap and are untouched. Floored by
-/// [`EQ_MAX_ROWS_FLOOR`] so a short pane still shows a readable equation. Kept modest so an
-/// equation flows with the prose instead of taking over the page — the glyphs are already
-/// normalised to text size, so this only reins in the genuinely tall constructs (a big
-/// fraction, a stacked matrix) that would otherwise run many rows.
-const EQ_MAX_ROWS_FRAC: f64 = 0.16;
+/// A display equation is bounded to this fraction of the viewport height — a **safety net**,
+/// not a routine size control: it only reins in an equation that would otherwise be taller
+/// than the screen (un-viewable at once), and leaves everything else at the book's uniform
+/// scale. A *routine* cap (the old low value) shrank tall equations — matrices, stacked
+/// fractions — below the one-liners' size, breaking the whole point of a uniform scale; a
+/// matrix of text-size elements is *meant* to be tall, and stays proportional here. Floored
+/// by [`EQ_MAX_ROWS_FLOOR`] so a short pane still shows a readable equation.
+const EQ_MAX_ROWS_FRAC: f64 = 0.9;
 
 /// Absolute floor (in text rows) for the [`EQ_MAX_ROWS_FRAC`] cap, so a small viewport
 /// doesn't shrink a multi-line equation to an illegible sliver.
@@ -382,17 +381,16 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
         // viewport so it can't take over the screen.
         GraphicKind::EquationRaster if fit.fit_mode == ImageFit::Faithful => cap.min(1.0),
         GraphicKind::EquationRaster => {
-            // Measure the raster's own ink and bring one glyph line to the text-relative
-            // target, so an *oversized* raster (higher-DPI than the rest) shrinks to match.
+            // One uniform scale for the whole book: `line_px` is the book-wide reference em
+            // (see `unify_book_em`), the same for every equation, so `s` is one factor that
+            // maps the publisher's source pixels to the terminal cell size — bringing the
+            // book's typical equation to the text target and scaling every other equation by
+            // the same amount. The publisher's relative proportions are preserved (a matrix
+            // stays proportional, never blown up independently), and the factor tracks the
+            // display DPI through `fhf` (the cell height in px), so equations stay text-
+            // relative on any monitor. "Math size %" (`knob`) scales the whole book.
             let s = match spec.ink {
-                // Cap *enlargement* at the publisher's native size scaled by the knob (native
-                // is scale 1.0, so native × knob = `knob`). An equation is never blown up past
-                // how it was authored: a matrix's small element em gives a large `s` that would
-                // otherwise enlarge the whole tall matrix and explode it — instead it renders
-                // at native (`s = knob`, i.e. native at the default 100%), consistent with its
-                // neighbours and with Faithful mode. Only a *too-big* raster (`s < knob`) is
-                // shrunk toward the target. "Math size %" scales the book up from native.
-                Some(p) => (fhf * EQ_TARGET_LINE_CELLS * knob / f64::from(p.line_px)).min(knob),
+                Some(p) => fhf * EQ_TARGET_LINE_CELLS * knob / f64::from(p.line_px),
                 // No measurable ink (rare): fall back to the authored em width if the
                 // publisher gave one, else the legacy low-res boost (never shrinks).
                 None => match spec.hint {
@@ -403,7 +401,7 @@ pub fn target_cells(w: u32, h: u32, fit: FitBox, spec: SizeSpec) -> (u16, u16) {
                 },
             };
             let s = s.min(cap); // fit the column / viewport
-            if s > 1.0 { s.min(MAX_UPSCALE) } else { s } // quality-cap the fallback boost
+            if s > 1.0 { s.min(MAX_UPSCALE) } else { s } // quality-cap enlargement
         }
         GraphicKind::Figure => {
             // The display width the figure should occupy: a consistent fraction of

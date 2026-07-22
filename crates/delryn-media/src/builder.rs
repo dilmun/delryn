@@ -85,8 +85,8 @@ mod geo_cache {
     /// must bump this or a stale-sized raster is served from disk. (v3: display-equation
     /// target lowered from 1.15 to 0.9 cells. v4: per-equation em, not one forced median.
     /// v5: display target dropped to prose size. v6: cap equation enlargement at native
-    /// size so matrices don't explode.)
-    pub const VERSION: u32 = 6;
+    /// size. v7: one uniform book scale + generous height cap (no per-equation sizing).)
+    pub const VERSION: u32 = 7;
 
     /// The cache key for a build's geometry: everything that determines the *pre-theme*
     /// raster. The render policy is excluded on purpose (theme is applied after a load).
