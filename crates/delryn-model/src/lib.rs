@@ -5,6 +5,7 @@
 
 pub mod content;
 pub mod math;
+pub mod math_ir;
 pub mod metadata;
 pub mod naming;
 pub mod status;
@@ -15,6 +16,7 @@ pub use content::{
     Anchor, Block, CalloutKind, ImageWidth, InkProfile, Inline, Section, Span, SpanMath, TableCell,
     find_footnote,
 };
+pub use math_ir::{MarkupSource, MathItem, PictureRef, PictureSize};
 pub use metadata::Metadata;
 pub use status::ReadingStatus;
 pub use toc::{OutlineItem, TocEntry};

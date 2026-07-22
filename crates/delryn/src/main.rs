@@ -115,8 +115,13 @@ fn main() -> Result<()> {
     // Index the configured folders in the background (incremental + dead-entry
     // prune) so the library appears instantly and refreshes as the scan lands.
     app.start_scan_startup();
+    // Persist measured equation-image ink profiles, so reopening a book reads them from
+    // disk instead of re-decoding every equation on the main thread (the open freeze).
+    delryn::app::reader_ink_cache_set_dir(delryn::media::raster_cache_dir());
     // Spawn the background image builder from the detected protocol.
-    app.image_builder = picker.clone().map(delryn::media::ImageBuilder::new);
+    app.image_builder = picker
+        .clone()
+        .map(|p| delryn::media::ImageBuilder::new(p, delryn::media::raster_cache_dir()));
     app.picker = picker;
 
     // Synchronized output (DEC 2026) can be toggled off for terminals that
@@ -127,10 +132,86 @@ fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
+    // ratatui's panic hook restores raw mode + the alt screen, but not the app-specific
+    // mouse capture or resident images — so a crash would leave the terminal streaming mouse
+    // escapes into the shell. Chain a hook that takes those down first, then defers to it.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(
+            io::stdout(),
+            Print(delryn::media::delete_all_images_seq()),
+            DisableMouseCapture
+        );
+        prev_hook(info);
+    }));
+    // Mute stray dependency stderr for the TUI's lifetime (see `StderrRedirect`).
+    let stderr_guard = StderrRedirect::for_tui();
     let result = run(&mut terminal, &mut app, sync);
+    // Free every terminal-resident image (pages + inline) so none linger after exit.
+    let _ = execute!(io::stdout(), Print(delryn::media::delete_all_images_seq()));
+    // Restore stderr before anything else prints, so real errors reach the terminal.
+    drop(stderr_guard);
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
+}
+
+/// While alive, points the process's stderr (fd 2) at a log file, so a dependency's stray
+/// `eprintln!` — e.g. the equation engine's RaTeX font-loader diagnostics
+/// (`[ratex-unicode-font] found via builtin path: …`) — can't scribble into the
+/// alternate-screen TUI and desync ratatui's cell-diff renderer (which surfaces as torn text
+/// and garbled prose mid-scroll). Restored on drop, so any error or panic printed after we
+/// leave the TUI still reaches the real terminal.
+#[cfg(unix)]
+struct StderrRedirect {
+    saved: Option<i32>,
+}
+
+#[cfg(unix)]
+impl StderrRedirect {
+    fn for_tui() -> Self {
+        use std::os::fd::AsRawFd;
+        let Ok(file) = std::fs::File::create(std::env::temp_dir().join("delryn.log")) else {
+            return Self { saved: None };
+        };
+        // SAFETY: `dup`/`dup2` act on the process's own stderr. `dup` saves the original
+        // stderr so `drop` can restore it; `dup2` repoints fd 2 at the log file's open
+        // description. `file`'s own fd is closed at end of scope, but fd 2 is an independent
+        // descriptor for the same description, so the log stays writable via fd 2 until the
+        // guard restores the original.
+        unsafe {
+            let saved = libc::dup(libc::STDERR_FILENO);
+            if saved < 0 {
+                return Self { saved: None };
+            }
+            libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+            Self { saved: Some(saved) }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StderrRedirect {
+    fn drop(&mut self) {
+        if let Some(saved) = self.saved {
+            // SAFETY: `saved` is a live dup of the original stderr; restore it onto fd 2 and
+            // close the temporary dup.
+            unsafe {
+                libc::dup2(saved, libc::STDERR_FILENO);
+                libc::close(saved);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct StderrRedirect;
+
+#[cfg(not(unix))]
+impl StderrRedirect {
+    fn for_tui() -> Self {
+        Self
+    }
 }
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> {
@@ -202,7 +283,12 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         if app.poll_scan() {
             dirty = true;
         }
-        // Keep redrawing while the grid is still building visible covers.
+        // Wrap + cache any covers the background loader finished this frame, and keep
+        // redrawing while it's still loading visible/prefetched covers — so they pop in
+        // without blocking navigation on I/O + decode.
+        if app.poll_grid_covers() {
+            dirty = true;
+        }
         if app.lib_grid_pending() {
             dirty = true;
         }
@@ -338,7 +424,10 @@ fn draw(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()>
     // escapes writes the page temp files; emit them inside the synchronized frame
     // so a page appears atomically with the chrome.
     let t_build = Instant::now();
-    let escapes = app.page_escapes();
+    let mut escapes = app.page_escapes();
+    // Inline images (equation rasters + inline figures) place in the same synchronized
+    // frame as the PDF pages and chrome, so a maths page appears atomically.
+    escapes.extend(app.inline_escapes());
     let build_us = t_build.elapsed().as_micros();
     let esc_bytes: usize = escapes.iter().map(String::len).sum();
     let t_write = Instant::now();

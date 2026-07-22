@@ -1,20 +1,18 @@
-//! Graphical math: turn display equations into themed images.
+//! Graphical math: render the recovered [`delryn_model::MathItem`] to themed images.
 //!
-//! A [`Block::Math`] that kept its LaTeX source (see `delryn-format`) is rendered to
-//! a PNG by [`delryn_math`] and swapped for a `Block::Image { math: true }`, so it
-//! flows through the existing inline-image pipeline (indexing, row reservation,
-//! async build + theme recolour, draw) with no math-specific plumbing. Anything
-//! without a LaTeX source, or that fails to render, stays a `Block::Math` shown as
-//! the centred Unicode approximation — the fallback is never regressed.
+//! A [`Block::Math`] is rendered down the [`delryn_eqn`] ladder — its crisp typeset raster,
+//! else the publisher's own picture — and swapped for a `Block::Image { math: true }`, so it
+//! flows through the existing inline-image pipeline (indexing, row reservation, async build +
+//! theme recolour, draw) with no math-specific plumbing. Anything the ladder can't render
+//! graphically stays a `Block::Math` shown as the centred Unicode floor — never regressed.
 //!
-//! Whether graphical math is on (config **and** a graphics protocol) and the target
-//! em size (from the terminal cell height) live in two atomics the view keeps in
-//! sync each frame ([`Reader::sync_graphical_math`]); a change re-decodes the open
-//! sections so the switch is live. The conversion runs where blocks are decoded —
-//! the background section loader (off the main thread) and the inline fetch — and
-//! delryn-math disk-caches every render, so only the first-ever render costs anything.
+//! Whether graphical math is on (config **and** a graphics protocol) and the target em size
+//! (from the terminal cell height) live in two atomics the view keeps in sync each frame
+//! ([`Reader::sync_graphical_math`]); a change re-decodes the open sections so the switch is
+//! live. The conversion runs where blocks are decoded — the background section loader (off
+//! the main thread) and the inline fetch.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -32,6 +30,13 @@ use super::Reader;
 /// instead (see [`unify_book_em`]). Reset when a new book opens ([`reset_book_ems`]);
 /// its rasters carry their own resolution and must not be sized by the previous book.
 static BOOK_EMS: Mutex<BTreeMap<usize, Vec<f32>>> = Mutex::new(BTreeMap::new());
+
+/// The book-wide pool of **inline** equation ems — a *separate* font size from the display
+/// equations, since publishers set inline math a touch smaller so it flows with the prose.
+/// Pooled per section and medianed exactly like [`BOOK_EMS`], so every inline equation is
+/// sized by the book's one inline em (see [`book_inline_em`]) — the same uniform, no-clamp
+/// model as the display path, just its own em. Reset per book.
+static BOOK_INLINE_EMS: Mutex<BTreeMap<usize, Vec<f32>>> = Mutex::new(BTreeMap::new());
 
 /// The book-wide reference em in effect (×100; `0` = unset), and a generation that ticks
 /// only when it *shifts meaningfully*. Early on — before the pool has enough correctly-
@@ -56,8 +61,29 @@ pub(crate) fn reset_book_ems() {
     if let Ok(mut pool) = BOOK_EMS.lock() {
         pool.clear();
     }
+    if let Ok(mut pool) = BOOK_INLINE_EMS.lock() {
+        pool.clear();
+    }
     BOOK_REF.store(0, Ordering::Relaxed);
     BOOK_REF_SEEN.store(BOOK_REF_GEN.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
+/// The book's one **inline** equation em: pool this section's measured atom ems book-wide
+/// and return the robust median — the size every inline equation is normalised to, exactly
+/// as [`unify_book_em`] does for display equations (a separate em, since inline math is set
+/// smaller). `None` below a few samples, where the pool isn't yet meaningful.
+pub(crate) fn book_inline_em(section: usize, section_ems: Vec<f32>) -> Option<f32> {
+    let Ok(mut pool) = BOOK_INLINE_EMS.lock() else {
+        return None;
+    };
+    if section_ems.is_empty() {
+        pool.remove(&section);
+    } else {
+        pool.insert(section, section_ems);
+    }
+    let all: Vec<f32> = pool.values().flatten().copied().collect();
+    drop(pool);
+    book_reference(&all)
 }
 
 /// Whether display equations are rendered graphically (config on + graphics
@@ -103,9 +129,9 @@ fn inline_em_px(cell_h: u16) -> u32 {
 /// Rasterise display math at the **text em** — equation glyphs match the surrounding
 /// prose, so a single-line display equation sits at text height and reads as part of
 /// the page rather than dominating it. `100%` `math_scale` is therefore exactly text
-/// size (the floor — math is never smaller than the text); the knob scales up from
-/// there. Multi-line equations are additionally height-capped in the sizer
-/// (`EQ_MAX_ROWS_FRAC`) so a tall stack can't take over the page.
+/// size (the default); the knob scales up to 3× or down below text size, so a reader who
+/// finds equations too large can tune them down. Multi-line equations are additionally
+/// height-capped in the sizer (`EQ_MAX_ROWS_FRAC`) so a tall stack can't take over the page.
 const DISPLAY_EM_FACTOR: f32 = 1.0;
 
 /// The px-per-em to rasterise display equations at, for a terminal `cell_h` (px) and
@@ -116,11 +142,10 @@ fn display_em_px(cell_h: u16, scale_pct: u16) -> u32 {
         as u32
 }
 
-/// Render every display equation with a recovered LaTeX source in `blocks` to a
-/// themed image (in place). A no-op when graphical math is off, and per-equation
-/// best-effort: a render failure leaves that `Block::Math` untouched (Unicode
-/// fallback). Runs off the main thread (the section loader) or once inline; cheap
-/// after the first render thanks to delryn-math's disk cache.
+/// Render every display equation in `blocks` down the engine ladder to a themed image (in
+/// place). A no-op when graphical math is off, and per-equation best-effort: a rung that
+/// can't render leaves that `Block::Math` untouched (Unicode floor). Runs off the main
+/// thread (the section loader) or once inline.
 pub(crate) fn convert_math_blocks(blocks: &mut [Block]) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
@@ -130,90 +155,165 @@ pub(crate) fn convert_math_blocks(blocks: &mut [Block]) {
         return;
     }
     for b in blocks.iter_mut() {
-        let Block::Math {
-            unicode,
-            latex: Some(latex),
-        } = b
-        else {
+        let Block::Math { item } = b else {
             continue;
         };
-        let Some(png) = delryn_math::render(latex, delryn_math::Style::Display, em_px) else {
-            continue; // unrenderable → keep the Unicode `Block::Math`
-        };
-        let alt = std::mem::take(unicode);
-        *b = Block::Image {
-            src: String::new(),
-            alt,
-            data: png,
-            caption: Vec::new(),
-            math: true,
-            width: delryn_model::ImageWidth::Auto,
-            // Rendered LaTeX is Path A — sized by its render em, not a measured
-            // ink profile — so it needs no profiling.
-            ink: None,
-        };
-    }
-}
-
-/// Rasterise each **inline** math run in `blocks` that kept a LaTeX source
-/// ([`SpanMath::Latex`]) to a small themed image drawn mid-line, assigning each a
-/// section-local id and swapping it in place for [`SpanMath::Raster`]. A no-op
-/// unless graphical inline math is enabled (the master toggle **and** the
-/// `graphical_inline_math` opt-in); per-run best-effort — a render failure, a too-tall
-/// equation (a fraction / limit stack that would smear in one text row), or an
-/// undecodable raster leaves the run as `Latex`, so the wrapper shows its Unicode
-/// approximation (the fallback is never regressed).
-///
-/// Only top-level `Para`/`Heading` runs are rendered — the same runs the wrapper
-/// can reserve atom cells for; nested (callout/footnote/table/caption) inline math
-/// keeps its own id space the reader doesn't address, so it stays Unicode. Runs off
-/// the main thread at every decode site (after [`convert_math_blocks`]); cheap after
-/// the first render thanks to delryn-math's disk cache.
-pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
-    if !INLINE_ENABLED.load(Ordering::Relaxed) {
-        return; // inline math stays the natural Unicode approximation
-    }
-    let em_px = INLINE_EM_PX.load(Ordering::Relaxed);
-    if em_px == 0 {
-        return;
-    }
-    let mut next_id = 0usize;
-    for b in blocks.iter_mut() {
-        let spans = match b {
-            Block::Para { spans, .. } | Block::Heading { spans, .. } => spans,
-            _ => continue,
-        };
-        for span in spans.iter_mut() {
-            let Some(SpanMath::Latex(latex)) = &span.math else {
-                continue;
+        // A `Block::Math` reaching here is typeset-able markup (the parser routed picture-
+        // backed equations it couldn't typeset to `Block::Image` already). Lay it out to a
+        // crisp raster; on the rare engine failure it stays `Block::Math` and centres its
+        // Unicode floor — never blank.
+        if let delryn_eqn::Rendered::Typeset(raster) = delryn_eqn::render(item, em_px, |_| None) {
+            *b = Block::Image {
+                src: String::new(),
+                alt: std::mem::take(&mut item.text),
+                data: raster.png,
+                caption: Vec::new(),
+                math: true,
+                width: delryn_model::ImageWidth::Auto,
+                // Path A: sized by its render em, not a measured ink profile.
+                ink: None,
             };
-            let Some(png) = delryn_math::render(latex, delryn_math::Style::Inline, em_px) else {
-                continue; // unrenderable → keep the Unicode fallback
-            };
-            // Height gate: a single-line inline equation fits one text row; a tall
-            // stack (fraction, ∫/∑ with limits) would smear, so keep it Unicode.
-            let too_tall = crate::media::image_dimensions(&png)
-                .is_none_or(|(_, h)| h as f32 > INLINE_MAX_H_EM * em_px as f32);
-            if too_tall {
-                continue;
-            }
-            span.math = Some(SpanMath::Raster { id: next_id, png });
-            next_id += 1;
         }
     }
 }
 
-/// Measure the ink profile of each **publisher** equation image in `blocks` (in
-/// place), so it can be sized to a text-relative height regardless of the file's DPI
-/// (see [`delryn_media::ink_profile`]). Runs right after [`convert_math_blocks`] at
-/// every decode site — off the main thread in the section loader — so the profile
-/// rides along on the block and both the up-front row estimate and the async build
-/// read it (they must agree). A no-op when graphical rendering is off (images then
-/// show as placeholders, so size is moot) or once a block is already profiled.
+/// Render each **inline** math run in `blocks` to a small themed image drawn mid-line,
+/// assigning each a section-local id and swapping it in place for [`SpanMath::Raster`]. Two
+/// sources feed it:
+/// - [`SpanMath::Picture`] — a publisher inline **image** (a tiny `<img>` symbol/equation the
+///   loader resolved bytes for). The image *is* the render, so it's drawn whenever graphical
+///   math is on, replacing the ugly placeholder these books would otherwise show mid-prose.
+/// - [`SpanMath::Source`] — recovered LaTeX/MathML, typeset down the engine rung. This stays
+///   behind the `graphical_inline_math` opt-in (off by default), since its Unicode floor
+///   lines up with prose better than a raster when the source is recoverable.
 ///
-/// delryn's *own* LaTeX renders (from [`convert_math_blocks`]) carry an empty `src`
-/// and are sized by their render em — they are skipped. A figure or photo that slips
-/// through the candidate gate profiles to `None` and is then sized as a figure.
+/// A no-op when graphical math is off. Per-run best-effort — an unresolved/undecodable/too-tall
+/// picture, or a typeset failure, leaves the run as-is so the wrapper shows its floor (never
+/// regressed). Every `Para`/`Heading` run is rendered, including those nested in a callout or
+/// footnote body (via [`Block::for_each_spans_mut`]) — one `id` space the wrapper reserves
+/// atom cells for and the draw addresses. Runs off the main thread at every decode site.
+pub(crate) fn convert_inline_math(blocks: &mut [Block]) {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return; // graphical math off entirely — inline math stays its Unicode floor
+    }
+    let inline_typeset = INLINE_ENABLED.load(Ordering::Relaxed);
+    let em_px = INLINE_EM_PX.load(Ordering::Relaxed);
+    let mut next_id = 0usize;
+    // Measure each distinct raster's ink **here** (at load, off the main thread for a
+    // prefetched section) so the reader's sizing pass reads it from the span instead of
+    // decoding on the render thread — deduped by content, so a glyph repeated hundreds
+    // of times (ℝ) is decoded once. Backed by the persistent [`ink_cache`], so a reopen
+    // reads the profile from disk rather than decoding the image again.
+    let mut ink_memo: HashMap<u64, Option<delryn_model::InkProfile>> = HashMap::new();
+    // Rasterise inline math in every run, recursing into callout/footnote bodies (via
+    // `for_each_spans_mut`) so a note's inline equations render too. One `id` space across
+    // all of them — the wrapper reserves cells and the draw addresses atoms by this id.
+    let mut rasterise = |spans: &mut Vec<delryn_model::Span>| {
+        for span in spans.iter_mut() {
+            // Take the math out so we can produce the raster without a borrow tangle; restore
+            // the source when we don't convert, so the floor is never lost.
+            let png: Option<Vec<u8>> = match span.math.take() {
+                Some(SpanMath::Picture { src, data }) => {
+                    // The publisher marked this image inline (`class="inline"`) and the loader
+                    // resolved its bytes — so the image *is* the render: draw it. No aspect
+                    // gate — a narrow tall fraction (`1/n`) is exactly what we want, and the
+                    // ink-based sizing normalises it to the prose size (a centred multi-row
+                    // atom, bounded by `INLINE_MAX_ROWS`). An unresolved picture (no bytes)
+                    // keeps its `Picture` floor so its placeholder text shows. Identical images
+                    // (the same glyph repeated) are deduped downstream by content.
+                    if data.is_empty() {
+                        span.math = Some(SpanMath::Picture { src, data });
+                        None
+                    } else {
+                        Some(data)
+                    }
+                }
+                Some(SpanMath::Source(item)) => {
+                    // Typeset rung, opt-in only. A too-tall stack (a fraction / ∫∑ with limits)
+                    // that would smear in one row, or any failure, keeps the Unicode floor.
+                    let png = (inline_typeset && em_px != 0)
+                        .then(|| match delryn_eqn::render(&item, em_px, |_| None) {
+                            delryn_eqn::Rendered::Typeset(raster)
+                                if crate::media::image_dimensions(&raster.png).is_some_and(
+                                    |(_, h)| (h as f32) <= INLINE_MAX_H_EM * em_px as f32,
+                                ) =>
+                            {
+                                Some(raster.png)
+                            }
+                            _ => None,
+                        })
+                        .flatten();
+                    if png.is_none() {
+                        span.math = Some(SpanMath::Source(item));
+                    }
+                    png
+                }
+                other => {
+                    span.math = other;
+                    None
+                }
+            };
+            if let Some(png) = png {
+                let h = super::ink_cache::hash(&png);
+                let ink = *ink_memo.entry(h).or_insert_with(|| {
+                    super::ink_cache::lookup(h).unwrap_or_else(|| {
+                        let p = inline_ink_of(&png);
+                        super::ink_cache::store(h, p);
+                        p
+                    })
+                });
+                span.math = Some(SpanMath::Raster {
+                    id: next_id,
+                    png,
+                    ink,
+                });
+                next_id += 1;
+            }
+        }
+    };
+    for b in blocks.iter_mut() {
+        b.for_each_spans_mut(&mut rasterise);
+    }
+}
+
+/// Measure one inline raster's ink profile (decodes the image). Called from
+/// [`convert_inline_math`] at load time — off the main thread for a prefetched section —
+/// so the reader's sizing pass reads it from the span instead of decoding on the render
+/// thread. The dependency-free model profile mirrors [`delryn_media::ink_profile`].
+fn inline_ink_of(png: &[u8]) -> Option<delryn_model::InkProfile> {
+    let img = crate::media::decode(png)?;
+    crate::media::ink_profile(&img).map(|p| delryn_model::InkProfile {
+        x0: p.x0,
+        y0: p.y0,
+        x1: p.x1,
+        y1: p.y1,
+        line_px: p.line_px,
+        line_count: p.line_count,
+    })
+}
+
+/// Measure the ink profile of every equation image in `blocks` (in place), so it can be
+/// sized to a text-relative height by the general pixel algorithm — regardless of the
+/// file's DPI or how it was produced (see [`delryn_media::ink_profile`]). Runs right after
+/// [`convert_math_blocks`] at every decode site — off the main thread in the section loader
+/// — so the profile rides along on the block and both the up-front row estimate and the
+/// async build read it (they must agree). A no-op when graphical rendering is off (images
+/// then show as placeholders, so size is moot) or once a block is already profiled.
+///
+/// This measures delryn's **own** typeset renders (from [`convert_math_blocks`], empty
+/// `src`) the same as publisher rasters: both are normalised so one glyph line hits the
+/// text-relative target, so a re-typeset equation and a publisher raster come out the same
+/// size (and a tall matrix is scaled down per-line instead of rendering at its native,
+/// oversized layout). A figure or photo that slips through the candidate gate profiles to
+/// `None` and is then sized as a figure.
+/// The file name of an image `src`, without directory or extension:
+/// `"images/Figure-3.1.jpg"` → `"Figure-3.1"`, so a figure-named file is recognised even
+/// when the alt is empty.
+fn file_stem(src: &str) -> &str {
+    let base = src.rsplit(['/', '\\']).next().unwrap_or(src);
+    base.rsplit_once('.').map_or(base, |(stem, _)| stem)
+}
+
 pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
@@ -234,51 +334,69 @@ pub(crate) fn profile_equation_images(blocks: &mut [Block], section: usize) {
         if data.is_empty() || ink.is_some() {
             continue; // no bytes, or already measured
         }
-        // delryn's own LaTeX render is flagged math with an empty src and is sized by
-        // its render em — leave it native, don't ink-normalise it.
-        if *math && src.is_empty() {
-            continue;
-        }
-        // A candidate publisher equation: flagged display-math, or alt text that
-        // parses as math, or an uncaptioned auto-width image (captioned / explicitly
-        // sized graphics are figures). A photo that slips through profiles to `None`
-        // and is then sized as a figure.
+        // A candidate equation: flagged display-math (a publisher raster *or* delryn's own
+        // typeset render), or alt text that parses as math, or an uncaptioned auto-width
+        // image whose alt *and* filename are not a figure's. A descriptive alt ("Figure 3.1:
+        // Two vectors…") or a figure-named file ("Figure-3.1.jpg" — this book ships diagrams
+        // with an empty alt, so the filename is the only signal) marks a diagram: left
+        // unprofiled so it sizes as a figure, not blown up on the equation path (its large
+        // bbox has few ink lines, so it would otherwise be mistaken for a short equation).
+        let figure = delryn_model::math::looks_like_figure_caption(alt.as_str())
+            || delryn_model::math::looks_like_figure_caption(file_stem(src));
         let candidate = *math
             || delryn_model::math::is_math(alt.as_str())
-            || (caption.is_empty() && matches!(*width, delryn_model::ImageWidth::Auto));
+            || (caption.is_empty() && matches!(*width, delryn_model::ImageWidth::Auto) && !figure);
         if !candidate {
             continue;
         }
-        let Some(img) = crate::media::decode(data) else {
-            continue;
+        let key = super::ink_cache::hash(data);
+        *ink = if let Some(cached) = super::ink_cache::lookup(key) {
+            cached // served from disk — no decode
+        } else {
+            let Some(img) = crate::media::decode(data) else {
+                continue; // decode failure (rare) — leave unmeasured, don't cache
+            };
+            let profile = crate::media::ink_profile(&img).map(|p| delryn_model::InkProfile {
+                x0: p.x0,
+                y0: p.y0,
+                x1: p.x1,
+                y1: p.y1,
+                line_px: p.line_px,
+                line_count: p.line_count,
+            });
+            super::ink_cache::store(key, profile);
+            profile
         };
-        *ink = crate::media::ink_profile(&img).map(|p| delryn_model::InkProfile {
-            x0: p.x0,
-            y0: p.y0,
-            x1: p.x1,
-            y1: p.y1,
-            line_px: p.line_px,
-            line_count: p.line_count,
-        });
     }
     unify_book_em(blocks, section);
 }
 
-/// Give the book's publisher equations one shared text em, so they all scale to the same
-/// on-screen size across the whole book. All display equations in a book share one font
-/// size, so unifying is correct — and it rescues the ones whose glyph measurement
-/// misreads. This section's ems join the book-wide pool ([`BOOK_EMS`]); the shared
-/// reference is drawn from **every** equation seen so far, then applied to this section.
+/// Assign the book's **one** reference em to every equation, so the whole book is sized by a
+/// single scale — the reliable core of equation normalisation.
 ///
-/// The reference is the pool's **upper-quartile (p75) em, not the median**, because the
-/// measurement only ever errs *low*: a fraction-heavy equation (`1/n Σ`, `x̄ ± Z(σ/√n)`)
-/// is mostly small numerator/denominator/limit glyphs, so its handful of full-height cap
-/// letters are a minority the cap-height estimate undershoots. Book-wide pooling plus the
-/// high quantile means even a section that is *entirely* such equations (a page of error
-/// metrics) is snapped up to the size the book's correctly-measured equations agree on,
-/// instead of being levelled to its own misreads (a per-section median did the latter —
-/// the whole page rendered oversized). Below a few samples the pool isn't meaningful yet,
-/// so each equation keeps its own measurement.
+/// # Why one scale, not per-equation
+/// A publisher rasterises all of a book's equations from one layout engine at one resolution,
+/// sizing them correctly *relative to each other* (matrix elements a touch smaller, one-liners
+/// at text size). So there is exactly one number to recover: the resolution the book was
+/// rendered at. We estimate it once — the robust **median** of every equation's measured glyph
+/// em ([`BOOK_EMS`] → [`book_reference`]) — and drive every equation by it.
+///
+/// Sizing each equation by its *own* measured em is unreliable and was the source of the
+/// "matrices explode / some equations bigger than others" bugs: `measure_glyphs` cannot read a
+/// matrix consistently (fused brackets measure as one tall blob → em too big → too small; small
+/// separated elements → em too small → exploded). Pooled across the whole book, though, that
+/// noise cancels — the median is stable — and because the scale is *uniform*, no single
+/// equation can be sized wrong independently of its neighbours. The publisher's relative
+/// proportions are preserved exactly.
+///
+/// # Display DPI / monitors
+/// The reference is in the raster's own *source* pixels (DPI-independent). The final scale
+/// (in [`crate::media::target_cells`]) is `target_cells × cell_height_px / reference`, so it
+/// maps source pixels to the terminal's cell size — which *is* the display DPI. Move to a
+/// hi-DPI monitor and the cell height grows, the scale grows with it, and equations stay
+/// text-relative. The raster cache is keyed on the cell size, so a monitor change rebuilds.
+/// Below a few samples the pool isn't meaningful yet, so each equation keeps its own value
+/// until the book-wide estimate settles.
 fn unify_book_em(blocks: &mut [Block], section: usize) {
     let section_ems: Vec<f32> = blocks
         .iter()
@@ -308,22 +426,25 @@ fn unify_book_em(blocks: &mut [Block], section: usize) {
     }
     for b in blocks.iter_mut() {
         if let Block::Image { ink: Some(p), .. } = b {
-            p.line_px = reference;
+            p.line_px = reference; // one scale for the whole book
         }
     }
 }
 
-/// The shared equation em from a pool of measured ems: the **upper quartile** — biased
-/// high because the ink measurement only ever errs *low* (see [`unify_book_em`]) — so
-/// undershooting equations are levelled *up* to the size the correctly-measured majority
-/// agree on. `None` below a few samples, where the pool isn't yet meaningful.
+/// The book's one equation em, from a pool of measured ems: the **median** — the robust
+/// centre of the cluster the correctly-measured equations agree on, unmoved by the
+/// mis-measured minority that errs both ways (a fraction-heavy equation undershoots; a
+/// bracket-connected matrix, measured as one component, overshoots). Every equation in a
+/// book is set at one font size, so this single value is the book's true glyph em; the
+/// reader sizes every equation by it (see [`unify_book_em`]). `None` below a few samples,
+/// where the pool isn't yet meaningful.
 fn book_reference(ems: &[f32]) -> Option<f32> {
     if ems.len() < 3 {
         return None;
     }
     let mut sorted = ems.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    Some(sorted[(sorted.len() * 3) / 4])
+    Some(sorted[sorted.len() / 2])
 }
 
 impl Reader {
@@ -390,16 +511,15 @@ impl Reader {
 mod tests {
     use super::*;
 
-    /// The rasterise em is the text em at the 100% floor (equation glyphs match the
-    /// prose), scaling linearly with the "Math size %" knob. The knob only enlarges
-    /// (the config floors it at 100), so display math is never smaller than the text.
+    /// The rasterise em is the text em at the 100% default (equation glyphs match the
+    /// prose), scaling linearly with the "Math size %" knob — down toward text size and
+    /// below, or up to the 300% max.
     #[test]
     fn display_em_px_is_text_relative() {
-        assert_eq!(display_em_px(20, 100), 20); // floor: exactly the text (cell) em
+        assert_eq!(display_em_px(20, 100), 20); // default: exactly the text (cell) em
         assert_eq!(display_em_px(20, 200), 40); // knob doubles it
         assert_eq!(display_em_px(20, 300), 60); // …up to the 300% max
-        // At the 100% floor a display equation is text-sized — never smaller.
-        assert_eq!(display_em_px(20, 100), 20, "the floor is exactly text size");
+        assert_eq!(display_em_px(20, 70), 14); // …and down below text size to tune large math down
     }
 
     /// With graphical math on, a display equation that kept its LaTeX source becomes
@@ -413,12 +533,20 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
 
         let math = || Block::Math {
-            unicode: "x²".to_string(),
-            latex: Some("x^2".to_string()),
+            item: delryn_model::MathItem {
+                display: true,
+                typeset: Some(delryn_model::MarkupSource::Latex("x^2".to_string())),
+                picture: None,
+                text: "x²".to_string(),
+            },
         };
-        let mathml_only = || Block::Math {
-            unicode: "α".to_string(),
-            latex: None,
+        let no_graphics = || Block::Math {
+            item: delryn_model::MathItem {
+                display: true,
+                typeset: None,
+                picture: None,
+                text: "α".to_string(),
+            },
         };
         EM_PX.store(40, Ordering::Relaxed);
 
@@ -433,7 +561,7 @@ mod tests {
 
         // On → LaTeX math becomes a themed image; a source-less one stays Unicode.
         ENABLED.store(true, Ordering::Relaxed);
-        let mut on = vec![math(), mathml_only()];
+        let mut on = vec![math(), no_graphics()];
         convert_math_blocks(&mut on);
         match &on[0] {
             Block::Image {
@@ -469,7 +597,12 @@ mod tests {
         let para = |latex: &str| Block::Para {
             spans: vec![
                 delryn_model::Span::plain("see "),
-                delryn_model::Span::math("approx", latex),
+                delryn_model::Span::math(delryn_model::MathItem {
+                    display: false,
+                    typeset: Some(delryn_model::MarkupSource::Latex(latex.to_string())),
+                    picture: None,
+                    text: "approx".to_string(),
+                }),
             ],
             indent: 0,
             quote: false,
@@ -480,15 +613,16 @@ mod tests {
             _ => unreachable!(),
         };
         INLINE_EM_PX.store(32, Ordering::Relaxed); // ~2× a 16px cell (the calib em)
+        ENABLED.store(true, Ordering::Relaxed); // graphical math on (the master gate)
 
-        // Off → no conversion (stays a LaTeX source span). Inline rasterising is
-        // gated on its own opt-in (`INLINE_ENABLED`), not the display master toggle.
+        // Off → no conversion (stays a LaTeX source span). Typeset inline math is gated on
+        // its own opt-in (`INLINE_ENABLED`) on top of the master toggle.
         INLINE_ENABLED.store(false, Ordering::Relaxed);
         let mut off = vec![para("x^2")];
         convert_inline_math(&mut off);
         assert!(
-            matches!(math_of(&off[0]), Some(SpanMath::Latex(_))),
-            "off: inline math stays a LaTeX source"
+            matches!(math_of(&off[0]), Some(SpanMath::Source(_))),
+            "off: inline math stays a recovered source"
         );
 
         // On → a short equation rasterises to an atom; a tall fraction stays Unicode.
@@ -496,7 +630,7 @@ mod tests {
         let mut short = vec![para("x^2")];
         convert_inline_math(&mut short);
         match math_of(&short[0]) {
-            Some(SpanMath::Raster { id, png }) => {
+            Some(SpanMath::Raster { id, png, .. }) => {
                 assert_eq!(id, 0, "first inline equation gets id 0");
                 assert!(!png.is_empty(), "carries the rendered PNG bytes");
             }
@@ -516,12 +650,78 @@ mod tests {
         let mut tall = vec![para("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}")];
         convert_inline_math(&mut tall);
         assert!(
-            matches!(math_of(&tall[0]), Some(SpanMath::Latex(_))),
+            matches!(math_of(&tall[0]), Some(SpanMath::Source(_))),
             "a too-tall stack keeps its Unicode fallback"
         );
 
         INLINE_ENABLED.store(false, Ordering::Relaxed); // don't leak to other tests
+        ENABLED.store(false, Ordering::Relaxed);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A publisher inline picture (a tiny `<img>` the loader resolved bytes for) is drawn
+    /// mid-line whenever graphical math is on — no typeset opt-in needed, because the image
+    /// *is* the render. Off, or unresolved, it stays a `Picture` so its floor text shows.
+    /// (Identical images are deduped by content in the atom pipeline, so a repeated symbol
+    /// uploads once.)
+    #[test]
+    fn converts_inline_picture_to_raster() {
+        // Serialised with the other tests that flip the global `ENABLED`/`INLINE_ENABLED`
+        // atomics, so they can't race and flip the flag out from under our assertions.
+        let _env = crate::test_env_guard();
+        let para_pic = |data: Vec<u8>| Block::Para {
+            spans: vec![
+                delryn_model::Span::plain("see "),
+                delryn_model::Span {
+                    text: "▢".to_string(),
+                    style: delryn_model::Inline {
+                        math: true,
+                        ..Default::default()
+                    },
+                    anchor: None,
+                    math: Some(SpanMath::Picture {
+                        src: "images/r.jpg".to_string(),
+                        data,
+                    }),
+                },
+            ],
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let math_of = |b: &Block| match b {
+            Block::Para { spans, .. } => spans[1].math.clone(),
+            _ => unreachable!(),
+        };
+
+        // Master graphical math OFF → stays a Picture (the floor shows).
+        ENABLED.store(false, Ordering::Relaxed);
+        let mut off = vec![para_pic(equation_png())];
+        convert_inline_math(&mut off);
+        assert!(
+            matches!(math_of(&off[0]), Some(SpanMath::Picture { .. })),
+            "off: inline picture stays a picture"
+        );
+
+        // ON, typeset opt-in OFF → the resolved picture still rasterises (it needs no source).
+        ENABLED.store(true, Ordering::Relaxed);
+        INLINE_ENABLED.store(false, Ordering::Relaxed);
+        let mut on = vec![para_pic(equation_png())];
+        convert_inline_math(&mut on);
+        assert!(
+            matches!(math_of(&on[0]), Some(SpanMath::Raster { .. })),
+            "on: resolved inline picture rasterises to an atom"
+        );
+
+        // An unresolved picture (loader found no bytes) stays a Picture → floor.
+        let mut unresolved = vec![para_pic(Vec::new())];
+        convert_inline_math(&mut unresolved);
+        assert!(
+            matches!(math_of(&unresolved[0]), Some(SpanMath::Picture { .. })),
+            "unresolved inline picture keeps its floor"
+        );
+
+        ENABLED.store(false, Ordering::Relaxed);
     }
 
     /// A transparent PNG with one opaque ink band — a minimal publisher equation.
@@ -539,9 +739,10 @@ mod tests {
         buf
     }
 
-    /// The profiling pass measures publisher equation images — an uncaptioned raster
-    /// or a `math`-flagged `<img>` (real `src`) — while leaving captioned figures and
-    /// delryn's own LaTeX renders (`math`, empty `src`) untouched.
+    /// The profiling pass measures every equation image — an uncaptioned raster, a
+    /// `math`-flagged publisher `<img>` (real `src`), *and* delryn's own typeset render
+    /// (`math`, empty `src`) — so all are sized text-relative by the same pixel algorithm;
+    /// only captioned figures are left untouched.
     #[test]
     fn profiles_publisher_equation_images_only() {
         let _env = crate::test_env_guard();
@@ -569,8 +770,8 @@ mod tests {
             "off: not profiled"
         );
 
-        // On → both publisher equations are measured; the figure and delryn's own
-        // render are left alone.
+        // On → every equation is measured (publisher rasters *and* delryn's own render),
+        // so all size text-relative by the same pixel algorithm; only the figure is left.
         ENABLED.store(true, Ordering::Relaxed);
         profile_equation_images(&mut blocks, 0);
         let ink = |b: &Block| matches!(b, Block::Image { ink: Some(_), .. });
@@ -581,25 +782,22 @@ mod tests {
         );
         assert!(!ink(&blocks[2]), "captioned figure left unprofiled");
         assert!(
-            !ink(&blocks[3]),
-            "delryn's own render (empty src) left unprofiled"
+            ink(&blocks[3]),
+            "delryn's own render (empty src) is profiled too — sized like every equation"
         );
 
         ENABLED.store(false, Ordering::Relaxed); // don't leak to other tests
     }
 
-    /// The shared reference is the pool's upper quartile, so a mis-measured (undershot)
-    /// equation is levelled *up* to what the correctly-measured majority agree on — not
-    /// the median, which a page of uniformly-undershot equations would drag down.
+    /// The shared reference is the pool **median** — the robust centre of the cluster the
+    /// correctly-measured equations agree on, unmoved by the mis-measured minority that
+    /// errs *both* ways (an undershot fraction; an overshot bracket-connected matrix).
     #[test]
-    fn book_reference_biases_to_the_upper_quartile() {
-        // Three well-measured (~20px) equations and one undershot outlier (6px).
-        assert_eq!(book_reference(&[20.0, 21.0, 19.0, 6.0]), Some(21.0));
-        // A whole page of undershot metrics next to the book's correct ones snaps up.
-        assert_eq!(
-            book_reference(&[17.0, 17.0, 18.0, 24.0, 24.0, 24.0, 24.0]),
-            Some(24.0)
-        );
+    fn book_reference_is_the_robust_median() {
+        // Well-measured (~20px) equations with outliers on both sides: median ignores them.
+        assert_eq!(book_reference(&[6.0, 19.0, 20.0, 21.0, 90.0]), Some(20.0));
+        // A low outlier alone doesn't drag the centre down.
+        assert_eq!(book_reference(&[20.0, 21.0, 19.0, 6.0]), Some(20.0));
         // Below a few samples the pool isn't meaningful yet.
         assert_eq!(book_reference(&[20.0, 20.0]), None);
     }

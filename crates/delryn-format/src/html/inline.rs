@@ -27,8 +27,10 @@ pub(super) fn img_src(e: &scraper::node::Element) -> Option<String> {
 
 /// Maximum inline-nesting depth before the walk stops recursing and flattens the
 /// rest to text — guards against a stack overflow on pathological markup (e.g.
-/// thousands of nested `<span>`s). Real inline nesting is a few levels deep.
-const MAX_INLINE_DEPTH: u16 = 256;
+/// thousands of nested `<span>`s). Real inline nesting is a few levels deep; the
+/// bound is kept well under where the recursive walk's (debug-build) frames would
+/// exhaust a default thread stack.
+const MAX_INLINE_DEPTH: u16 = 128;
 
 pub(super) fn collect_inline(node: NodeRef<Node>, style: Inline, out: &mut Vec<Span>) {
     collect_inline_at(node, style, 0, out);
@@ -124,36 +126,36 @@ fn collect_inline_at(node: NodeRef<Node>, style: Inline, depth: u16, out: &mut V
                         });
                         return;
                     }
-                    // Inline math source: LaTeX/MathML in the `alt` (MathJax-style),
-                    // or a trailing MathML/LaTeX comment (Wiley/For-Dummies ship it
-                    // there with a bare `alt="math"`, which otherwise printed as
-                    // "[math]"). Keep the recovered LaTeX (delimiter-stripped) so the
-                    // reader can render it graphically; MathML-only stays Unicode.
-                    let math_raw = e
-                        .attr("alt")
-                        .filter(|a| delryn_model::math::is_math(a))
-                        .map(str::to_string)
-                        .or_else(|| img_math_comment(node));
-                    if let Some(raw) = math_raw {
-                        let latex = (!delryn_model::math::is_mathml(&raw)).then(|| {
-                            delryn_model::SpanMath::Latex(delryn_model::math::strip_delimiters(
-                                &raw,
-                            ))
-                        });
+                    // Inline math? The universal detector harvests every source the image
+                    // carries — LaTeX/MathML in the `alt` (MathJax-style), a trailing
+                    // MathML/LaTeX comment (Wiley/For-Dummies, bare `alt="math"`), a picture
+                    // — and a Unicode floor. The reader renders it down the ladder.
+                    if let Some(item) = detect_inline(node) {
+                        out.push(inline_math_span(item, style));
+                        return;
+                    }
+                    // An inline image with a useless alt (empty / generic) is almost always
+                    // a rasterised inline symbol or equation (ℝ, a small formula) the
+                    // converter couldn't give recoverable source. Carry its `src` as an
+                    // inline picture so the reader draws it mid-line (it resolves the bytes),
+                    // with the quiet marker kept as the fallback if it can't be rendered.
+                    if is_placeholder_alt(alt) && !src.is_empty() {
                         out.push(Span {
-                            text: math_unicode(&raw),
+                            text: "▢".to_string(),
                             style: Inline {
                                 italic: true,
                                 math: true,
                                 ..style
                             },
                             anchor: None,
-                            math: latex,
+                            math: Some(delryn_model::SpanMath::Picture {
+                                src: src.to_string(),
+                                data: Vec::new(),
+                            }),
                         });
                         return;
                     }
-                    // Any other inline image: a quiet marker for a useless alt (often
-                    // math the converter rasterised), else the alt label.
+                    // Any other inline image: a quiet marker for a useless alt, else the alt label.
                     let text = if is_placeholder_alt(alt) {
                         "▢".to_string()
                     } else {
@@ -170,30 +172,13 @@ fn collect_inline_at(node: NodeRef<Node>, style: Inline, depth: u16, out: &mut V
                     });
                     return;
                 }
-                // Native inline math → Unicode approximation, plus the recovered
-                // LaTeX source (when the parser could get it) so the reader can
-                // rasterise it graphically. Don't recurse, or the raw token text
-                // leaks out. Block math is handled at the block level.
+                // Native inline math → the recovered MathItem (its Unicode floor as the
+                // fallback text) so the reader can render it down the ladder. Don't recurse,
+                // or the raw token text leaks out. Block math is handled at the block level.
                 "math" => {
-                    let (text, latex) = native_math(node);
-                    let mstyle = Inline {
-                        math: true,
-                        ..style
-                    };
-                    out.push(match latex {
-                        Some(latex) => Span {
-                            text,
-                            style: mstyle,
-                            anchor: None,
-                            math: Some(delryn_model::SpanMath::Latex(latex)),
-                        },
-                        None => Span {
-                            text,
-                            style: mstyle,
-                            anchor: None,
-                            math: None,
-                        },
-                    });
+                    if let Some(item) = detect_inline(node) {
+                        out.push(inline_math_span(item, style));
+                    }
                     return;
                 }
                 _ => style,
@@ -213,6 +198,38 @@ fn collect_inline_at(node: NodeRef<Node>, style: Inline, depth: u16, out: &mut V
             }
         }
         _ => {}
+    }
+}
+
+/// Recover an inline math occurrence via the universal detector, forcing `display = false`:
+/// inline runs sit mid-line, so a MathJax/MathML `display` attribute on the node (which the
+/// block classifier already routed elsewhere when it means block) never re-promotes it here.
+// Kept out-of-line: the equation engine's large frames must not inflate the recursive
+// inline walk's per-level stack (see the note in `math::display_math_item`).
+#[inline(never)]
+fn detect_inline(node: NodeRef<Node>) -> Option<delryn_model::MathItem> {
+    let mut item = delryn_eqn::detect(node)?;
+    item.display = false;
+    Some(item)
+}
+
+/// Build an inline math span from a recovered [`MathItem`]. Its Unicode floor is always the
+/// run text (the fallback). The recovered source rides along for graphical rendering **only
+/// when the engine can typeset it** — a publisher raster mid-line can't sit in the text flow,
+/// so a non-typeset-able inline equation stays the Unicode approximation rather than a broken
+/// image. Tagged `math` so math-only text fix-ups apply.
+#[inline(never)]
+fn inline_math_span(item: delryn_model::MathItem, style: Inline) -> Span {
+    let math = is_typesettable(&item).then(|| delryn_model::SpanMath::Source(item.clone()));
+    Span {
+        text: item.text,
+        style: Inline {
+            italic: true,
+            math: true,
+            ..style
+        },
+        anchor: None,
+        math,
     }
 }
 

@@ -9,3 +9,4 @@ base64.workspace = true
 image.workspace = true
 ratatui.workspace = true
 ratatui-image.workspace = true
+fast_image_resize = "6"

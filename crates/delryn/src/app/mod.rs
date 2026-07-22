@@ -62,6 +62,7 @@ pub use reader::{
 mod image_view;
 pub use image_view::{Figure, ImageViewer};
 
+mod cover_loader;
 mod library;
 pub use library::{LibPane, LibView, SortKey};
 
@@ -82,6 +83,17 @@ pub use code_view::{CodeFocus, CodeSnippet, CodeView};
 
 mod page_deck;
 use page_deck::PageDeck;
+pub(crate) mod inline_deck;
+use inline_deck::InlineDeck;
+
+/// Point the reader's persistent equation-image ink-profile cache at `<root>/ink-vN`
+/// (typically `<config>/rasters`). Call once at startup, before any book opens, so the
+/// background section loader and the start-section decode both consult it. `None` (or a
+/// create failure) leaves ink caching off. Thin re-export so the binary can reach the
+/// otherwise crate-private reader module.
+pub fn reader_ink_cache_set_dir(root: Option<std::path::PathBuf>) {
+    reader::ink_cache::set_dir(root);
+}
 
 /// How long the library selection must hold still before the detail-pane cover
 /// is (re)built, so holding j/k stays smooth.
@@ -282,10 +294,15 @@ pub struct App {
     pub image_builder: Option<ImageBuilder>,
     /// Direct-Kitty manager for full PDF page images (transmit-once + place).
     page_deck: PageDeck,
+    /// Direct-Kitty manager for the reader's inline images — equation rasters and
+    /// inline figures (transmit-once + place + re-place on scroll + free on leave).
+    inline_deck: InlineDeck,
     /// The open book, its persistence handle, and session start — see [`Session`].
     session: Session,
     /// Library list, selection, sort, filter, and covers — see [`LibraryState`].
     pub library: LibraryState,
+    /// Background loader for library covers (load + decode off the render loop).
+    cover_loader: cover_loader::CoverLoader,
     /// Receiver for async Open Library results (search / cover), if a request
     /// from the editor's Online tab is in flight.
     pub online_rx: Option<Receiver<OnlineMsg>>,
@@ -450,12 +467,14 @@ impl App {
             picker: None,
             image_builder: None,
             page_deck: PageDeck::default(),
+            inline_deck: InlineDeck::default(),
             session: Session {
                 store,
                 book_path,
                 started: Some(Instant::now()),
             },
             library: LibraryState::default(),
+            cover_loader: cover_loader::CoverLoader::new(),
             online_rx: None,
             define_rx: None,
             dup_scan: None,
@@ -493,12 +512,14 @@ impl App {
             picker: None,
             image_builder: None,
             page_deck: PageDeck::default(),
+            inline_deck: InlineDeck::default(),
             session: Session {
                 store,
                 book_path: String::new(),
                 started: None,
             },
             library: LibraryState::default(),
+            cover_loader: cover_loader::CoverLoader::new(),
             online_rx: None,
             define_rx: None,
             dup_scan: None,
@@ -581,14 +602,12 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// Terminal image ids to delete: covers evicted from the library grid cache,
-    /// images evicted from the reader's cache, and figures the image viewer has
-    /// finished with (superseded while open, or its last image once closed).
+    /// Terminal image ids to delete: covers evicted from the library grid cache, and
+    /// figures the image viewer has finished with (superseded while open, or its last
+    /// image once closed). The reader's inline/figure images are freed by the InlineDeck
+    /// directly (it emits `d=I` when an image leaves the screen), not through this queue.
     pub fn take_image_deletes(&mut self) -> Vec<u32> {
         let mut ids = std::mem::take(&mut self.library.grid_deletes);
-        if let Some(r) = self.reader.as_mut() {
-            ids.extend(r.take_image_deletes());
-        }
         // The open viewer frees each figure it moves off (mode toggle / navigation);
         // a closed viewer's last image is carried across the drop in this queue.
         if let Overlay::ImageView(v) = &mut self.overlay {
@@ -702,6 +721,42 @@ impl App {
         self.page_deck.render(&targets, policy, |s| r.page_png(s))
     }
 
+    /// The Kitty escapes to reconcile the reader's inline images (equation rasters +
+    /// inline figures) to what the view collected this frame — via [`InlineDeck`], the
+    /// direct-placement analogue of [`Self::page_escapes`]. Leaving the reader frees
+    /// every inline image (so no ghost survives into the library / a PDF).
+    pub fn inline_escapes(&mut self) -> Vec<String> {
+        // Leaving the reader, or a popup is up: Kitty images draw *above* the cell grid, so
+        // an inline image would render over the popup — and a rebuild while it's open (e.g.
+        // toggling image sizing, which re-places every equation) corrupts it. Take the inline
+        // images down, like the PDF page (`in_pdf`); they re-place when the reader is shown
+        // again / the popup closes (the overlay toggle forces a full repaint). Still drain the
+        // frame's targets so they don't accumulate behind the popup.
+        if self.mode != Mode::Reader || self.any_overlay_open() {
+            if let Some(r) = self.reader.as_ref() {
+                let _ = r.take_inline_targets();
+            }
+            return if self.inline_deck.is_empty() {
+                Vec::new()
+            } else {
+                self.inline_deck.clear()
+            };
+        }
+        let Some(r) = self.reader.as_ref() else {
+            return Vec::new();
+        };
+        let targets = r.take_inline_targets();
+        // A restage dropped the built PNGs: clear the deck first so the rebuilt images
+        // re-transmit rather than being assumed still resident.
+        let mut out = if r.take_inline_clear() {
+            self.inline_deck.clear()
+        } else {
+            Vec::new()
+        };
+        out.extend(self.inline_deck.render(&targets, |key| r.image_png(key)));
+        out
+    }
+
     /// Text queued for the system clipboard (OSC 52), if any.
     pub fn take_clipboard(&mut self) -> Option<String> {
         self.reader.as_mut().and_then(|r| r.take_clipboard())
@@ -744,6 +799,10 @@ impl App {
             // (its blocks/math render off the main thread), so it fills the buffer
             // tail as soon as it lands instead of after the next keypress.
             || (in_reader && r.following_pending())
+            // Keep redrawing while the inline deck still has new images to upload
+            // (its per-frame transmit cap spreads a maths-dense page over a few
+            // frames), so they all land without a keypress.
+            || (in_reader && self.inline_deck.deferred())
             // PDF: keep redrawing while a visible page is still rasterizing
             // (async, off the main thread) or is ready but not yet placed, so it
             // pops in without needing a keypress.

@@ -447,6 +447,7 @@ impl Reader {
     /// scrolled above the viewport top, roll to the next section (keeping the
     /// leftover). At the book's final section it clamps to the last page.
     pub(super) fn continuous_scroll_down(&mut self, n: usize) {
+        let start = self.section;
         let last = self.doc.section_count().saturating_sub(1);
         self.scroll += n;
         while self.section < last && self.scroll >= self.lines.len().max(1) {
@@ -457,11 +458,19 @@ impl Reader {
             let max = self.max_scroll();
             self.scroll = self.scroll.min(max);
         }
+        // Crossing into the next section re-wrapped it with the previous section's image
+        // reservations (corrected only by the next `sync_images`); capture the position as
+        // a fraction so `resolve_pending` restores it after the corrected re-wrap rather
+        // than letting the changed line count jump the view. (See `continuous_scroll_up`.)
+        if self.section != start {
+            self.pending_frac = Some(self.within_frac());
+        }
     }
 
     /// Continuous scroll-up: retreat the anchor across section boundaries. Crossing
     /// the top of a section lands on the last line of the previous one.
     pub(super) fn continuous_scroll_up(&mut self, n: usize) {
+        let start = self.section;
         let mut up = n;
         while up > 0 {
             if self.scroll >= up {
@@ -478,6 +487,15 @@ impl Reader {
             up -= 1;
             self.move_anchor(self.section - 1);
             self.scroll = self.lines.len().saturating_sub(1);
+        }
+        // `move_anchor` re-wrapped the new anchor with the *old* section's image
+        // reservations (only `sync_images` corrects them next frame), so its line count —
+        // and this scroll offset off it — is provisional; the corrected re-wrap would
+        // otherwise jump the view. Capture the position as a fraction so `resolve_pending`
+        // restores it after that re-wrap (a single-line roll lands on the last line at
+        // fraction ~1.0, i.e. exactly the bottom).
+        if self.section != start {
+            self.pending_frac = Some(self.within_frac());
         }
     }
 

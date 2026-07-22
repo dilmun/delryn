@@ -99,13 +99,13 @@ pub const MAX_IMAGE_PX: u16 = 4096;
 pub const MIN_IMAGE_WIDTH_PCT: u16 = 20;
 pub const MAX_IMAGE_WIDTH_PCT: u16 = 100;
 
-/// Math display size, as a percent of the built-in text-relative size. `100` is
-/// the floor — the built-in size, calibrated so equation glyphs match the
-/// surrounding text — so math is **never rendered smaller than the prose**; the
-/// knob only enlarges from there. One knob governs *all* display equations
-/// (rendered LaTeX and publisher equation images alike), scaling them together. A
-/// saved value below the floor (from an older build) is migrated up on load.
-pub const MIN_MATH_SCALE: u16 = 100;
+/// Math display size, as a percent of the built-in text-relative size. `100` is the
+/// default — the built-in size (a hair larger than the prose, ~1.15× the text). The band
+/// runs below 100 too, so a reader who finds equations too large can tune them down toward
+/// (and a little under) text size, and up to 3× for a large display. One knob governs *all*
+/// display equations (rendered LaTeX and publisher equation images alike), scaling them
+/// together. A saved value outside the band is clamped into it on load.
+pub const MIN_MATH_SCALE: u16 = 70;
 pub const MAX_MATH_SCALE: u16 = 300;
 
 /// Book-format labels in the default duplicate keep-priority (high → low). Kept as
@@ -663,10 +663,10 @@ library_grid_size = "??"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A config from an older build (a `math_scale` below the new 100% floor, and no
-    /// `graphical_inline_math` field at all) is migrated on load: the size floors up
-    /// to 100 so math is never smaller than the text, and inline graphical math
-    /// defaults off (inline math stays the natural Unicode approximation).
+    /// A config from an older build (a `math_scale` below the allowed band, and no
+    /// `graphical_inline_math` field at all) is migrated on load: the size clamps up
+    /// into the band, and inline graphical math defaults off (inline math stays the
+    /// natural Unicode approximation).
     #[test]
     fn migrates_legacy_math_settings() {
         let _g = crate::test_env_guard();
@@ -683,7 +683,7 @@ library_grid_size = "??"
         let c = Config::load();
         assert_eq!(
             c.math_scale, MIN_MATH_SCALE,
-            "a sub-floor saved size migrates up to 100%"
+            "a sub-floor saved size migrates up into the band"
         );
         assert!(
             c.graphical_inline_math,

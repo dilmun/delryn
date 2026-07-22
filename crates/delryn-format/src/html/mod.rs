@@ -196,8 +196,10 @@ fn leading_text(node: NodeRef<Node>, max: usize) -> String {
 /// emits the remaining subtree as flat text. Real books nest a handful of levels
 /// deep; this only trips on pathological / malicious markup (thousands of nested
 /// `<div>`s), where unbounded recursion would overflow the stack and abort the
-/// process. No real content is lost below this bound.
-const MAX_BLOCK_DEPTH: u16 = 256;
+/// process. No real content is lost below this bound. Kept well under the point
+/// where the recursive walk's (debug-build, un-coalesced) frames would exhaust a
+/// default thread stack — the block and inline walks can each reach this depth.
+const MAX_BLOCK_DEPTH: u16 = 128;
 
 #[derive(Default, Clone)]
 struct Ctx {
@@ -361,33 +363,12 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 });
             }
         }
-        ElementRole::DisplayMath(mb) => {
-            // Prefer delryn's crisp RaTeX render from the recovered LaTeX (Style::
-            // Display, no inline height gate). No LaTeX (MathML-only alt, or a bare
-            // equation image) → the publisher's rendered image; else the centred
-            // Unicode approximation. The fallback is never worse than before.
-            if let Some(latex) = mb.latex.filter(|l| !l.trim().is_empty()) {
-                out.push(Block::Math {
-                    unicode: mb.unicode,
-                    latex: Some(latex),
-                });
-            } else if let Some(src) = mb.img_src.filter(|s| !s.is_empty()) {
-                out.push(Block::Image {
-                    src,
-                    alt: mb.unicode,
-                    data: Vec::new(),
-                    caption: Vec::new(),
-                    math: true,
-                    // The raster's authored `em` width (its text-relative size) sizes it
-                    // to the prose — DPI-independent, so it never renders out of scale.
-                    width: mb.width,
-                    ink: None, // measured later, off-thread, by the reader
-                });
-            } else if !mb.unicode.trim().is_empty() {
-                out.push(Block::Math {
-                    unicode: mb.unicode,
-                    latex: None,
-                });
+        ElementRole::DisplayMath(item) => {
+            // Choose the most efficient renderable form up front: crisp vector type when the
+            // engine can map the markup, else the publisher's raster (bytes resolved by the
+            // format layer), else the Unicode floor. Nothing renderable → drop it.
+            if let Some(block) = display_math_block(item) {
+                out.push(block);
             }
         }
         ElementRole::Heading(level) => {
@@ -593,6 +574,31 @@ fn emit_paragraph(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
     let mut spans = inline_spans(node);
     if spans.iter().any(|s| !s.text.trim().is_empty()) {
         superscript_math_exponents(&mut spans);
+        // A paragraph that opens with an admonition keyword *immediately* followed by a
+        // colon ("Note:", "Warning:", "Hint:") is an inline callout — the reliable content
+        // signal publishers use for boxed asides (`<p class="box">`) and inline notes alike.
+        // Promote it to a styled Callout (note/tip/warning border + label) instead of leaving
+        // it as plain bold text. Multi-word or non-keyword leads ("Definition:", "f: D → ℝ",
+        // a URL) never match, so ordinary prose is untouched.
+        if !ctx.quote
+            && ctx.item_marker().is_none()
+            && let Some((kind, prefix)) = leading_callout(&spans)
+        {
+            // Strip the "Keyword:" prefix from the body — the callout's own label already
+            // announces the kind, so a leading "Note:" inside the box reads as a double note.
+            strip_leading_chars(&mut spans, prefix);
+            out.push(Block::Callout {
+                kind,
+                title: None,
+                blocks: vec![Block::Para {
+                    spans,
+                    indent: 0,
+                    quote: false,
+                    marker: None,
+                }],
+            });
+            return;
+        }
         out.push(Block::Para {
             spans,
             indent: ctx.indent,
@@ -600,6 +606,32 @@ fn emit_paragraph(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
             marker: ctx.item_marker(),
         });
     }
+}
+
+/// The admonition kind and the length (in chars) of the leading `Keyword:` prefix (plus any
+/// following space) when a paragraph opens with a keyword immediately followed by a colon
+/// (`Note:`, `Warning:`, `Hint:`); `None` for ordinary prose. Requires a single leading word
+/// before the first colon, so "Definition:", "f: D → ℝ", "http://…", and "Note that …" (no
+/// colon after the word) are all left as normal paragraphs. The keyword/colon/space are ASCII,
+/// so the byte length is also the char length of the prefix.
+fn leading_callout(spans: &[Span]) -> Option<(CalloutKind, usize)> {
+    let mut lead = String::new();
+    for s in spans {
+        lead.push_str(&s.text);
+        if lead.len() >= 32 {
+            break;
+        }
+    }
+    let ws = lead.len() - lead.trim_start().len(); // leading whitespace bytes
+    let colon = lead[ws..].find(':')?;
+    let word = lead[ws..ws + colon].trim();
+    if word.split_whitespace().count() != 1 {
+        return None;
+    }
+    let kind = CalloutKind::from_word(word)?;
+    let after = ws + colon + 1; // just past ':'
+    let trailing_ws = lead[after..].len() - lead[after..].trim_start().len();
+    Some((kind, after + trailing_ws))
 }
 
 fn list_item(

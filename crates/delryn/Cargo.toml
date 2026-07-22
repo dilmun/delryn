@@ -18,7 +18,7 @@ delryn-media = { workspace = true }
 delryn-format = { workspace = true }
 delryn-render = { workspace = true }
 delryn-library = { workspace = true }
-delryn-math = { workspace = true }
+delryn-eqn = { workspace = true }
 anyhow.workspace = true
 arboard.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -33,3 +33,9 @@ syntect.workspace = true
 # platform-specific (macOS Finder trash / Windows recycle bin / freedesktop XDG
 # trash), which this crate abstracts.
 trash = "5"
+
+[target.'cfg(unix)'.dependencies]
+# Redirect the process's stderr (fd 2) for the TUI's lifetime, so a dependency's stray
+# `eprintln!` (the equation engine's RaTeX font-loader diagnostics) can't scribble into
+# the alternate screen and desync the renderer. Only fd-level dup2 does this cleanly.
+libc = "0.2"

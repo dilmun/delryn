@@ -98,6 +98,42 @@ fn load_blocks(doc: &mut EpubDoc<BufReader<File>>, index: usize) -> Result<Vec<B
             *data = bytes;
         }
     }
+    // Resolve inline math pictures (tiny `<img>` symbols/equations shipped mid-line) so the
+    // reader can draw them in the text flow. Resolve each DISTINCT src once, not per
+    // occurrence: a book that repeats ℝ hundreds of times would otherwise inflate the same
+    // archive entry hundreds of times on open — collapse that to one read. Recurses into
+    // nested blocks (a callout/footnote body) so a note's inline math resolves too.
+    let mut resolved: std::collections::HashMap<String, Option<Vec<u8>>> =
+        std::collections::HashMap::new();
+    {
+        let mut runs: Vec<&[delryn_model::Span]> = Vec::new();
+        for block in &blocks {
+            block.collect_span_runs(&mut runs);
+        }
+        for spans in &runs {
+            for span in *spans {
+                if let Some(delryn_model::SpanMath::Picture { src, data }) = &span.math
+                    && data.is_empty()
+                    && !resolved.contains_key(src)
+                {
+                    let bytes = resolve_image(doc, &dir, src);
+                    resolved.insert(src.clone(), bytes);
+                }
+            }
+        }
+    }
+    for block in &mut blocks {
+        block.for_each_spans_mut(&mut |spans| {
+            for span in spans.iter_mut() {
+                if let Some(delryn_model::SpanMath::Picture { src, data }) = &mut span.math
+                    && data.is_empty()
+                    && let Some(Some(bytes)) = resolved.get(src)
+                {
+                    *data = bytes.clone();
+                }
+            }
+        });
+    }
     Ok(blocks)
 }
 

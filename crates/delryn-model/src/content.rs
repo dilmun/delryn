@@ -1,6 +1,8 @@
 //! Reflowable content model: the blocks and inline runs every format produces
 //! and every renderer consumes.
 
+use crate::math_ir::MathItem;
+
 /// Inline styling applied to a run of text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Inline {
@@ -29,21 +31,32 @@ pub enum Anchor {
     Citation(String),
 }
 
-/// The graphical form of an inline math run, when the parser recovered LaTeX for
-/// it. `Span::text` always holds the Unicode approximation (the fallback); this
-/// says whether — and how — the reader renders it as a small image mid-line.
+/// The graphical form of an inline math run. `Span::text` always holds the Unicode
+/// approximation (the fallback); this says whether — and how — the reader renders it as a
+/// small image mid-line.
 ///
-/// Flows: the parser emits [`SpanMath::Latex`]; the reader's graphical-math pass
-/// either rasterises it to [`SpanMath::Raster`] (when graphical math is on and the
-/// equation is short enough to sit in one text row) or leaves it `Latex`, in which
-/// case the Unicode `text` is shown — the fallback is never regressed.
+/// Flows: the parser emits [`SpanMath::Source`] (the recovered [`MathItem`]); the reader's
+/// graphical-math pass either renders it down the ladder to [`SpanMath::Raster`] (when
+/// graphical math is on and the equation is short enough to sit in a text row) or leaves it
+/// `Source`, in which case the Unicode `text` is shown — the fallback is never regressed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpanMath {
-    /// Inline math with a recovered LaTeX source, not (yet) rendered graphically.
-    Latex(String),
-    /// Rendered to a small themed raster: a section-local id (its draw/build key)
-    /// and the black-on-transparent PNG bytes (recoloured to the theme at build).
-    Raster { id: usize, png: Vec<u8> },
+    /// Inline math with its recovered sources, not (yet) rendered graphically.
+    Source(MathItem),
+    /// An inline math **image** the publisher shipped as a tiny `<img>` (an equation or a
+    /// single symbol like ℝ, usually with an empty alt): its `src` and the bytes the loader
+    /// resolves from the archive (empty until then). The reader rasterises it into the same
+    /// inline-atom pipeline as [`Raster`], so it draws mid-line instead of as a placeholder.
+    Picture { src: String, data: Vec<u8> },
+    /// Rendered to a small themed raster: a section-local id (its draw/build key),
+    /// the black-on-transparent PNG bytes (recoloured to the theme at build), and the
+    /// measured ink profile — measured once at load time (off the main thread) so the
+    /// reader's sizing pass reads it without decoding the image on the render thread.
+    Raster {
+        id: usize,
+        png: Vec<u8>,
+        ink: Option<InkProfile>,
+    },
 }
 
 /// A run of text with uniform inline styling and an optional navigation anchor.
@@ -78,18 +91,18 @@ impl Span {
         }
     }
 
-    /// An inline math run: its Unicode approximation (the fallback shown when
-    /// graphical math is off or the equation is too tall) plus the recovered LaTeX
-    /// the reader rasterises. `style.math` is set so the math text fix-ups apply.
-    pub fn math(unicode: impl Into<String>, latex: impl Into<String>) -> Span {
+    /// An inline math run from its recovered [`MathItem`]: `text` is the item's Unicode
+    /// floor (shown when graphical math is off or the equation is too tall), and the item
+    /// rides along for the reader to render. `style.math` is set so math text fix-ups apply.
+    pub fn math(item: MathItem) -> Span {
         Span {
-            text: unicode.into(),
+            text: item.text.clone(),
             style: Inline {
                 math: true,
                 ..Inline::default()
             },
             anchor: None,
-            math: Some(SpanMath::Latex(latex.into())),
+            math: Some(SpanMath::Source(item)),
         }
     }
 }
@@ -218,14 +231,13 @@ pub enum Block {
         lang: Option<String>,
         lines: Vec<String>,
     },
-    /// Display (block-level) mathematics. `unicode` is the always-present Unicode
-    /// approximation the layout pass centres (see [`crate::math`]); `latex` is the
-    /// original LaTeX source when the parser could recover it (`alttext` /
-    /// `<annotation …tex>`), for the graphical-math renderer to rasterise — `None`
-    /// when only presentation MathML was available (Unicode only).
+    /// Display (block-level) mathematics, as the encoding-agnostic [`MathItem`] the
+    /// parser recovered (every source it could — LaTeX, MathML, a publisher picture,
+    /// and always a Unicode floor). The reader renders it down the never-blank ladder
+    /// (typeset → picture → text); until then, or with graphical math off, the layout
+    /// pass centres `item.text`.
     Math {
-        unicode: String,
-        latex: Option<String>,
+        item: MathItem,
     },
     /// A table: an optional header row, then body rows. Each cell is styled spans.
     Table {
@@ -288,6 +300,38 @@ impl Block {
         }
         let id_digits = digits(id);
         !id_digits.is_empty() && id_digits == digits(target)
+    }
+
+    /// Apply `f` to every run collection (Para/Heading spans) in this block **and any
+    /// nested block bodies** (callouts, footnotes), depth-first. Inline-span passes
+    /// (resolving picture bytes, rasterising inline math, sizing atoms) use this so they
+    /// reach spans inside a callout/footnote, not only top-level paragraphs.
+    pub fn for_each_spans_mut(&mut self, f: &mut impl FnMut(&mut Vec<Span>)) {
+        match self {
+            Block::Para { spans, .. } | Block::Heading { spans, .. } => f(spans),
+            Block::Callout { blocks, .. } | Block::Footnote { blocks, .. } => {
+                for b in blocks.iter_mut() {
+                    b.for_each_spans_mut(f);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect a borrow of every run collection (Para/Heading spans) in this block and any
+    /// nested block bodies (callouts, footnotes) into `out`, depth-first — the shared-borrow
+    /// counterpart of [`for_each_spans_mut`], returning slices (nameable lifetime) so a caller
+    /// can stash them and iterate while mutating a *different* field of its own state.
+    pub fn collect_span_runs<'a>(&'a self, out: &mut Vec<&'a [Span]>) {
+        match self {
+            Block::Para { spans, .. } | Block::Heading { spans, .. } => out.push(spans),
+            Block::Callout { blocks, .. } | Block::Footnote { blocks, .. } => {
+                for b in blocks.iter() {
+                    b.collect_span_runs(out);
+                }
+            }
+            _ => {}
+        }
     }
 }
 

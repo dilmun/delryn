@@ -23,6 +23,43 @@ pub fn is_mathml(s: &str) -> bool {
     s.contains("<math") || s.contains("mml:math") || s.contains("MathML")
 }
 
+/// Does this image `alt` read like a **figure caption** rather than an equation — a
+/// diagram/photo/chart the reader must size as a figure, not normalise on the text-relative
+/// equation path? Equations carry empty/markup alts (caught by [`is_math`]); a figure carries
+/// descriptive prose ("Figure 3.1: Two vectors in a 2D plane"). Without this, a sparse diagram
+/// with few ink lines is mistaken for an equation and the per-line normalisation — which
+/// assumes bbox ≈ lines × line-height — blows its large bbox up to many rows. Conservative:
+/// a figure/table keyword prefix, or 3+ words of plain prose. Callers only consult this once
+/// the alt is known non-math, so a verbose *equation* alt (which is markup) never reaches it.
+pub fn looks_like_figure_caption(alt: &str) -> bool {
+    let a = alt.trim();
+    if a.is_empty() {
+        return false;
+    }
+    let lower = a.to_ascii_lowercase();
+    const KEYWORDS: &[&str] = &[
+        "figure",
+        "fig.",
+        "fig ",
+        "table",
+        "diagram",
+        "chart",
+        "graph",
+        "plot",
+        "illustration",
+        "scheme",
+        "exhibit",
+        "photo",
+        "screenshot",
+        "picture",
+    ];
+    if KEYWORDS.iter().any(|k| lower.starts_with(k)) {
+        return true;
+    }
+    // Descriptive prose (three or more words) reads as a caption, not a rasterised equation.
+    a.split_whitespace().count() >= 3
+}
+
 pub fn latex_to_unicode(raw: &str) -> String {
     let mut s = strip_delimiters(raw.trim());
     s = s
@@ -771,7 +808,23 @@ const SYMBOLS: &[(&str, &str)] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{latex_to_unicode, strip_delimiters};
+    use super::{latex_to_unicode, looks_like_figure_caption, strip_delimiters};
+
+    /// A descriptive/figure-keyword alt reads as a figure caption; an empty, terse, or
+    /// label-like alt does not (so a rasterised equation isn't mistaken for a figure).
+    #[test]
+    fn figure_captions_are_recognised() {
+        assert!(looks_like_figure_caption(
+            "Figure 3.1: Two vectors in a 2D plane"
+        ));
+        assert!(looks_like_figure_caption("Two vectors in a 2D plane"));
+        assert!(looks_like_figure_caption("Diagram of the network"));
+        assert!(looks_like_figure_caption("graph")); // keyword, even terse
+        // Not figures: empty, a bare symbol, or a short equation label.
+        assert!(!looks_like_figure_caption(""));
+        assert!(!looks_like_figure_caption("x"));
+        assert!(!looks_like_figure_caption("Eq. 3"));
+    }
 
     /// The Unicode fallback never leaks LaTeX macro *names* — a command it can't
     /// map to a glyph is dropped, not spelled out. Regression for the real-book

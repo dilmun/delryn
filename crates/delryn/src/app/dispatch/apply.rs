@@ -71,6 +71,10 @@ impl App {
                     }
                 }
                 self.session.started = Some(Instant::now());
+                // Drop the reader's built images; the deck frees the terminal-resident
+                // ones next frame (it sees `mode != Reader`), so none linger into the
+                // library view.
+                reader.evict_all_images();
                 self.mode = Mode::Library;
                 save = true;
             }

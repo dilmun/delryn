@@ -27,6 +27,7 @@ mod continuous;
 mod crisp;
 mod elements;
 mod images;
+pub(crate) mod ink_cache;
 pub(crate) mod math;
 pub use images::ImageGeom;
 mod page_stack;
@@ -221,9 +222,6 @@ pub struct Reader {
     pub search: SearchState,
     /// Decoded section blocks + the background loader (cache, channels, worker).
     sections: SectionCache,
-    /// Terminal image ids evicted from the cache, to be deleted from the
-    /// terminal by the main loop.
-    pending_deletes: Vec<u32>,
     /// Text queued to be copied to the system clipboard by the main loop.
     pending_clipboard: Option<String>,
     /// An external link the user activated, awaiting the app's open-in-browser
@@ -285,6 +283,13 @@ pub struct Reader {
     collapsed: HashSet<usize>,
     /// The active visual text selection (vim `V`), or `None` in normal reading.
     select: Option<Selection>,
+    /// Inline-image placement targets the view collects during render, drained by
+    /// `App::inline_escapes` and reconciled by the `InlineDeck`. `RefCell` so the
+    /// shared-borrow (`&self`) draw path can push into it.
+    inline_targets: std::cell::RefCell<Vec<crate::app::inline_deck::InlineTarget>>,
+    /// Set by `restage_visible_images`: the inline deck is cleared next frame so the
+    /// rebuilt images re-transmit instead of being assumed still resident.
+    inline_needs_clear: std::cell::Cell<bool>,
 }
 
 impl Reader {
@@ -367,7 +372,6 @@ impl Reader {
             nav: NavState::default(),
             search: SearchState::default(),
             sections,
-            pending_deletes: Vec::new(),
             pending_clipboard: None,
             pending_open: None,
             flash: None,
@@ -390,6 +394,8 @@ impl Reader {
             overlay_occlude: None,
             collapsed: HashSet::new(),
             select: None,
+            inline_targets: std::cell::RefCell::new(Vec::new()),
+            inline_needs_clear: std::cell::Cell::new(false),
         };
         reader.prefetch_neighbors();
         Ok(reader)
@@ -458,7 +464,7 @@ impl Reader {
     /// section's code blocks (matches `LineKind::Code`) — used to pre-select it in
     /// the code viewer. `None` if none is in view.
     pub fn current_code_index(&self) -> Option<usize> {
-        let center = self.scroll + self.viewport_lines / 2;
+        let center = self.scroll.saturating_add(self.viewport_lines / 2);
         self.lines
             .iter()
             .enumerate()
@@ -482,11 +488,41 @@ impl Reader {
         self.viewport_lines * cols
     }
 
+    /// The section-local figure `idx`s and inline-atom `id`s currently in the viewport
+    /// (both spread columns), read from the wrapped lines. Used to build the on-screen
+    /// equations before the section's off-screen rest on a theme/knob change — the layout
+    /// is unchanged there, so `self.lines` still says what's visible. Empty before the first
+    /// wrap. (On a *section* change the lines are the previous section's, so the caller skips
+    /// this and lets the natural top-of-section index order carry the priority.)
+    fn visible_image_targets(&self) -> (HashSet<usize>, HashSet<usize>) {
+        let mut figures = HashSet::new();
+        let mut inline = HashSet::new();
+        // `scroll` is transiently `usize::MAX` after scrolling up past a section top (clamped
+        // to the bottom next draw), so add saturating — `scroll + span` would otherwise
+        // overflow and panic. A `MAX` start clamps to `len`, giving an empty (no-op) range.
+        let start = self.scroll.min(self.lines.len());
+        let end = self
+            .scroll
+            .saturating_add(self.visible_span())
+            .min(self.lines.len());
+        for line in &self.lines[start..end] {
+            if let LineKind::Image(idx) = line.kind {
+                figures.insert(idx);
+            }
+            for run in &line.runs {
+                if let Some(id) = run.math {
+                    inline.insert(id);
+                }
+            }
+        }
+        (figures, inline)
+    }
+
     /// The code block a fold toggle acts on: the one nearest the centre of the whole
     /// visible area (both spread columns), so `F` reaches a right-column block, not
     /// only the left one.
     pub fn fold_target(&self) -> Option<usize> {
-        let center = self.scroll + self.visible_span() / 2;
+        let center = self.scroll.saturating_add(self.visible_span() / 2);
         self.lines
             .iter()
             .enumerate()
@@ -502,7 +538,7 @@ impl Reader {
     /// order (left spread column before right), capped at 9 so each gets a `1..=9`
     /// badge. Shared by the `F`/`I` pick-modes.
     fn visible_elements(&self, kind: HintKind) -> Vec<usize> {
-        let end = self.scroll + self.visible_span();
+        let end = self.scroll.saturating_add(self.visible_span());
         let mut out: Vec<usize> = Vec::new();
         for line in self.lines.iter().skip(self.scroll).take(end - self.scroll) {
             let idx = match (kind, line.kind) {
@@ -1455,8 +1491,12 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
 
         let mut r = reader_with(vec![Block::Math {
-            unicode: "x".into(),
-            latex: Some("\\frac{x^2}{y}".into()),
+            item: delryn_model::MathItem {
+                display: true,
+                typeset: Some(delryn_model::MarkupSource::Latex("\\frac{x^2}{y}".into())),
+                picture: None,
+                text: "x".into(),
+            },
         }]);
         let dims = |r: &mut Reader| -> (u32, u32) {
             r.fetch_blocks(0)
@@ -1796,8 +1836,12 @@ mod tests {
     }
     fn math() -> Block {
         Block::Math {
-            unicode: r"\alpha".to_string(),
-            latex: None,
+            item: delryn_model::MathItem {
+                display: true,
+                typeset: None,
+                picture: None,
+                text: r"\alpha".to_string(),
+            },
         }
     }
 
@@ -2501,7 +2545,8 @@ mod tests {
         // A small cache so the bound clearly bites: spare = 10 with an empty cache.
         r.images.cache.resize(NonZeroUsize::new(10).unwrap());
 
-        let builder = crate::media::ImageBuilder::new(ratatui_image::picker::Picker::halfblocks());
+        let builder =
+            crate::media::ImageBuilder::new(ratatui_image::picker::Picker::halfblocks(), None);
         let geom = ImageGeom {
             avail: 40,
             max_rows: 40,

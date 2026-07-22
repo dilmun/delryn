@@ -58,11 +58,13 @@ const EM_QUANTILE: f32 = 0.90;
 /// is a glyph (base, cap, or subscript).
 const OPERATOR_EM_RATIO: f32 = 2.0;
 
-/// The most text ems tall one *counted* equation line can plausibly be. A monochrome
-/// line-drawing / illustration that slips past the sparse-ink gate spans far more than
-/// this per line, so it is rejected as a figure rather than normalised as a giant
-/// equation (its ink is not text).
-const MAX_EM_PER_LINE: f32 = 5.0;
+/// The most text ems tall one *counted* equation line can plausibly be — the backstop that
+/// keeps a monochrome line-drawing / illustration (whose ink spans far more than text per
+/// line) from being normalised as a giant equation. Generous: a real display line with a big
+/// integral/fraction and its limits runs ~5 ems, and a matrix row measured as one band can be
+/// taller still, so a tight bound wrongly rejected real multi-line equations and sent them to
+/// the exploded native path. A genuine sketch sits far above this (~20 ems/line).
+const MAX_EM_PER_LINE: f32 = 12.0;
 
 /// The measured ink geometry of an equation raster (mirrors `delryn_model::InkProfile`
 /// — this crate stays independent of the content model). Produced by [`ink_profile`].
@@ -130,13 +132,14 @@ pub fn ink_profile(img: &DynamicImage) -> Option<InkProfile> {
     let (x0, x1) = ink_span(&col_ink)?;
     let (y0, y1) = ink_span(&row_ink)?;
 
-    // The text em ≈ the cap height: a high percentile ([`EM_QUANTILE`]) of the glyph
-    // (connected-component) heights — above the small sub/superscripts and the JPEG
-    // fragments, below the few tall operators — so it tracks the body text size, not
-    // the full bbox, and a plain line and a busy one measure the same. Fall back to the
-    // bbox height when no sizeable glyph is found.
-    let line_px = glyph_em(&mask, wu, x0, x1, y0, y1).unwrap_or((y1 - y0) as f32);
-    let line_count = count_lines(&row_ink, y0, y1);
+    // Measure the glyph components once: the text em ≈ the cap height (a high percentile
+    // of the glyph heights, above sub/superscripts and JPEG fragments, below the few tall
+    // operators) and the row count (clusters of glyph rows). Counting rows from the glyphs
+    // — not a raw row-ink projection — is what lets a bracketed matrix count its rows: the
+    // full-height fences ink every row, so a projection sees one band, but the fences are
+    // tall operators and are excluded here. Fall back to the bbox height / one line.
+    let (line_px, line_count) =
+        measure_glyphs(&mask, wu, x0, x1, y0, y1).unwrap_or(((y1 - y0) as f32, 1));
 
     // Reject a monochrome *figure* — a line drawing / illustration sparse enough to pass
     // the ink-density gate but whose ink spans far more than text. A real equation is at
@@ -170,17 +173,37 @@ fn ink_span(mass: &[f32]) -> Option<(usize, usize)> {
     Some((lo, hi))
 }
 
-/// A robust estimate of the text em: a high percentile ([`EM_QUANTILE`]) of the
-/// connected ink-component (glyph) heights — the cap height. A high quantile (rather
-/// than the mean/mode) is what makes a JPEG equation measure consistently: its glyphs
-/// shatter into many small fragments that would drag a lower estimate far below the true
-/// size, while the few tall operators (Σ, fractions) sit above the quantile and don't
-/// inflate it — so every equation, sparse or busy, recovers the same font size and
-/// normalises to the same on-screen size. Specks and thin rules (below [`MIN_GLYPH_PX`])
-/// are dropped. 4-connected flood fill; `None` when nothing sizeable is found.
-fn glyph_em(mask: &[bool], w: usize, x0: usize, x1: usize, y0: usize, y1: usize) -> Option<f32> {
+/// Measure the equation's glyph components in one 4-connected flood-fill pass, returning
+/// the text em (cap height) and the row count.
+///
+/// **em**: a high percentile ([`EM_QUANTILE`]) of the glyph-component heights — the cap
+/// height. A high quantile (rather than the mean/mode) makes a JPEG equation measure
+/// consistently: its glyphs shatter into many small fragments that would drag a lower
+/// estimate far below the true size, while the few tall operators (Σ, fractions, fences)
+/// sit above the quantile and don't inflate it — so every equation, sparse or busy,
+/// recovers the same font size and normalises to the same on-screen size.
+///
+/// **rows**: the number of vertical clusters of *glyph* rows. Counting from the glyph
+/// components — with the tall operators and thin rules excluded — is what lets a bracketed
+/// matrix count its rows correctly: its full-height fences ink every row, so a raw row-ink
+/// projection collapses to a single band, but the fences are tall operators and are dropped
+/// here, leaving the real inter-row gaps. Rows closer than [`INTERLINE_FRAC`] of the em
+/// merge (a fraction's numerator/denominator, a stacked limit); genuine array-row gaps split.
+///
+/// Specks and thin rules (below [`MIN_GLYPH_PX`]) are dropped. `None` when nothing sizeable
+/// is found.
+fn measure_glyphs(
+    mask: &[bool],
+    w: usize,
+    x0: usize,
+    x1: usize,
+    y0: usize,
+    y1: usize,
+) -> Option<(f32, u16)> {
     let mut visited = vec![false; mask.len()];
-    let mut heights: Vec<f32> = Vec::new();
+    // Each sizeable component as (top, bottom) rows, so we can derive both the em and the
+    // row clusters from the same set.
+    let mut comps: Vec<(usize, usize)> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
     for sy in y0..y1 {
         for sx in x0..x1 {
@@ -214,62 +237,60 @@ fn glyph_em(mask: &[bool], w: usize, x0: usize, x1: usize, y0: usize, y1: usize)
                     visit(i + w, &mut visited, &mut stack);
                 }
             }
-            let ch = (bot - top + 1) as f32;
-            if ch >= MIN_GLYPH_PX {
-                heights.push(ch);
+            if (bot - top + 1) as f32 >= MIN_GLYPH_PX {
+                comps.push((top, bot));
             }
         }
     }
-    if heights.is_empty() {
+    if comps.is_empty() {
         return None;
     }
-    // Drop the tall operators (a few components far above the typical glyph — Σ, ∫, big
-    // fences) so they can't inflate the em, then take the cap-height quantile of the
-    // glyphs that remain. The quantile is above the small subscript/limit glyphs, so a
-    // plain equation and one dominated by ∫/Σ bounds recover the same cap height.
-    let median = percentile(heights.iter().copied(), 0.5);
+    // The em: cap-height quantile of the glyph heights, with the tall operators (Σ, ∫, big
+    // fences — a few components far above the typical glyph) dropped so they can't inflate
+    // it. The same operator cut then excludes the fences from the row count below.
+    let median = percentile(comps.iter().map(|&(t, b)| (b - t + 1) as f32), 0.5);
     let cut = median * OPERATOR_EM_RATIO;
-    let em = percentile(heights.iter().copied().filter(|&h| h <= cut), EM_QUANTILE);
-    Some(em.max(1.0))
+    let em = percentile(
+        comps
+            .iter()
+            .map(|&(t, b)| (b - t + 1) as f32)
+            .filter(|&h| h <= cut),
+        EM_QUANTILE,
+    )
+    .max(1.0);
+    let line_count = count_glyph_rows(&comps, cut, em);
+    Some((em, line_count))
 }
 
-/// Count the equation's ink lines: raw ink-row runs merged across small (intra-line)
-/// gaps and split on large (inter-line) ones. Used only to tell a sparse equation
-/// from a many-row diagram in the classifier — the sizing uses the glyph em above.
-fn count_lines(row_ink: &[f32], y0: usize, y1: usize) -> u16 {
-    let peak = row_ink[y0..y1].iter().copied().fold(0.0f32, f32::max);
-    let is_ink = |y: usize| row_ink[y] >= INK_LINE_FRAC * peak;
-
-    let mut runs: Vec<(usize, usize)> = Vec::new();
-    let mut start: Option<usize> = None;
-    for y in y0..y1 {
-        match (is_ink(y), start) {
-            (true, None) => start = Some(y),
-            (false, Some(s)) => {
-                runs.push((s, y));
-                start = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(s) = start {
-        runs.push((s, y1));
-    }
-    if runs.len() <= 1 {
+/// Number of equation rows from the glyph components: mark the rows each *glyph* (a
+/// component no taller than the operator `cut`) covers, then count the covered bands,
+/// merging bands closer than [`INTERLINE_FRAC`] of the em (intra-line gaps: a fraction bar,
+/// a stacked limit) so only genuine array-row breaks split a line. Tall operators and
+/// fences (above `cut`) are excluded, so a matrix's full-height brackets never merge its
+/// rows into one.
+fn count_glyph_rows(comps: &[(usize, usize)], cut: f32, em: f32) -> u16 {
+    // Row intervals of the glyphs (drop the tall operators/fences), sorted by top.
+    let mut rows: Vec<(usize, usize)> = comps
+        .iter()
+        .copied()
+        .filter(|&(t, b)| (b - t + 1) as f32 <= cut)
+        .collect();
+    if rows.len() <= 1 {
         return 1;
     }
-
-    // Merge runs separated by a gap smaller than a line-height fraction (intra-line
-    // gaps: fraction bars, stacked limits) so only genuine row breaks split a line.
-    let line_h = percentile(runs.iter().map(|&(a, b)| (b - a) as f32), 0.5);
-    let break_gap = (INTERLINE_FRAC * line_h).max(MIN_BREAK_PX);
+    rows.sort_by_key(|&(t, _)| t);
+    let break_gap = (INTERLINE_FRAC * em).max(MIN_BREAK_PX);
     let mut bands = 1u16;
-    let mut prev_end = runs[0].1;
-    for (a, b) in runs.into_iter().skip(1) {
-        if (a as f32 - prev_end as f32) >= break_gap {
+    // Track the current band's lowest covered row; a new glyph starts a new band only when
+    // it begins well below everything in the current band (overlapping glyphs stay together).
+    let mut band_bot = rows[0].1;
+    for &(t, b) in rows.iter().skip(1) {
+        if t as f32 - band_bot as f32 >= break_gap {
             bands += 1;
+            band_bot = b;
+        } else {
+            band_bot = band_bot.max(b);
         }
-        prev_end = b;
     }
     bands
 }
@@ -397,6 +418,40 @@ mod tests {
         let p =
             ink_profile(&banded(200, 200, &[(10, 22), (46, 58), (82, 94)])).expect("an equation");
         assert_eq!(p.line_count, 3, "three ink bands → 3 lines");
+    }
+
+    /// A bracketed matrix — full-height fences down both edges plus rows of small glyphs —
+    /// counts its glyph rows and is profiled as an equation. The fences ink every row, so a
+    /// raw row-ink projection would see one band and the height guard would reject the whole
+    /// thing as a figure (the bug that let a diagonal matrix render at native, exploded
+    /// size); counting from the glyph components (fences excluded as tall operators) keeps
+    /// it an equation, normalised to its true row count.
+    #[test]
+    fn bracketed_matrix_counts_rows_not_rejected() {
+        let mut img = RgbaImage::from_pixel(120, 120, Rgba([0, 0, 0, 0]));
+        let mut fill = |x0: u32, y0: u32, x1: u32, y1: u32| {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+                }
+            }
+        };
+        // Full-height fences (tall operators) down the left and right edges.
+        fill(10, 10, 14, 110);
+        fill(106, 10, 110, 110);
+        // Three rows of body glyphs (12px) with clear inter-row gaps.
+        for row in 0..3u32 {
+            let y = 20 + row * 30;
+            for c in 0..3u32 {
+                let x = 34 + c * 20;
+                fill(x, y, x + 10, y + 12);
+            }
+        }
+        let p = ink_profile(&DynamicImage::ImageRgba8(img)).expect("a matrix is an equation");
+        assert_eq!(
+            p.line_count, 3,
+            "three matrix rows counted despite full-height brackets: {p:?}"
+        );
     }
 
     #[test]

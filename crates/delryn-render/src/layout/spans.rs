@@ -20,9 +20,9 @@ struct Glyph {
     style: Inline,
     anchor: Option<Anchor>,
     /// `(inline-math id, reserved cell width, reserved cell height)` when this is an
-    /// atomic inline-math cell; `None` for an ordinary glyph. A height of 2 (a
-    /// fraction) makes its line reserve a blank spacer row below for the raster to hang
-    /// into (see [`emit_lines`]).
+    /// atomic inline-math cell; `None` for an ordinary glyph. A height > 1 (a fraction,
+    /// always odd) makes its line reserve `(height-1)/2` blank spacer rows above and as
+    /// many below, so the raster is centred on the text row (see [`emit_lines`]).
     math: Option<(usize, u16, u16)>,
 }
 
@@ -44,12 +44,6 @@ impl Glyph {
             Some((_, cols, _)) => usize::from(cols),
             None => char_width(self.ch),
         }
-    }
-
-    /// Whether this atom reserves more than one text row (a fraction), so its line
-    /// needs a blank spacer row below it.
-    fn is_tall_math(&self) -> bool {
-        matches!(self.math, Some((_, _, rows)) if rows > 1)
     }
 }
 
@@ -314,12 +308,26 @@ fn emit_lines(
                 });
             }
         }
-        let tall_math = line.iter().any(|p| p.cells.iter().any(Glyph::is_tall_math));
+        // A line carrying a multi-row inline equation (a fraction) reserves blank spacer
+        // rows **above and below** it: the raster is centred on the text row, straddling the
+        // line so its bar sits level with the prose instead of hanging under it. `(rows-1)/2`
+        // rows each side (the reader paints the atom `rows` cells tall, starting that many
+        // rows above the text line).
+        let atom_rows = line
+            .iter()
+            .flat_map(|p| p.cells.iter())
+            .filter_map(|g| g.math.map(|(_, _, r)| r))
+            .max()
+            .unwrap_or(1);
+        let half = usize::from(atom_rows.saturating_sub(1) / 2);
+        for _ in 0..half {
+            out.push(DisplayLine {
+                runs: Vec::new(),
+                kind,
+            });
+        }
         out.push(DisplayLine { runs, kind });
-        // A line carrying a two-row inline equation (a fraction) reserves a blank
-        // spacer row below it, so the raster hangs into empty space instead of over the
-        // next line of text (the reader paints the atom `rows` cells tall).
-        if tall_math {
+        for _ in 0..half {
             out.push(DisplayLine {
                 runs: Vec::new(),
                 kind,
@@ -434,7 +442,11 @@ mod tests {
                 ..Inline::default()
             },
             anchor: None,
-            math: Some(SpanMath::Raster { id, png: vec![] }),
+            math: Some(SpanMath::Raster {
+                id,
+                png: vec![],
+                ink: None,
+            }),
         }
     }
 
@@ -577,10 +589,11 @@ mod tests {
     }
 
     #[test]
-    fn two_row_inline_math_reserves_a_spacer_line() {
-        // A rasterised inline-math atom reserving TWO rows (a fraction) makes its
-        // wrapped line reserve a blank spacer line below it, so the raster hangs into
-        // empty space instead of over the next line. A one-row atom inserts no spacer.
+    fn multi_row_inline_math_reserves_spacers_around_the_line() {
+        // A rasterised inline-math atom reserving an odd row count (a fraction: 3 = one
+        // spacer above, the text row, one below) makes its wrapped line reserve blank
+        // spacer lines **above and below** it, so the raster straddles the line (centred on
+        // it) instead of hanging under it. A one-row atom inserts no spacer.
         let mk = || {
             para_spans(vec![
                 Span::plain("let "),
@@ -588,23 +601,25 @@ mod tests {
                 Span::plain(" be"),
             ])
         };
-        let two_row = WrapOpts {
+        let three_row = WrapOpts {
             width: 80,
             inline_math_cols: &[3],
-            inline_math_rows: &[2],
+            inline_math_rows: &[3],
             para_spacing: 0,
             ..Default::default()
         };
-        let lines = wrap_blocks(&[mk()], &two_row, &[]);
+        let lines = wrap_blocks(&[mk()], &three_row, &[]);
         let atom_line = lines
             .iter()
             .position(|l| l.runs.iter().any(|r| r.math.is_some()))
             .expect("a line carrying the atom");
         assert!(
-            lines
-                .get(atom_line + 1)
-                .is_some_and(|l| l.text().trim().is_empty()),
-            "a blank spacer line follows the two-row atom: {:?}",
+            atom_line >= 1
+                && lines[atom_line - 1].text().trim().is_empty()
+                && lines
+                    .get(atom_line + 1)
+                    .is_some_and(|l| l.text().trim().is_empty()),
+            "blank spacer lines bracket the multi-row atom: {:?}",
             texts(&lines)
         );
 

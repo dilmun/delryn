@@ -1,6 +1,7 @@
-//! Math in the DOM: detect math classes, standalone math images, alt-text
-//! conversion, and the conservative exponent fix-up. Conversion of MathML text
-//! to Unicode lives in `crate::mathml`.
+//! Math in the DOM: the *structural* classification — detect math classes and elements,
+//! decide display vs inline, and find the standalone/container math node — plus the
+//! conservative exponent fix-up. Source *recovery* (node → the model's `MathItem`, every
+//! encoding) is delegated to `delryn_eqn::detect` via [`display_math_item`].
 
 use super::*;
 
@@ -61,15 +62,6 @@ pub(super) fn superscript_math_exponents(spans: &mut [Span]) {
     }
 }
 
-/// Math source (LaTeX or MathML) → final Unicode for rendering.
-pub(super) fn math_unicode(alt: &str) -> String {
-    if delryn_model::math::is_mathml(alt) {
-        crate::mathml::to_unicode(alt)
-    } else {
-        delryn_model::math::latex_to_unicode(alt)
-    }
-}
-
 /// Whether an element is a native MathML `<math>`.
 pub(super) fn is_math_element(e: &scraper::node::Element) -> bool {
     e.name() == "math"
@@ -114,84 +106,86 @@ pub(super) fn is_math_node(node: NodeRef<Node>) -> bool {
     node.value().as_element().is_some_and(is_math_element) || is_math_img(node)
 }
 
-/// The recovered form of a math node: its Unicode approximation, the LaTeX source
-/// (delimiter-stripped) when one exists, and — for a rasterised equation — the
-/// publisher image `src` as a last-resort visual.
-pub(super) struct MathBlock {
-    pub unicode: String,
-    pub latex: Option<String>,
-    pub img_src: Option<String>,
-    /// The publisher raster's authored width (its `<img>` CSS width) — an `em` value
-    /// is the reliable text-relative size the reader uses to scale the equation to the
-    /// prose. `Auto` for native `<math>` / LaTeX (delryn renders those at its own em).
-    pub width: delryn_model::ImageWidth,
+/// Recover a display-math occurrence into the model's [`delryn_model::MathItem`] via the
+/// universal detector, which harvests **every** source the node carries (authored LaTeX,
+/// Presentation/Content MathML — native, hidden, `<switch>`, trailing comment, MathJax
+/// assistive — a publisher picture with its text-relative size, and a Unicode floor).
+///
+/// The `display` flag is forced on: the structural classifier ([`standalone_math_node`] /
+/// [`equation_image_node`]) already decided this node stands alone as a block equation, a
+/// signal `detect` (which reads only explicit `display`/`displaystyle` attributes) doesn't
+/// see. A node `detect` can't recover — rare, since the classifier deemed it math —
+/// degrades to a text-only item from its glyph text, so the never-blank floor still holds.
+// The math-recovery helpers call into the equation engine (`detect` / `to_nodes`), whose
+// large stack frames must NOT be inlined into the parser's recursive DOM walk — Rust
+// reserves a function's whole local space (inlined cold branches included) at every
+// recursion level, so inlining these would balloon each `walk`/`collect_inline` frame and
+// overflow the stack on deeply nested markup. `inline(never)` keeps them a plain call.
+#[inline(never)]
+pub(super) fn display_math_item(node: NodeRef<Node>) -> delryn_model::MathItem {
+    let mut item = delryn_eqn::detect(node).unwrap_or_else(|| delryn_model::MathItem {
+        display: true,
+        typeset: None,
+        picture: None,
+        text: crate::container::descendant_text(node, false, None)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    });
+    item.display = true;
+    item
 }
 
-/// Recover everything renderable from a math node (native `<math>` or math image),
-/// or the first math descendant of a container. Prefers a reliable LaTeX source (for a
-/// crisp RaTeX render); otherwise the publisher raster — a math image's `src`, or a
-/// native `<math>`'s `altimg` when its LaTeX would only be *synthesized* from
-/// presentation MathML — and the Unicode approximation as the last resort.
-pub(super) fn recover_math_block(node: NodeRef<Node>) -> MathBlock {
-    if let Some(e) = node.value().as_element() {
-        if is_math_element(e) {
-            let (unicode, latex) = native_math(node);
-            // A publisher equation raster the `<math>` ships alongside its MathML
-            // (the MathML `altimg` attribute), resolved like any image `src`.
-            let img_src = e
-                .attr("altimg")
-                .map(str::to_string)
-                .filter(|s| !s.trim().is_empty());
-            // Presentation-MathML-only equations that ship a raster: prefer the raster
-            // over the *synthesized* LaTeX. MathML-derived LaTeX is the least reliable
-            // source and RaTeX may reject it (e.g. an `<mover>` accent becomes
-            // `\overset{◌̄}{X}`, which the KaTeX subset can't parse), silently dropping
-            // the whole equation to a lossy Unicode approximation. The publisher raster
-            // is authoritative and rides the same ink-based sizing as any equation image.
-            // Authored LaTeX (`alttext`/`<annotation>`) is reliable, so it still wins.
-            let latex = if img_src.is_some() && !math_has_authored_latex(node) {
-                None
-            } else {
-                latex
-            };
-            return MathBlock {
-                unicode,
-                latex,
-                img_src,
-                width: delryn_model::ImageWidth::Auto,
-            };
-        }
-        if matches!(e.name(), "img" | "image") {
-            // Source: LaTeX/MathML in the `alt`, else a trailing comment (Wiley).
-            let raw = e
-                .attr("alt")
-                .filter(|a| delryn_model::math::is_math(a))
-                .map(str::to_string)
-                .or_else(|| img_math_comment(node));
-            let latex = raw
-                .as_deref()
-                .filter(|s| !delryn_model::math::is_mathml(s))
-                .map(delryn_model::math::strip_delimiters)
-                .filter(|l| !l.trim().is_empty());
-            return MathBlock {
-                unicode: raw.as_deref().map(math_unicode).unwrap_or_default(),
-                latex,
-                img_src: img_src(e).filter(|s| !s.is_empty()),
-                width: super::parse_img_width(e.attr("width"), e.attr("style")),
-            };
-        }
+/// Whether the recovered markup can be laid out by the typeset engine — the cheap,
+/// crisp, vector path. Checked at parse time so the *representation* is chosen up front:
+/// a typeset-able equation stays markup for the reader to render, while one the engine
+/// can't map falls to the publisher's raster instead of a broken vector attempt.
+#[inline(never)]
+pub(super) fn is_typesettable(item: &delryn_model::MathItem) -> bool {
+    item.typeset
+        .as_ref()
+        .is_some_and(|s| delryn_eqn::to_nodes(s).is_some())
+}
+
+/// Pick the model representation for a recovered display equation, preferring the most
+/// efficient form that is also **reliable**:
+///
+/// 1. **Authored LaTeX** → [`Block::Math`]: RaTeX handles the author's exact TeX
+///    dependably, so the reader lays it out as crisp vector type (no image to transmit).
+/// 2. **A publisher picture** → [`Block::Image`] (bytes resolved by the format layer): the
+///    publisher's own rendering is authoritative and consistently sized. Structural-MathML
+///    typesetting is best-effort — it can pass `to_nodes` yet still fail to *lay out* — so
+///    when a raster exists it wins (a reliable image beats a vector that may not build).
+/// 3. **MathML with no picture** → [`Block::Math`]: typesetting is the only graphical path,
+///    so the reader attempts it (falling back to the Unicode floor if it can't build).
+/// 4. Otherwise the Unicode floor as [`Block::Math`], or nothing if even that is empty.
+#[inline(never)]
+pub(super) fn display_math_block(item: delryn_model::MathItem) -> Option<Block> {
+    if matches!(item.typeset, Some(delryn_model::MarkupSource::Latex(_))) {
+        return Some(Block::Math { item });
     }
-    // A wrapper element: recover from the first math node inside it.
-    for d in node.descendants() {
-        if is_math_node(d) {
-            return recover_math_block(d);
-        }
+    if let Some(pic) = item.picture {
+        return Some(Block::Image {
+            src: pic.src,
+            alt: item.text,
+            data: Vec::new(),
+            caption: Vec::new(),
+            math: true,
+            width: picture_width(pic.size),
+            ink: None,
+        });
     }
-    MathBlock {
-        unicode: String::new(),
-        latex: None,
-        img_src: None,
-        width: delryn_model::ImageWidth::Auto,
+    (item.typeset.is_some() || !item.text.trim().is_empty()).then_some(Block::Math { item })
+}
+
+/// Map a recovered picture's text-relative size hint to the model's authored image width,
+/// so a publisher equation raster scales to the prose (DPI-independent). `MeasureInk` has no
+/// authored size → `Auto`, and the reader ink-profiles it instead.
+fn picture_width(size: delryn_model::PictureSize) -> delryn_model::ImageWidth {
+    match size {
+        delryn_model::PictureSize::Em(w) => delryn_model::ImageWidth::Em(w),
+        delryn_model::PictureSize::Ex(w) => delryn_model::ImageWidth::Em(w * 0.5),
+        delryn_model::PictureSize::MeasureInk => delryn_model::ImageWidth::Auto,
     }
 }
 
@@ -436,55 +430,6 @@ fn sibling_has_content(node: NodeRef<Node>) -> bool {
         Node::Element(e) => matches!(e.name(), "img" | "image" | "svg"),
         _ => false,
     })
-}
-
-/// Convert a native `<math>` element to `(Unicode, Option<LaTeX source>)`. Prefers
-/// the authored text equivalents (`alttext` / `<annotation encoding="…tex">`, which
-/// carry LaTeX and aren't otherwise rendered) — those also hand back the raw LaTeX
-/// for the graphical renderer — then falls back to walking the presentation MathML
-/// (Unicode only, no LaTeX to recover).
-pub(super) fn native_math(node: NodeRef<Node>) -> (String, Option<String>) {
-    let Some(e) = node.value().as_element() else {
-        return (String::new(), None);
-    };
-    // 1. alttext attribute (usually LaTeX, e.g. from LaTeXML / Springer).
-    if let Some(alt) = e.attr("alttext")
-        && !alt.trim().is_empty()
-    {
-        return (
-            delryn_model::math::latex_to_unicode(alt),
-            Some(delryn_model::math::strip_delimiters(alt)),
-        );
-    }
-    // 2. <annotation encoding="application/x-tex"> embedded LaTeX.
-    if let Some(tex) = annotation_tex(node) {
-        let unicode = delryn_model::math::latex_to_unicode(&tex);
-        return (unicode, Some(delryn_model::math::strip_delimiters(&tex)));
-    }
-    // 3. Presentation MathML only (no LaTeX equivalent): serialise the subtree, then
-    //    both transcode to Unicode (the fallback) *and* synthesise LaTeX from the tree
-    //    so the equation can still render graphically (RaTeX) instead of as lossy
-    //    Unicode — a render failure downstream falls back to that Unicode.
-    let Some(el) = scraper::ElementRef::wrap(node) else {
-        return (String::new(), None);
-    };
-    let html = el.html();
-    (
-        crate::mathml::to_unicode(&html),
-        crate::mathml::to_latex(&html),
-    )
-}
-
-/// Whether a `<math>` carries an *authored* LaTeX source — a non-empty `alttext`
-/// attribute or a TeX `<annotation>`. Those are reliable input for the graphical
-/// renderer; presentation MathML alone is only *synthesized* into LaTeX (less
-/// reliable), so a publisher raster is preferred over it when one exists.
-fn math_has_authored_latex(node: NodeRef<Node>) -> bool {
-    node.value()
-        .as_element()
-        .and_then(|e| e.attr("alttext"))
-        .is_some_and(|a| !a.trim().is_empty())
-        || annotation_tex(node).is_some()
 }
 
 /// The text of a `<math>`'s TeX `<annotation>`, if present.

@@ -10,6 +10,25 @@ use super::*;
 use crate::app::IMAGE_CACHE_CAP;
 use crate::media::{ImageBuilder, ImagePlan, ImgKey};
 
+/// Cap on how many **distinct** inline-math images one section may upload. Identical images
+/// are deduped (a repeated symbol uploads once), so this only bounds genuinely-different
+/// inline equations. A dense math chapter legitimately has hundreds (this book runs ~320–500
+/// distinct per chapter, every symbol a separate image), so the cap is generous — high enough
+/// that a real book never loses equations, still a backstop against a truly pathological file.
+/// Off-screen atoms build in the background pool and only upload when scrolled into view, so
+/// the cost scales with what's read, not the raw count. Extras past the cap fall back to text.
+const MAX_INLINE_ATOMS: usize = 1024;
+
+/// A content-address for an inline atom: a hash of its rendered bytes, so identical images
+/// (the same symbol repeated across a section) share one build, one upload, and one cache
+/// slot instead of one per occurrence.
+fn inline_content_key(png: &[u8]) -> usize {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    png.hash(&mut h);
+    h.finish() as usize
+}
+
 /// Map a block's authored width, math flag, and caption presence to the media
 /// layer's sizing intent. A caption is the reliable figure/table-vs-equation
 /// signal: figures and tables are captioned and normalize to the column band;
@@ -113,11 +132,10 @@ impl Reader {
                     if !is_current && self.images.cache.len() >= self.images.cache.cap().get() {
                         continue;
                     }
-                    if let Some((_, evicted)) = self.images.cache.push(done.key, plan)
-                        && let Some(id) = evicted.image_id()
-                    {
-                        self.pending_deletes.push(id);
-                    }
+                    // The `InlineDeck` owns the terminal image lifecycle now: it frees a
+                    // resident image when its key leaves the screen. So an eviction from
+                    // this LRU only drops the PNG payload — no `d=I` needed here.
+                    self.images.cache.push(done.key, plan);
                 }
                 None => {
                     self.images.failed.insert(done.key);
@@ -137,10 +155,20 @@ impl Reader {
             geom.fit_mode,
         );
         if self.images.images_key != key || self.images.policy != geom.policy {
+            // Build what's on screen first. On a theme/knob change the section is unchanged,
+            // so the wrapped lines still say what's visible — prioritise those so the current
+            // view re-tints before the section's thousands of off-screen rasters. On a section
+            // change the lines are stale (previous section), so skip it: navigation resets to
+            // the section top, which the natural index-order dispatch already builds first.
+            let (vis_figures, vis_inline) = if self.images.images_key.0 == self.section {
+                self.visible_image_targets()
+            } else {
+                (HashSet::new(), HashSet::new())
+            };
             self.images.images_key = key;
             self.images.policy = geom.policy;
-            self.remap_section_images(builder, picker, geom);
-            self.remap_inline_math(builder, picker, geom);
+            self.remap_section_images(builder, picker, geom, &vis_figures);
+            self.remap_inline_math(builder, picker, geom, &vis_inline);
         }
 
         // 4. Pre-build neighbouring sections' images once the current one is ready.
@@ -245,8 +273,15 @@ impl Reader {
     }
 
     /// Map the current section's images to cache keys, estimate their rows for
-    /// reflow, and request builds for any not already cached/in-flight/failed.
-    fn remap_section_images(&mut self, builder: &ImageBuilder, picker: &Picker, geom: ImageGeom) {
+    /// reflow, and request builds for any not already cached/in-flight/failed. Figures whose
+    /// `idx` is in `visible` (on screen) are dispatched at the front of the build queue.
+    fn remap_section_images(
+        &mut self,
+        builder: &ImageBuilder,
+        picker: &Picker,
+        geom: ImageGeom,
+        visible: &HashSet<usize>,
+    ) {
         // A failed build is only blacklisted until the next remap (section change,
         // resize, theme/mode toggle): clear it so a *transient* failure (e.g. the
         // protocol upload losing under load) recovers on its own instead of
@@ -342,7 +377,11 @@ impl Reader {
         }
         for (k, bytes, spec) in requests {
             self.images.requested.insert(k);
-            builder.request(k, bytes, spec);
+            if visible.contains(&k.idx) {
+                builder.request_priority(k, bytes, spec);
+            } else {
+                builder.request(k, bytes, spec);
+            }
         }
     }
 
@@ -356,14 +395,15 @@ impl Reader {
     /// wrapper's atom reservation, and the draw all agree. Called right after
     /// `remap_section_images` (which sized the cache to the figures); this grows it
     /// again to fit the inline equations too.
-    fn remap_inline_math(&mut self, builder: &ImageBuilder, picker: &Picker, geom: ImageGeom) {
+    fn remap_inline_math(
+        &mut self,
+        builder: &ImageBuilder,
+        picker: &Picker,
+        geom: ImageGeom,
+        visible_ids: &HashSet<usize>,
+    ) {
         let fs = picker.font_size();
         let (fw, fh) = (fs.width, fs.height);
-        let spec = media::SizeSpec {
-            inline: true,
-            math: true,
-            ..Default::default()
-        };
         let fit = media::FitBox {
             fw,
             fh,
@@ -377,69 +417,172 @@ impl Reader {
         let mut section_inline = HashMap::new();
         let mut cols_by_id: Vec<u16> = Vec::new();
         let mut rows_by_id: Vec<u16> = Vec::new();
-        let mut requests: Vec<(ImgKey, Vec<u8>)> = Vec::new();
+        // Inline build requests: the PNG bytes (the worker decodes them off-thread). Ink
+        // was already measured at load time (on the span), so the render thread never
+        // decodes an inline image here.
+        let mut requests: Vec<(ImgKey, Vec<u8>, media::SizeSpec)> = Vec::new();
+        // Content-address the atoms: an inline image is keyed by *what it is*, not where it
+        // occurs, so the same symbol repeated across the section (a book that ships ℝ as its
+        // own tiny `<img>` uses it hundreds of times) is built and uploaded **once** and every
+        // occurrence places that single image. `distinct` also bounds how many unique inline
+        // images a section may upload — beyond the cap the extra ones fall back to their text
+        // floor (cols = 0), so a pathological page can never flood the terminal.
+        // Collect every atom run (recursing into callout/footnote bodies, so a note's inline
+        // math is sized/built too). The borrow of `self.blocks` (via the slices) stays
+        // disjoint from the `self.images` we read/mutate below.
+        let mut runs: Vec<&[delryn_model::Span]> = Vec::new();
         for block in &self.blocks {
-            let spans = match block {
-                Block::Para { spans, .. } | Block::Heading { spans, .. } => spans,
-                _ => continue,
-            };
-            for span in spans {
-                let Some(delryn_model::SpanMath::Raster { id, png }) = &span.math else {
+            block.collect_span_runs(&mut runs);
+        }
+        let section = self.section;
+        let key_for = |ck: usize| ImgKey {
+            kind: media::ImgSlot::InlineMath,
+            section,
+            idx: ck,
+            avail: geom.avail,
+            max_rows: geom.max_rows,
+            max_px: geom.max_px,
+            target_pct: geom.width_pct,
+            math_scale: geom.math_scale,
+            fit_mode: geom.fit_mode,
+            policy: geom.policy,
+        };
+
+        // Pass 1 — gather each **distinct** atom's ink (measured off-thread at load, carried
+        // on the span — no decode here) and the section's ems. `order` is the first-seen
+        // order, for the distinct-upload cap.
+        let mut ems: Vec<f32> = Vec::new();
+        let mut order: Vec<usize> = Vec::new();
+        let mut ink_by_ck: HashMap<usize, Option<media::InkProfile>> = HashMap::new();
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        // The distinct atoms with at least one occurrence on screen — dispatched first so the
+        // viewport re-tints ahead of the section's off-screen atoms. An atom's build is keyed
+        // by content (`ck`), but visibility is per occurrence (`id`), so any visible `id`
+        // marks its `ck` visible.
+        let mut visible_cks: HashSet<usize> = HashSet::new();
+        for spans in &runs {
+            for span in *spans {
+                let Some(delryn_model::SpanMath::Raster { id, png, ink }) = &span.math else {
                     continue;
                 };
-                let key = ImgKey {
-                    kind: media::ImgSlot::InlineMath,
-                    section: self.section,
-                    idx: *id,
-                    avail: geom.avail,
-                    max_rows: geom.max_rows,
-                    max_px: geom.max_px,
-                    target_pct: geom.width_pct,
-                    math_scale: geom.math_scale,
-                    fit_mode: geom.fit_mode,
-                    policy: geom.policy,
+                let ck = inline_content_key(png);
+                if visible_ids.contains(id) {
+                    visible_cks.insert(ck);
+                }
+                if !seen.insert(ck) {
+                    continue; // distinct only
+                }
+                order.push(ck);
+                // Cross the crate boundary: the model's dependency-free profile → media's.
+                let media_ink = ink.map(|p| media::InkProfile {
+                    x0: p.x0,
+                    y0: p.y0,
+                    x1: p.x1,
+                    y1: p.y1,
+                    line_px: p.line_px,
+                    line_count: p.line_count,
+                });
+                if let Some(p) = media_ink {
+                    ems.push(p.line_px);
+                }
+                ink_by_ck.insert(ck, media_ink);
+            }
+        }
+        // The book's one inline reference em: pool this section's atom ems book-wide and take
+        // the robust median — the SAME uniform, one-scale model the display equations use.
+        // Inline atoms are rasterised at their own (usually smaller) source resolution than
+        // display equations, so they get their own median; but both normalise to the same
+        // prose target (Pass 2), so inline math and display equations render at the same glyph
+        // size, consistent regardless of the per-image cap-height noise. `None` early on.
+        let book_em = crate::app::reader::math::book_inline_em(section, ems);
+
+        // Pass 2 — reserve cells and dispatch builds, sizing each atom against the section em.
+        let cap: std::collections::HashSet<usize> =
+            order.iter().take(MAX_INLINE_ATOMS).copied().collect();
+        let mut dispatched: std::collections::HashSet<ImgKey> = std::collections::HashSet::new();
+        for spans in &runs {
+            for span in *spans {
+                let Some(delryn_model::SpanMath::Raster { id, png, .. }) = &span.math else {
+                    continue;
                 };
-                // The atom's reserved width *and height* — the same `target_cells` the
-                // build uses, so the wrapper's reservation (columns, and a spacer row
-                // for a two-row fraction) matches the drawn raster exactly.
-                let (cols, rows) = media::image_dimensions(png)
-                    .map(|(w, h)| media::target_cells(w, h, fit, spec))
-                    .unwrap_or((0, 1));
+                let ck = inline_content_key(png);
+                let capped = !cap.contains(&ck);
+                // Normalise every atom by the book's one inline em (uniform, no clamp), so all
+                // inline equations flow at the same size — a fraction-heavy atom that
+                // under-measures and a bracket-connected one that over-measures both size to
+                // the book em, like the display path. Each raster keeps its own ink bbox (a
+                // fraction is still taller than a symbol) so it renders at its true height.
+                let ink = if capped {
+                    None
+                } else {
+                    ink_by_ck.get(&ck).copied().flatten().map(|mut p| {
+                        if let Some(em) = book_em {
+                            p.line_px = em;
+                        }
+                        p
+                    })
+                };
+                let spec = media::SizeSpec {
+                    inline: true,
+                    math: true,
+                    ink,
+                    ..Default::default()
+                };
+                // The atom's reserved width *and height* — the same `target_cells` (and thus
+                // `inline_fit`) the build uses, so the wrapper's reservation (columns, and the
+                // spacer rows for a centred fraction) matches the drawn raster exactly.
+                let (cols, rows) = if capped {
+                    (0, 1)
+                } else {
+                    media::image_dimensions(png)
+                        .map(|(w, h)| media::target_cells(w, h, fit, spec))
+                        .unwrap_or((0, 1))
+                };
                 if *id >= cols_by_id.len() {
                     cols_by_id.resize(*id + 1, 0);
                     rows_by_id.resize(*id + 1, 1);
                 }
                 cols_by_id[*id] = cols;
                 rows_by_id[*id] = rows;
-                section_inline.insert(*id, key);
-                if cols > 0
-                    && !self.images.cache.contains(&key)
-                    && !self.images.requested.contains(&key)
-                    && !self.images.failed.contains(&key)
-                {
-                    requests.push((key, png.clone()));
+                if cols > 0 {
+                    let key = key_for(ck);
+                    section_inline.insert(*id, key);
+                    // Queue the build once per distinct atom (later occurrences find it already
+                    // queued / cached / failed). The worker decodes the PNG off the main thread.
+                    if !self.images.cache.contains(&key)
+                        && !self.images.requested.contains(&key)
+                        && !self.images.failed.contains(&key)
+                        && dispatched.insert(key)
+                    {
+                        requests.push((key, png.clone(), spec));
+                    }
                 }
             }
         }
+        let distinct_count = cap.len();
         self.images.section_inline = section_inline;
         self.images.inline_cols = cols_by_id;
         self.images.inline_rows = rows_by_id;
-        // Grow the cache so the section's figures *and* inline equations all fit,
-        // keeping `IMAGE_CACHE_CAP` spare for neighbour prefetch (grow only).
+        // Grow the cache so the section's figures *and* its **distinct** inline equations all
+        // fit, keeping `IMAGE_CACHE_CAP` spare for neighbour prefetch (grow only).
         let needed = self
             .images
             .section_images
             .len()
-            .saturating_add(self.images.section_inline.len())
+            .saturating_add(distinct_count)
             .saturating_add(IMAGE_CACHE_CAP);
         if self.images.cache.cap().get() < needed
             && let Some(cap) = NonZeroUsize::new(needed)
         {
             self.images.cache.resize(cap);
         }
-        for (k, bytes) in requests {
+        for (k, bytes, spec) in requests {
             self.images.requested.insert(k);
-            builder.request(k, bytes, spec);
+            if visible_cks.contains(&k.idx) {
+                builder.request_priority(k, bytes, spec);
+            } else {
+                builder.request(k, bytes, spec);
+            }
         }
     }
 
@@ -543,11 +686,21 @@ impl Reader {
         self.images.cache.peek(key)
     }
 
+    /// The cache key for the current section's figure `idx` (its deck identity).
+    pub fn image_key(&self, idx: usize) -> Option<ImgKey> {
+        self.images.section_images.get(&idx).copied()
+    }
+
     /// Look up a built plan for the current section's inline-math atom `id` — the
     /// small equation raster the reader paints over the atom's reserved cells.
     pub fn inline_math_plan(&self, id: usize) -> Option<&ImagePlan> {
         let key = self.images.section_inline.get(&id)?;
         self.images.cache.peek(key)
+    }
+
+    /// The cache key for the current section's inline-math atom `id` (its deck identity).
+    pub fn inline_math_key(&self, id: usize) -> Option<ImgKey> {
+        self.images.section_inline.get(&id).copied()
     }
 
     /// The current section's inline-math atom widths (by id), for the wrapper.
@@ -562,9 +715,33 @@ impl Reader {
         self.images.cache.peek(key)
     }
 
-    /// Drain terminal image ids that should be deleted (evicted from cache).
-    pub fn take_image_deletes(&mut self) -> Vec<u32> {
-        std::mem::take(&mut self.pending_deletes)
+    /// The built PNG for a cache key — the `InlineDeck`'s transmit payload. `None`
+    /// until the background build lands (the deck retries next frame). Peek (no LRU
+    /// touch), cloned since the deck writes it to the terminal outside the borrow.
+    pub fn image_png(&self, key: ImgKey) -> Option<Vec<u8>> {
+        self.images.cache.peek(&key).map(|p| p.png.clone())
+    }
+
+    /// Record one inline-image placement target for this frame (the view collects them
+    /// during render; `App::inline_escapes` drains and reconciles them via the deck).
+    pub fn push_inline_target(&self, target: crate::app::inline_deck::InlineTarget) {
+        self.inline_targets.borrow_mut().push(target);
+    }
+
+    /// Drain this frame's collected inline-image targets.
+    pub fn take_inline_targets(&self) -> Vec<crate::app::inline_deck::InlineTarget> {
+        std::mem::take(&mut self.inline_targets.borrow_mut())
+    }
+
+    /// Start a fresh frame's inline-target collection (clears the previous frame's).
+    pub fn begin_inline_frame(&self) {
+        self.inline_targets.borrow_mut().clear();
+    }
+
+    /// Whether the inline deck must be fully cleared before this frame's placements
+    /// (a restage dropped the built PNGs, so the terminal images must re-transmit).
+    pub fn take_inline_clear(&self) -> bool {
+        self.inline_needs_clear.replace(false)
     }
 
     /// Returning from the full-screen image viewer: drop the current section's
@@ -586,16 +763,27 @@ impl Reader {
             .copied()
             .collect();
         for k in keys {
-            if let Some(plan) = self.images.cache.pop(&k)
-                && let Some(id) = plan.image_id()
-            {
-                self.pending_deletes.push(id);
-            }
+            self.images.cache.pop(&k);
             self.images.requested.remove(&k);
             self.images.failed.remove(&k);
         }
+        // Free every terminal-resident image next frame (deck `clear`) so the rebuilt
+        // images re-transmit under fresh ids instead of being assumed still resident.
+        self.inline_needs_clear.set(true);
         // Force the next `sync_images` to re-remap this section (re-dispatching the
         // builds that were just dropped) even when nothing else changed.
+        self.images.images_key.0 = usize::MAX;
+    }
+
+    /// Drop every built image and its remap state — for leaving the reader. The
+    /// terminal-resident images are freed by the deck (it sees no targets / a clear).
+    pub fn evict_all_images(&mut self) {
+        self.images.cache.clear();
+        self.images.section_images.clear();
+        self.images.section_inline.clear();
+        self.images.following.clear();
+        self.images.requested.clear();
+        self.images.failed.clear();
         self.images.images_key.0 = usize::MAX;
     }
 

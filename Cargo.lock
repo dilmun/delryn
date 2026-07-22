@@ -693,16 +693,17 @@ dependencies = [
  "arboard",
  "chrono",
  "crossterm",
+ "delryn-eqn",
  "delryn-format",
  "delryn-infra",
  "delryn-library",
- "delryn-math",
  "delryn-media",
  "delryn-model",
  "delryn-online",
  "delryn-render",
  "delryn-store",
  "image",
+ "libc",
  "lru",
  "ratatui",
  "ratatui-image",
@@ -714,10 +715,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "delryn-eqn"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "delryn-model",
+ "ego-tree",
+ "ratex-layout",
+ "ratex-parser",
+ "ratex-render",
+ "ratex-types",
+ "scraper",
+]
+
+[[package]]
 name = "delryn-format"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "delryn-eqn",
  "delryn-model",
  "ego-tree",
  "epub",
@@ -750,22 +766,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "delryn-math"
-version = "0.1.0"
-dependencies = [
- "delryn-infra",
- "ratex-layout",
- "ratex-parser",
- "ratex-render",
- "ratex-types",
-]
-
-[[package]]
 name = "delryn-media"
 version = "0.1.0"
 dependencies = [
  "base64",
  "delryn-infra",
+ "fast_image_resize",
  "image",
  "ratatui",
  "ratatui-image",
@@ -1044,6 +1050,18 @@ name = "fast-srgb8"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd2e7510819d6fbf51a5545c8f922716ecfb14df168a3242f7d33e0239efe6a1"
+
+[[package]]
+name = "fast_image_resize"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12dd43e5011e8d8411a3215a0d57a2ec5c68282fb90eb5d7221fab0113442174"
+dependencies = [
+ "cfg-if",
+ "document-features",
+ "num-traits",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "fastrand"
