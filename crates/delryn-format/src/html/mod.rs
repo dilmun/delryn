@@ -329,6 +329,65 @@ fn flush(inline: &mut Vec<Span>, ctx: &Ctx, out: &mut Vec<Block>) {
     }
 }
 
+/// Emit a caption wrapper (Springer's `<div class="Caption">` = a `CaptionNumber`
+/// span plus a `SimplePara` title) as **one** caption line — "Table 3. …title…" —
+/// instead of letting the number span and the title paragraph stack as two spaced
+/// blocks with the number stranded on its own wasted row. Only a *textual* caption
+/// is merged; one carrying an image or table falls back to the normal walk so
+/// nothing is dropped.
+fn emit_caption(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
+    let mut inner = Vec::new();
+    walk_children(node, ctx, &mut inner);
+    if !inner
+        .iter()
+        .all(|b| matches!(b, Block::Para { .. } | Block::Heading { .. }))
+    {
+        out.extend(inner);
+        return;
+    }
+    let spans = coalesce_caption_spans(inner);
+    if spans.iter().any(|s| !s.text.trim().is_empty()) {
+        out.push(Block::Para {
+            spans,
+            indent: ctx.indent,
+            quote: ctx.quote,
+            marker: None,
+        });
+    }
+}
+
+/// Flatten a caption's child blocks into one run of spans, bridging each element
+/// boundary the source left unspaced (`</span><p>`) with a single space so the
+/// number and title read as one line rather than jammed ("Table 3.Classification").
+fn coalesce_caption_spans(blocks: Vec<Block>) -> Vec<Span> {
+    let mut spans: Vec<Span> = Vec::new();
+    for b in blocks {
+        let runs = match b {
+            Block::Para { spans, .. } | Block::Heading { spans, .. } => spans,
+            _ => continue,
+        };
+        if runs.iter().all(|s| s.text.trim().is_empty()) {
+            continue;
+        }
+        let need_gap = spans
+            .last()
+            .is_some_and(|l| !l.text.ends_with(char::is_whitespace))
+            && !runs
+                .first()
+                .is_some_and(|f| f.text.starts_with(char::is_whitespace));
+        if need_gap {
+            spans.push(Span {
+                text: " ".to_string(),
+                style: Inline::default(),
+                anchor: None,
+                math: None,
+            });
+        }
+        spans.extend(runs);
+    }
+    spans
+}
+
 /// Turn a classified block-level element into `Block`s. Pure dispatch — every
 /// "what is this?" decision lives in [`semantics::classify`]; this maps each
 /// role to its extractor.
@@ -436,6 +495,7 @@ fn block_element(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
                 out.push(table);
             }
         }
+        ElementRole::Caption => emit_caption(node, ctx, out),
         ElementRole::Container => {
             // A ToC region (or a Springer ToC-level div) indents to its level and
             // packs entries tight; the flag flows to all descendants.

@@ -233,6 +233,7 @@ fn harvest_picture(node: NodeRef<Node>, el: &scraper::node::Element) -> Option<P
             .map(|src| PictureRef {
                 src: src.to_string(),
                 size: css_math_size(el),
+                data: Vec::new(),
             });
     }
     // A math `<img>`/`<image>`.
@@ -246,6 +247,7 @@ fn harvest_picture(node: NodeRef<Node>, el: &scraper::node::Element) -> Option<P
         return Some(PictureRef {
             src: src.to_string(),
             size: css_math_size(el),
+            data: Vec::new(),
         });
     }
     // A container (mjx / switch): the first image in its subtree.
@@ -261,6 +263,7 @@ fn harvest_picture(node: NodeRef<Node>, el: &scraper::node::Element) -> Option<P
             return Some(PictureRef {
                 src: src.to_string(),
                 size: css_math_size(e),
+                data: Vec::new(),
             });
         }
     }

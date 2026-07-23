@@ -147,21 +147,22 @@ pub(super) fn is_typesettable(item: &delryn_model::MathItem) -> bool {
         .is_some_and(|s| delryn_eqn::to_nodes(s).is_some())
 }
 
-/// Pick the model representation for a recovered display equation, preferring the most
-/// efficient form that is also **reliable**:
+/// Pick the model representation for a recovered display equation, preferring the crispest
+/// form we can build reliably:
 ///
-/// 1. **Authored LaTeX** → [`Block::Math`]: RaTeX handles the author's exact TeX
-///    dependably, so the reader lays it out as crisp vector type (no image to transmit).
-/// 2. **A publisher picture** → [`Block::Image`] (bytes resolved by the format layer): the
-///    publisher's own rendering is authoritative and consistently sized. Structural-MathML
-///    typesetting is best-effort — it can pass `to_nodes` yet still fail to *lay out* — so
-///    when a raster exists it wins (a reliable image beats a vector that may not build).
-/// 3. **MathML with no picture** → [`Block::Math`]: typesetting is the only graphical path,
-///    so the reader attempts it (falling back to the Unicode floor if it can't build).
-/// 4. Otherwise the Unicode floor as [`Block::Math`], or nothing if even that is empty.
+/// 1. **Typeset-able markup** (authored LaTeX, or Presentation MathML the engine can map) →
+///    [`Block::Math`]: RaTeX lays it out as crisp vector type at prose size, DPI-independent.
+///    This beats a publisher raster whose only fallback is a fixed-resolution image — real
+///    books ship low-DPI equation JPGs whose ink can't be measured reliably, so they size
+///    inconsistently. The render ladder keeps the picture as a fallback (typeset → picture →
+///    text): a mappable equation that nonetheless fails to *lay out* drops to its raster (the
+///    loader resolved its bytes onto the picture ref), never to mangled Unicode.
+/// 2. **A publisher picture, not typeset-able** → [`Block::Image`] (bytes resolved by the
+///    format layer): the raster is the only graphical option, ink-measured for sizing.
+/// 3. Otherwise the Unicode floor as [`Block::Math`], or nothing if even that is empty.
 #[inline(never)]
 pub(super) fn display_math_block(item: delryn_model::MathItem) -> Option<Block> {
-    if matches!(item.typeset, Some(delryn_model::MarkupSource::Latex(_))) {
+    if is_typesettable(&item) {
         return Some(Block::Math { item });
     }
     if let Some(pic) = item.picture {
