@@ -6,8 +6,13 @@
 //! - **Presentation MathML** maps *structurally* to `ParseNode`s (real fractions, scripts,
 //!   roots, accents, braces, fences) — no lossy round-trip through a LaTeX string — while
 //!   leaf symbols resolve through the engine's own table by parsing their command form, so
-//!   every glyph is the one it draws. Any element not mapped yet returns `None`, and the
-//!   render ladder falls to the publisher picture, then text.
+//!   every glyph is the one it draws.
+//!
+//! **Graceful degradation.** Mapping never fails the *whole* equation on one bad node: an
+//! element we don't map renders its children, an unparseable leaf renders its raw text, and a
+//! degenerate/empty node renders nothing. `to_nodes` returns `None` only when the equation
+//! yields *no* visible content at all (or the source is Content MathML) — then the render
+//! ladder falls to the publisher picture, then the Unicode floor.
 
 use ego_tree::NodeRef;
 use ratex_parser::parse_node::{AlignSpec, AlignType, AtomFamily, Mode, ParseNode};
@@ -27,19 +32,11 @@ pub fn to_nodes(src: &MarkupSource) -> Option<Vec<ParseNode>> {
     }
 }
 
-/// Map a Presentation-MathML string to a `ParseNode` tree.
+/// Map a Presentation-MathML string to a `ParseNode` tree. `None` only when nothing visible
+/// maps (an entirely empty/degenerate equation) — the ladder then falls to the picture.
 fn mathml_to_nodes(src: &str) -> Option<Vec<ParseNode>> {
     let frag = Html::parse_fragment(src);
-    let mut out = Vec::new();
-    for child in frag.root_element().children() {
-        match child.value() {
-            Node::Text(t) if !t.text.trim().is_empty() => {
-                out.push(leaf(&symbol_latex(t.text.trim()))?)
-            }
-            Node::Element(e) if !is_annotation(local(e.name())) => out.push(map_node(child, 1)?),
-            _ => {}
-        }
-    }
+    let out = map_children_degraded(*frag.root_element(), 1);
     (!out.is_empty()).then_some(out)
 }
 
@@ -49,8 +46,11 @@ fn local(name: &str) -> &str {
     name.rsplit(':').next().unwrap_or(name)
 }
 
+/// Annotation siblings inside `<semantics>` (`<annotation>`, `<annotation-xml>`) carry the
+/// non-presentation encodings (MathType-MTEF binary, Content MathML, speech) — skip them.
+/// `<semantics>` itself is NOT annotation: it's a transparent wrapper around the presentation.
 fn is_annotation(name: &str) -> bool {
-    matches!(name, "annotation" | "annotation-xml" | "semantics")
+    matches!(name, "annotation" | "annotation-xml")
 }
 
 fn elem_children(node: NodeRef<Node>) -> Vec<NodeRef<Node>> {
@@ -107,6 +107,53 @@ fn leaf(latex: &str) -> Option<ParseNode> {
     }
 }
 
+/// Map a node, degrading rather than failing: a node we can't map becomes visible content
+/// (its children, or its raw text) so one bad node never sinks the whole equation.
+fn map_or_degrade(node: NodeRef<Node>, depth: u16) -> ParseNode {
+    map_node(node, depth).unwrap_or_else(|| degrade(node, depth))
+}
+
+/// The fallback for a node `map_node` returned `None` for: an unknown/malformed element
+/// renders whatever children it has (the semantically-closest thing); a stray text leaf
+/// renders literally; nothing renders an empty group.
+fn degrade(node: NodeRef<Node>, depth: u16) -> ParseNode {
+    if depth >= MAX_DEPTH {
+        return ord(Vec::new());
+    }
+    match node.value() {
+        Node::Element(_) => normalize(ord(map_children_degraded(node, depth + 1))),
+        Node::Text(t) => text_leaf(t.text.trim()),
+        _ => ord(Vec::new()),
+    }
+}
+
+/// A leaf that renders `raw` literally — the last-resort glyph fallback (the engine passes
+/// unknown non-ASCII through as text; `\text{…}` covers whatever it can't).
+fn text_leaf(raw: &str) -> ParseNode {
+    if raw.is_empty() {
+        return ord(Vec::new());
+    }
+    leaf(raw)
+        .or_else(|| leaf(&format!("\\text{{{}}}", escape_text(raw))))
+        .unwrap_or_else(|| ord(Vec::new()))
+}
+
+/// A text node's content → a node: a known operator becomes its command, else it renders
+/// literally. Invisible operators (function-application, invisible-times, …) drop to nothing.
+fn text_or_symbol(raw: &str) -> ParseNode {
+    if is_invisible_op(raw) {
+        return ord(Vec::new());
+    }
+    leaf(&symbol_latex(raw)).unwrap_or_else(|| text_leaf(raw))
+}
+
+/// The Unicode "invisible operators" MathType inserts explicitly — function application,
+/// invisible times/comma/plus. They carry no ink; emitting them yields tofu, so drop them.
+fn is_invisible_op(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty() && t.chars().all(|c| ('\u{2061}'..='\u{2064}').contains(&c))
+}
+
 /// A `<mi>` identifier's command form: standard function names render upright (`\sin`),
 /// everything else goes through the symbol map.
 fn mi_latex(t: &str) -> String {
@@ -131,38 +178,34 @@ fn map_node(node: NodeRef<Node>, depth: u16) -> Option<ParseNode> {
     };
     let kids = elem_children(node);
     match local(e.name()) {
-        "mi" => {
-            let t = token_text(node);
-            (!t.is_empty()).then(|| leaf(&mi_latex(&t))).flatten()
-        }
-        "mn" => {
-            let t = token_text(node);
-            (!t.is_empty()).then(|| leaf(&t)).flatten()
-        }
+        "mi" => Some(token(e, &token_text(node), mi_latex)),
+        "mn" => Some(token(e, &token_text(node), |s| s.to_string())),
         "mo" => {
             let t = token_text(node);
-            if t.is_empty() {
+            if is_invisible_op(&t) {
                 Some(ord(Vec::new()))
             } else {
-                leaf(&symbol_latex(&t))
+                Some(token(e, &t, symbol_latex))
             }
         }
         "mtext" | "ms" => {
             let t = token_text(node);
             if t.is_empty() {
                 // An empty or whitespace-only `<mtext>` is a spacing gap — publishers use one
-                // between words (`for` ⋯ `y`). A small space, never `None`: it must not sink
-                // the whole equation to the raster.
+                // between words (`for` ⋯ `y`). A small space, never the whole equation lost.
                 Some(leaf("\\;").unwrap_or_else(|| ord(Vec::new())))
             } else {
-                leaf(&format!("\\text{{{}}}", escape_text(&t)))
+                Some(
+                    leaf(&format!("\\text{{{}}}", escape_text(&t)))
+                        .unwrap_or_else(|| text_leaf(&t)),
+                )
             }
         }
         "mfrac" if kids.len() >= 2 => Some(ParseNode::GenFrac {
             mode: Mode::Math,
             continued: false,
-            numer: Box::new(map_node(kids[0], depth + 1)?),
-            denom: Box::new(map_node(kids[1], depth + 1)?),
+            numer: Box::new(map_or_degrade(kids[0], depth + 1)),
+            denom: Box::new(map_or_degrade(kids[1], depth + 1)),
             has_bar_line: !matches!(
                 e.attr("linethickness").map(str::trim),
                 Some("0" | "0pt" | "0px" | "0em" | "none")
@@ -173,77 +216,166 @@ fn map_node(node: NodeRef<Node>, depth: u16) -> Option<ParseNode> {
             loc: None,
         }),
         "msup" if kids.len() >= 2 => Some(sup_sub(
-            map_node(kids[0], depth + 1)?,
-            Some(map_node(kids[1], depth + 1)?),
+            map_or_degrade(kids[0], depth + 1),
+            Some(map_or_degrade(kids[1], depth + 1)),
             None,
         )),
         "msub" if kids.len() >= 2 => Some(sup_sub(
-            map_node(kids[0], depth + 1)?,
+            map_or_degrade(kids[0], depth + 1),
             None,
-            Some(map_node(kids[1], depth + 1)?),
+            Some(map_or_degrade(kids[1], depth + 1)),
         )),
         // MathML orders <msubsup> as base, subscript, superscript.
         "msubsup" if kids.len() >= 3 => Some(sup_sub(
-            map_node(kids[0], depth + 1)?,
-            Some(map_node(kids[2], depth + 1)?),
-            Some(map_node(kids[1], depth + 1)?),
+            map_or_degrade(kids[0], depth + 1),
+            Some(map_or_degrade(kids[2], depth + 1)),
+            Some(map_or_degrade(kids[1], depth + 1)),
         )),
-        "munderover" if kids.len() >= 3 => under_over(kids[0], Some(kids[1]), Some(kids[2]), depth),
-        "munder" if kids.len() >= 2 => under_over(kids[0], Some(kids[1]), None, depth),
-        "mover" if kids.len() >= 2 => under_over(kids[0], None, Some(kids[1]), depth),
+        "munderover" if kids.len() >= 3 => {
+            Some(under_over(kids[0], Some(kids[1]), Some(kids[2]), depth))
+        }
+        "munder" if kids.len() >= 2 => Some(under_over(kids[0], Some(kids[1]), None, depth)),
+        "mover" if kids.len() >= 2 => Some(under_over(kids[0], None, Some(kids[1]), depth)),
         "msqrt" => Some(ParseNode::Sqrt {
             mode: Mode::Math,
-            body: Box::new(ord(map_children(node, depth + 1)?)),
+            body: Box::new(ord(map_children_degraded(node, depth + 1))),
             index: None,
             loc: None,
         }),
         "mroot" if kids.len() >= 2 => Some(ParseNode::Sqrt {
             mode: Mode::Math,
-            body: Box::new(map_node(kids[0], depth + 1)?),
-            index: Some(Box::new(map_node(kids[1], depth + 1)?)),
+            body: Box::new(map_or_degrade(kids[0], depth + 1)),
+            index: Some(Box::new(map_or_degrade(kids[1], depth + 1))),
             loc: None,
         }),
-        "mfenced" => fenced(node, e, depth),
+        "mfenced" => Some(fenced(node, e, depth)),
         // A grid: matrices, and the outer right|left layout table InDesign wraps every
         // display equation in. Delimiters, when present, come from a surrounding `<mfenced>`.
         "mtable" => mtable(node, e, depth),
-        // A spacing element → a small gap (so a `, y > 0` annotation doesn't jam). Never
-        // fails: an unsupported `<mspace>` must not sink the whole equation to the raster.
+        // A spacing element → a small gap (so a `, y > 0` annotation doesn't jam).
         "mspace" => Some(leaf("\\;").unwrap_or_else(|| ord(Vec::new()))),
-        "mrow" | "math" | "mstyle" | "mpadded" | "mphantom" => {
-            let body = map_children(node, depth + 1)?;
-            // An empty group maps to an empty ord, not `None` — publishers use an empty
-            // `<mrow/>` inside a fence for a lone stretchy bar (InDesign renders `|dx/dy|` as
-            // `[|][frac][|]`), and that must not fail the equation.
-            Some(if body.is_empty() {
+        // Invisible: reserves space, renders nothing (never leak its content as visible math).
+        "mphantom" => Some(ParseNode::Phantom {
+            mode: Mode::Math,
+            body: map_children_degraded(node, depth + 1),
+            loc: None,
+        }),
+        // `<semantics>` = a transparent wrapper: prefer an embedded LaTeX annotation, else the
+        // presentation child (its `<annotation>`/`<annotation-xml>` siblings are filtered out).
+        "semantics" => Some(semantics(node, depth)),
+        // Transparent grouping. A `mathvariant` on `<mstyle>` pushes its font onto the group.
+        "mrow" | "math" | "mstyle" | "mpadded" => {
+            // A `|…|` / `‖…‖` / `(matrix)` run around tall content → stretchy `\left…\right`.
+            if let Some(p) = promote_delims(node, depth) {
+                return Some(variant(e, p));
+            }
+            let body = map_children_degraded(node, depth + 1);
+            let group = if body.is_empty() {
                 ord(body)
             } else {
                 normalize(ord(body))
-            })
+            };
+            Some(variant(e, group))
         }
-        // <mtable> and anything else unmapped → fall back to the picture/text.
+        // Anything else → let the caller degrade it (render its children).
         _ => None,
     }
 }
 
-/// Map every renderable child of `node` into a list; `None` if any child fails.
-fn map_children(node: NodeRef<Node>, depth: u16) -> Option<Vec<ParseNode>> {
+/// A token element (`<mi>`/`<mn>`/`<mo>`) → its leaf, honoring `mathvariant`. Empty → an empty
+/// group; an unparseable command → the raw text (never sinks the equation).
+fn token(e: &scraper::node::Element, t: &str, to_latex: impl Fn(&str) -> String) -> ParseNode {
+    if t.is_empty() {
+        return ord(Vec::new());
+    }
+    variant(e, leaf(&to_latex(t)).unwrap_or_else(|| text_leaf(t)))
+}
+
+/// Map every renderable child of `node`, degrading any child that can't map. Never fails —
+/// `<annotation>`/`<annotation-xml>` siblings are skipped so `<semantics>` renders clean.
+fn map_children_degraded(node: NodeRef<Node>, depth: u16) -> Vec<ParseNode> {
     if depth >= MAX_DEPTH {
-        return None;
+        return Vec::new();
     }
     let mut out = Vec::new();
     for c in node.children() {
         match c.value() {
-            Node::Text(t) if !t.text.trim().is_empty() => {
-                out.push(leaf(&symbol_latex(t.text.trim()))?)
-            }
+            Node::Text(t) if !t.text.trim().is_empty() => out.push(text_or_symbol(t.text.trim())),
             Node::Element(e) if !is_annotation(local(e.name())) => {
-                out.push(map_node(c, depth + 1)?)
+                out.push(map_or_degrade(c, depth + 1))
             }
             _ => {}
         }
     }
-    Some(out)
+    out
+}
+
+/// `<semantics>`: prefer an embedded `<annotation encoding="application/x-tex">` (lossless
+/// LaTeX), else render the presentation child.
+fn semantics(node: NodeRef<Node>, depth: u16) -> ParseNode {
+    if let Some(tex) = tex_annotation(node)
+        && let Ok(nodes) = parse(&tex)
+        && !nodes.is_empty()
+    {
+        return normalize(ord(nodes));
+    }
+    normalize(ord(map_children_degraded(node, depth + 1)))
+}
+
+/// The text of a child `<annotation encoding="…x-tex|TeX|LaTeX">`, if present.
+fn tex_annotation(node: NodeRef<Node>) -> Option<String> {
+    node.children().find_map(|c| {
+        let e = c.value().as_element()?;
+        (local(e.name()) == "annotation"
+            && matches!(
+                e.attr("encoding").map(str::trim),
+                Some("application/x-tex" | "application/x-latex" | "TeX" | "LaTeX" | "text/x-tex")
+            ))
+        .then(|| token_text(c))
+        .filter(|s| !s.is_empty())
+    })
+}
+
+/// Apply a token/`mstyle` `mathvariant` by wrapping in the matching font command. `italic`
+/// and the absent/default case are no-ops (math letters already render italic).
+fn variant(e: &scraper::node::Element, node: ParseNode) -> ParseNode {
+    match e.attr("mathvariant").and_then(|v| variant_cmd(v.trim())) {
+        Some(cmd) => font_wrap(cmd, node),
+        None => node,
+    }
+}
+
+/// The engine font command for a `mathvariant` value (blackboard, bold, script, …), or `None`
+/// for `italic`/unknown (the default is already italic, so no wrap).
+fn variant_cmd(v: &str) -> Option<&'static str> {
+    Some(match v {
+        "normal" => "\\mathrm",
+        "bold" => "\\mathbf",
+        "bold-italic" => "\\boldsymbol",
+        "double-struck" => "\\mathbb",
+        "script" | "bold-script" | "calligraphic" | "bold-calligraphic" => "\\mathscr",
+        "fraktur" | "bold-fraktur" => "\\mathfrak",
+        "sans-serif" | "bold-sans-serif" | "sans-serif-italic" | "sans-serif-bold-italic" => {
+            "\\mathsf"
+        }
+        "monospace" => "\\mathtt",
+        _ => return None,
+    })
+}
+
+/// Wrap `body` in a font command by grafting the command's `Font` node (so the exact font
+/// string the engine uses is preserved). A command that isn't a plain font (e.g. `\boldsymbol`)
+/// falls back to the unwrapped body rather than failing.
+fn font_wrap(cmd: &str, body: ParseNode) -> ParseNode {
+    match parse(&format!("{cmd}{{x}}")).ok().and_then(|mut v| v.pop()) {
+        Some(ParseNode::Font { mode, font, .. }) => ParseNode::Font {
+            mode,
+            font,
+            body: Box::new(body),
+            loc: None,
+        },
+        _ => body,
+    }
 }
 
 /// Unwrap a single-element group so `<mrow><mi>x</mi></mrow>` is just `x`.
@@ -263,34 +395,33 @@ fn under_over(
     under: Option<NodeRef<Node>>,
     over: Option<NodeRef<Node>>,
     depth: u16,
-) -> Option<ParseNode> {
-    let base = map_node(base, depth + 1)?;
+) -> ParseNode {
+    let base = map_or_degrade(base, depth + 1);
     if under.is_none()
         && let Some(o) = over
     {
         let t = token_text(o);
-        if let Some(label) = accent_label(&t) {
-            return accent_node(label, base);
+        if let Some(label) = accent_label(&t)
+            && let Some(a) = accent_node(label, base.clone())
+        {
+            return a;
         }
-        if is_top_brace(&t) {
-            return brace_node(base, true);
+        if is_top_brace(&t)
+            && let Some(b) = brace_node(base.clone(), true)
+        {
+            return b;
         }
     }
     if over.is_none()
         && let Some(u) = under
         && is_bottom_brace(&token_text(u))
+        && let Some(b) = brace_node(base.clone(), false)
     {
-        return brace_node(base, false);
+        return b;
     }
-    let sup = match over {
-        Some(o) => Some(map_node(o, depth + 1)?),
-        None => None,
-    };
-    let sub = match under {
-        Some(u) => Some(map_node(u, depth + 1)?),
-        None => None,
-    };
-    Some(sup_sub(base, sup, sub))
+    let sup = over.map(|o| map_or_degrade(o, depth + 1));
+    let sub = under.map(|u| map_or_degrade(u, depth + 1));
+    sup_sub(base, sup, sub)
 }
 
 fn is_top_brace(s: &str) -> bool {
@@ -358,16 +489,21 @@ fn brace_node(base: ParseNode, is_over: bool) -> Option<ParseNode> {
 }
 
 /// `<mfenced>`: a `\left…\right` delimited group, children separated by the `separators` glyph.
-fn fenced(node: NodeRef<Node>, e: &scraper::node::Element, depth: u16) -> Option<ParseNode> {
-    let left = fence_delim(e.attr("open").unwrap_or("("))?;
-    let right = fence_delim(e.attr("close").unwrap_or(")"))?;
-    let sep = e
-        .attr("separators")
-        .and_then(|s| s.chars().find(|c| !c.is_whitespace()))
-        .unwrap_or(',');
+/// An unrecognised delimiter degrades to `.` (an invisible fence) rather than sinking the
+/// equation; an empty `separators=""` means no separators.
+fn fenced(node: NodeRef<Node>, e: &scraper::node::Element, depth: u16) -> ParseNode {
+    let left = fence_delim(e.attr("open").unwrap_or("(")).unwrap_or_else(|| ".".into());
+    let right = fence_delim(e.attr("close").unwrap_or(")")).unwrap_or_else(|| ".".into());
+    // Present-but-empty `separators` → no separator; absent → the default comma.
+    let sep = match e.attr("separators") {
+        Some(s) => s.chars().find(|c| !c.is_whitespace()),
+        None => Some(','),
+    };
     let mut body = Vec::new();
     for (i, &c) in elem_children(node).iter().enumerate() {
-        if i > 0 {
+        if i > 0
+            && let Some(sep) = sep
+        {
             body.push(ParseNode::Atom {
                 mode: Mode::Math,
                 family: AtomFamily::Punct,
@@ -375,24 +511,24 @@ fn fenced(node: NodeRef<Node>, e: &scraper::node::Element, depth: u16) -> Option
                 loc: None,
             });
         }
-        body.push(map_node(c, depth + 1)?);
+        body.push(map_or_degrade(c, depth + 1));
     }
-    Some(ParseNode::LeftRight {
+    ParseNode::LeftRight {
         mode: Mode::Math,
         body,
         left,
         right,
         right_color: None,
         loc: None,
-    })
+    }
 }
 
 /// `<mtable>` → an `Array` node — a matrix, or the outer right|left layout table InDesign
 /// wraps around a display equation. Each `<mtd>` becomes a cell (an empty cell → an empty
 /// group); per-column alignment comes from `columnalign` (a cell's own overrides the table's,
 /// with the last table value repeating per the MathML rule). Delimiters, when present, come
-/// from the surrounding `<mfenced>`. `None` if any cell holds an element we can't map — so the
-/// ladder falls to the publisher raster rather than a partial grid.
+/// from the surrounding `<mfenced>`. `None` only when there are no rows/cells at all — the
+/// caller then degrades (renders whatever children exist).
 fn mtable(node: NodeRef<Node>, e: &scraper::node::Element, depth: u16) -> Option<ParseNode> {
     if depth >= MAX_DEPTH {
         return None;
@@ -419,7 +555,7 @@ fn mtable(node: NodeRef<Node>, e: &scraper::node::Element, depth: u16) -> Option
             if cell.value().as_element().map(|c| local(c.name())) != Some("mtd") {
                 continue;
             }
-            out_row.push(ord(map_children(cell, depth + 1)?));
+            out_row.push(ord(map_children_degraded(cell, depth + 1)));
             if ri == 0 {
                 cell_aligns.push(
                     cell.value()
@@ -480,6 +616,54 @@ fn align_letter(a: &str) -> &'static str {
         "left" => "l",
         "right" => "r",
         _ => "c",
+    }
+}
+
+/// Promote a group that is exactly `OPEN … CLOSE` — a matched pair of delimiter `<mo>`s
+/// (`|`, `‖`, `(`, `[`, …) around *tall* content (a fraction, matrix, radical, or stacked
+/// script) — into a stretchy `\left…\right` so the delimiters grow with the content. Bars
+/// around short content stay literal (avoids over-tall bars); `None` when it doesn't apply.
+fn promote_delims(node: NodeRef<Node>, depth: u16) -> Option<ParseNode> {
+    let kids = elem_children(node);
+    if kids.len() < 3 {
+        return None;
+    }
+    let left = mo_fence(*kids.first()?)?;
+    let right = mo_fence(*kids.last()?)?;
+    let middle = &kids[1..kids.len() - 1];
+    if !middle.iter().any(|&m| is_tall(m)) {
+        return None;
+    }
+    let body = middle
+        .iter()
+        .map(|&m| map_or_degrade(m, depth + 1))
+        .collect();
+    Some(ParseNode::LeftRight {
+        mode: Mode::Math,
+        body,
+        left,
+        right,
+        right_color: None,
+        loc: None,
+    })
+}
+
+/// The engine delimiter form of an `<mo>` whose glyph is a fence character, else `None`.
+fn mo_fence(node: NodeRef<Node>) -> Option<String> {
+    let e = node.value().as_element()?;
+    (local(e.name()) == "mo").then(|| fence_delim(&token_text(node)))?
+}
+
+/// Whether an element renders taller than one line — the trigger for stretchy delimiters.
+fn is_tall(node: NodeRef<Node>) -> bool {
+    match node.value().as_element().map(|e| local(e.name())) {
+        Some(
+            "mfrac" | "mtable" | "msqrt" | "mroot" | "msubsup" | "munderover" | "mover" | "munder",
+        ) => true,
+        Some("mrow" | "mstyle" | "mpadded" | "math" | "mphantom" | "semantics") => {
+            elem_children(node).iter().any(|&c| is_tall(c))
+        }
+        _ => false,
     }
 }
 
@@ -576,6 +760,43 @@ fn symbol_latex(s: &str) -> String {
         "∨" => "\\vee ",
         "⊕" => "\\oplus ",
         "⊗" => "\\otimes ",
+        "⊙" => "\\odot ",
+        "∘" => "\\circ ",
+        "∙" | "•" => "\\bullet ",
+        "⋆" => "\\star ",
+        "†" => "\\dagger ",
+        "‡" => "\\ddagger ",
+        "′" => "'",
+        "″" => "''",
+        "‴" => "'''",
+        "∠" => "\\angle ",
+        "⊥" => "\\perp ",
+        "∣" => "\\mid ",
+        "∥" => "\\parallel ",
+        "←" => "\\leftarrow ",
+        "↔" => "\\leftrightarrow ",
+        "↑" => "\\uparrow ",
+        "↓" => "\\downarrow ",
+        "⇐" => "\\Leftarrow ",
+        "≪" => "\\ll ",
+        "≫" => "\\gg ",
+        "≃" => "\\simeq ",
+        "≐" => "\\doteq ",
+        "≺" => "\\prec ",
+        "≻" => "\\succ ",
+        "⪯" => "\\preceq ",
+        "⪰" => "\\succeq ",
+        "⊤" => "\\top ",
+        "⊢" => "\\vdash ",
+        "⊨" => "\\models ",
+        "⊳" => "\\triangleright ",
+        "⊲" => "\\triangleleft ",
+        "ℓ" => "\\ell ",
+        "ℏ" => "\\hbar ",
+        "ℵ" => "\\aleph ",
+        "℘" => "\\wp ",
+        "ℑ" => "\\Im ",
+        "ℜ" => "\\Re ",
         "ℝ" => "\\mathbb{R}",
         "ℕ" => "\\mathbb{N}",
         "ℤ" => "\\mathbb{Z}",
@@ -759,6 +980,113 @@ mod tests {
         assert!(
             d.contains("Array") && d.contains("\"r\"") && d.contains("\"l\""),
             "right|left column alignment carries into the array: {d}"
+        );
+    }
+
+    // ---- Layer A: robustness ----
+
+    #[test]
+    fn mathvariant_maps_to_font_commands() {
+        // Blackboard/bold variants (pervasive in probability texts: ℝ, bold vectors) must
+        // carry into the engine's font, not render as a plain letter.
+        let bb = nodes_of(MarkupSource::PresentationMathml(
+            r#"<math><mstyle mathvariant="double-struck"><mi>R</mi></mstyle></math>"#.into(),
+        ));
+        assert!(
+            bb.contains("Font") && bb.contains("mathbb"),
+            "double-struck → \\mathbb: {bb}"
+        );
+        let bold = nodes_of(MarkupSource::PresentationMathml(
+            r#"<math><mi mathvariant="bold">v</mi></math>"#.into(),
+        ));
+        assert!(
+            bold.contains("Font") && bold.contains("mathbf"),
+            "bold → \\mathbf: {bold}"
+        );
+    }
+
+    #[test]
+    fn semantics_renders_presentation_and_prefers_tex_annotation() {
+        // A bare <semantics> renders its presentation child (not skipped as annotation).
+        let pres = nodes_of(MarkupSource::PresentationMathml(
+            "<math><semantics><mrow><mi>x</mi></mrow><annotation encoding=\"MathType-MTEF\">BINARY</annotation></semantics></math>".into(),
+        ));
+        assert!(
+            !pres.contains("BINARY"),
+            "the MTEF annotation blob must not leak: {pres}"
+        );
+        // An x-tex annotation is preferred over the presentation tree.
+        let tex = nodes_of(MarkupSource::PresentationMathml(
+            r#"<math><semantics><mn>0</mn><annotation encoding="application/x-tex">\frac{1}{2}</annotation></semantics></math>"#.into(),
+        ));
+        assert!(
+            tex.contains("GenFrac"),
+            "the application/x-tex LaTeX annotation is used: {tex}"
+        );
+    }
+
+    #[test]
+    fn invisible_operators_are_dropped() {
+        // U+2061 function-application (MathType inserts it before an argument) carries no ink.
+        let d = nodes_of(MarkupSource::PresentationMathml(
+            "<math><mi>P</mi><mo>\u{2061}</mo><mi>A</mi></math>".into(),
+        ));
+        assert!(
+            !d.contains('\u{2061}'),
+            "the invisible operator must not reach the tree: {d}"
+        );
+        assert!(is_invisible_op("\u{2062}"), "invisible-times recognised");
+    }
+
+    #[test]
+    fn mphantom_is_invisible() {
+        let d = nodes_of(MarkupSource::PresentationMathml(
+            "<math><mphantom><mi>x</mi></mphantom></math>".into(),
+        ));
+        assert!(
+            d.contains("Phantom"),
+            "mphantom → an invisible Phantom node: {d}"
+        );
+    }
+
+    #[test]
+    fn unknown_element_degrades_to_its_children_not_none() {
+        // An element we don't map (mmultiscripts) must not sink the equation — render its
+        // children so the equation still typesets instead of falling to the raster.
+        let d = to_nodes(&MarkupSource::PresentationMathml(
+            "<math><mmultiscripts><mi>X</mi><mn>1</mn><none/></mmultiscripts></math>".into(),
+        ));
+        assert!(d.is_some(), "unknown element degrades, not None");
+    }
+
+    #[test]
+    fn tall_bars_promote_to_stretchy_delimiters() {
+        // ‖dx/dy‖ / |frac|: bars around tall content grow via \left…\right.
+        let tall = nodes_of(MarkupSource::PresentationMathml(
+            "<math><mo>|</mo><mfrac><mi>a</mi><mi>b</mi></mfrac><mo>|</mo></math>".into(),
+        ));
+        assert!(
+            tall.contains("LeftRight") && tall.contains("GenFrac"),
+            "bars around a fraction stretch: {tall}"
+        );
+        // Short content keeps literal bars (no over-tall delimiters).
+        let short = nodes_of(MarkupSource::PresentationMathml(
+            "<math><mo>|</mo><mi>x</mi><mo>|</mo></math>".into(),
+        ));
+        assert!(
+            !short.contains("LeftRight"),
+            "bars around a single symbol stay literal: {short}"
+        );
+    }
+
+    #[test]
+    fn mfenced_empty_separators_inserts_none() {
+        let d = nodes_of(MarkupSource::PresentationMathml(
+            r#"<math><mfenced open="(" close=")" separators=""><mi>x</mi><mi>y</mi></mfenced></math>"#.into(),
+        ));
+        assert!(
+            d.contains("LeftRight") && !d.contains("text: \",\""),
+            "separators=\"\" → no comma between children: {d}"
         );
     }
 }
