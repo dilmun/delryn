@@ -163,17 +163,17 @@ mod tests {
 
     #[test]
     fn unmapped_markup_falls_to_the_picture() {
-        // <mtable> isn't mapped → typeset fails → the ladder shows the publisher picture.
+        // Content MathML isn't mapped yet → typeset fails → the ladder shows the publisher picture.
         let it = item(
-            Some(MarkupSource::PresentationMathml(
-                "<math><mtable><mtr><mtd><mn>1</mn></mtd></mtr></mtable></math>".into(),
+            Some(MarkupSource::ContentMathml(
+                "<math><apply><ci>x</ci></apply></math>".into(),
             )),
             Some(PictureRef {
                 src: "eq.png".into(),
                 size: PictureSize::Em(3.0),
                 data: Vec::new(),
             }),
-            "table",
+            "x",
         );
         match render(&it, 40, |src| (src == "eq.png").then(|| vec![1, 2, 3, 4])) {
             Rendered::Picture { png, size } => {
@@ -208,15 +208,15 @@ mod tests {
         // The loader resolves a typeset-able equation's picture onto the ref; an unmapped
         // markup then falls back to those bytes even with a no-op resolver.
         let it = item(
-            Some(MarkupSource::PresentationMathml(
-                "<math><mtable><mtr><mtd><mn>1</mn></mtd></mtr></mtable></math>".into(),
+            Some(MarkupSource::ContentMathml(
+                "<math><apply><ci>x</ci></apply></math>".into(),
             )),
             Some(PictureRef {
                 src: "eq.png".into(),
                 size: PictureSize::Em(2.0),
                 data: vec![9, 8, 7],
             }),
-            "table",
+            "x",
         );
         match render(&it, 40, |_| None) {
             Rendered::Picture { png, size } => {

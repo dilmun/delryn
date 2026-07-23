@@ -10,7 +10,7 @@
 //!   render ladder falls to the publisher picture, then text.
 
 use ego_tree::NodeRef;
-use ratex_parser::parse_node::{AtomFamily, Mode, ParseNode};
+use ratex_parser::parse_node::{AlignSpec, AlignType, AtomFamily, Mode, ParseNode};
 use ratex_parser::parser::parse;
 use scraper::{Html, Node};
 
@@ -199,6 +199,9 @@ fn map_node(node: NodeRef<Node>, depth: u16) -> Option<ParseNode> {
             loc: None,
         }),
         "mfenced" => fenced(node, e, depth),
+        // A grid: matrices, and the outer right|left layout table InDesign wraps every
+        // display equation in. Delimiters, when present, come from a surrounding `<mfenced>`.
+        "mtable" => mtable(node, e, depth),
         // A spacing element → a small gap (so a `, y > 0` annotation doesn't jam). Never
         // fails: an unsupported `<mspace>` must not sink the whole equation to the raster.
         "mspace" => Some(leaf("\\;").unwrap_or_else(|| ord(Vec::new()))),
@@ -379,6 +382,102 @@ fn fenced(node: NodeRef<Node>, e: &scraper::node::Element, depth: u16) -> Option
     })
 }
 
+/// `<mtable>` → an `Array` node — a matrix, or the outer right|left layout table InDesign
+/// wraps around a display equation. Each `<mtd>` becomes a cell (an empty cell → an empty
+/// group); per-column alignment comes from `columnalign` (a cell's own overrides the table's,
+/// with the last table value repeating per the MathML rule). Delimiters, when present, come
+/// from the surrounding `<mfenced>`. `None` if any cell holds an element we can't map — so the
+/// ladder falls to the publisher raster rather than a partial grid.
+fn mtable(node: NodeRef<Node>, e: &scraper::node::Element, depth: u16) -> Option<ParseNode> {
+    if depth >= MAX_DEPTH {
+        return None;
+    }
+    let rows: Vec<NodeRef<Node>> = elem_children(node)
+        .into_iter()
+        .filter(|r| {
+            r.value()
+                .as_element()
+                .is_some_and(|el| local(el.name()) == "mtr")
+        })
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+
+    let mut body: Vec<Vec<ParseNode>> = Vec::with_capacity(rows.len());
+    let mut ncols = 0usize;
+    // The first row's per-cell `columnalign` seeds each column's alignment.
+    let mut cell_aligns: Vec<Option<String>> = Vec::new();
+    for (ri, &row) in rows.iter().enumerate() {
+        let mut out_row = Vec::new();
+        for &cell in elem_children(row).iter() {
+            if cell.value().as_element().map(|c| local(c.name())) != Some("mtd") {
+                continue;
+            }
+            out_row.push(ord(map_children(cell, depth + 1)?));
+            if ri == 0 {
+                cell_aligns.push(
+                    cell.value()
+                        .as_element()
+                        .and_then(|c| c.attr("columnalign"))
+                        .map(str::to_string),
+                );
+            }
+        }
+        ncols = ncols.max(out_row.len());
+        body.push(out_row);
+    }
+    if ncols == 0 {
+        return None;
+    }
+
+    let table_aligns: Vec<&str> = e
+        .attr("columnalign")
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect();
+    let cols = (0..ncols)
+        .map(|c| {
+            let a = cell_aligns
+                .get(c)
+                .and_then(Option::as_deref)
+                .or_else(|| table_aligns.get(c).or_else(|| table_aligns.last()).copied())
+                .unwrap_or("center");
+            AlignSpec {
+                align_type: AlignType::Align,
+                align: Some(align_letter(a).to_string()),
+                pregap: None,
+                postgap: None,
+            }
+        })
+        .collect();
+
+    Some(ParseNode::Array {
+        mode: Mode::Math,
+        body,
+        row_gaps: Vec::new(),
+        hlines_before_row: Vec::new(),
+        cols: Some(cols),
+        col_separation_type: None,
+        hskip_before_and_after: None,
+        add_jot: None,
+        arraystretch: 1.0,
+        tags: None,
+        leqno: None,
+        is_cd: None,
+        loc: None,
+    })
+}
+
+/// The engine's one-letter column alignment for a MathML `columnalign` token.
+fn align_letter(a: &str) -> &'static str {
+    match a.trim() {
+        "left" => "l",
+        "right" => "r",
+        _ => "c",
+    }
+}
+
 /// The engine delimiter form of a fence character (`{` → `\{`, `⟨` → `\langle`); `None` for
 /// an unrecognised one so the equation falls back rather than mis-render.
 fn fence_delim(s: &str) -> Option<String> {
@@ -431,6 +530,8 @@ fn symbol_latex(s: &str) -> String {
         "÷" => "\\div ",
         "∗" => "\\ast ",
         "⋯" => "\\cdots ",
+        "⋮" => "\\vdots ",
+        "⋱" => "\\ddots ",
         "…" => "\\ldots ",
         "≠" => "\\ne ",
         "≤" | "⩽" => "\\le ",
@@ -601,17 +702,48 @@ mod tests {
     }
 
     #[test]
-    fn unmapped_and_content_fall_back_to_none() {
-        assert!(
-            to_nodes(&MarkupSource::PresentationMathml(
-                "<math><mtable><mtr><mtd><mn>1</mn></mtd></mtr></mtable></math>".into()
-            ))
-            .is_none(),
-            "mtable is deferred → None (render falls to the picture)"
-        );
+    fn content_mathml_falls_back_to_none() {
         assert!(
             to_nodes(&MarkupSource::ContentMathml("<math><apply/></math>".into())).is_none(),
             "content MathML not yet mapped → None"
+        );
+    }
+
+    #[test]
+    fn mtable_builds_a_real_array() {
+        // A 2×2 matrix inside stretchy parens — the delimiters come from the `<mfenced>`, the
+        // grid from the `<mtable>`. Must typeset (an `Array` in a `LeftRight`), not raster.
+        let d = nodes_of(MarkupSource::PresentationMathml(
+            r#"<math><mfenced open="(" close=")" separators=""><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable></mfenced></math>"#.into(),
+        ));
+        assert!(
+            d.contains("Array") && d.contains("LeftRight"),
+            "matrix → an Array inside a stretchy delimiter group: {d}"
+        );
+    }
+
+    #[test]
+    fn mtable_empty_cells_and_dots_do_not_fail() {
+        // Matrices carry blank cells (`<mtd/>`) and `⋮`/`⋱` fillers — none may sink the grid.
+        let d = nodes_of(MarkupSource::PresentationMathml(
+            "<math><mtable><mtr><mtd><mn>1</mn></mtd><mtd/></mtr><mtr><mtd><mo>⋮</mo></mtd><mtd><mo>⋱</mo></mtd></mtr></mtable></math>".into(),
+        ));
+        assert!(
+            d.contains("Array"),
+            "blank cells and dots still build an array: {d}"
+        );
+    }
+
+    #[test]
+    fn mtable_per_column_alignment_from_columnalign() {
+        // The outer right|left layout table InDesign wraps a display equation in: the first
+        // cell's `columnalign` seeds the right column, the table default seeds the rest.
+        let d = nodes_of(MarkupSource::PresentationMathml(
+            r#"<math><mtable columnalign="left"><mtr><mtd columnalign="right"><mi>y</mi></mtd><mtd><mo>=</mo><mi>x</mi></mtd></mtr></mtable></math>"#.into(),
+        ));
+        assert!(
+            d.contains("Array") && d.contains("\"r\"") && d.contains("\"l\""),
+            "right|left column alignment carries into the array: {d}"
         );
     }
 }
