@@ -805,7 +805,10 @@ mod tests {
         ENABLED.store(true, Ordering::Relaxed);
         profile_equation_images(&mut blocks, 0);
         let ink = |b: &Block| matches!(b, Block::Image { ink: Some(_), .. });
-        assert!(ink(&blocks[0]), "uncaptioned publisher equation is profiled");
+        assert!(
+            ink(&blocks[0]),
+            "uncaptioned publisher equation is profiled"
+        );
         assert!(
             ink(&blocks[1]),
             "publisher math image (real src) is profiled"

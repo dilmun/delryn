@@ -222,7 +222,11 @@ fn springer_table_caption_is_one_line_not_two_stacked_paras() {
                 if spans.iter().map(|s| s.text.as_str()).collect::<String>().contains("Table 3."))
         })
         .collect();
-    assert_eq!(caps.len(), 1, "number + title collapse to a single caption block");
+    assert_eq!(
+        caps.len(),
+        1,
+        "number + title collapse to a single caption block"
+    );
     let Block::Para { spans, .. } = caps[0] else {
         unreachable!()
     };
