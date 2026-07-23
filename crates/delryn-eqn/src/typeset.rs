@@ -149,9 +149,14 @@ fn map_node(node: NodeRef<Node>, depth: u16) -> Option<ParseNode> {
         }
         "mtext" | "ms" => {
             let t = token_text(node);
-            (!t.is_empty())
-                .then(|| leaf(&format!("\\text{{{}}}", escape_text(&t))))
-                .flatten()
+            if t.is_empty() {
+                // An empty or whitespace-only `<mtext>` is a spacing gap — publishers use one
+                // between words (`for` ⋯ `y`). A small space, never `None`: it must not sink
+                // the whole equation to the raster.
+                Some(leaf("\\;").unwrap_or_else(|| ord(Vec::new())))
+            } else {
+                leaf(&format!("\\text{{{}}}", escape_text(&t)))
+            }
         }
         "mfrac" if kids.len() >= 2 => Some(ParseNode::GenFrac {
             mode: Mode::Math,
@@ -635,6 +640,16 @@ mod tests {
             "the empty stretchy `|` fence maps to a delimiter group: {d}"
         );
         assert!(d.contains("GenFrac"), "the fraction still maps: {d}");
+    }
+
+    #[test]
+    fn empty_mtext_gap_does_not_fail_the_equation() {
+        // Publishers drop an empty/whitespace `<mtext>` between words (`for` ⋯ `y`) as a
+        // spacing gap — it must map to a space, not sink the whole equation to the raster.
+        let d = nodes_of(MarkupSource::PresentationMathml(
+            "<math><mtext>for</mtext><mtext></mtext><mi>y</mi></math>".into(),
+        ));
+        assert!(d.contains("Text"), "the `for` text still maps: {d}");
     }
 
     #[test]
