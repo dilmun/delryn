@@ -199,9 +199,19 @@ fn map_node(node: NodeRef<Node>, depth: u16) -> Option<ParseNode> {
             loc: None,
         }),
         "mfenced" => fenced(node, e, depth),
+        // A spacing element → a small gap (so a `, y > 0` annotation doesn't jam). Never
+        // fails: an unsupported `<mspace>` must not sink the whole equation to the raster.
+        "mspace" => Some(leaf("\\;").unwrap_or_else(|| ord(Vec::new()))),
         "mrow" | "math" | "mstyle" | "mpadded" | "mphantom" => {
             let body = map_children(node, depth + 1)?;
-            (!body.is_empty()).then(|| normalize(ord(body)))
+            // An empty group maps to an empty ord, not `None` — publishers use an empty
+            // `<mrow/>` inside a fence for a lone stretchy bar (InDesign renders `|dx/dy|` as
+            // `[|][frac][|]`), and that must not fail the equation.
+            Some(if body.is_empty() {
+                ord(body)
+            } else {
+                normalize(ord(body))
+            })
         }
         // <mtable> and anything else unmapped → fall back to the picture/text.
         _ => None,
@@ -509,6 +519,21 @@ mod tests {
 
     fn nodes_of(src: MarkupSource) -> String {
         format!("{:?}", to_nodes(&src).expect("maps"))
+    }
+
+    #[test]
+    fn mspace_and_empty_fence_do_not_fail_the_equation() {
+        // InDesign/MathType ships a stretchy `|` as an *empty* `<mfenced>`, and uses
+        // `<mspace>` for annotation gaps (`, y > 0`). Neither may sink the whole equation to
+        // the publisher raster — both must map so the equation typesets (crisp, prose-sized).
+        let d = nodes_of(MarkupSource::PresentationMathml(
+            r#"<math><mstyle mathsize="2em"><mfenced open="|" close="" separators=""><mrow/></mfenced></mstyle><mfrac><mrow><mi>d</mi><mi>x</mi></mrow><mrow><mi>d</mi><mi>y</mi></mrow></mfrac><mspace width="1em"/><mi>y</mi></math>"#.into(),
+        ));
+        assert!(
+            d.contains("LeftRight"),
+            "the empty stretchy `|` fence maps to a delimiter group: {d}"
+        );
+        assert!(d.contains("GenFrac"), "the fraction still maps: {d}");
     }
 
     #[test]
