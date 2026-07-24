@@ -807,6 +807,60 @@ fn imagewrap_div_with_caption_class_merges() {
 }
 
 #[test]
+fn image_paragraph_becomes_a_block_figure_with_caption() {
+    // The InDesign/Calibre block-figure shape (Blitzstein *Intro to Probability* et al.):
+    // a bare `<img alt="Image">` alone in a `<p class="image">`, followed by a separate
+    // `<p class="figcaption">`. No `<figure>` wrapper. The image must become a block figure
+    // (sized to the column) — not an inline picture drawn mid-line at text height (which
+    // rendered a full-page figure as a tiny thumbnail) — and the caption must attach to it.
+    let blocks = parse_blocks(
+        r##"<html><body>
+        <p class="noindentt">plotted in <a href="#fig8_9">Figure 8.9</a>.</p>
+        <p class="image"><a id="fig8_9"/><img alt="Image" src="../images/fig8_9.jpg"/></p>
+        <p class="figcaption"><b>FIGURE 8.9</b><br/>Hybrid joint distribution of Y.</p>
+        </body></html>"##,
+    );
+    let (src, caption) = first_captioned_image(&blocks).expect("a block figure image");
+    assert_eq!(src, "../images/fig8_9.jpg");
+    assert!(
+        caption.starts_with("FIGURE 8.9"),
+        "caption attaches to the block figure: {caption:?}"
+    );
+    // The figure must NOT be an inline picture inside a paragraph (the tiny-thumbnail bug):
+    // no Para should carry the inline-picture placeholder, and the caption isn't left stray.
+    assert!(
+        !blocks.iter().any(|b| matches!(b, Block::Para { spans, .. }
+            if spans.iter().any(|s| matches!(&s.math, Some(delryn_model::SpanMath::Picture { .. }))))),
+        "figure is a block image, not an inline picture: {blocks:?}"
+    );
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Image { .. }))
+            .count(),
+        1,
+        "exactly one block image: {blocks:?}"
+    );
+}
+
+#[test]
+fn inline_image_amid_prose_stays_inline() {
+    // An image *with* surrounding text in the same paragraph is a genuine inline
+    // symbol/equation and must stay inline — only a *lone* image paragraph promotes.
+    let blocks = parse_blocks(
+        r#"<html><body><p>the value <img alt="" src="../images/eq1.jpg"/> is small.</p></body></html>"#,
+    );
+    assert!(
+        !blocks.iter().any(|b| matches!(b, Block::Image { .. })),
+        "an image amid prose is not promoted to a block figure: {blocks:?}"
+    );
+    assert!(
+        blocks.iter().any(|b| matches!(b, Block::Para { .. })),
+        "the prose paragraph survives: {blocks:?}"
+    );
+}
+
+#[test]
 fn icon_images_become_glyphs_not_labels() {
     // Dummies-style marker icons render as a symbol, not "[tip]"/"[check]".
     let blocks = parse_blocks(

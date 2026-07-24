@@ -627,10 +627,53 @@ fn inline_spans(node: NodeRef<Node>) -> Vec<Span> {
     spans
 }
 
+/// The single real (figure) image when a block's *only* meaningful content is that
+/// image — an "image paragraph" (`<p class="image"><img/></p>`, the common
+/// InDesign/Calibre shape for a block figure not wrapped in `<figure>`). Such a
+/// figure must render block-level (sized to the column), not as an inline picture
+/// drawn mid-line at text height — the bug that shrank captioned figures to a
+/// thumbnail. `None` when the block has visible text, math, or more than one image,
+/// so an image *amid* prose (a genuine inline symbol) stays inline. Anchors
+/// (`<a id="fig…">`) and whitespace are ignored.
+fn sole_figure_image<'a>(node: NodeRef<'a, Node>) -> Option<&'a scraper::node::Element> {
+    let mut img = None;
+    for d in node.descendants() {
+        match d.value() {
+            Node::Text(t) if !t.text.trim().is_empty() => return None,
+            Node::Element(e) if matches!(e.name(), "img" | "image") => {
+                if img.is_some() || !is_real_image(e) {
+                    return None; // a second image, or a math/icon image → not a lone figure
+                }
+                img = Some(e);
+            }
+            // An image sitting beside math (a labelled equation) is not a plain figure.
+            Node::Element(e) if e.name() == "math" => return None,
+            _ => {}
+        }
+    }
+    img
+}
+
 /// Emit a paragraph from an element's inline content (with math exponent fix-up),
 /// dropping it if there's no visible text. List markers are attached separately
 /// by [`list_item`].
 fn emit_paragraph(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
+    // A paragraph that is *only* a figure image (`<p class="image"><img/></p>`)
+    // renders as a block figure, not an inline picture: promote it to a `Block::Image`
+    // so the block sizer treats it as a column-width figure (and `attach_trailing_captions`
+    // can pick up a following "Figure N …" caption paragraph).
+    if let Some(img) = sole_figure_image(node) {
+        out.push(Block::Image {
+            src: img_src(img).unwrap_or_default(),
+            alt: img.attr("alt").unwrap_or("").to_string(),
+            data: Vec::new(),
+            caption: Vec::new(),
+            math: false,
+            width: parse_img_width(img.attr("width"), img.attr("style")),
+            ink: None,
+        });
+        return;
+    }
     let mut spans = inline_spans(node);
     if spans.iter().any(|s| !s.text.trim().is_empty()) {
         superscript_math_exponents(&mut spans);
