@@ -45,7 +45,18 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let math_on = config.graphical_math && images.is_some();
     let inline_math_on = math_on && config.graphical_inline_math;
     let cell_h = images.map(|(p, _)| p.font_size().height).unwrap_or(20);
-    reader.sync_graphical_math(math_on, inline_math_on, cell_h, config.math_scale);
+    // The text-column width in px = the last wrap width (cells) × the cell width — the budget a
+    // too-wide display equation breaks to when `break_wide_equations` is on.
+    let cell_w = images.map(|(p, _)| p.font_size().width).unwrap_or(10);
+    let wrap_px = (reader.last_measure as u32).saturating_mul(u32::from(cell_w));
+    reader.sync_graphical_math(
+        math_on,
+        inline_math_on,
+        cell_h,
+        config.math_scale,
+        config.break_wide_equations,
+        wrap_px,
+    );
     let theme = config.theme;
     reader.code_theme = theme.code_syntect().to_string();
     reader.line_spacing = config.line_spacing;

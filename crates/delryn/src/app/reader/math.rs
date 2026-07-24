@@ -100,6 +100,25 @@ static INLINE_ENABLED: AtomicBool = AtomicBool::new(false);
 /// shows at a text-relative type size — delryn-media shows math at native px.
 static EM_PX: AtomicU32 = AtomicU32::new(0);
 
+/// Whether a display equation wider than the text column is **broken** into stacked lines
+/// (the default) rather than scaled down to fit. Read on every decoded section.
+static BREAK_WIDE: AtomicBool = AtomicBool::new(true);
+
+/// The text-column width in px (`0` = unset) — the budget a broken display equation wraps to.
+/// Updated silently on resize (no re-decode); the layout still scales any residual-wide line to
+/// fit, and the next section load re-breaks at the new width.
+static WRAP_PX: AtomicU32 = AtomicU32::new(0);
+
+/// The max display-equation width (em) to break at, or `None` when breaking is off or the
+/// column width isn't known yet — then a single raster is rendered and the layout scales it.
+fn max_display_em(em_px: u32) -> Option<f32> {
+    if !BREAK_WIDE.load(Ordering::Relaxed) || em_px == 0 {
+        return None;
+    }
+    let wrap = WRAP_PX.load(Ordering::Relaxed);
+    (wrap > 0).then(|| wrap as f32 / em_px as f32)
+}
+
 /// The em size in px to rasterise *inline* equations at (`0` = unset). Fixed at a
 /// small multiple of the cell height (independent of the `math_scale` knob — inline
 /// math tracks the surrounding text, always drawn one cell tall); oversampled so the
@@ -163,7 +182,7 @@ pub(crate) fn convert_math_blocks(blocks: &mut [Block]) {
         // kept as a fallback (the loader resolved its bytes onto the ref) — ink-sized like any
         // publisher equation; else it stays `Block::Math` and centres its Unicode floor —
         // never blank.
-        match delryn_eqn::render(item, em_px, |_| None) {
+        match delryn_eqn::render_wrapped(item, em_px, max_display_em(em_px), |_| None) {
             delryn_eqn::Rendered::Typeset(raster) => {
                 *b = Block::Image {
                     src: String::new(),
@@ -485,7 +504,15 @@ impl Reader {
     /// the built-in size). When the effective state changes (startup, toggle, size, or
     /// a cell-size change) the open sections are re-decoded so equations switch /
     /// resize live, without reopening.
-    pub fn sync_graphical_math(&mut self, on: bool, inline_on: bool, cell_h: u16, scale_pct: u16) {
+    pub fn sync_graphical_math(
+        &mut self,
+        on: bool,
+        inline_on: bool,
+        cell_h: u16,
+        scale_pct: u16,
+        break_wide: bool,
+        wrap_px: u32,
+    ) {
         let em = display_em_px(cell_h, scale_pct);
         let inline_em = inline_em_px(cell_h);
         // Update ALL atomics unconditionally, then OR the results: a `||` between the
@@ -496,9 +523,18 @@ impl Reader {
         let inline_enabled_changed = INLINE_ENABLED.swap(inline_on, Ordering::Relaxed) != inline_on;
         let em_changed = EM_PX.swap(em, Ordering::Relaxed) != em;
         let inline_em_changed = INLINE_EM_PX.swap(inline_em, Ordering::Relaxed) != inline_em;
+        let break_changed = BREAK_WIDE.swap(break_wide, Ordering::Relaxed) != break_wide;
+        // The wrap width updates silently: a resize must NOT re-decode every section (only the
+        // layout re-fits); the new width takes effect as sections next load (per the chosen
+        // simple-resize model).
+        WRAP_PX.store(wrap_px, Ordering::Relaxed);
         // Only reflowable docs have math to (un)convert; never drop a paged doc's
         // rasterized-page cache (it would blank the page and force a reload).
-        if (enabled_changed || inline_enabled_changed || em_changed || inline_em_changed)
+        if (enabled_changed
+            || inline_enabled_changed
+            || em_changed
+            || inline_em_changed
+            || break_changed)
             && !self.is_paged_image()
         {
             self.invalidate_sections();

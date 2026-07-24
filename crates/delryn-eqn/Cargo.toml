@@ -19,3 +19,5 @@ ratex-render.workspace = true
 ratex-types.workspace = true
 # Kitty graphics delivery: chunked base64 image transmits.
 base64.workspace = true
+# Compositing broken display equations: decode the per-line PNGs from RaTeX and stack them.
+image.workspace = true

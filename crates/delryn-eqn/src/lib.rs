@@ -21,6 +21,6 @@ pub use delryn_model::{MarkupSource, MathItem, PictureRef, PictureSize};
 
 pub use delivery::{Deck, Target};
 pub use detect::detect;
-pub use render::{Raster, Rendered, render};
+pub use render::{Raster, Rendered, render, render_wrapped};
 pub use sizing::{Cell, Placement, em_text_px, fit_columns, size_picture, size_typeset};
 pub use typeset::to_nodes;
