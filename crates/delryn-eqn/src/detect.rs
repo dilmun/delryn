@@ -18,7 +18,9 @@ pub fn detect(node: NodeRef<Node>) -> Option<MathItem> {
     let is_math = match name {
         "math" => true,
         "img" | "image" => is_math_img(node, el),
-        _ => is_mjx_container(el) || has_role_math(el),
+        // A MathJax v2 frame (`class="MathJax_CHTML"` + `data-mathml`) matches none of the
+        // `mjx-*`/role checks, so key off the recoverable payload itself.
+        _ => is_mjx_container(el) || has_role_math(el) || has_data_mathml(el),
     };
     if !is_math {
         return None;
@@ -68,11 +70,35 @@ fn local(name: &str) -> &str {
 }
 
 /// Whether an `<img>`/`<image>` carries math (vs being a figure): a math-shaped `alt`, a
-/// math class on it or an ancestor, or a trailing MathML/LaTeX comment.
+/// math class on it or an ancestor, a trailing MathML/LaTeX comment, or an `aria-describedby`
+/// pointing at a hidden `<math>`.
 fn is_math_img(node: NodeRef<Node>, el: &scraper::node::Element) -> bool {
     el.attr("alt").is_some_and(looks_like_math)
         || has_math_class(node)
         || trailing_math_comment(node).is_some()
+        || describes_math(node, el)
+}
+
+/// Whether an element carries a `data-mathml` payload (MathJax v2).
+fn has_data_mathml(el: &scraper::node::Element) -> bool {
+    el.attr("data-mathml")
+        .is_some_and(|d| d.contains("<math") || d.contains(":math"))
+}
+
+/// Whether the element's `aria-describedby` resolves to a hidden element holding `<math>`.
+/// Gated on the attribute so the document scan only runs when it's actually present.
+fn describes_math(node: NodeRef<Node>, el: &scraper::node::Element) -> bool {
+    el.attr("aria-describedby").is_some_and(|ids| {
+        ids.split_whitespace().any(|id| {
+            find_by_id(node, id).is_some_and(|t| {
+                t.descendants().any(|d| {
+                    d.value()
+                        .as_element()
+                        .is_some_and(|e| local(e.name()) == "math")
+                })
+            })
+        })
+    })
 }
 
 /// A MathJax container: the `<mjx-container>` element or anything classed `mjx-*`.
@@ -144,14 +170,21 @@ fn harvest_authored_latex(node: NodeRef<Node>, el: &scraper::node::Element) -> O
     None
 }
 
-/// The text of a TeX `<annotation encoding="application/x-tex|application/x-latex">`.
+/// The authored TeX for this occurrence: a TeX `<annotation encoding="application/x-tex|
+/// application/x-latex">` (MathML/MathType), or a JATS `<tex-math>` element (Elsevier).
 fn annotation_tex(node: NodeRef<Node>) -> Option<String> {
     for d in node.descendants() {
-        if let Some(e) = d.value().as_element()
-            && local(e.name()) == "annotation"
-            && e.attr("encoding")
-                .is_some_and(|enc| enc.contains("x-tex") || enc.contains("x-latex"))
-        {
+        let Some(e) = d.value().as_element() else {
+            continue;
+        };
+        let is_tex = match local(e.name()) {
+            "annotation" => e
+                .attr("encoding")
+                .is_some_and(|enc| enc.contains("x-tex") || enc.contains("x-latex")),
+            "tex-math" => true, // JATS `<tex-math>` carries LaTeX directly.
+            _ => false,
+        };
+        if is_tex {
             let t = descendant_text(d);
             if !t.trim().is_empty() {
                 return Some(t.trim().to_string());
@@ -181,6 +214,17 @@ fn harvest_mathml(node: NodeRef<Node>) -> Option<String> {
     {
         return Some(alt.to_string());
     }
+    // MathJax v2 stores the serialized Presentation MathML in a `data-mathml` attribute on
+    // the frame element (HTML-escaped in source; the parser has already unescaped it, so the
+    // attribute value is real markup). Recover it before falling to the visual span soup.
+    for d in node.descendants() {
+        if let Some(e) = d.value().as_element()
+            && let Some(dm) = e.attr("data-mathml").map(str::trim)
+            && (dm.contains("<math") || dm.contains(":math"))
+        {
+            return Some(dm.to_string());
+        }
+    }
     // A <math> anywhere in the subtree (assistive-mml, hidden div, switch branch).
     for d in node.descendants() {
         if d.value()
@@ -188,6 +232,26 @@ fn harvest_mathml(node: NodeRef<Node>) -> Option<String> {
             .is_some_and(|e| local(e.name()) == "math")
         {
             return serialize(d);
+        }
+    }
+    // An image `aria-describedby` a hidden element that holds the `<math>` (the EPUB
+    // accessibility pattern). Resolve the id anywhere in the document; gated on the attribute
+    // so the tree scan only runs when it's actually present.
+    if let Some(ids) = node
+        .value()
+        .as_element()
+        .and_then(|e| e.attr("aria-describedby"))
+    {
+        for id in ids.split_whitespace() {
+            if let Some(target) = find_by_id(node, id)
+                && let Some(m) = target.descendants().find(|d| {
+                    d.value()
+                        .as_element()
+                        .is_some_and(|e| local(e.name()) == "math")
+                })
+            {
+                return serialize(m);
+            }
         }
     }
     // A <math> in a following sibling's subtree (image + adjacent hidden MathML).
@@ -202,6 +266,16 @@ fn harvest_mathml(node: NodeRef<Node>) -> Option<String> {
     }
     // A trailing HTML comment carrying MathML (Wiley / For-Dummies).
     trailing_math_comment(node)
+}
+
+/// The element with `id == id` anywhere in the document, or `None`. Walks from the tree root,
+/// so it resolves an `aria-describedby` target that lives outside this occurrence's subtree.
+fn find_by_id<'a>(node: NodeRef<'a, Node>, id: &str) -> Option<NodeRef<'a, Node>> {
+    node.tree().root().descendants().find(|d| {
+        d.value()
+            .as_element()
+            .is_some_and(|e| e.attr("id") == Some(id))
+    })
 }
 
 /// The MathML/LaTeX source in the nearest trailing HTML comment (skipping whitespace),
@@ -596,5 +670,49 @@ mod tests {
             "MathML floor is transcribed: {:?}",
             mathml.text
         );
+    }
+
+    #[test]
+    fn mathjax_v2_data_mathml_is_harvested() {
+        // MathJax v2 frame: visible spans, the recoverable MathML in `data-mathml` (the parser
+        // unescapes the attribute). The `MathJax_CHTML` class matches no `mjx-*`/role check, so
+        // the payload itself must gate detection.
+        let item = detect_first(
+            r#"<span class="MathJax_CHTML" data-mathml="<math><mfrac><mn>1</mn><mn>2</mn></mfrac></math>"><span class="mjx-chtml">soup</span></span>"#,
+            "span.MathJax_CHTML",
+        )
+        .expect("v2 frame is math");
+        assert!(
+            matches!(item.typeset, Some(MarkupSource::PresentationMathml(ref s)) if s.contains("mfrac")),
+            "harvested data-mathml: {:?}",
+            item.typeset
+        );
+    }
+
+    #[test]
+    fn jats_tex_math_is_recovered() {
+        // Elsevier/JATS: a `<tex-math>` element carries the LaTeX directly.
+        let item = detect_first(
+            r#"<math><semantics><mi>x</mi><tex-math>x^2</tex-math></semantics></math>"#,
+            "math",
+        )
+        .expect("math");
+        assert_eq!(item.typeset, Some(MarkupSource::Latex("x^2".to_string())));
+    }
+
+    #[test]
+    fn aria_describedby_hidden_math_is_harvested() {
+        // Accessibility pattern: an image described by a hidden <math> elsewhere in the doc.
+        let item = detect_first(
+            r#"<div><img src="eq.png" alt="one half" aria-describedby="m1"/><div id="m1" hidden><math><mfrac><mn>1</mn><mn>2</mn></mfrac></math></div></div>"#,
+            "img",
+        )
+        .expect("image described by hidden math");
+        assert!(
+            matches!(item.typeset, Some(MarkupSource::PresentationMathml(ref s)) if s.contains("mfrac")),
+            "resolved the aria-describedby math: {:?}",
+            item.typeset
+        );
+        assert_eq!(item.picture.expect("keeps the picture").src, "eq.png");
     }
 }
