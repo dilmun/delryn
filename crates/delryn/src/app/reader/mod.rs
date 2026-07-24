@@ -1512,11 +1512,11 @@ mod tests {
 
         // The knob only enlarges from the 100% floor, so compare the floor against a
         // larger setting (inline rasterising left off — irrelevant to display math).
-        r.sync_graphical_math(true, false, 16, 100);
+        r.sync_graphical_math(true, false, 16, 100, false, 0);
         let small = dims(&mut r);
-        r.sync_graphical_math(true, false, 16, 200);
+        r.sync_graphical_math(true, false, 16, 200, false, 0);
         let big = dims(&mut r);
-        r.sync_graphical_math(false, false, 16, 100); // reset ENABLED so it doesn't leak
+        r.sync_graphical_math(false, false, 16, 100, false, 0); // reset ENABLED so it doesn't leak
         let _ = std::fs::remove_dir_all(&tmp);
 
         assert!(

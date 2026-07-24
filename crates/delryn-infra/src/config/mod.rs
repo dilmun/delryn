@@ -277,6 +277,11 @@ pub struct Config {
     /// than the surrounding text — and the knob only enlarges from there. One knob
     /// governs *all* display equations, rendered LaTeX and publisher rasters alike.
     pub math_scale: u16,
+    /// Break a display equation that is wider than the text column into stacked lines (at its
+    /// top-level relations/operators, continuation lines indented to the relation) instead of
+    /// scaling the whole equation down to fit. On by default: a wide equation then reads at full
+    /// text size across several lines rather than shrinking. Off ⇒ scale-to-fit (one line).
+    pub break_wide_equations: bool,
     /// Directories scanned for the library.
     pub library_paths: Vec<String>,
     /// How the library lists books (table / dense table / cover grid).
@@ -353,6 +358,7 @@ impl Default for Config {
             // 100% = the built-in text-relative size (the floor); the knob (100–300%)
             // only enlarges, so display math is never smaller than the prose.
             math_scale: 100,
+            break_wide_equations: true,
             library_paths: Vec::new(),
             library_layout: LibLayout::List,
             library_grid_size: GridSize::Medium,

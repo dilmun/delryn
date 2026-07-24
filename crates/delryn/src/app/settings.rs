@@ -53,6 +53,7 @@ pub enum SettingItem {
     GraphicalMath,
     GraphicalInlineMath,
     MathScale,
+    BreakWideEquations,
     CodeWrap,
     CodeLineNumbers,
     CodeLanguageLabel,
@@ -118,6 +119,7 @@ impl SettingItem {
             SettingItem::GraphicalMath => "Graphical math",
             SettingItem::GraphicalInlineMath => "Graphical inline math",
             SettingItem::MathScale => "Math size %",
+            SettingItem::BreakWideEquations => "Break wide equations",
             SettingItem::CodeWrap => "Wrap long lines",
             SettingItem::CodeLineNumbers => "Line numbers",
             SettingItem::CodeLanguageLabel => "Language label",
@@ -194,6 +196,7 @@ impl SettingItem {
             SettingItem::GraphicalMath => onoff(c.graphical_math),
             SettingItem::GraphicalInlineMath => onoff(c.graphical_inline_math),
             SettingItem::MathScale => format!("{}%", c.math_scale),
+            SettingItem::BreakWideEquations => onoff(c.break_wide_equations),
             SettingItem::CodeWrap => onoff(c.code_wrap),
             SettingItem::CodeLineNumbers => onoff(c.code_line_numbers),
             SettingItem::CodeLanguageLabel => onoff(c.code_language_label),
@@ -281,6 +284,7 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(GraphicalMath),
                     I(GraphicalInlineMath),
                     I(MathScale),
+                    I(BreakWideEquations),
                     S("Code"),
                     I(CodeWrap),
                     I(CodeLineNumbers),
@@ -730,6 +734,7 @@ impl App {
             }
             SettingItem::GraphicalMath => c.graphical_math = !c.graphical_math,
             SettingItem::GraphicalInlineMath => c.graphical_inline_math = !c.graphical_inline_math,
+            SettingItem::BreakWideEquations => c.break_wide_equations = !c.break_wide_equations,
             SettingItem::MathScale => {
                 use crate::config::{MAX_MATH_SCALE, MIN_MATH_SCALE};
                 // Step in 10% increments within the allowed band.
