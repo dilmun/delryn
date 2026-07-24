@@ -26,7 +26,33 @@ pub fn to_unicode(src: &str) -> String {
     for child in frag.root_element().children() {
         emit(child, 0, &mut out);
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    tidy(&out)
+}
+
+/// Collapse whitespace to single spaces and drop the stray space a token push leaves *before*
+/// a closing delimiter or punctuation (`E(X₁ )` → `E(X₁)`, `2ρxy) ,` → `2ρxy),`).
+fn tidy(s: &str) -> String {
+    let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = String::with_capacity(collapsed.len());
+    for c in collapsed.chars() {
+        if matches!(c, ')' | ']' | '}' | ',' | ';' | '.') && out.ends_with(' ') {
+            out.pop();
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Whether `c` is a Unicode super/subscript glyph (a digit, sign, or letter that renders
+/// *attached* to its base) — so a fraction side like `x²` or `∂²` counts as one term, not two.
+fn is_script_char(c: char) -> bool {
+    matches!(c as u32,
+        0x00B2 | 0x00B3 | 0x00B9      // ² ³ ¹
+        | 0x2070..=0x209F             // super/subscript digits, signs, aeoxₐₑₒₓ …
+        | 0x1D43..=0x1D6B             // superscript latin letters ᵃᵇ… and ᵢᵣᵤᵥ
+        | 0x02B0..=0x02E4             // modifier letters ʰʲʳˡˢˣʷʸ
+        | 0x2C7C,                     // ⱼ
+    )
 }
 
 /// Element name without any namespace prefix (`mml:msup` → `msup`).
@@ -44,11 +70,11 @@ fn elem_children(node: NodeRef<Node>) -> Vec<NodeRef<Node>> {
 fn part(node: NodeRef<Node>, depth: u16) -> String {
     let mut s = String::new();
     emit(node, depth, &mut s);
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    tidy(&s)
 }
 
 fn part_str(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    tidy(s)
 }
 
 /// The trimmed text content of a token element (`<mi>`/`<mn>`/`<mo>`/…).
@@ -109,7 +135,10 @@ fn is_decoration(script: &str) -> bool {
     })
 }
 fn fallback_script(arg: &str, sub: bool) -> String {
-    let tight: String = arg.split_whitespace().collect();
+    // Unicode scripts drop spaces (`x₁₀₀`); the parenthesised fallback keeps them so a compound
+    // script reads (`^(E(W) + ½Var(W))`, not `^(E(W)+½Var(W))`).
+    let spaced = arg.split_whitespace().collect::<Vec<_>>().join(" ");
+    let tight: String = spaced.chars().filter(|c| !c.is_whitespace()).collect();
     let mapped = if sub {
         subscript_str(&tight)
     } else {
@@ -118,7 +147,7 @@ fn fallback_script(arg: &str, sub: bool) -> String {
     match mapped {
         Some(u) => u,
         None if tight.chars().count() <= 1 => format!("{}{tight}", if sub { '_' } else { '^' }),
-        None => format!("{}({tight})", if sub { '_' } else { '^' }),
+        None => format!("{}({spaced})", if sub { '_' } else { '^' }),
     }
 }
 
@@ -164,10 +193,12 @@ fn is_spaced_op(op: &str) -> bool {
     )
 }
 
-/// A fraction: `num/den`, parenthesising a side that is more than one token.
+/// A fraction: `num/den`, parenthesising a side that is more than one *term* so the linear
+/// slash can't be misread — `1/(2πτ)` not `1/2πτ`, but `x²/2` and `∂²/∂x` stay bare. A term is
+/// a base glyph plus its attached scripts, so `x²`/`∂²`/`xᵢ` count as one.
 fn frac(num: &str, den: &str) -> String {
     let wrap = |s: &str| {
-        if s.chars().count() > 1 && s.chars().any(|c| !c.is_alphanumeric()) {
+        if s.chars().filter(|&c| !is_script_char(c)).count() > 1 {
             format!("({s})")
         } else {
             s.to_string()
@@ -388,5 +419,33 @@ mod tests {
     fn fraction_and_relation_spacing() {
         let src = r#"<math><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>=</mo><mn>0.5</mn></math>"#;
         assert_eq!(to_unicode(src), "1/2 = 0.5");
+    }
+
+    #[test]
+    fn multi_term_fraction_side_is_parenthesised() {
+        // 1/(2πτ): a bare `1/2πτ` reads as (1/2)πτ; the denominator must be grouped. A single
+        // term with attached scripts (x²) stays bare.
+        let src =
+            r#"<math><mfrac><mn>1</mn><mrow><mn>2</mn><mi>π</mi><mi>τ</mi></mrow></mfrac></math>"#;
+        assert_eq!(to_unicode(src), "1/(2πτ)");
+        let sq = r#"<math><mfrac><msup><mi>x</mi><mn>2</mn></msup><mn>2</mn></mfrac></math>"#;
+        assert_eq!(to_unicode(sq), "x²/2", "single scripted term stays bare");
+    }
+
+    #[test]
+    fn compound_script_keeps_spacing() {
+        // e^(x + 1/2): a script with an unmappable char (`/`) falls back to a parenthesised
+        // form that keeps its word spacing (not a jammed `^(x+1/2)`).
+        let src = r#"<math><msup><mi>e</mi><mrow><mi>x</mi><mo>+</mo><mfrac><mn>1</mn><mn>2</mn></mfrac></mrow></msup></math>"#;
+        let out = to_unicode(src);
+        assert!(out.contains("x + 1/2"), "spacing kept in script: {out:?}");
+        assert!(!out.contains('{'), "no raw braces: {out:?}");
+    }
+
+    #[test]
+    fn no_space_before_closing_delimiters_or_punctuation() {
+        // A subscripted token inside parens must not leave `E(X₁ )`.
+        let src = r#"<math><mi>E</mi><mo>(</mo><msub><mi>X</mi><mn>1</mn></msub><mo>)</mo></math>"#;
+        assert_eq!(to_unicode(src), "E(X₁)");
     }
 }
