@@ -220,17 +220,24 @@ fn render_content(
     } else {
         Vec::new()
     };
-    let plan = super::layout::plan(
-        config.view_mode,
-        &LayoutCtx {
-            body,
-            config,
-            paged,
-            scroll: reader.scroll,
-            section: reader.section,
-            spread: &spread,
-        },
-    );
+    // Planning is pure geometry over the reading position, so it can be redone once
+    // the scroll settles (see the re-plan after `clamp_scroll` below).
+    let section = reader.section;
+    let plan_at = |scroll: usize| {
+        super::layout::plan(
+            config.view_mode,
+            &LayoutCtx {
+                body,
+                config,
+                paged,
+                scroll,
+                section,
+                spread: &spread,
+            },
+        )
+    };
+    let planned_scroll = reader.scroll;
+    let mut plan = plan_at(planned_scroll);
 
     // Write back the geometry the nav / scroll / page-mode math reads.
     // `viewport_lines` (one column height) and `page_lines` (the scroll unit) are
@@ -286,6 +293,14 @@ fn render_content(
     reader.ensure_wrapped(plan.measure as usize);
     reader.resolve_pending();
     reader.clamp_scroll();
+    // The plan above used the pre-wrap scroll — settling it needs the wrapped-line
+    // count, which needs the plan's `measure`. When settling moves it (entering a
+    // section from the bottom, or clamping past the last line), re-plan so the
+    // columns, the gutter, and the image targets all draw the current slice rather
+    // than a stale one.
+    if reader.scroll != planned_scroll {
+        plan = plan_at(reader.scroll);
+    }
 
     // Draw each text column: the wrapped-line slice, then its bookmark ribbon
     // (only where the column has margin for it). In continuous mode the single
@@ -346,7 +361,7 @@ fn draw_hint_badges(f: &mut Frame, area: Rect, reader: &Reader, top: usize, them
     let Some((kind, targets)) = reader.hint() else {
         return;
     };
-    let view_end = top + area.height as usize;
+    let view_end = top.saturating_add(area.height as usize);
     // The `Selection` role (ink on the accent, bold) — the same legible pill as a
     // selected row / search match. It resolves via `on_accent()`, so it stays
     // readable in the `auto` theme too, where `Heading` is `Reset` (no colour).
@@ -436,7 +451,9 @@ fn draw_gutter(f: &mut Frame, text_area: Rect, reader: &Reader, top: usize, them
     let ribbon = theme.style(Role::AccentStrong);
     let lines: Vec<Line> = (0..text_area.height as usize)
         .map(|row| {
-            let line = top + row;
+            // Saturate: a row index past the flow just draws blank, and a render
+            // pass must never panic on the scroll it was handed.
+            let line = top.saturating_add(row);
             // A note (pen) takes precedence over a bookmark (flag); a highlight
             // (a colour bar in its own hue) marks a line neither claims — its wash
             // already stands out, so the chip is just a margin cue and colour key.
@@ -596,7 +613,7 @@ fn align_page(area: Rect, cols: u16, rows: u16, align: PageAlign) -> (u16, u16) 
 /// offset lets `inline_target` source-crop an image scrolling past either edge so it
 /// shows its visible slice rather than appearing/vanishing whole.
 fn collect_image_targets(area: Rect, reader: &Reader, top: usize) {
-    let view_end = top + area.height as usize;
+    let view_end = top.saturating_add(area.height as usize);
     let lines = &reader.lines;
     let mut i = 0;
     while i < lines.len() {
