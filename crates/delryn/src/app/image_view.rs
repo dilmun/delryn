@@ -26,28 +26,47 @@ pub struct Figure {
     pub dims: Option<(u32, u32)>,
 }
 
+/// Whether an image block is one the viewer will actually open. Display-equation
+/// rasters and data-less images still consume an `image_index` — that space has to
+/// stay aligned with `LineKind::Image` — but the viewer is for real figures. Anything
+/// that *offers* figures to the user has to filter by this too, or it ends up pointing
+/// at an element the viewer silently resolves to some other figure.
+fn is_openable(block: &Block) -> bool {
+    matches!(block, Block::Image { data, math, .. } if !data.is_empty() && !*math)
+}
+
+/// Every image block paired with its section-local `image_index`. The index counts
+/// *all* images (equations and empty ones included) so it matches `LineKind::Image`.
+fn indexed_images(blocks: &[Block]) -> impl Iterator<Item = (usize, &Block)> {
+    blocks
+        .iter()
+        .filter(|b| matches!(b, Block::Image { .. }))
+        .enumerate()
+}
+
+/// The section-local `image_index` of every figure the viewer can open, in reading
+/// order. Used by the badge pick-mode so it never badges an element a digit couldn't
+/// open — see [`is_openable`].
+pub fn openable_image_indices(blocks: &[Block]) -> Vec<usize> {
+    indexed_images(blocks)
+        .filter(|(_, b)| is_openable(b))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
 /// Collect the renderable figures from a section's blocks into `out`, naming any
 /// caption-less, alt-less figure "Figure {n}" counted across the whole list.
 pub fn collect_figures(blocks: &[Block], section: usize, out: &mut Vec<Figure>) {
-    // Counts every image (incl. equation/empty ones) to match `LineKind::Image`.
-    let mut image_index = 0usize;
-    for b in blocks {
+    for (idx, b) in indexed_images(blocks) {
+        if !is_openable(b) {
+            continue;
+        }
         let Block::Image {
-            alt,
-            data,
-            caption,
-            math,
-            ..
+            alt, data, caption, ..
         } = b
         else {
             continue;
         };
-        let idx = image_index;
-        image_index += 1;
-        // Skip equations-as-images (display math); the viewer is for real figures.
-        if data.is_empty() || *math {
-            continue;
-        }
         let caption_text = caption
             .iter()
             .map(|s| s.text.as_str())
