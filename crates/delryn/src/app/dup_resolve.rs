@@ -111,7 +111,10 @@ impl App {
     /// pre-applying the smart auto-select. No-op (with a flash) when nothing is
     /// duplicated.
     pub(crate) fn open_dup_resolve(&mut self) {
+        // Every exit from here reports something. Returning silently made `D` look
+        // like an unbound key rather than "there is nothing to resolve".
         let Some(store) = &self.session.store else {
+            self.library.flash = Some("library database unavailable".into());
             return;
         };
         let all = store.all_books();
@@ -164,7 +167,10 @@ impl App {
                 })
                 .collect();
         if groups.is_empty() {
-            self.library.flash = Some("no duplicates found".into());
+            // Name the deeper scan, so "nothing here" doesn't read as "broken":
+            // the metadata pass misses PDFs that only a cover scan (`R`) matches.
+            self.library.flash =
+                Some("no duplicates found — press R in Duplicates for a cover scan".into());
             return;
         }
         let mut dr = DupResolve { groups, cursor: 0 };

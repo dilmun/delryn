@@ -631,7 +631,7 @@ impl App {
     /// the popup isn't hidden behind it.
     fn in_pdf(&self) -> bool {
         self.mode == Mode::Reader
-            && !self.any_overlay_open()
+            && !self.modal_open()
             && self.reader.as_ref().is_some_and(|r| r.is_paged_image())
     }
 
@@ -733,7 +733,7 @@ impl App {
         // images down, like the PDF page (`in_pdf`); they re-place when the reader is shown
         // again / the popup closes (the overlay toggle forces a full repaint). Still drain the
         // frame's targets so they don't accumulate behind the popup.
-        if self.mode != Mode::Reader || self.any_overlay_open() {
+        if self.mode != Mode::Reader || self.modal_open() {
             if let Some(r) = self.reader.as_ref() {
                 let _ = r.take_inline_targets();
             }
@@ -777,10 +777,24 @@ impl App {
         self.pending_clipboard_image.take()
     }
 
-    /// Whether any blocking overlay/popup is currently open. The main loop forces
-    /// a full repaint when this toggles, so a closed popup's cells (which may sit
-    /// over an inline image) don't leave a ghost the cell-diff misses.
-    pub fn any_overlay_open(&self) -> bool {
+    /// Whether anything modal is drawn over the page — a popup, a confirmation, or
+    /// one of the text prompts. Terminal images composite *above* the cell grid, so
+    /// while this holds the PDF page and inline images are taken down; otherwise
+    /// they render on top of the very thing asking for input. The main loop also
+    /// forces a full repaint when it toggles, so a dismissed modal leaves no ghost.
+    ///
+    /// The dialogs count as much as the popups do: they were status-bar lines when
+    /// this list was written, which is why they were missing from it.
+    pub fn modal_open(&self) -> bool {
+        if self.pending_confirm.is_some() {
+            return true;
+        }
+        if self.mode == Mode::Library && self.library.filtering {
+            return true;
+        }
+        if self.reader.as_ref().is_some_and(|r| r.search.searching) {
+            return true;
+        }
         matches!(
             self.overlay,
             Overlay::Settings(_)
@@ -793,6 +807,7 @@ impl App {
                 | Overlay::ImageView(_)
                 | Overlay::WordLookup(_)
                 | Overlay::CodeView(_)
+                | Overlay::TagEdit(_)
         )
     }
 
@@ -859,6 +874,33 @@ mod tests {
             _ => panic!("metadata editor not open"),
         }
     }
+    /// Terminal images composite *above* the cell grid, so anything drawn over the
+    /// page must report itself here or the images render on top of it. The dialogs
+    /// were missed when they were status-bar lines: an in-book search opened over
+    /// a figure came out with the equation painted across the prompt.
+    #[test]
+    fn every_modal_reports_itself_so_images_are_taken_down() {
+        let mut app = App::library();
+        assert!(!app.modal_open(), "a plain library view occludes nothing");
+
+        app.library.filtering = true;
+        assert!(app.modal_open(), "the filter prompt is modal");
+        app.library.filtering = false;
+        assert!(!app.modal_open());
+
+        app.ask_confirm("Delete?", super::confirm::ConfirmAction::Rename);
+        assert!(app.modal_open(), "a confirmation is modal");
+        app.pending_confirm = None;
+        assert!(!app.modal_open());
+
+        app.overlay = Overlay::TagEdit(crate::app::tags::TagInput {
+            input: crate::ui::TextInput::new(),
+            targets: Vec::new(),
+            multi: false,
+        });
+        assert!(app.modal_open(), "the tag prompt is modal");
+    }
+
     fn settings_state(app: &App) -> &Settings {
         match &app.overlay {
             Overlay::Settings(s) => s,

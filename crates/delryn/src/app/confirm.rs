@@ -5,13 +5,25 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use super::App;
 
-/// A destructive action waiting for a yes/no answer. One uniform prompt across
-/// the app, shown in the status bar.
+/// An action waiting for a yes/no answer. One uniform modal across the app (see
+/// `view::dialog`), so no destructive step can be answered by reflex.
 pub struct PendingConfirm {
     /// The question, e.g. `Delete "SciFi"?` or `Rename 3 books?`.
     pub question: String,
     /// What to run when the user confirms.
     action: ConfirmAction,
+}
+
+impl PendingConfirm {
+    /// Whether saying yes destroys something (deletes files, drops rows) rather
+    /// than just saving or navigating. Drives the modal's emphasis, so "this
+    /// removes files" doesn't look like "this saves your edits".
+    pub fn is_destructive(&self) -> bool {
+        matches!(
+            self.action,
+            ConfirmAction::ResolveDuplicates(_) | ConfirmAction::TrashBooks(_)
+        )
+    }
 }
 
 /// The action a [`PendingConfirm`] commits on `yes`. The relevant popup state

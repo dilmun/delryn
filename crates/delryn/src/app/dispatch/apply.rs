@@ -166,8 +166,13 @@ impl App {
             }
             Action::NextAnchor => reader.next_anchor(),
             Action::PrevAnchor => reader.prev_anchor(),
+            // Esc peels one layer at a time: the link cursor first, then the search
+            // highlight. Matches used to stay lit with no key that would dismiss
+            // them — the only way out was searching for something else.
             Action::ClearAnchor => {
-                reader.clear_anchor();
+                if !reader.clear_anchor() {
+                    reader.clear_search_highlight();
+                }
             }
             Action::Expand => {
                 if reader.focus == Focus::Sidebar {

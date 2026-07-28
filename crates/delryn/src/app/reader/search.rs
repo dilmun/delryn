@@ -43,6 +43,19 @@ impl Reader {
         self.search.input = self.search.history[pos].clone();
     }
 
+    /// Drop the active search highlight, keeping the query in history so `/` + Up
+    /// recalls it. Returns whether anything was lit — the caller uses that to make
+    /// Esc peel one layer at a time.
+    pub fn clear_search_highlight(&mut self) -> bool {
+        if self.search.matcher.is_none() {
+            return false;
+        }
+        self.search.matcher = None;
+        self.search.matches.clear();
+        self.search.idx = 0;
+        true
+    }
+
     /// Run the typed query across the whole book in the current mode, recording
     /// matching (section, line) positions and jumping to the first.
     pub fn run_search(&mut self) {
@@ -153,5 +166,47 @@ impl Reader {
         }
         self.scroll = line;
         self.focus = Focus::Content;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::{para, reader_with};
+
+    /// Esc had no effect on a search highlight: it mapped to "clear the link
+    /// cursor" and stopped there, so matches stayed lit and the only way out was
+    /// running a different search. It peels the highlight once the cursor is gone.
+    #[test]
+    fn clearing_the_highlight_reports_whether_anything_was_lit() {
+        let mut r = reader_with(vec![para()]);
+        assert!(
+            !r.clear_search_highlight(),
+            "nothing lit yet, so Esc must fall through to whatever is next"
+        );
+
+        r.search.input = "lorem".into();
+        r.run_search();
+        assert!(r.search.matcher.is_some(), "the search lit some matches");
+
+        assert!(r.clear_search_highlight(), "Esc consumes the highlight");
+        assert!(r.search.matcher.is_none(), "and the highlight is gone");
+        assert!(r.search.matches.is_empty());
+        assert_eq!(r.search.idx, 0);
+        // A second Esc has nothing left to take, so it falls through again.
+        assert!(!r.clear_search_highlight());
+    }
+
+    /// The query survives in history — Esc dismisses the highlight, it doesn't
+    /// forget what you searched for.
+    #[test]
+    fn clearing_the_highlight_keeps_the_query_recallable() {
+        let mut r = reader_with(vec![para()]);
+        r.search.input = "ipsum".into();
+        r.run_search();
+        r.clear_search_highlight();
+        assert!(
+            r.search.history.iter().any(|q| q == "ipsum"),
+            "history should still hold the query for `/` + Up"
+        );
     }
 }

@@ -93,7 +93,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 
     // Visual mode always shows its command hint, even with the status bar hidden.
-    let status_h = u16::from(show_status || reader.search.searching || reader.selection_active());
+    // Search is a modal now, so it no longer needs a status row of its own; the
+    // visual-selection legend still does, since it is a live mode not a prompt.
+    let status_h = u16::from(show_status || reader.selection_active());
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(area);
     let body = rows[0];
     let status = rows[1];
@@ -114,11 +116,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_sidebar(f, sb, reader, theme);
     }
     render_content(f, content_area, reader, config, theme, images);
-    if reader.search.searching {
-        let style = theme.style(Role::StatusBar);
-        let prompt = format!("[{}] /{}", reader.search.mode.label(), reader.search.input);
-        f.render_widget(Paragraph::new(Line::raw(prompt)).style(style), status);
-    } else if reader.selection_active() {
+    if reader.selection_active() {
         let style = theme.style(Role::StatusBar);
         let hint = if reader.selection_selecting() {
             " SELECT · h/l/w/b/j/k extend · ^d/^u ½page · y copy · 1-5/H highlight · a note · K look up · Esc "
