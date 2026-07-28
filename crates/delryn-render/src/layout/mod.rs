@@ -121,6 +121,10 @@ pub struct WrapOpts<'a> {
     pub table_wrap: bool,
     /// Fully justify body paragraphs to the column (true) vs. ragged-right (false).
     pub justify: bool,
+    /// Break long words across lines at algorithmic (Knuth–Liang) hyphenation
+    /// points, on top of any soft hyphens the author supplied. Callers gate this
+    /// on the book's language — only English patterns are compiled in.
+    pub hyphenate: bool,
     /// Collapse converter spacing artifacts in body text (see [`spans`]).
     pub tidy_spacing: bool,
     /// Reserved cell width per **inline-math** id (section-local), from the reader's
@@ -151,6 +155,7 @@ impl Default for WrapOpts<'_> {
             code_fold_flip: &[],
             table_wrap: true,
             justify: false,
+            hyphenate: false,
             tidy_spacing: true,
             inline_math_cols: &[],
             inline_math_rows: &[],

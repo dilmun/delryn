@@ -4,7 +4,7 @@
 
 use delryn_model::{Block, CalloutKind, Inline, Span};
 
-use super::spans::{InlineMathDims, Prefix, tidy_spacing, wrap_spans};
+use super::spans::{InlineMathDims, Prefix, ProseFit, tidy_spacing, wrap_spans};
 use super::width::display_width;
 use super::{DisplayLine, LineKind, Run, WrapOpts, wrap_blocks};
 
@@ -40,7 +40,10 @@ pub(super) fn emit_heading(
             cont: "",
         },
         LineKind::Heading(level),
-        false,
+        ProseFit {
+            justify: false,
+            hyphenate: opts.hyphenate,
+        },
         InlineMathDims {
             cols: opts.inline_math_cols,
             rows: opts.inline_math_rows,
@@ -78,7 +81,10 @@ pub(super) fn emit_para(
             cont: &cont_prefix,
         },
         kind,
-        opts.justify,
+        ProseFit {
+            justify: opts.justify,
+            hyphenate: opts.hyphenate,
+        },
         InlineMathDims {
             cols: opts.inline_math_cols,
             rows: opts.inline_math_rows,
@@ -179,7 +185,7 @@ pub(super) fn emit_image(
             width,
             no_prefix,
             LineKind::Body,
-            false,
+            ProseFit::default(),
             InlineMathDims {
                 cols: &[],
                 rows: &[],
@@ -377,7 +383,10 @@ fn wrap_nested(
         code_fold_threshold: 0,
         code_fold_flip: &[],
         table_wrap: opts.table_wrap,
+        // A callout / footnote body is a narrow inset column. It isn't justified,
+        // so it has no gaps to close, and hyphens in it would read as content.
         justify: false,
+        hyphenate: false,
         tidy_spacing: opts.tidy_spacing,
         // Inline math shares one id space across nested blocks (the reader's
         // `convert_inline_math`/`remap_inline_math` recurse into callout/footnote bodies),

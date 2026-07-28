@@ -51,6 +51,32 @@ impl Glyph {
 /// from the rendered text, but a real `-` is shown when a word breaks there.
 const SOFT_HYPHEN: char = '\u{00AD}';
 
+/// Shortest word worth hyphenating. Below this a break saves a cell or two and
+/// costs a fragment the eye has to reassemble, which is a bad trade.
+const MIN_HYPHENATE_LEN: usize = 6;
+
+/// Longest token hyphenation is attempted on. Real words stop well short of this;
+/// anything longer is an identifier, a hash, or a URL, where a hyphen would read
+/// as part of the text rather than as a break.
+const MAX_HYPHENATE_LEN: usize = 40;
+
+/// Fewest characters a hyphenation may leave on either side of the break. TeX's
+/// English defaults are 2 and 3; a lone two-cell fragment in a terminal reads as
+/// noise rather than as a continued word, so both sides are held to three.
+const HYPHEN_EDGE_MIN: usize = 3;
+
+/// The most a justified line will widen an inter-word gap, in extra cells.
+///
+/// Justification distributes a line's leftover columns across its gaps. When
+/// there is little to give away that is invisible, but a line that has to hand
+/// out five or six cells opens holes the eye follows *down* the paragraph
+/// instead of across it. Past this limit the line is left ragged: an uneven right
+/// edge on the occasional line costs less than a river through the page.
+///
+/// Hyphenation is what makes the limit affordable — with break points inside
+/// words most lines end up needing a cell or two at most.
+const MAX_GAP_STRETCH: usize = 1;
+
 /// A piece of a word placed on a line: its glyphs plus whether a hyphen follows
 /// (true when a long word was broken at a soft hyphen).
 struct Piece {
@@ -81,6 +107,16 @@ pub(super) struct InlineMathDims<'a> {
     pub rows: &'a [u16],
 }
 
+/// How prose is fitted to the column: whether inner lines are padded out to both
+/// edges, and whether words may be broken to help them get there. The two travel
+/// together because they are one decision — justification without hyphenation is
+/// what opens the wide gaps (see [`MAX_GAP_STRETCH`]).
+#[derive(Clone, Copy, Default)]
+pub(super) struct ProseFit {
+    pub justify: bool,
+    pub hyphenate: bool,
+}
+
 /// Word-wrap styled spans into display lines, with a prefix on the first line
 /// and a (usually padding) prefix on continuations. Three phases: flatten the
 /// spans to break-segmented words, greedily fill lines, then emit them.
@@ -89,17 +125,30 @@ pub(super) fn wrap_spans(
     width: usize,
     prefix: Prefix,
     kind: LineKind,
-    justify: bool,
+    fit: ProseFit,
     math: InlineMathDims,
     out: &mut Vec<DisplayLine>,
 ) {
     let (first_prefix, cont_prefix) = (prefix.first, prefix.cont);
-    let words = flatten_to_words(spans, math);
+    let mut words = flatten_to_words(spans, math);
     if words.is_empty() {
         return;
     }
+    if fit.hyphenate {
+        for word in &mut words {
+            hyphenate_word(word);
+        }
+    }
     let lines = fill_lines(words, width, first_prefix, cont_prefix);
-    emit_lines(lines, width, first_prefix, cont_prefix, kind, justify, out);
+    emit_lines(
+        lines,
+        width,
+        first_prefix,
+        cont_prefix,
+        kind,
+        fit.justify,
+        out,
+    );
 }
 
 /// The prefix that leads line `line` (first line vs. continuation).
@@ -171,6 +220,69 @@ fn flatten_to_words(spans: &[Span], math: InlineMathDims) -> Vec<Vec<Vec<Glyph>>
         words.push(segs);
     }
     words
+}
+
+/// Phase 1b — give a word the break opportunities its author didn't.
+///
+/// Almost no book ships soft hyphens, so without this the filler can only break
+/// *between* words. That is what opens the gaps in justified text: a long word
+/// that won't fit is pushed to the next line whole, and the line it left behind
+/// has to stretch to cover the hole. Knuth–Liang patterns supply the missing
+/// break points, so the word can straddle the line end with a hyphen instead.
+///
+/// Left alone: words the author already segmented (their soft hyphens are better
+/// information than a pattern match), anything holding an inline-math atom, and
+/// anything that isn't a plain run of ASCII letters — an identifier, a URL or a
+/// hyphenate-me-not like `re-entrant` would only be damaged by a second hyphen.
+/// Trailing punctuation is allowed and rides along with the final syllable.
+fn hyphenate_word(word: &mut Vec<Vec<Glyph>>) {
+    if word.len() != 1 {
+        return; // already segmented by the author
+    }
+    let splits = {
+        let seg = &word[0];
+        let core = seg
+            .iter()
+            .take_while(|g| g.ch.is_ascii_alphabetic() && g.math.is_none())
+            .count();
+        if !(MIN_HYPHENATE_LEN..=MAX_HYPHENATE_LEN).contains(&core) {
+            return;
+        }
+        // Whatever follows the letters must be punctuation — a comma or a closing
+        // quote. Any further letter or digit means this is not one plain word.
+        if seg[core..]
+            .iter()
+            .any(|g| g.ch.is_alphanumeric() || g.math.is_some())
+        {
+            return;
+        }
+        let text: String = seg[..core].iter().map(|g| g.ch).collect();
+        let mut at = 0usize;
+        let mut splits: Vec<usize> = Vec::new();
+        for syllable in hypher::hyphenate_bounded(
+            &text,
+            hypher::Lang::English,
+            HYPHEN_EDGE_MIN,
+            HYPHEN_EDGE_MIN,
+        ) {
+            at += syllable.chars().count();
+            if at < core {
+                splits.push(at);
+            }
+        }
+        splits
+    };
+    if splits.is_empty() {
+        return;
+    }
+    // The core is ASCII, so a char index is a glyph index.
+    let seg = word.pop().unwrap_or_default();
+    let mut start = 0usize;
+    for end in splits {
+        word.push(seg[start..end].to_vec());
+        start = end;
+    }
+    word.push(seg[start..].to_vec());
 }
 
 /// Phase 2 — greedy line fill, breaking over-long words at soft hyphens when it
@@ -264,12 +376,13 @@ fn emit_lines(
             .map(|p| cells_width(&p.cells) + usize::from(p.hyphen))
             .sum();
         let gaps = line.len().saturating_sub(1);
-        let justify_line = justify_body && li != last && gaps >= 1;
-        let slack = if justify_line {
-            avail(width, first, cont, li).saturating_sub(pieces_w + gaps)
-        } else {
-            0
-        };
+        // What justification would have to give away to reach the right edge. A
+        // line that can be closed cheaply is justified; one that would need wide
+        // gaps is left ragged instead of opening a river (see `MAX_GAP_STRETCH`).
+        let room = avail(width, first, cont, li).saturating_sub(pieces_w + gaps);
+        let justify_line =
+            justify_body && li != last && gaps >= 1 && room <= gaps * MAX_GAP_STRETCH;
+        let slack = if justify_line { room } else { 0 };
 
         let mut runs: Vec<Run> = Vec::new();
         if !prefix.is_empty() {
@@ -771,5 +884,116 @@ mod tests {
         for l in &lines {
             assert!(l.chars().count() <= 12, "line stays within width: {l:?}");
         }
+    }
+
+    /// Almost no book ships soft hyphens, so the wrapper has to find its own break
+    /// points or a long word can only be pushed whole to the next line.
+    #[test]
+    fn hyphenation_breaks_a_long_word_the_author_never_marked() {
+        let block = para("The consideration was extraordinary");
+        let opts = WrapOpts {
+            width: 16,
+            hyphenate: true,
+            ..Default::default()
+        };
+        let lines = texts(&wrap_blocks(&[block], &opts, &[]));
+        let joined = lines.join("|");
+        assert!(
+            joined.contains('-'),
+            "a word breaks with a hyphen: {joined:?}"
+        );
+        for l in &lines {
+            assert!(l.chars().count() <= 16, "within width: {l:?}");
+        }
+        // The text itself is untouched — only line breaks and hyphens are added.
+        let flat = joined.replace(['|', '-'], "");
+        assert_eq!(flat.replace(' ', ""), "Theconsiderationwasextraordinary");
+
+        // Off, the same paragraph keeps its words whole.
+        let plain = WrapOpts {
+            width: 16,
+            ..Default::default()
+        };
+        let joined = texts(&wrap_blocks(
+            &[para("The consideration was extraordinary")],
+            &plain,
+            &[],
+        ))
+        .join("|");
+        assert!(!joined.contains('-'), "no hyphens when off: {joined:?}");
+    }
+
+    /// Hyphenating anything that isn't a plain word does real damage: a URL or an
+    /// identifier gains a `-` that reads as part of it, and a word already spelled
+    /// with a hyphen gains a second one.
+    #[test]
+    fn hyphenation_leaves_non_words_alone() {
+        let opts = WrapOpts {
+            width: 14,
+            hyphenate: true,
+            ..Default::default()
+        };
+        for token in [
+            "https://example.com/some/path",
+            "SectionHeading_2024",
+            "re-entrant",
+            "modelling3d",
+        ] {
+            let joined = texts(&wrap_blocks(&[para(token)], &opts, &[])).join("|");
+            let added = joined.matches('-').count() - token.matches('-').count();
+            assert_eq!(added, 0, "{token} gained a hyphen: {joined:?}");
+        }
+        // A word too short to give three characters to each side of a break is
+        // never split — the fragments would cost more than the fit is worth.
+        let joined = texts(&wrap_blocks(&[para("cat dog runs over")], &opts, &[])).join("|");
+        assert!(!joined.contains('-'), "short words kept whole: {joined:?}");
+    }
+
+    /// An author's own soft hyphens are better information than a pattern match,
+    /// so a word that carries them is left segmented exactly as written.
+    #[test]
+    fn author_soft_hyphens_win_over_the_hyphenator() {
+        let shy = '\u{00AD}';
+        let word = format!("data{shy}base");
+        let opts = WrapOpts {
+            width: 7,
+            hyphenate: true,
+            ..Default::default()
+        };
+        let lines = texts(&wrap_blocks(&[para(&word)], &opts, &[]));
+        assert_eq!(
+            lines.join("|"),
+            "data-|base",
+            "broken at the author's point"
+        );
+    }
+
+    /// Justification pads the gaps between words, so a line with little text and
+    /// far to reach would open holes the eye follows down the page. Past the limit
+    /// the line is left ragged instead.
+    #[test]
+    fn a_line_needing_wide_gaps_is_left_ragged() {
+        // Three short words on a wide column: closing it would cost many cells per
+        // gap, so the line keeps single spaces and stops short of the edge.
+        let block = para("alpha beta gamma extraordinarily-long-unbreakable-token tail");
+        let opts = WrapOpts {
+            width: 40,
+            justify: true,
+            para_spacing: 0,
+            ..Default::default()
+        };
+        let lines: Vec<String> = texts(&wrap_blocks(&[block], &opts, &[]))
+            .into_iter()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        let first = &lines[0];
+        assert!(
+            !first.contains("  "),
+            "gaps stay single spaces rather than opening: {first:?}"
+        );
+        assert!(
+            first.chars().count() < 40,
+            "and the line is left ragged: {first:?}"
+        );
     }
 }

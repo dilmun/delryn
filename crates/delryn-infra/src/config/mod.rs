@@ -230,8 +230,16 @@ pub struct Config {
     /// Word-wrap table cells to their column (true) vs. truncate with `…` (false).
     pub table_wrap: bool,
     /// Fully justify body text to the column width (true) vs. ragged-right /
-    /// left-aligned (false). The last line of a paragraph is never justified.
+    /// left-aligned (false). The last line of a paragraph is never justified,
+    /// and neither is one that would have to open wide gaps to reach the edge.
     pub justify: bool,
+    /// Break long words across lines with a hyphen, at Knuth-Liang points on top
+    /// of any soft hyphens the book supplies.
+    ///
+    /// This is what keeps justified text tight: without break points inside words
+    /// a line can only be closed by widening the spaces between them. Applied only
+    /// to books in a language the compiled-in patterns describe.
+    pub hyphenate: bool,
     /// Tidy converter artifacts in body text — collapse the stray space some
     /// EPUBs leave between a short styled variable and a hyphenated suffix
     /// (`t -distribution` → `t-distribution`). Leaves numbers and prose alone.
@@ -353,6 +361,7 @@ impl Default for Config {
             code_fold_threshold: 20,
             table_wrap: true,
             justify: false,
+            hyphenate: true,
             tidy_spacing: true,
             paged: false,
             continuous: false,

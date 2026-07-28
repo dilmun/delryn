@@ -120,6 +120,10 @@ impl Reader {
                         // Never justify (keeps single spaces so phrase matches work);
                         // tidy must match the display so positions line up.
                         justify: false,
+                        // Hyphenation *does* move line breaks, so it has to match
+                        // the display or every match index below it is off by the
+                        // lines the two wraps disagree on.
+                        hyphenate: self.hyphenate,
                         tidy_spacing: self.tidy_spacing,
                         inline_math_cols: inline_cols,
                         inline_math_rows: inline_rows,

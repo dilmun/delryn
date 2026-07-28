@@ -118,6 +118,10 @@ pub struct Reader {
     pub table_wrap: bool,
     /// Full justification + converter-spacing tidy (set each render from config).
     pub justify: bool,
+    /// Break long words at algorithmic hyphenation points (set each render from
+    /// config, and only for a book whose language the patterns actually fit — see
+    /// [`Reader::language_hyphenates`]).
+    pub hyphenate: bool,
     pub tidy_spacing: bool,
     /// Keep scrolling within the current chapter (set each render from config).
     pub chapter_lock: bool,
@@ -351,6 +355,7 @@ impl Reader {
             code_fold_flip: Vec::new(),
             table_wrap: true,
             justify: false,
+            hyphenate: false,
             tidy_spacing: true,
             chapter_lock: false,
             paged: false,
@@ -819,6 +824,7 @@ impl Reader {
             code_fold_flip: self.code_fold_flip.clone(),
             table_wrap: self.table_wrap,
             justify: self.justify,
+            hyphenate: self.hyphenate,
             tidy: self.tidy_spacing,
             images_key: self.images.images_key,
         };
@@ -877,6 +883,7 @@ impl Reader {
                 code_fold_flip: flip,
                 table_wrap: self.table_wrap,
                 justify: self.justify,
+                hyphenate: self.hyphenate,
                 tidy_spacing: self.tidy_spacing,
                 inline_math_cols,
                 inline_math_rows,
@@ -1305,6 +1312,24 @@ impl Reader {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    /// Whether this book's language is one the compiled-in hyphenation patterns
+    /// actually describe.
+    ///
+    /// Only English patterns are built in, and applying them to another language
+    /// doesn't degrade gracefully — it breaks words at points that language never
+    /// breaks at, which is worse than not hyphenating. A book that declares no
+    /// language is taken as English: undeclared metadata is common, and the
+    /// alternative is to silently withhold the feature from most of a library.
+    pub fn language_hyphenates(&self) -> bool {
+        match self.doc.metadata().language.as_deref() {
+            None => true,
+            Some(tag) => {
+                let tag = tag.trim().to_ascii_lowercase();
+                tag == "en" || tag.starts_with("en-") || tag.starts_with("en_")
+            }
+        }
     }
 
     pub fn chapter_title(&self) -> String {

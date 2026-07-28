@@ -68,6 +68,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.code_fold_threshold = config.code_fold_threshold;
     reader.table_wrap = config.table_wrap;
     reader.justify = config.justify;
+    reader.hyphenate = config.hyphenate && reader.language_hyphenates();
     reader.tidy_spacing = config.tidy_spacing;
     reader.paged = config.paged;
     // The raw continuous flag + view mode; each `continuous_*_active` check gates the

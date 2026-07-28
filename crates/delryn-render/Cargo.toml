@@ -7,5 +7,6 @@ edition.workspace = true
 # pagination, tables, and graphical math will join here.
 [dependencies]
 delryn-model = { workspace = true }
+hypher = { version = "0.1.7", default-features = false, features = ["alloc", "english"] }
 syntect.workspace = true
 unicode-width.workspace = true

@@ -60,6 +60,7 @@ pub enum SettingItem {
     LineSpacing,
     ParagraphSpacing,
     Justify,
+    Hyphenate,
     TidySpacing,
     ShowSidebar,
     ShowStatus,
@@ -127,6 +128,7 @@ impl SettingItem {
             SettingItem::LineSpacing => "Line spacing",
             SettingItem::ParagraphSpacing => "Paragraph spacing",
             SettingItem::Justify => "Justify text",
+            SettingItem::Hyphenate => "Hyphenate",
             SettingItem::TidySpacing => "Tidy spacing",
             SettingItem::ShowSidebar => "Sidebar by default",
             SettingItem::ShowStatus => "Status bar by default",
@@ -201,7 +203,10 @@ impl SettingItem {
             SettingItem::LineSpacing => "Blank rows added between every line of text.",
             SettingItem::ParagraphSpacing => "Blank rows added between paragraphs.",
             SettingItem::Justify => {
-                "Pad spaces so both edges line up, instead of a ragged right edge."
+                "Pad spaces so both edges line up; a line needing wide gaps stays ragged."
+            }
+            SettingItem::Hyphenate => {
+                "Break long words across lines with a hyphen, which keeps justified gaps small."
             }
             SettingItem::TidySpacing => {
                 "Collapse runs of blank lines and stray indents from sloppy publisher markup."
@@ -308,6 +313,7 @@ impl SettingItem {
             SettingItem::LineSpacing => c.line_spacing = d.line_spacing,
             SettingItem::ParagraphSpacing => c.paragraph_spacing = d.paragraph_spacing,
             SettingItem::Justify => c.justify = d.justify,
+            SettingItem::Hyphenate => c.hyphenate = d.hyphenate,
             SettingItem::TidySpacing => c.tidy_spacing = d.tidy_spacing,
             SettingItem::ShowSidebar => c.show_sidebar = d.show_sidebar,
             SettingItem::ShowStatus => c.show_status = d.show_status,
@@ -377,6 +383,7 @@ impl SettingItem {
             SettingItem::LineSpacing => c.line_spacing.to_string(),
             SettingItem::ParagraphSpacing => c.paragraph_spacing.to_string(),
             SettingItem::Justify => onoff(c.justify),
+            SettingItem::Hyphenate => onoff(c.hyphenate),
             SettingItem::TidySpacing => onoff(c.tidy_spacing),
             SettingItem::ShowSidebar => onoff(c.show_sidebar),
             SettingItem::ShowStatus => onoff(c.show_status),
@@ -482,6 +489,7 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(LineSpacing),
                     I(ParagraphSpacing),
                     I(Justify),
+                    I(Hyphenate),
                 ],
             ),
             tab(
@@ -1119,6 +1127,7 @@ impl App {
                 c.paragraph_spacing = (c.paragraph_spacing as i32 + delta).clamp(0, 3) as u8
             }
             SettingItem::Justify => c.justify = !c.justify,
+            SettingItem::Hyphenate => c.hyphenate = !c.hyphenate,
             SettingItem::TidySpacing => c.tidy_spacing = !c.tidy_spacing,
             SettingItem::ShowSidebar => c.show_sidebar = !c.show_sidebar,
             SettingItem::ShowStatus => c.show_status = !c.show_status,
