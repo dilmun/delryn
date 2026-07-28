@@ -158,6 +158,41 @@ impl Default for WrapOpts<'_> {
     }
 }
 
+/// Blank rows to put *below* the block just emitted, given the heading level it
+/// was (if any) and whether a heading follows. Body blocks get the reader's full
+/// paragraph spacing.
+///
+/// A section heading (level 2 and deeper) sits **directly** on the prose it
+/// introduces: all of its air goes above it, where it does the separating, and a
+/// blank row below would only push it back toward the paragraph it does not
+/// belong to. This is how print sets a subhead, and on a character grid it is the
+/// only tightening available — a row is indivisible, so there is no fraction of
+/// one to trim instead.
+///
+/// Two cases keep their gap. A chapter title (levels 0–1) opens a section rather
+/// than labelling one inside it. And a heading immediately followed by another
+/// heading is a pair sharing the air above them, not a heading meeting its text.
+fn gap_below(prev_heading: Option<u8>, next_is_heading: bool, para_spacing: u8) -> usize {
+    match prev_heading {
+        Some(level) if level >= 2 && !next_is_heading => 0,
+        _ => para_spacing as usize,
+    }
+}
+
+/// Whether a heading gets a row of air *beyond* the reader's paragraph spacing
+/// above it — the row that says a new section starts here.
+///
+/// Chapter titles and section headings (level 2 and above) earn it. A subheading
+/// (level 3 and deeper) does not: it divides a section rather than opening one,
+/// and approaching it with the same run-up as its parent flattened the two to the
+/// same rank — the tier was left to colour and italics alone to carry.
+///
+/// Back-to-back headings get nothing either; a pair shares the air above the
+/// first of them rather than being driven apart.
+fn extra_row_above(level: Option<u8>, prev_heading: Option<u8>) -> bool {
+    matches!(level, Some(l) if l <= 2) && prev_heading.is_none()
+}
+
 /// Wrap a section's blocks to styled display lines per `opts`. `image_rows` gives
 /// the reserved row count for each image block (0 → text placeholder).
 ///
@@ -169,8 +204,9 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
     let para_spacing = opts.para_spacing;
     let mut out = Vec::new();
     let mut prev_item = false;
-    // A heading binds to the text it introduces (see the spacing rule below).
-    let mut prev_heading = false;
+    // The level of the heading just emitted, if the previous block was one — a
+    // heading binds to the text it introduces (see the spacing rule below).
+    let mut prev_heading: Option<u8> = None;
     let mut first = true;
     let mut img_idx = 0usize;
     let mut code_idx = 0usize;
@@ -194,20 +230,21 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
         // Spacing between blocks: blank line(s), except between consecutive list
         // items and around explicit blanks.
         //
-        // Headings are spaced typographically rather than uniformly: more air
-        // *above* than below, so a heading groups with the text it introduces
-        // instead of floating equidistant between two paragraphs. The gap below is
-        // reduced, never removed — closing it entirely sat the heading directly on
-        // its first line, which reads as collision rather than grouping.
-        let is_heading = matches!(block, Block::Heading { .. });
+        // Headings are spaced typographically rather than uniformly: the air goes
+        // *above*, and the text it introduces follows immediately, so the heading
+        // groups with that text instead of floating equidistant between two
+        // paragraphs. How much air depends on the tier — see `gap_below` and
+        // `extra_row_above`.
+        let heading_level = match block {
+            Block::Heading { level, .. } => Some(*level),
+            _ => None,
+        };
         let consecutive_items = is_item && prev_item;
         if !(first || matches!(block, Block::Blank) || consecutive_items) {
-            for _ in 0..para_spacing {
+            for _ in 0..gap_below(prev_heading, heading_level.is_some(), para_spacing) {
                 out.push(DisplayLine::blank());
             }
-            // One extra row above a heading — but not between a heading and its own
-            // subheading, which are already a unit.
-            if is_heading && !prev_heading {
+            if extra_row_above(heading_level, prev_heading) {
                 out.push(DisplayLine::blank());
             }
         }
@@ -281,7 +318,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
         }
 
         prev_item = is_item;
-        prev_heading = is_heading;
+        prev_heading = heading_level;
         first = false;
     }
 
@@ -417,7 +454,40 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap_text;
+    use super::{extra_row_above, gap_below, wrap_text};
+
+    /// A section heading keeps its air above and none below — it sits on the prose
+    /// it introduces. A chapter title, and a heading followed by another heading,
+    /// both keep the reader's gap.
+    #[test]
+    fn a_section_heading_sits_on_the_text_below_it() {
+        for ps in 0..=3 {
+            // Body blocks are unaffected at every setting.
+            assert_eq!(gap_below(None, false, ps), ps as usize);
+            // A chapter title opens a section rather than labelling one inside it.
+            assert_eq!(gap_below(Some(1), false, ps), ps as usize);
+            // A section heading meets its prose directly, whatever the setting.
+            assert_eq!(gap_below(Some(2), false, ps), 0);
+            assert_eq!(gap_below(Some(3), false, ps), 0);
+            // …but a heading pair shares the air above it and keeps its own gap.
+            assert_eq!(gap_below(Some(2), true, ps), ps as usize);
+        }
+    }
+
+    /// The run-up grades the tiers: a title or a section heading is approached
+    /// with an extra row, a subheading is not — so the hierarchy is legible from
+    /// the spacing and not only from the ink.
+    #[test]
+    fn only_the_upper_tiers_get_a_run_up() {
+        assert!(extra_row_above(Some(1), None), "chapter title");
+        assert!(extra_row_above(Some(2), None), "section heading");
+        assert!(!extra_row_above(Some(3), None), "subheading");
+        assert!(!extra_row_above(Some(4), None), "deeper still");
+        // A heading pair shares the air above the first of them.
+        assert!(!extra_row_above(Some(2), Some(1)));
+        // Body text never gets one.
+        assert!(!extra_row_above(None, None));
+    }
 
     #[test]
     fn wrap_text_wraps_on_words_and_hard_breaks_long_tokens() {

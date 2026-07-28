@@ -690,29 +690,28 @@ mod heading_spacing_tests {
             .count()
     }
 
-    /// A heading is spaced typographically: more air above than below, so it
-    /// groups with the text it introduces rather than floating between two
-    /// paragraphs. The gap below is reduced, never closed — sitting the heading
-    /// directly on its first line reads as collision, not grouping.
+    /// A heading is spaced typographically: the air goes above it, and the text it
+    /// introduces follows on the very next row, so the two read as one unit rather
+    /// than as a heading floating between two paragraphs.
     #[test]
-    fn a_heading_has_more_air_above_than_below() {
+    fn a_heading_sits_directly_on_its_own_text() {
         let blocks = vec![
             para("Body before."),
             heading(2, "Related Work"),
             para("Body after."),
         ];
         let lines = wrap_blocks(&blocks, &opts(1), &[]);
-        let above = blanks_before(&lines, "Related Work");
-        let below = blanks_before(&lines, "Body after.");
-        assert!(
-            above > below,
-            "a heading must lean toward its own text (above {above}, below {below})"
+        assert!(blanks_before(&lines, "Related Work") >= 2, "air above");
+        assert_eq!(
+            blanks_before(&lines, "Body after."),
+            0,
+            "its first line follows immediately"
         );
-        assert!(below >= 1, "but must not touch it (below {below})");
     }
 
-    /// The rule scales with the reader's paragraph-spacing setting rather than
-    /// hard-coding a gap, so a dense setting stays dense.
+    /// The air above scales with the reader's paragraph-spacing setting rather than
+    /// hard-coding a gap, so a dense setting stays dense. Below is closed at every
+    /// setting — the heading belongs to the text under it.
     #[test]
     fn heading_spacing_follows_the_paragraph_setting() {
         let blocks = vec![
@@ -720,7 +719,7 @@ mod heading_spacing_tests {
             heading(2, "Related Work"),
             para("Body after."),
         ];
-        for spacing in [1u8, 2, 3] {
+        for spacing in [1u8, 2, 3, 4] {
             let lines = wrap_blocks(&blocks, &opts(spacing), &[]);
             assert_eq!(
                 blanks_before(&lines, "Related Work"),
@@ -729,10 +728,49 @@ mod heading_spacing_tests {
             );
             assert_eq!(
                 blanks_before(&lines, "Body after."),
-                spacing as usize,
-                "the body gap is unchanged at spacing {spacing}"
+                0,
+                "no gap below at spacing {spacing}"
             );
         }
+    }
+
+    /// The trim is for section headings. A chapter title opens a section rather
+    /// than labelling one inside it, and keeps the reader's full gap below.
+    #[test]
+    fn a_chapter_title_keeps_its_full_gap() {
+        let blocks = vec![
+            para("Body before."),
+            heading(1, "Chapter One"),
+            para("Body after."),
+        ];
+        for spacing in [2u8, 3, 4] {
+            let lines = wrap_blocks(&blocks, &opts(spacing), &[]);
+            assert_eq!(
+                blanks_before(&lines, "Body after."),
+                spacing as usize,
+                "a title is untrimmed at spacing {spacing}"
+            );
+        }
+    }
+
+    /// The tiers are legible from the spacing, not only from the ink: a subheading
+    /// rising out of body text is approached with one row less than a section
+    /// heading is, so the reader can see which one outranks the other.
+    #[test]
+    fn a_subheading_gets_a_shorter_run_up_than_a_section() {
+        let after_body = |level| {
+            let blocks = vec![para("Body."), heading(level, "Marker"), para("After.")];
+            blanks_before(&wrap_blocks(&blocks, &opts(1), &[]), "Marker")
+        };
+        let section = after_body(2);
+        let subsection = after_body(3);
+        assert_eq!(
+            subsection,
+            section - 1,
+            "a subheading takes one row less than its parent tier \
+             (section {section}, subsection {subsection})"
+        );
+        assert!(subsection >= 1, "but still parts from the paragraph above");
     }
 
     /// Back-to-back headings (a section immediately followed by its subsection)
