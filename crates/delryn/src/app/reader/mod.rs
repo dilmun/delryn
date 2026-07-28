@@ -546,6 +546,14 @@ impl Reader {
     /// order (left spread column before right), capped at 9 so each gets a `1..=9`
     /// badge. Shared by the `F`/`I` pick-modes.
     fn visible_elements(&self, kind: HintKind) -> Vec<usize> {
+        // A badge has to lead somewhere: the viewer opens real figures only, while
+        // `LineKind::Image` also covers display-equation rasters and data-less
+        // images. Badging those numbered elements the viewer would then resolve to
+        // an unrelated figure, so restrict the image mode to what it can open.
+        let openable = match kind {
+            HintKind::Image => Some(super::image_view::openable_image_indices(&self.blocks)),
+            HintKind::Code => None,
+        };
         let end = self.scroll.saturating_add(self.visible_span());
         let mut out: Vec<usize> = Vec::new();
         for line in self.lines.iter().skip(self.scroll).take(end - self.scroll) {
@@ -554,6 +562,9 @@ impl Reader {
                 (HintKind::Image, LineKind::Image(x)) => x,
                 _ => continue,
             };
+            if openable.as_ref().is_some_and(|o| !o.contains(&idx)) {
+                continue;
+            }
             if !out.contains(&idx) {
                 out.push(idx);
                 if out.len() == 9 {
@@ -2377,6 +2388,37 @@ mod tests {
         );
     }
 
+    /// A display equation is an image block too, so `LineKind::Image` covers it —
+    /// but `collect_figures` skips equation rasters, so the viewer's list never held
+    /// one. Badging them sent the digit into `select_image`'s *nearest*-index match,
+    /// which silently opened an unrelated figure (a screen of equations would badge
+    /// 1–4 and then jump to some other chapter figure entirely). Badge only what the
+    /// viewer can actually open.
+    #[test]
+    fn image_badges_cover_only_figures_the_viewer_opens() {
+        let mut r = reader_with(vec![
+            math_img(),   // image_index 0 — a display equation, not a figure
+            img_block(1), // image_index 1 — a real figure
+            math_img(),   // image_index 2 — another equation
+        ]);
+        // Images only reserve `LineKind::Image` rows once their heights are known.
+        r.images.rows_estimate = vec![2, 2, 2];
+        r.wrapped.width = usize::MAX; // force the re-wrap that lays them out
+        r.ensure_wrapped(40);
+        r.viewport_lines = 100;
+        r.scroll = 0;
+        assert_eq!(
+            r.visible_elements(HintKind::Image),
+            vec![1],
+            "equations are not badged — only the real figure is"
+        );
+        // The badge index and the viewer's figure list must agree exactly, or the
+        // nearest-match in `select_image` opens the wrong figure.
+        let figs = r.figures(false);
+        assert_eq!(figs.len(), 1, "the viewer lists only the real figure");
+        assert_eq!(figs[0].image_index, 1, "and under the badged index");
+    }
+
     #[test]
     fn hold_reflow_position_keeps_the_fraction_across_a_rewrap() {
         // A chapter long enough that changing the measure changes the line count.
@@ -2574,6 +2616,19 @@ mod tests {
             data: vec![1, 2, 3, 4],
             caption: Vec::new(),
             math: false,
+            width: delryn_model::ImageWidth::Auto,
+            ink: None,
+        }
+    }
+
+    /// A display-equation raster: an image block like any other, but `math`.
+    fn math_img() -> Block {
+        Block::Image {
+            src: "eq.png".into(),
+            alt: String::new(),
+            data: vec![1, 2, 3, 4],
+            caption: Vec::new(),
+            math: true,
             width: delryn_model::ImageWidth::Auto,
             ink: None,
         }
