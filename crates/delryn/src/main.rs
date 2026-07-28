@@ -215,9 +215,12 @@ impl StderrRedirect {
 }
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> {
-    draw(terminal, app, sync)?;
+    draw(terminal, app, sync, false)?;
     let mut last_draw = Instant::now();
     let mut dirty = false;
+    // A pending full redraw (layout change / overlay toggle). Held across
+    // iterations so a request made mid-throttle still reaches the next frame.
+    let mut full_redraw = false;
     // Tracks overlay open/closed so a toggle can force a full repaint — a closed
     // popup over an inline image otherwise leaves a ghost the cell-diff skips.
     let mut overlay_open = app.any_overlay_open();
@@ -345,18 +348,23 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         let overlay_now = app.any_overlay_open();
         if overlay_now != overlay_open {
             overlay_open = overlay_now;
-            terminal.clear()?;
+            full_redraw = true;
             dirty = true;
         }
-        // A code fold/unfold reflows in place and moves inline images; force the same
-        // full repaint so the old placement doesn't linger until the next scroll.
+        // A reflow in place — a code fold/unfold, or a chrome/width toggle that
+        // resizes the text area — moves every inline image; force the same full
+        // repaint so old placements don't linger until the next scroll.
         if app.take_repaint() {
-            terminal.clear()?;
+            full_redraw = true;
             dirty = true;
         }
 
+        // The request rides along to the next drawn frame rather than clearing the
+        // screen here: the throttle can hold a bare, terminal-coloured screen for a
+        // whole frame interval, which mashing a chrome toggle turns into a strobe.
         if dirty && last_draw.elapsed() >= FRAME {
-            draw(terminal, app, sync)?;
+            draw(terminal, app, sync, full_redraw)?;
+            full_redraw = false;
             last_draw = Instant::now();
             dirty = false;
         }
@@ -412,9 +420,27 @@ fn register_library_dirs(args: &[String], require_dir: bool) {
 /// Render one frame, bracketed in synchronized output (DEC mode 2026) so the
 /// terminal presents it atomically — no tearing or jitter while scrolling.
 /// Terminals that don't support it ignore the escape sequences.
-fn draw(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> {
+fn draw(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    sync: bool,
+    full_redraw: bool,
+) -> Result<()> {
     if sync {
         execute!(io::stdout(), BeginSynchronizedUpdate)?;
+    }
+    // A layout change needs every cell rewritten and every image re-placed: the
+    // clear resets ratatui's cell-diff, and terminal graphics live outside that
+    // grid, so the decks must forget what they believe is on screen or their
+    // "nothing changed" fast path would leave the images gone.
+    //
+    // It has to happen *inside* the synchronized frame. A clear paints the
+    // terminal's own background, so presenting it on its own — as a separate
+    // frame, or for however long the frame throttle holds it — flashes bright on
+    // any theme darker than the terminal.
+    if full_redraw {
+        terminal.clear()?;
+        app.restage_images();
     }
     let t_draw = Instant::now();
     terminal.draw(|f| view::render(f, app))?;

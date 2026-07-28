@@ -158,6 +158,15 @@ impl PageDeck {
         self.shown.iter().map(|t| t.section).collect()
     }
 
+    /// Forget what is placed on screen, keeping transmitted page data resident, so
+    /// the next [`render`](Self::render) re-places it. Pairs with a full repaint —
+    /// clearing the screen drops the terminal's placements, and without this the
+    /// `shows` fast path would leave the page blank. See `InlineDeck::restage`.
+    pub fn restage(&mut self) {
+        self.shown.clear();
+        self.shown_policy = None;
+    }
+
     /// Reconcile the terminal to show `targets`, returning the escapes to write.
     /// `png_for` yields a section's themed PNG once ready — but it's only consulted
     /// for a page that needs (re)transmitting (new, or re-themed); a page already

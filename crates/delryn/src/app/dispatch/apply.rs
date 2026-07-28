@@ -1,8 +1,8 @@
 //! The `Action` dispatcher: `App::apply` routes a resolved [`Action`] to its
 //! effect (config toggles, navigation, overlays, persistence), with the reader
 //! navigation cluster split into the free `apply_nav` so the router stays flat.
-//! A reflow-affecting change snapshots [`reflow_key`] before/after so the reader
-//! preserves its reading position across the re-wrap.
+//! A layout-affecting change snapshots [`layout_key`] before/after so the reader
+//! preserves its reading position across the re-wrap and repaints in full.
 
 use super::super::*;
 use crate::HighlightColor;
@@ -10,36 +10,48 @@ use crate::config::{Config, ViewMode};
 
 /// The config knobs that change how a section wraps or how wide the reading
 /// measure is. When any of them changes (a view-mode switch, a reading preset, a
-/// width/spacing tweak), the section re-wraps, so the reader preserves its
-/// reading position across the change via [`Reader::hold_reflow_position`].
-fn reflow_key(
-    c: &Config,
-) -> (
-    ViewMode,
-    u16,
-    u16,
-    u8,
-    u8,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    usize,
-) {
-    (
-        c.view_mode,
-        c.side_padding,
-        c.page_gap,
-        c.line_spacing,
-        c.paragraph_spacing,
-        c.justify,
-        c.tidy_spacing,
-        c.code_wrap,
-        c.table_wrap,
-        c.code_fold,
-        c.code_fold_threshold,
-    )
+/// width/spacing tweak, or toggling a piece of chrome), the section re-wraps, so
+/// the reader preserves its reading position across the change via
+/// [`Reader::hold_reflow_position`] and forces a full repaint.
+///
+/// The chrome flags belong here even though they aren't wrap *settings*: hiding
+/// the sidebar or the status bar resizes the text area, which re-wraps the
+/// section and moves every inline image exactly like a width change does.
+#[derive(PartialEq)]
+struct LayoutKey {
+    view_mode: ViewMode,
+    side_padding: u16,
+    page_gap: u16,
+    line_spacing: u8,
+    paragraph_spacing: u8,
+    justify: bool,
+    tidy_spacing: bool,
+    code_wrap: bool,
+    table_wrap: bool,
+    code_fold: bool,
+    code_fold_threshold: usize,
+    focus_mode: bool,
+    show_sidebar: bool,
+    show_status: bool,
+}
+
+fn layout_key(c: &Config) -> LayoutKey {
+    LayoutKey {
+        view_mode: c.view_mode,
+        side_padding: c.side_padding,
+        page_gap: c.page_gap,
+        line_spacing: c.line_spacing,
+        paragraph_spacing: c.paragraph_spacing,
+        justify: c.justify,
+        tidy_spacing: c.tidy_spacing,
+        code_wrap: c.code_wrap,
+        table_wrap: c.table_wrap,
+        code_fold: c.code_fold,
+        code_fold_threshold: c.code_fold_threshold,
+        focus_mode: c.focus_mode,
+        show_sidebar: c.show_sidebar,
+        show_status: c.show_status,
+    }
 }
 
 impl App {
@@ -59,7 +71,7 @@ impl App {
         let paged = self.config.paged || reader.is_paged_image();
         // Snapshot the wrap-affecting settings so we can preserve the reading
         // position if this action re-wraps the text (see below).
-        let wrap_before = reflow_key(&self.config);
+        let layout_before = layout_key(&self.config);
         match action {
             Action::Quit => self.should_quit = true,
             Action::Back => {
@@ -412,8 +424,13 @@ impl App {
         // If this action changed a wrap-affecting setting (view mode, width,
         // spacing, preset), the section re-wraps next frame — anchor the reading
         // position so it stays put instead of drifting to a stale line offset.
-        if reflow_key(&self.config) != wrap_before {
+        if layout_key(&self.config) != layout_before {
             reader.hold_reflow_position();
+            // The re-wrap moves every inline image, and terminal graphics don't
+            // compose with the cell-diff: without a full repaint the old placements
+            // linger over the new text and the diff skips cells it believes are
+            // unchanged, so repeated toggles smear two layouts together.
+            reader.request_repaint();
         }
 
         // Persist on chapter change or a settings change (cheap).
@@ -569,5 +586,68 @@ fn apply_nav(reader: &mut Reader, action: Action, paged: bool, flip_ready: bool)
             reader.jump_to(n.saturating_sub(1).min(last), None);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hiding the sidebar or the status bar, or entering focus mode, resizes the
+    /// text area — the section re-wraps and every inline image moves. Those flags
+    /// were missing from the layout key, so `f` (focus) and `z` (status) skipped
+    /// both the reading-position anchor and the full repaint, and terminal graphics
+    /// don't compose with the cell-diff: repeated toggles smeared two layouts
+    /// together and left ghost images behind.
+    #[test]
+    fn chrome_toggles_count_as_layout_changes() {
+        let base = Config::default();
+        for (name, changed) in [
+            (
+                "focus_mode",
+                Config {
+                    focus_mode: !base.focus_mode,
+                    ..Config::default()
+                },
+            ),
+            (
+                "show_sidebar",
+                Config {
+                    show_sidebar: !base.show_sidebar,
+                    ..Config::default()
+                },
+            ),
+            (
+                "show_status",
+                Config {
+                    show_status: !base.show_status,
+                    ..Config::default()
+                },
+            ),
+        ] {
+            assert!(
+                layout_key(&changed) != layout_key(&base),
+                "toggling {name} must count as a layout change"
+            );
+        }
+    }
+
+    /// The wrap settings still belong to the key, and an unrelated knob doesn't.
+    #[test]
+    fn layout_key_tracks_wrap_settings_but_not_unrelated_ones() {
+        let base = Config::default();
+        let wider = Config {
+            side_padding: base.side_padding + 1,
+            ..Config::default()
+        };
+        assert!(layout_key(&wider) != layout_key(&base), "width re-wraps");
+        let recoloured = Config {
+            theme: base.theme.next(),
+            ..Config::default()
+        };
+        assert!(
+            layout_key(&recoloured) == layout_key(&base),
+            "a theme change re-colours but never re-wraps"
+        );
     }
 }

@@ -757,6 +757,15 @@ impl App {
         out
     }
 
+    /// Forget which images the terminal is showing so the next frame re-places them
+    /// all (data stays resident — no re-transmit). The loop calls this with every
+    /// `terminal.clear()`: the clear drops the terminal's placements, so without it
+    /// each deck's "nothing changed" fast path would leave the screen imageless.
+    pub fn restage_images(&mut self) {
+        self.inline_deck.restage();
+        self.page_deck.restage();
+    }
+
     /// Text queued for the system clipboard (OSC 52), if any.
     pub fn take_clipboard(&mut self) -> Option<String> {
         self.reader.as_mut().and_then(|r| r.take_clipboard())
