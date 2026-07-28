@@ -152,6 +152,16 @@ impl InlineDeck {
         out
     }
 
+    /// Forget what is placed on screen while keeping the transmitted image *data*
+    /// resident, so the next [`render`](Self::render) re-places everything without
+    /// re-transmitting. Pairs with the loop's full repaint: clearing the screen drops
+    /// the terminal's *placements* but not its stored images, so without this the
+    /// "nothing changed" fast path in `render` would emit nothing and the images would
+    /// stay gone until some target happened to move.
+    pub fn restage(&mut self) {
+        self.shown.clear();
+    }
+
     /// Free every resident image (`d=I` per id) and forget all placements — for leaving
     /// the reader or a full restage. Returns the escapes to write.
     pub fn clear(&mut self) -> Vec<String> {
@@ -228,6 +238,27 @@ mod tests {
         assert!(out.iter().any(|e| e.contains("d=i")), "drops old placement");
         assert!(out.iter().any(|e| e.contains("a=p")), "re-places");
         assert!(!out.iter().any(|e| e.contains("a=t")), "no re-transmit");
+    }
+
+    /// A full repaint clears the screen, which drops the terminal's placements but
+    /// keeps its stored image data. Without `restage` the deck still believed those
+    /// placements were live, so the unchanged-targets fast path emitted nothing and
+    /// the images stayed gone — repeatedly toggling chrome smeared the screen.
+    #[test]
+    fn restage_re_places_everything_without_re_transmitting() {
+        let mut deck = InlineDeck::default();
+        let t = [target(0, 3, 4)];
+        deck.render(&t, |_| Some(vec![1, 2, 3]));
+        assert!(deck.shows(&t), "placed and settled");
+
+        deck.restage();
+        assert!(!deck.shows(&t), "the screen is no longer trusted");
+        let out = deck.render(&t, |_| panic!("data stays resident: no re-fetch"));
+        assert!(out.iter().any(|e| e.contains("a=p")), "re-places the image");
+        assert!(
+            !out.iter().any(|e| e.contains("a=t")),
+            "without re-transmit"
+        );
     }
 
     #[test]
