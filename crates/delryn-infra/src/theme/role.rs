@@ -33,6 +33,11 @@ pub enum Role {
     Marker,
     /// Rules, faint separators, de-emphasised text, footnotes, the code gutter.
     Muted,
+    /// A lower-tier heading (h3 and below): the heading ink without the weight, so
+    /// it still reads as structure but sits clearly under a [`Role::Heading`].
+    /// Terminals have no font weights to grade, so the hierarchy is carried by
+    /// colour, bold, and italic instead.
+    Subheading,
     /// Display equation (accented like a heading).
     Math,
     /// Inline math set within a line of prose: the body ink nudged subtly toward the
@@ -102,6 +107,7 @@ pub(super) fn resolve(t: &Theme, role: Role) -> Resolved {
     match role {
         Body => plain(t.fg),
         Heading => with(t.heading, Modifier::BOLD),
+        Subheading => with(t.heading, Modifier::ITALIC),
         Quote => with(t.quote, Modifier::ITALIC),
         Link => plain(t.link),
         Code => plain(t.code_fg),

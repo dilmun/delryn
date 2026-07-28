@@ -947,7 +947,18 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, decor: &LineDecor) -> Line<'stat
 fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
     // The line kind's base role — Heading/Quote/Math carry their own emphasis.
     let role = match kind {
-        LineKind::Heading(_) => Role::Heading,
+        // Grade the heading by depth. Every level used to resolve to one role, so a
+        // section and its subsection looked identical and a numbered paper read as
+        // undifferentiated bold text. A terminal has no font sizes or weights to
+        // grade with, so the tiers are carried by colour, bold, and italic:
+        // accent+bold for a chapter title, heading+bold for a section, heading+italic
+        // below that, and muted for the deepest levels.
+        LineKind::Heading(level) => match level {
+            0 | 1 => Role::Title,
+            2 => Role::Heading,
+            3 => Role::Subheading,
+            _ => Role::Muted,
+        },
         LineKind::Quote => Role::Quote,
         LineKind::Math => Role::Math, // display equations, accented
         // Rules, the code gutter / unhighlighted code, and footnotes read muted.

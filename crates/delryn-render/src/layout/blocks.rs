@@ -647,3 +647,119 @@ mod tests {
         assert!(joined.contains("the cited source"));
     }
 }
+
+#[cfg(test)]
+mod heading_spacing_tests {
+    use super::super::*;
+    use delryn_model::Span;
+
+    fn opts(para_spacing: u8) -> WrapOpts<'static> {
+        WrapOpts {
+            width: 40,
+            para_spacing,
+            ..Default::default()
+        }
+    }
+
+    fn para(t: &str) -> Block {
+        Block::Para {
+            spans: vec![Span::plain(t)],
+            indent: 0,
+            quote: false,
+            marker: None,
+        }
+    }
+
+    fn heading(level: u8, t: &str) -> Block {
+        Block::Heading {
+            level,
+            spans: vec![Span::plain(t)],
+        }
+    }
+
+    /// Blank rows immediately before the line whose text is `needle`.
+    fn blanks_before(lines: &[DisplayLine], needle: &str) -> usize {
+        let at = lines
+            .iter()
+            .position(|l| l.text().contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} not laid out"));
+        lines[..at]
+            .iter()
+            .rev()
+            .take_while(|l| l.text().trim().is_empty())
+            .count()
+    }
+
+    /// A heading is spaced typographically: more air above than below, so it
+    /// groups with the text it introduces rather than floating between two
+    /// paragraphs. The gap below is reduced, never closed — sitting the heading
+    /// directly on its first line reads as collision, not grouping.
+    #[test]
+    fn a_heading_has_more_air_above_than_below() {
+        let blocks = vec![
+            para("Body before."),
+            heading(2, "Related Work"),
+            para("Body after."),
+        ];
+        let lines = wrap_blocks(&blocks, &opts(1), &[]);
+        let above = blanks_before(&lines, "Related Work");
+        let below = blanks_before(&lines, "Body after.");
+        assert!(
+            above > below,
+            "a heading must lean toward its own text (above {above}, below {below})"
+        );
+        assert!(below >= 1, "but must not touch it (below {below})");
+    }
+
+    /// The rule scales with the reader's paragraph-spacing setting rather than
+    /// hard-coding a gap, so a dense setting stays dense.
+    #[test]
+    fn heading_spacing_follows_the_paragraph_setting() {
+        let blocks = vec![
+            para("Body before."),
+            heading(2, "Related Work"),
+            para("Body after."),
+        ];
+        for spacing in [1u8, 2, 3] {
+            let lines = wrap_blocks(&blocks, &opts(spacing), &[]);
+            assert_eq!(
+                blanks_before(&lines, "Related Work"),
+                spacing as usize + 1,
+                "one row more than the body gap at spacing {spacing}"
+            );
+            assert_eq!(
+                blanks_before(&lines, "Body after."),
+                spacing as usize,
+                "the body gap is unchanged at spacing {spacing}"
+            );
+        }
+    }
+
+    /// Back-to-back headings (a section immediately followed by its subsection)
+    /// are already a unit, so the subsection gets no extra row driving them apart.
+    #[test]
+    fn consecutive_headings_stay_together() {
+        let blocks = vec![
+            para("Body."),
+            heading(2, "Related Work"),
+            heading(3, "Zero-Shot"),
+            para("After."),
+        ];
+        let lines = wrap_blocks(&blocks, &opts(1), &[]);
+        assert_eq!(
+            blanks_before(&lines, "Zero-Shot"),
+            1,
+            "a subsection keeps the plain body gap under its parent heading"
+        );
+    }
+
+    /// A heading opening a section gets no leading blank — no gap at the top.
+    #[test]
+    fn a_leading_heading_adds_no_blank_above() {
+        let lines = wrap_blocks(&[heading(1, "Title"), para("Body.")], &opts(1), &[]);
+        assert!(
+            !lines[0].text().trim().is_empty(),
+            "the first line is the heading itself, not padding"
+        );
+    }
+}

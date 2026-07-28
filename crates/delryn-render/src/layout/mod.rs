@@ -169,6 +169,8 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
     let para_spacing = opts.para_spacing;
     let mut out = Vec::new();
     let mut prev_item = false;
+    // A heading binds to the text it introduces (see the spacing rule below).
+    let mut prev_heading = false;
     let mut first = true;
     let mut img_idx = 0usize;
     let mut code_idx = 0usize;
@@ -191,9 +193,21 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
 
         // Spacing between blocks: blank line(s), except between consecutive list
         // items and around explicit blanks.
+        //
+        // Headings are spaced typographically rather than uniformly: more air
+        // *above* than below, so a heading groups with the text it introduces
+        // instead of floating equidistant between two paragraphs. The gap below is
+        // reduced, never removed — closing it entirely sat the heading directly on
+        // its first line, which reads as collision rather than grouping.
+        let is_heading = matches!(block, Block::Heading { .. });
         let consecutive_items = is_item && prev_item;
         if !(first || matches!(block, Block::Blank) || consecutive_items) {
             for _ in 0..para_spacing {
+                out.push(DisplayLine::blank());
+            }
+            // One extra row above a heading — but not between a heading and its own
+            // subheading, which are already a unit.
+            if is_heading && !prev_heading {
                 out.push(DisplayLine::blank());
             }
         }
@@ -267,6 +281,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
         }
 
         prev_item = is_item;
+        prev_heading = is_heading;
         first = false;
     }
 

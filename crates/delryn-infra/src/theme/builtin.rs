@@ -168,7 +168,10 @@ pub const LIGHT: Theme = Theme {
     name: "light",
     bg: Some(Color::Rgb(0xff, 0xff, 0xff)),
     fg: Color::Rgb(0x1a, 0x1a, 0x1a),
-    heading: Color::Rgb(0x00, 0x00, 0x00),
+    // Was pure black against near-black body ink — indistinguishable, so headings
+    // read as nothing but bold prose. A deep amber separates them at a glance and
+    // stays clear of the blue used for links.
+    heading: Color::Rgb(0x8a, 0x4a, 0x00),
     quote: Color::Rgb(0x6a, 0x6a, 0x6a),
     link: Color::Rgb(0x0b, 0x5c, 0xad),
     muted: Color::Rgb(0x9a, 0x9a, 0x9a),
@@ -180,3 +183,36 @@ pub const LIGHT: Theme = Theme {
     danger: Color::Rgb(0xc0, 0x28, 0x28),
     syntect: "InspiredGitHub",
 };
+
+#[cfg(test)]
+mod contrast_tests {
+    use super::*;
+
+    fn rgb(c: Color) -> Option<(i32, i32, i32)> {
+        match c {
+            Color::Rgb(r, g, b) => Some((r as i32, g as i32, b as i32)),
+            _ => None,
+        }
+    }
+
+    /// A heading has to be visibly *different ink* from body text, not merely bold.
+    /// The `light` theme shipped `#000000` headings over `#1a1a1a` body — a
+    /// difference of 26/255 on one axis, invisible in practice, so every section
+    /// title in a paper read as plain bold prose.
+    #[test]
+    fn every_theme_separates_heading_ink_from_body_ink() {
+        for t in BUILTINS {
+            let (Some(h), Some(f)) = (rgb(t.heading), rgb(t.fg)) else {
+                continue; // a theme deferring to the terminal's own palette
+            };
+            let distance = (h.0 - f.0).abs() + (h.1 - f.1).abs() + (h.2 - f.2).abs();
+            assert!(
+                distance >= 90,
+                "{}: heading {:?} is too close to body {:?} (distance {distance})",
+                t.name,
+                t.heading,
+                t.fg
+            );
+        }
+    }
+}
