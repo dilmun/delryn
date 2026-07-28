@@ -16,7 +16,11 @@ impl LayoutStrategy for CenterStrategy {
         let measure = if ctx.paged {
             ctx.body.width.max(1)
         } else {
-            measure_for(ctx.body.width, ctx.config.side_padding)
+            measure_for(
+                ctx.body.width,
+                ctx.config.side_padding,
+                ctx.config.max_measure,
+            )
         };
         let left_pad = ctx.body.width.saturating_sub(measure) / 2;
         let text_area = centered_column(ctx.body, left_pad, measure);

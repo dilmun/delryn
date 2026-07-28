@@ -226,7 +226,7 @@ the essentials:
 
 delryn reads `~/.config/delryn/config.toml` (TOML), but everything is also editable **live in the
 app** — press `;` for the Settings overlay, which writes the file on close. Highlights: theme,
-typography (margins, line &amp; paragraph spacing, justify), reading mode &amp; direction, image / math
+typography (margins, max text width, line &amp; paragraph spacing, justify), reading mode &amp; direction, image / math
 scaling, PDF trim, and a `[status]` block to compose the status bar (per-zone segment order,
 separator, clock). The same folder holds the library database, cover cache, and `themes/` for
 your own `*.toml` themes.

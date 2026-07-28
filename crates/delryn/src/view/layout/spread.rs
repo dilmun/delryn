@@ -26,6 +26,14 @@ impl LayoutStrategy for SpreadStrategy {
         };
         let usable = body.width.saturating_sub(pad * 2 + gap).max(2);
         let col_w = (usable / 2).max(1);
+        // A reflowed column is a reading column in its own right, so the cap applies
+        // per column rather than to the pair; the surplus falls into the margins,
+        // which are derived from `col_w` below. A page image carries its own
+        // margins and fills its half of the spread, so the cap leaves it alone.
+        let col_w = match config.max_measure {
+            cap if cap > 0 && !ctx.paged => col_w.min(cap),
+            _ => col_w,
+        };
         // Re-center any rounding remainder into the outer margins.
         let side_pad = body.width.saturating_sub(col_w * 2 + gap) / 2;
         let cols = Layout::horizontal([

@@ -53,6 +53,7 @@ pub enum SettingItem {
     Theme,
     ViewMode,
     SidePadding,
+    MaxMeasure,
     PageGap,
     CoverOffset,
     ReadingDirection,
@@ -119,6 +120,7 @@ impl SettingItem {
             SettingItem::Theme => "Theme",
             SettingItem::ViewMode => "View mode",
             SettingItem::SidePadding => "Side margin %",
+            SettingItem::MaxMeasure => "Max text width",
             SettingItem::PageGap => "Two-page gap",
             SettingItem::CoverOffset => "First page alone",
             SettingItem::ReadingDirection => "Reading direction",
@@ -186,6 +188,9 @@ impl SettingItem {
             SettingItem::Theme => "Colour scheme for text, chrome, and recoloured images.",
             SettingItem::ViewMode => "One column of text, or two side-by-side pages.",
             SettingItem::SidePadding => "Blank margin on each side, as a percent of the window.",
+            SettingItem::MaxMeasure => {
+                "Widest the text column may get, in characters; \"off\" lets it fill the margins."
+            }
             SettingItem::PageGap => "Blank columns between the two pages in two-page view.",
             SettingItem::CoverOffset => {
                 "Show the first page by itself, so later spreads pair up like a printed book."
@@ -296,6 +301,7 @@ impl SettingItem {
             SettingItem::Theme => c.theme = d.theme,
             SettingItem::ViewMode => c.view_mode = d.view_mode,
             SettingItem::SidePadding => c.side_padding = d.side_padding,
+            SettingItem::MaxMeasure => c.max_measure = d.max_measure,
             SettingItem::PageGap => c.page_gap = d.page_gap,
             SettingItem::CoverOffset => c.cover_offset = d.cover_offset,
             SettingItem::ReadingDirection => c.reading_direction = d.reading_direction,
@@ -358,6 +364,10 @@ impl SettingItem {
             SettingItem::Theme => c.theme.name.to_string(),
             SettingItem::ViewMode => c.view_mode.label().to_string(),
             SettingItem::SidePadding => c.side_padding.to_string(),
+            SettingItem::MaxMeasure => match c.max_measure {
+                0 => "off".to_string(),
+                n => n.to_string(),
+            },
             SettingItem::PageGap => c.page_gap.to_string(),
             SettingItem::CoverOffset => onoff(c.cover_offset),
             SettingItem::ReadingDirection => match c.reading_direction {
@@ -465,6 +475,7 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(Theme),
                     I(ViewMode),
                     I(SidePadding),
+                    I(MaxMeasure),
                     I(PageGap),
                     I(CoverOffset),
                     I(ReadingDirection),
@@ -1022,7 +1033,9 @@ impl App {
     }
 
     pub(crate) fn settings_change(&mut self, delta: i32) {
-        use crate::config::{MAX_LINE_SPACING, MAX_PAGE_GAP, MAX_SIDE_PADDING};
+        use crate::config::{
+            MAX_LINE_SPACING, MAX_MEASURE_CAP, MAX_PAGE_GAP, MAX_SIDE_PADDING, MIN_MEASURE_CAP,
+        };
         let Overlay::Settings(s) = &self.overlay else {
             return;
         };
@@ -1071,6 +1084,21 @@ impl App {
             SettingItem::SidePadding => {
                 c.side_padding =
                     (c.side_padding as i32 + delta).clamp(0, MAX_SIDE_PADDING as i32) as u16
+            }
+            // "off" (0) sits just below the range rather than inside it: stepping
+            // down off the floor turns the cap off, stepping up from off re-enters
+            // at the floor, so one key reaches every state without a second toggle.
+            SettingItem::MaxMeasure => {
+                let stepped = match (c.max_measure, delta) {
+                    (0, d) if d > 0 => MIN_MEASURE_CAP as i32,
+                    (0, _) => 0,
+                    (n, d) => n as i32 + d,
+                };
+                c.max_measure = if stepped < MIN_MEASURE_CAP as i32 {
+                    0
+                } else {
+                    stepped.min(MAX_MEASURE_CAP as i32) as u16
+                };
             }
             SettingItem::PageGap => {
                 c.page_gap = (c.page_gap as i32 + delta).clamp(0, MAX_PAGE_GAP as i32) as u16

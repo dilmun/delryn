@@ -85,6 +85,11 @@ pub const MAX_PAGE_GAP: u16 = 16;
 /// Smallest text column we'll ever wrap to, so heavy padding on a narrow
 /// terminal still leaves a readable line.
 pub const MIN_TEXT_COLS: u16 = 20;
+/// Bounds for the reading-column cap (`Config::max_measure`), in characters.
+/// `0` means uncapped; anything else is held inside this range, which brackets
+/// the 45–75 characters prose is comfortable at.
+pub const MIN_MEASURE_CAP: u16 = 40;
+pub const MAX_MEASURE_CAP: u16 = 160;
 /// Maximum extra blank lines between text lines.
 pub const MAX_LINE_SPACING: u8 = 3;
 /// Upper bound for the PDF margin-trim crop (percent per edge). Capped well below
@@ -177,6 +182,13 @@ pub struct Config {
     /// Text padding from each edge, as a percent of the content pane width, so
     /// the reading column scales with the window. Applied in every view mode.
     pub side_padding: u16,
+    /// Widest the reading column may grow, in characters — `0` for no cap.
+    ///
+    /// Padding alone is a *percentage*, so on a wide terminal the column widens
+    /// with the window and the line outruns what the eye can track back from. The
+    /// cap stops it at a measure and lets the margins take the rest, which is what
+    /// keeps a maximised window reading like a page instead of a wall.
+    pub max_measure: u16,
     /// Gap (in cells) between the two columns of the two-page spread.
     pub page_gap: u16,
     /// In two-page mode, show the first page alone (like a book cover), then pair
@@ -321,9 +333,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             // Wide enough to read like a book rather than a terminal: the column
-            // keeps a tenth of the pane as margin on each side, which lands a
-            // typical window near the ~66-character measure prose is set to.
+            // keeps a tenth of the pane as margin on each side, and stops growing
+            // at the measure prose is comfortable at however wide the window gets.
             side_padding: 10,
+            max_measure: 72,
             page_gap: 5,
             cover_offset: false,
             reading_direction: ReadingDirection::default(),
@@ -451,16 +464,9 @@ impl Config {
     /// The preset the live reading settings correspond to, or `Custom` when they
     /// match none (derived, so it stays honest after any individual tweak).
     pub fn reading_mode(&self) -> ReadingMode {
-        let current = ReadingProfile {
-            side_padding: self.side_padding,
-            line_spacing: self.line_spacing,
-            paragraph_spacing: self.paragraph_spacing,
-            show_sidebar: self.show_sidebar,
-            show_status: self.show_status,
-            chapter_lock: self.chapter_lock,
-            paged: self.paged,
-        };
+        let current = self.reading_profile();
         [
+            ReadingMode::Default,
             ReadingMode::Study,
             ReadingMode::Research,
             ReadingMode::Presentation,
@@ -470,18 +476,32 @@ impl Config {
         .unwrap_or(ReadingMode::Custom)
     }
 
+    /// The live settings as a profile, for comparison against the presets.
+    pub(crate) fn reading_profile(&self) -> ReadingProfile {
+        ReadingProfile {
+            side_padding: self.side_padding,
+            max_measure: self.max_measure,
+            line_spacing: self.line_spacing,
+            paragraph_spacing: self.paragraph_spacing,
+            justify: self.justify,
+            continuous: self.continuous,
+            chapter_lock: self.chapter_lock,
+        }
+    }
+
     /// Apply a reading-mode preset to the live settings (a no-op for `Custom`).
     pub fn apply_reading_mode(&mut self, mode: ReadingMode) {
         let Some(p) = mode.profile() else {
             return;
         };
         self.side_padding = p.side_padding;
+        self.max_measure = p.max_measure;
         self.line_spacing = p.line_spacing;
         self.paragraph_spacing = p.paragraph_spacing;
-        self.show_sidebar = p.show_sidebar;
-        self.show_status = p.show_status;
+        self.justify = p.justify;
+        self.continuous = p.continuous;
         self.chapter_lock = p.chapter_lock;
-        self.paged = p.paged;
+        self.focus_mode = mode.hides_chrome();
     }
 
     /// Load global defaults from `config.toml`, falling back to built-ins.
@@ -498,6 +518,10 @@ impl Config {
             return Config::default();
         };
         c.side_padding = c.side_padding.min(MAX_SIDE_PADDING);
+        // 0 is a real value here (uncapped), so it survives the clamp intact.
+        if c.max_measure != 0 {
+            c.max_measure = c.max_measure.clamp(MIN_MEASURE_CAP, MAX_MEASURE_CAP);
+        }
         c.page_gap = c.page_gap.min(MAX_PAGE_GAP);
         c.pdf_margin_pct = c.pdf_margin_pct.min(MAX_PDF_MARGIN_PCT);
         c.line_spacing = c.line_spacing.min(MAX_LINE_SPACING);
@@ -533,24 +557,37 @@ mod tests {
     #[test]
     fn reading_mode_apply_and_derive() {
         let mut c = Config::default();
-        // The built-in defaults are not a preset.
-        assert_eq!(c.reading_mode(), ReadingMode::Custom);
 
         // Applying a preset sets its fields and is then recognised.
         c.apply_reading_mode(ReadingMode::Study);
         assert_eq!(c.reading_mode(), ReadingMode::Study);
         assert!(c.chapter_lock);
 
-        // Presets leave the page layout (view_mode) untouched — it's the reader's
-        // choice, not something a preset should override.
+        // Presets leave the reader's own layout choices alone: how many columns
+        // (`view_mode`) and reflow-vs-page-flips (`paged`) are how someone likes to
+        // read, not what they're reading for.
         c.view_mode = ViewMode::TwoPage;
+        c.paged = true;
         c.apply_reading_mode(ReadingMode::Research);
         assert_eq!(c.view_mode, ViewMode::TwoPage);
+        assert!(c.paged);
         assert_eq!(c.reading_mode(), ReadingMode::Research);
 
+        // Chrome is hidden through the transient `focus_mode`, so the persisted
+        // preferences survive a preset that strips the window bare.
         c.apply_reading_mode(ReadingMode::Presentation);
         assert_eq!(c.reading_mode(), ReadingMode::Presentation);
-        assert!(c.paged && !c.show_sidebar && !c.show_status);
+        assert!(c.focus_mode);
+        assert!(
+            c.show_sidebar && c.show_status,
+            "the saved chrome preferences are untouched"
+        );
+
+        // …and because chrome is applied rather than compared, toggling focus
+        // doesn't rename the preset. `focus_mode` is never persisted, so if it
+        // decided identity the label would also flip on the next restart.
+        c.focus_mode = !c.focus_mode;
+        assert_eq!(c.reading_mode(), ReadingMode::Presentation);
 
         // A manual tweak drops the derived mode back to Custom (stays honest).
         c.side_padding += 1;
@@ -560,6 +597,30 @@ mod tests {
         let before = c.side_padding;
         c.apply_reading_mode(ReadingMode::Custom);
         assert_eq!(c.side_padding, before);
+    }
+
+    /// A fresh install has to name the state it shipped in. If the two ever drift
+    /// apart the reader opens their first book in a mode called `custom`, and
+    /// cycling presets has no way back to the defaults — so the profile is pinned
+    /// to `Config::default()` here rather than left to be kept in sync by hand.
+    #[test]
+    fn the_shipped_defaults_are_the_default_preset() {
+        let c = Config::default();
+        assert_eq!(c.reading_mode(), ReadingMode::Default);
+        assert_eq!(
+            ReadingMode::Default.profile(),
+            Some(c.reading_profile()),
+            "the Default preset and Config::default() have drifted apart"
+        );
+        // And applying it over a mangled config restores exactly that state.
+        let mut m = Config {
+            side_padding: 33,
+            max_measure: 0,
+            justify: true,
+            ..Config::default()
+        };
+        m.apply_reading_mode(ReadingMode::Default);
+        assert_eq!(m.reading_profile(), c.reading_profile());
     }
 
     /// Format guard: a config written in the historical on-disk shape (option
