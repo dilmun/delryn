@@ -142,30 +142,6 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
     let dim = theme.style(Role::StatusDim);
     let mut bar = StatusBar::new();
 
-    // The tag prompt owns the row while active.
-    if let Overlay::TagEdit(t) = &app.overlay {
-        let label = if t.multi {
-            format!("Tag {} books", t.targets.len())
-        } else {
-            "Edit tags".to_string()
-        };
-        bar.text(
-            SegmentId::Context,
-            Zone::Left,
-            9,
-            format!("{label}: {}", t.input.text()),
-            bold,
-        );
-        bar.text(
-            SegmentId::Keys,
-            Zone::Right,
-            2,
-            "type · ←→ move · ^U clear · ⏎ save · Esc cancel",
-            dim,
-        );
-        return bar;
-    }
-
     let marked = app.library.marked.len();
     let visual = app.library.visual.is_some();
     if let Some(flash) = &app.library.flash {
@@ -277,10 +253,6 @@ pub fn overlay_bar(app: &App, theme: Theme) -> Option<StatusBar> {
 /// The (context label, shortcut legend) for the active overlay, if any. Highest
 /// to lowest precedence matches how `on_key` routes input.
 fn legend(app: &App) -> Option<(String, String)> {
-    // A pending yes/no confirmation is modal — it owns the bar above everything.
-    if let Some(c) = &app.pending_confirm {
-        return Some((c.question.clone(), "y/⏎ confirm · n/Esc cancel".into()));
-    }
     if matches!(app.overlay, Overlay::Settings(_)) {
         return Some((
             "Settings".into(),
@@ -366,4 +338,29 @@ fn editor_legend(ed: &MetaEdit) -> (String, String) {
         }
     };
     (state, keys.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    /// The status bar reports state; it never hosts a prompt. Confirmations, tag
+    /// editing, the library filter, and in-book search are modals now (see
+    /// `view::dialog`) — a prompt down here was missed, and its text entry
+    /// silently swallowed every shortcut. This pins the rule against a relapse.
+    #[test]
+    fn no_prompt_text_is_produced_for_the_status_bar() {
+        // Scan only the module's real code: this test's own needles live below.
+        let full = include_str!("producers.rs");
+        let src = full.split("#[cfg(test)]").next().unwrap_or(full);
+        for needle in [
+            "pending_confirm",
+            "Overlay::TagEdit",
+            "confirm · n/Esc",
+            "⏎ save · Esc cancel",
+        ] {
+            assert!(
+                !src.contains(needle),
+                "{needle:?} is prompt UI and belongs in view::dialog, not the status bar"
+            );
+        }
+    }
 }

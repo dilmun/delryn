@@ -93,7 +93,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 
     // Visual mode always shows its command hint, even with the status bar hidden.
-    let status_h = u16::from(show_status || reader.search.searching || reader.selection_active());
+    // Search is a modal now, so it no longer needs a status row of its own; the
+    // visual-selection legend still does, since it is a live mode not a prompt.
+    let status_h = u16::from(show_status || reader.selection_active());
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(area);
     let body = rows[0];
     let status = rows[1];
@@ -114,11 +116,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_sidebar(f, sb, reader, theme);
     }
     render_content(f, content_area, reader, config, theme, images);
-    if reader.search.searching {
-        let style = theme.style(Role::StatusBar);
-        let prompt = format!("[{}] /{}", reader.search.mode.label(), reader.search.input);
-        f.render_widget(Paragraph::new(Line::raw(prompt)).style(style), status);
-    } else if reader.selection_active() {
+    if reader.selection_active() {
         let style = theme.style(Role::StatusBar);
         let hint = if reader.selection_selecting() {
             " SELECT · h/l/w/b/j/k extend · ^d/^u ½page · y copy · 1-5/H highlight · a note · K look up · Esc "
@@ -132,12 +130,30 @@ pub fn render(f: &mut Frame, app: &mut App) {
 }
 
 fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
+    // While the contents filter is open, the pane's footer becomes the query line
+    // with a live match count, so the sidebar explains its own narrowed state.
+    let filter_footer = reader.sidebar_filter.as_ref().map(|input| {
+        let n = reader.outline_visible().len();
+        let count = match n {
+            0 => "no matches".to_string(),
+            1 => "1 match".to_string(),
+            n => format!("{n} matches"),
+        };
+        format!(" /{}\u{2588} · {count} ", input.text())
+    });
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.style(Role::Border))
         .title(Span::styled(" Contents ", theme.style(Role::Title)))
         .style(theme.text_style());
+    let block = match &filter_footer {
+        Some(text) => block.title_bottom(
+            Line::from(Span::styled(text.clone(), theme.style(Role::Accent)))
+                .alignment(Alignment::Center),
+        ),
+        None => block,
+    };
     let inner = block.inner(area);
     f.render_widget(block, area);
 

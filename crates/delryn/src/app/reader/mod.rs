@@ -240,6 +240,10 @@ pub struct Reader {
     scroll_pending: isize,
     pub focus: Focus,
     pub sidebar_sel: usize,
+    /// The sidebar's `/` filter. While `Some` it owns the keyboard and the
+    /// contents list shows only matching entries, ignoring collapsed parents so a
+    /// match is always reachable. Enter jumps to the selection; Esc clears it.
+    pub sidebar_filter: Option<crate::ui::TextInput>,
     /// Top visible row of the TOC viewport (free mouse scroll / centered cursor).
     pub sidebar_offset: usize,
     /// TOC viewport height in rows, refreshed each draw.
@@ -387,6 +391,7 @@ impl Reader {
             scroll_pending: 0,
             focus: Focus::Content,
             sidebar_sel: 0,
+            sidebar_filter: None,
             sidebar_offset: 0,
             sidebar_h: 1,
             viewport_lines: 1,
@@ -1482,7 +1487,7 @@ mod tests {
         }
     }
 
-    fn para() -> Block {
+    pub(super) fn para() -> Block {
         Block::Para {
             spans: vec![Span::plain("lorem ipsum dolor sit amet ".repeat(4))],
             indent: 0,
@@ -1497,7 +1502,7 @@ mod tests {
         }
     }
 
-    fn reader_with(blocks: Vec<Block>) -> Reader {
+    pub(super) fn reader_with(blocks: Vec<Block>) -> Reader {
         let mut r = Reader::new(Box::new(MockDoc::new(vec![blocks]))).unwrap();
         r.last_measure = 40;
         r.ensure_wrapped(40);

@@ -20,6 +20,29 @@ pub struct Settings {
     /// user is typing. `None` outside that inline edit. Only the Sources tab uses
     /// it; the input owns the keyboard while it's `Some`.
     pub adding: Option<TextInput>,
+    /// The `/` filter. While `Some` the text is being edited; Enter commits it to
+    /// `query` (keeping the results, returning the keys to the list) and Esc drops
+    /// it. Either way `query` is what the view filters by.
+    pub filter: Option<TextInput>,
+    /// The committed filter text, empty when not filtering.
+    pub query: String,
+}
+
+impl Settings {
+    /// The filter in effect right now — the live edit if one is open, else the
+    /// committed query.
+    pub fn active_query(&self) -> &str {
+        match &self.filter {
+            Some(input) => input.text(),
+            None => &self.query,
+        }
+    }
+
+    /// Whether a filter is narrowing the list (so the view shows matches across
+    /// every tab instead of the active tab's rows).
+    pub fn filtering(&self) -> bool {
+        !self.active_query().trim().is_empty()
+    }
 }
 
 /// One adjustable setting (identity, not position — so section headers can be
@@ -152,6 +175,181 @@ impl SettingItem {
         }
     }
 
+    /// One line explaining what the option does, shown under the focused row.
+    /// Labels alone are ambiguous ("Tidy spacing", "Image & equation sizing"), so
+    /// each says what changes on screen rather than restating the label.
+    pub fn help(self) -> &'static str {
+        match self {
+            SettingItem::ReadingMode => {
+                "A preset that sets several options at once; changing any of them switches to Custom."
+            }
+            SettingItem::Theme => "Colour scheme for text, chrome, and recoloured images.",
+            SettingItem::ViewMode => "One column of text, or two side-by-side pages.",
+            SettingItem::SidePadding => "Blank margin on each side, as a percent of the window.",
+            SettingItem::PageGap => "Blank columns between the two pages in two-page view.",
+            SettingItem::CoverOffset => {
+                "Show the first page by itself, so later spreads pair up like a printed book."
+            }
+            SettingItem::ReadingDirection => {
+                "Right-to-left swaps the page order and side for manga and Arabic/Hebrew books."
+            }
+            SettingItem::LineSpacing => "Blank rows added between every line of text.",
+            SettingItem::ParagraphSpacing => "Blank rows added between paragraphs.",
+            SettingItem::Justify => {
+                "Pad spaces so both edges line up, instead of a ragged right edge."
+            }
+            SettingItem::TidySpacing => {
+                "Collapse runs of blank lines and stray indents from sloppy publisher markup."
+            }
+            SettingItem::ShowSidebar => "Whether the contents sidebar is open when a book opens.",
+            SettingItem::ShowStatus => "Whether the status bar is shown when a book opens.",
+            SettingItem::BoldBorders => "Draw popup and pane borders with a heavier line.",
+            SettingItem::StatusTheme => "Show the current theme name in the status bar.",
+            SettingItem::StatusView => "Show the current view mode in the status bar.",
+            SettingItem::StatusPosition => "Show the chapter/page position in the status bar.",
+            SettingItem::StatusPercent => "Show percent read in the status bar.",
+            SettingItem::StatusGauge => "Show the progress bar in the status bar.",
+            SettingItem::StatusClock => "Show the wall clock in the status bar.",
+            SettingItem::ImageMaxPx => {
+                "Cap the longest side of an image in pixels; off sends it at full resolution."
+            }
+            SettingItem::ImageWidthPct => "How much of the text column a figure fills.",
+            SettingItem::ImageFit => {
+                "Normalized sizes every graphic to the text; publisher size honours the authored width."
+            }
+            SettingItem::ImageMode => {
+                "How images are recoloured for the theme — invert, tint, or leave alone."
+            }
+            SettingItem::GraphicalMath => {
+                "Render display equations as images; off falls back to Unicode approximations."
+            }
+            SettingItem::GraphicalInlineMath => {
+                "Also render equations that sit inside a line of prose, not just standalone ones."
+            }
+            SettingItem::MathScale => "Size equations relative to the surrounding text.",
+            SettingItem::BreakWideEquations => {
+                "Split an equation too wide for the column into stacked lines instead of shrinking it."
+            }
+            SettingItem::CodeWrap => "Wrap long code lines instead of scrolling them sideways.",
+            SettingItem::CodeLineNumbers => "Number the lines in code blocks.",
+            SettingItem::CodeLanguageLabel => "Show the detected language above a code block.",
+            SettingItem::CodeFold => "Collapse long code blocks, expandable with the fold key.",
+            SettingItem::CodeFoldThreshold => "How many lines a code block needs before it folds.",
+            SettingItem::TableWrap => {
+                "Wrap text inside table cells instead of letting wide tables scroll."
+            }
+            SettingItem::Paged => "Move a whole screen at a time instead of scrolling by line.",
+            SettingItem::Continuous => {
+                "Flow the next chapter in as you reach the bottom, with no break between them."
+            }
+            SettingItem::ChapterLock => {
+                "Stop at each chapter's edges instead of crossing into the next."
+            }
+            SettingItem::TrimMargins => {
+                "Crop the white border off PDF pages so the text fills more."
+            }
+            SettingItem::PdfMargin => "How much of a PDF page edge to crop when trimming.",
+            SettingItem::Mouse => "Click, scroll, and select with the mouse.",
+            SettingItem::LookupSdcv => "Look words up in local sdcv dictionaries (needs sdcv).",
+            SettingItem::LookupDictionary => "Look words up in an online dictionary.",
+            SettingItem::LookupWikipedia => "Include a short Wikipedia summary in lookups.",
+            SettingItem::LookupTranslate => "Include a translation in lookups.",
+            SettingItem::TranslateTo => "Language that lookups translate into.",
+            SettingItem::Source(_) => "A folder scanned for books. Press d to remove it.",
+            SettingItem::AddSource => "Type a folder path to scan it for books.",
+            SettingItem::RescanNow => "Re-read every source folder and refresh the library.",
+            SettingItem::LibLayout => "Show the library as a list of rows or a grid of covers.",
+            SettingItem::GridSize => "How large the covers are in grid layout.",
+            SettingItem::Column(_) => "Show this column in the library list.",
+            SettingItem::DupConvertedDelete => {
+                "When resolving duplicates, always mark format-converted copies for deletion."
+            }
+            SettingItem::DupFormat(_) => {
+                "Which format to keep when the same book exists in several. l/h reorders."
+            }
+        }
+    }
+
+    /// Whether this option is an action rather than a value (the Sources tab's
+    /// rows). Actions have nothing to reset and are skipped by reset-all.
+    pub fn is_action(self) -> bool {
+        matches!(
+            self,
+            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow
+        )
+    }
+
+    /// Whether the option currently holds its default. Compared through
+    /// [`value`](Self::value) so it stays correct automatically as options are
+    /// added — a new setting can't be forgotten here the way a hand-written
+    /// per-field comparison would be.
+    pub fn is_default(self, c: &Config) -> bool {
+        self.is_action() || self.value(c) == self.value(&Config::default())
+    }
+
+    /// Restore this option's default. Actions are ignored.
+    pub fn reset(self, c: &mut Config) {
+        let d = Config::default();
+        match self {
+            // A preset writes several fields at once, so re-apply it wholesale.
+            SettingItem::ReadingMode => c.apply_reading_mode(d.reading_mode()),
+            SettingItem::Theme => c.theme = d.theme,
+            SettingItem::ViewMode => c.view_mode = d.view_mode,
+            SettingItem::SidePadding => c.side_padding = d.side_padding,
+            SettingItem::PageGap => c.page_gap = d.page_gap,
+            SettingItem::CoverOffset => c.cover_offset = d.cover_offset,
+            SettingItem::ReadingDirection => c.reading_direction = d.reading_direction,
+            SettingItem::LineSpacing => c.line_spacing = d.line_spacing,
+            SettingItem::ParagraphSpacing => c.paragraph_spacing = d.paragraph_spacing,
+            SettingItem::Justify => c.justify = d.justify,
+            SettingItem::TidySpacing => c.tidy_spacing = d.tidy_spacing,
+            SettingItem::ShowSidebar => c.show_sidebar = d.show_sidebar,
+            SettingItem::ShowStatus => c.show_status = d.show_status,
+            SettingItem::BoldBorders => c.bold_borders = d.bold_borders,
+            SettingItem::StatusTheme => c.status.theme = d.status.theme,
+            SettingItem::StatusView => c.status.view = d.status.view,
+            SettingItem::StatusPosition => c.status.position = d.status.position,
+            SettingItem::StatusPercent => c.status.percent = d.status.percent,
+            SettingItem::StatusGauge => c.status.gauge = d.status.gauge,
+            SettingItem::StatusClock => c.status.clock = d.status.clock,
+            SettingItem::ImageMaxPx => c.image_max_px = d.image_max_px,
+            SettingItem::ImageWidthPct => c.image_width_pct = d.image_width_pct,
+            SettingItem::ImageFit => c.image_fit = d.image_fit,
+            SettingItem::ImageMode => c.image_mode = d.image_mode,
+            SettingItem::GraphicalMath => c.graphical_math = d.graphical_math,
+            SettingItem::GraphicalInlineMath => c.graphical_inline_math = d.graphical_inline_math,
+            SettingItem::MathScale => c.math_scale = d.math_scale,
+            SettingItem::BreakWideEquations => c.break_wide_equations = d.break_wide_equations,
+            SettingItem::CodeWrap => c.code_wrap = d.code_wrap,
+            SettingItem::CodeLineNumbers => c.code_line_numbers = d.code_line_numbers,
+            SettingItem::CodeLanguageLabel => c.code_language_label = d.code_language_label,
+            SettingItem::CodeFold => c.code_fold = d.code_fold,
+            SettingItem::CodeFoldThreshold => c.code_fold_threshold = d.code_fold_threshold,
+            SettingItem::TableWrap => c.table_wrap = d.table_wrap,
+            SettingItem::Paged => c.paged = d.paged,
+            SettingItem::Continuous => c.continuous = d.continuous,
+            SettingItem::ChapterLock => c.chapter_lock = d.chapter_lock,
+            SettingItem::TrimMargins => c.pdf_trim = d.pdf_trim,
+            SettingItem::PdfMargin => c.pdf_margin_pct = d.pdf_margin_pct,
+            SettingItem::Mouse => c.mouse_enabled = d.mouse_enabled,
+            SettingItem::LookupSdcv => c.lookup_sdcv = d.lookup_sdcv,
+            SettingItem::LookupDictionary => c.lookup_dictionary = d.lookup_dictionary,
+            SettingItem::LookupWikipedia => c.lookup_wikipedia = d.lookup_wikipedia,
+            SettingItem::LookupTranslate => c.lookup_translate = d.lookup_translate,
+            SettingItem::TranslateTo => c.translate_to = d.translate_to,
+            SettingItem::LibLayout => c.library_layout = d.library_layout,
+            SettingItem::GridSize => c.library_grid_size = d.library_grid_size,
+            SettingItem::Column(key) => {
+                if d.column_on(key) != c.column_on(key) {
+                    c.toggle_column(key);
+                }
+            }
+            SettingItem::DupConvertedDelete => c.dup_converted_delete = d.dup_converted_delete,
+            SettingItem::DupFormat(_) => c.dup_format_order = d.dup_format_order,
+            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow => {}
+        }
+    }
+
     /// The current value, formatted for display.
     pub fn value(self, c: &Config) -> String {
         let onoff = |b: bool| if b { "on" } else { "off" }.to_string();
@@ -233,7 +431,9 @@ impl SettingItem {
 
 /// A row in the settings popup: a non-selectable section header or a setting.
 pub enum SettingRow {
-    Section(&'static str),
+    /// A non-selectable heading. Owned because the filter view synthesises
+    /// "Tab \u203a Section" breadcrumbs that no static string can express.
+    Section(std::borrow::Cow<'static, str>),
     Item(SettingItem),
 }
 
@@ -259,9 +459,9 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
             tab(
                 "Reading",
                 vec![
-                    S("Profile"),
+                    S("Profile".into()),
                     I(ReadingMode),
-                    S("Typography"),
+                    S("Typography".into()),
                     I(Theme),
                     I(ViewMode),
                     I(SidePadding),
@@ -276,7 +476,7 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
             tab(
                 "Content",
                 vec![
-                    S("Images"),
+                    S("Images".into()),
                     I(ImageMaxPx),
                     I(ImageWidthPct),
                     I(ImageFit),
@@ -285,20 +485,20 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(GraphicalInlineMath),
                     I(MathScale),
                     I(BreakWideEquations),
-                    S("Code"),
+                    S("Code".into()),
                     I(CodeWrap),
                     I(CodeLineNumbers),
                     I(CodeLanguageLabel),
                     I(CodeFold),
                     I(CodeFoldThreshold),
-                    S("Tables & text"),
+                    S("Tables & text".into()),
                     I(TableWrap),
                     I(TidySpacing),
-                    S("Pagination"),
+                    S("Pagination".into()),
                     I(Paged),
                     I(Continuous),
                     I(ChapterLock),
-                    S("PDF"),
+                    S("PDF".into()),
                     I(TrimMargins),
                     I(PdfMargin),
                 ],
@@ -306,11 +506,11 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
             tab(
                 "Chrome",
                 vec![
-                    S("Panes"),
+                    S("Panes".into()),
                     I(ShowSidebar),
                     I(ShowStatus),
                     I(BoldBorders),
-                    S("Status bar segments"),
+                    S("Status bar segments".into()),
                     I(StatusTheme),
                     I(StatusView),
                     I(StatusPosition),
@@ -322,20 +522,20 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
             tab(
                 "Lookup",
                 vec![
-                    S("Word lookup (K)"),
+                    S("Word lookup (K)".into()),
                     I(LookupSdcv),
                     I(LookupDictionary),
                     I(LookupWikipedia),
-                    S("Translation"),
+                    S("Translation".into()),
                     I(LookupTranslate),
                     I(TranslateTo),
                 ],
             ),
-            tab("Input", vec![S("Mouse"), I(Mouse)]),
+            tab("Input", vec![S("Mouse".into()), I(Mouse)]),
         ],
         Mode::Library => {
             // The star + Title columns are always on; the rest are user-toggled.
-            let mut columns = vec![S("Show / hide")];
+            let mut columns = vec![S("Show / hide".into())];
             columns.extend(
                 crate::config::LIB_COLUMNS
                     .iter()
@@ -344,9 +544,9 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
             // Duplicate-resolver preferences: a converted-copies toggle and the
             // per-format keep priority (l/h on a format raises/lowers its rank).
             let mut dups = vec![
-                S("Auto-select"),
+                S("Auto-select".into()),
                 I(DupConvertedDelete),
-                S("Keep priority — l/h"),
+                S("Keep priority — l/h".into()),
             ];
             dups.extend(BookFormat::ALL.iter().map(|f| I(DupFormat(f.label()))));
             // The Sources tab manages the library's scanned folders: one row per
@@ -354,22 +554,22 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
             // action, and a rescan action. First-run (empty library) still lands
             // here — not because it's first, but via `open_sources_if_empty`, which
             // finds the tab by title.
-            let mut sources = vec![S("Folders")];
+            let mut sources = vec![S("Folders".into())];
             sources.extend((0..config.library_paths.len()).map(|i| I(Source(i))));
             sources.push(I(AddSource));
             sources.push(I(RescanNow));
             // Ordered most-frequently-used first: view/columns are constant tweaks,
             // appearance occasional, sources set-and-forget, dup-prefs rare.
             vec![
-                tab("View", vec![S("Layout"), I(LibLayout), I(GridSize)]),
+                tab("View", vec![S("Layout".into()), I(LibLayout), I(GridSize)]),
                 tab("Columns", columns),
                 tab(
                     "General",
                     vec![
-                        S("Appearance"),
+                        S("Appearance".into()),
                         I(Theme),
                         I(BoldBorders),
-                        S("Input"),
+                        S("Input".into()),
                         I(Mouse),
                     ],
                 ),
@@ -387,6 +587,50 @@ pub fn tab_rows(scope: Mode, tab: usize, config: &Config) -> Vec<SettingRow> {
         .nth(tab)
         .map(|t| t.rows)
         .unwrap_or_default()
+}
+
+/// Every option across every tab whose label or description matches `query`,
+/// each under a "Tab › Section" breadcrumb so a match is placeable without
+/// remembering which tab owns it. Sources-tab action rows are skipped — they run
+/// commands rather than holding a value, so they don't belong in a value search.
+pub fn filtered_rows(scope: Mode, query: &str, config: &Config) -> Vec<SettingRow> {
+    let q = query.trim().to_lowercase();
+    let mut out = Vec::new();
+    for tab in settings_tabs(scope, config) {
+        let mut section = String::new();
+        let mut crumbed = String::new();
+        for row in tab.rows {
+            match row {
+                SettingRow::Section(title) => section = title.into_owned(),
+                SettingRow::Item(item) if !item.is_action() => {
+                    let hit = item.label().to_lowercase().contains(&q)
+                        || item.help().to_lowercase().contains(&q);
+                    if !hit {
+                        continue;
+                    }
+                    let crumb = format!("{} › {}", tab.title, section);
+                    if crumb != crumbed {
+                        out.push(SettingRow::Section(crumb.clone().into()));
+                        crumbed = crumb;
+                    }
+                    out.push(SettingRow::Item(item));
+                }
+                SettingRow::Item(_) => {}
+            }
+        }
+    }
+    out
+}
+
+/// The rows the popup is showing: the filter results when one is active, else the
+/// active tab's own rows. Every navigation, edit, and render path goes through
+/// this so filtered and unfiltered modes can't diverge.
+pub fn visible_rows(scope: Mode, tab: usize, query: &str, config: &Config) -> Vec<SettingRow> {
+    if query.trim().is_empty() {
+        tab_rows(scope, tab, config)
+    } else {
+        filtered_rows(scope, query, config)
+    }
 }
 
 /// Index of the first selectable item in a tab (skips a leading section header).
@@ -407,11 +651,21 @@ impl App {
             self.settings_add_key(key);
             return;
         }
+        // The `/` filter takes text keys but leaves the movement keys alone, so the
+        // list can be walked without first dismissing the filter. Any edit can
+        // change the match set, so re-clamp the cursor onto a real row after it.
+        if self.settings_filter_key(key) {
+            self.settings_move(0);
+            return;
+        }
         match key.code {
+            // Esc backs out of a filter first, so a search doesn't cost the popup.
+            KeyCode::Esc if self.settings_clear_filter() => self.settings_move(0),
             KeyCode::Esc | KeyCode::Char(';') | KeyCode::Char('q') => {
                 self.overlay = Overlay::None;
                 self.config.save();
             }
+            KeyCode::Char('/') => self.settings_begin_filter(),
             KeyCode::Tab => self.settings_tab(1),
             KeyCode::BackTab => self.settings_tab(-1),
             KeyCode::Char('j') | KeyCode::Down => self.settings_move(1),
@@ -430,12 +684,72 @@ impl App {
             KeyCode::PageUp => self.settings_move(-5),
             KeyCode::Char('g') | KeyCode::Home => self.settings_move(-9999),
             KeyCode::Char('G') | KeyCode::End => self.settings_move(9999),
+            KeyCode::Char('r') => self.settings_reset_focused(),
+            KeyCode::Char('R') => self.settings_reset_tab(),
             // Remove the focused library source (no-op on any other row/tab).
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
                 self.settings_delete_source()
             }
             _ => {}
         }
+    }
+
+    /// Keys while the `/` filter is open. Returns whether the key was consumed —
+    /// movement keys are deliberately left for the normal handler so typing and
+    /// navigating interleave. Enter keeps the results and hands the keys back to
+    /// the list; Esc drops the filter entirely.
+    fn settings_filter_key(&mut self, key: KeyEvent) -> bool {
+        let Overlay::Settings(s) = &mut self.overlay else {
+            return false;
+        };
+        let Some(input) = &mut s.filter else {
+            return false;
+        };
+        match key.code {
+            KeyCode::Enter => {
+                s.query = input.text().trim().to_string();
+                s.filter = None;
+                true
+            }
+            KeyCode::Esc => {
+                s.filter = None;
+                s.query.clear();
+                true
+            }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::PageUp
+            | KeyCode::PageDown => false,
+            _ => {
+                input.handle_key(key);
+                true
+            }
+        }
+    }
+
+    /// Open the `/` filter, seeded with any committed query so refining a search
+    /// doesn't start from scratch.
+    fn settings_begin_filter(&mut self) {
+        if let Overlay::Settings(s) = &mut self.overlay {
+            let mut input = TextInput::new();
+            input.set(s.query.clone());
+            s.filter = Some(input);
+        }
+    }
+
+    /// Drop any active filter (Esc from the list, or closing the popup).
+    fn settings_clear_filter(&mut self) -> bool {
+        let Overlay::Settings(s) = &mut self.overlay else {
+            return false;
+        };
+        if s.filter.is_none() && s.query.is_empty() {
+            return false;
+        }
+        s.filter = None;
+        s.query.clear();
+        true
     }
 
     /// Key handling while the inline "add folder" path input is open: Enter
@@ -466,6 +780,83 @@ impl App {
         };
         if let Some(path) = committed {
             self.commit_add_source(&path);
+        }
+    }
+
+    /// Restore the focused option's default (`r`). A no-op on section headers and
+    /// on the Sources tab's action rows, which have no value to restore.
+    fn settings_reset_focused(&mut self) {
+        let Overlay::Settings(s) = &self.overlay else {
+            return;
+        };
+        let Some(SettingRow::Item(item)) =
+            visible_rows(s.scope, s.tab, s.active_query(), &self.config)
+                .into_iter()
+                .nth(s.row)
+        else {
+            return;
+        };
+        if item.is_action() || item.is_default(&self.config) {
+            return;
+        }
+        let before = super::dispatch::layout_key(&self.config);
+        item.reset(&mut self.config);
+        self.config.save();
+        self.settings_relayout(&before);
+        self.flash_settings(format!(
+            "Reset {} to {}",
+            item.label(),
+            item.value(&self.config)
+        ));
+    }
+
+    /// Restore every option on the current tab (`R`), reporting how many changed.
+    fn settings_reset_tab(&mut self) {
+        let Overlay::Settings(s) = &self.overlay else {
+            return;
+        };
+        let (scope, tab) = (s.scope, s.tab);
+        let query = s.active_query().to_string();
+        let stale: Vec<SettingItem> = visible_rows(scope, tab, &query, &self.config)
+            .into_iter()
+            .filter_map(|r| match r {
+                SettingRow::Item(i) if !i.is_action() && !i.is_default(&self.config) => Some(i),
+                _ => None,
+            })
+            .collect();
+        if stale.is_empty() {
+            self.flash_settings("Already at defaults".into());
+            return;
+        }
+        let n = stale.len();
+        let before = super::dispatch::layout_key(&self.config);
+        for item in stale {
+            item.reset(&mut self.config);
+        }
+        self.config.save();
+        self.settings_relayout(&before);
+        self.flash_settings(format!("Reset {n} option(s) to defaults"));
+    }
+
+    /// Re-anchor and repaint after a settings edit changed the layout. The popup
+    /// writes `config` directly, bypassing `App::apply`, so the bookkeeping a
+    /// keybinding would have done has to happen here too — without it, changing
+    /// the margin or spacing re-wraps the section and drifts the reading position.
+    fn settings_relayout(&mut self, before: &super::dispatch::LayoutKey) {
+        if super::dispatch::layout_key(&self.config) == *before {
+            return;
+        }
+        if let Some(r) = self.reader.as_mut() {
+            r.hold_reflow_position();
+            r.request_repaint();
+        }
+    }
+
+    /// Report a settings action in whichever surface the popup was opened over.
+    fn flash_settings(&mut self, msg: String) {
+        match self.reader.as_mut() {
+            Some(r) => r.flash = Some(msg),
+            None => self.library.flash = Some(msg),
         }
     }
 
@@ -513,7 +904,7 @@ impl App {
             return;
         };
         let Some(SettingRow::Item(SettingItem::Source(idx))) =
-            tab_rows(s.scope, s.tab, &self.config)
+            visible_rows(s.scope, s.tab, s.active_query(), &self.config)
                 .into_iter()
                 .nth(s.row)
         else {
@@ -558,6 +949,8 @@ impl App {
             tab,
             row,
             adding: None,
+            filter: None,
+            query: String::new(),
         });
     }
 
@@ -611,7 +1004,7 @@ impl App {
         let Overlay::Settings(s) = &self.overlay else {
             return;
         };
-        let rows = tab_rows(s.scope, s.tab, &self.config);
+        let rows = visible_rows(s.scope, s.tab, s.active_query(), &self.config);
         let items: Vec<usize> = rows
             .iter()
             .enumerate()
@@ -634,9 +1027,10 @@ impl App {
             return;
         };
         // Resolve the focused row (in the active tab) to a setting identity.
-        let Some(SettingRow::Item(item)) = tab_rows(s.scope, s.tab, &self.config)
-            .into_iter()
-            .nth(s.row)
+        let Some(SettingRow::Item(item)) =
+            visible_rows(s.scope, s.tab, s.active_query(), &self.config)
+                .into_iter()
+                .nth(s.row)
         else {
             return;
         };
@@ -648,6 +1042,8 @@ impl App {
             SettingItem::Source(_) => return, // delete via `d`/Delete, not change
             _ => {}
         }
+        // Snapshot before the edit so a layout-affecting option re-anchors below.
+        let before = super::dispatch::layout_key(&self.config);
         let c = &mut self.config;
         match item {
             SettingItem::ReadingMode => {
@@ -787,6 +1183,7 @@ impl App {
             // l/right/Enter (delta > 0) promotes the format toward "keep #1".
             SettingItem::DupFormat(label) => c.move_dup_format(label, delta > 0),
         }
+        self.settings_relayout(&before);
     }
 
     /// Open Library settings on the Duplicates tab — the resolve overlay's
@@ -804,6 +1201,127 @@ impl App {
             tab,
             row,
             adding: None,
+            filter: None,
+            query: String::new(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every option must explain itself: a blank or label-echoing description makes
+    /// the help pane worse than nothing, and it's easy to forget one when adding a
+    /// setting. Walks both scopes so no tab is missed.
+    #[test]
+    fn every_setting_has_a_distinct_help_line() {
+        let config = Config::default();
+        for scope in [Mode::Reader, Mode::Library] {
+            for tab in settings_tabs(scope, &config) {
+                for row in tab.rows {
+                    let SettingRow::Item(item) = row else {
+                        continue;
+                    };
+                    let help = item.help();
+                    assert!(
+                        help.len() > 10,
+                        "{:?} needs a real description, got {help:?}",
+                        item
+                    );
+                    assert_ne!(help, item.label(), "{item:?} help just repeats the label");
+                }
+            }
+        }
+    }
+
+    /// A stock config must report every option as default, or the "changed" dots
+    /// light up on a fresh install. This is the check that keeps `is_default`
+    /// honest as options are added, since it compares formatted values.
+    #[test]
+    fn a_default_config_marks_nothing_as_changed() {
+        let config = Config::default();
+        for scope in [Mode::Reader, Mode::Library] {
+            for tab in settings_tabs(scope, &config) {
+                for row in tab.rows {
+                    let SettingRow::Item(item) = row else {
+                        continue;
+                    };
+                    assert!(
+                        item.is_default(&config),
+                        "{item:?} differs on a stock config"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Reset has to actually restore the default — and the dot has to clear with it.
+    #[test]
+    fn reset_restores_the_default_value() {
+        let mut config = Config::default();
+        config.side_padding += 7;
+        config.line_spacing += 2;
+        assert!(!SettingItem::SidePadding.is_default(&config));
+
+        SettingItem::SidePadding.reset(&mut config);
+        assert!(SettingItem::SidePadding.is_default(&config));
+        assert_eq!(config.side_padding, Config::default().side_padding);
+        // Untouched options stay untouched.
+        assert!(!SettingItem::LineSpacing.is_default(&config));
+    }
+
+    /// The filter searches labels *and* descriptions, across every tab, and tags
+    /// each hit with the tab it came from so a match can be placed.
+    #[test]
+    fn filter_matches_across_tabs_with_breadcrumbs() {
+        let config = Config::default();
+        let rows = filtered_rows(Mode::Reader, "equation", &config);
+        let items: Vec<SettingItem> = rows
+            .iter()
+            .filter_map(|r| match r {
+                SettingRow::Item(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            items.contains(&SettingItem::BreakWideEquations),
+            "label match missing"
+        );
+        assert!(
+            items.contains(&SettingItem::ImageFit),
+            "description-only match missing (its label says nothing about equations)"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r, SettingRow::Section(s) if s.contains('›'))),
+            "matches need a Tab › Section breadcrumb"
+        );
+    }
+
+    /// Sources rows run commands rather than holding values, so a value search must
+    /// not surface them and reset must leave them alone.
+    #[test]
+    fn filter_and_reset_skip_action_rows() {
+        let config = Config::default();
+        for row in filtered_rows(Mode::Library, "folder", &config) {
+            if let SettingRow::Item(item) = row {
+                assert!(
+                    !item.is_action(),
+                    "{item:?} is an action and can't be a hit"
+                );
+            }
+        }
+        assert!(SettingItem::AddSource.is_default(&config));
+    }
+
+    /// An empty query falls back to the plain tab, so one row source serves both
+    /// modes and they can't drift.
+    #[test]
+    fn an_empty_query_shows_the_plain_tab() {
+        let config = Config::default();
+        let plain = tab_rows(Mode::Reader, 0, &config).len();
+        assert_eq!(visible_rows(Mode::Reader, 0, "", &config).len(), plain);
+        assert_eq!(visible_rows(Mode::Reader, 0, "   ", &config).len(), plain);
     }
 }

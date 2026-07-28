@@ -5,6 +5,7 @@ pub mod annotations;
 pub mod bidi;
 pub mod bulk_rename;
 pub mod code_view;
+pub mod dialog;
 pub mod dup_resolve;
 pub mod image;
 pub mod layout;
@@ -540,6 +541,72 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     if matches!(app.overlay, Overlay::IgnoredView(_)) {
         dup_resolve::render_ignored(f, app);
+    }
+    // The tag prompt is a real modal now: it takes the keyboard, so it has to look
+    // like it has. Drawn above every other overlay because it is opened from them.
+    if let Overlay::TagEdit(t) = &app.overlay {
+        let (title, note) = if t.multi {
+            (
+                "Add tags",
+                Some(format!("Added to {} selected books.", t.targets.len())),
+            )
+        } else {
+            (
+                "Edit tags",
+                Some("Comma-separated; replaces this book's tags.".to_string()),
+            )
+        };
+        dialog::prompt(
+            f,
+            title,
+            note.as_deref(),
+            t.input.text(),
+            t.input.cursor(),
+            "⏎ save · ^U clear · Esc cancel",
+            app.config.theme,
+            app.config.bold_borders,
+        );
+    }
+    // The library filter and in-book search are text entry, so they get the same
+    // modal treatment: on the status bar they gave no sign the keyboard had been
+    // taken over, and every letter typed was silently swallowed from the shortcuts.
+    if app.mode == Mode::Library && app.library.filtering {
+        dialog::prompt(
+            f,
+            "Filter library",
+            Some("Matches title, author, series, and tags."),
+            &app.library.filter,
+            app.library.filter.chars().count(),
+            "⏎ apply · Esc clear",
+            app.config.theme,
+            app.config.bold_borders,
+        );
+    }
+    if let Some(r) = app.reader.as_ref()
+        && r.search.searching
+    {
+        dialog::prompt(
+            f,
+            &format!("Search — {}", r.search.mode.label()),
+            None,
+            &r.search.input,
+            r.search.input.chars().count(),
+            "⏎ search · Tab scope · Esc cancel",
+            app.config.theme,
+            app.config.bold_borders,
+        );
+    }
+    // A pending confirmation outranks everything — it is modal in the key router,
+    // so it must be modal on screen too. Last, so nothing can draw over it.
+    if let Some(c) = &app.pending_confirm {
+        dialog::confirm(
+            f,
+            &c.question,
+            c.is_destructive(),
+            app.config.theme,
+            app.config.bold_borders,
+        );
+        return;
     }
     // An open overlay shows its shortcuts on the shared bottom status row,
     // drawn last so it sits above the popup (which never reaches that row).

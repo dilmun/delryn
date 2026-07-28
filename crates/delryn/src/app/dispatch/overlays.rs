@@ -73,6 +73,41 @@ impl App {
         }
     }
 
+    /// Keys while the sidebar's contents filter is open. Movement keys still walk
+    /// the filtered list so you can type and pick without dismissing it; Enter
+    /// jumps to the highlighted chapter and closes the filter, Esc just closes it.
+    pub(super) fn sidebar_filter_key(&mut self, key: KeyEvent) {
+        let Some(r) = self.reader.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Enter => {
+                r.sidebar_activate();
+                r.clear_sidebar_filter();
+            }
+            KeyCode::Esc => {
+                r.clear_sidebar_filter();
+            }
+            KeyCode::Up => r.sidebar_move(-1),
+            KeyCode::Down => r.sidebar_move(1),
+            KeyCode::PageUp => r.sidebar_move(-10),
+            KeyCode::PageDown => r.sidebar_move(10),
+            KeyCode::Tab | KeyCode::BackTab => {
+                // Leaving the sidebar drops the filter with it.
+                r.clear_sidebar_filter();
+                r.focus = Focus::Content;
+            }
+            _ => {
+                if let Some(input) = r.sidebar_filter.as_mut() {
+                    input.handle_key(key);
+                }
+                // The match set moved under the cursor — put it back on a real row.
+                r.sidebar_move(0);
+                r.center_sidebar();
+            }
+        }
+    }
+
     /// Set the reader's transient flash (no-op outside the reader).
     fn set_reader_flash(&mut self, msg: &str) {
         if let Some(r) = self.reader.as_mut() {

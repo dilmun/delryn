@@ -18,7 +18,7 @@ use crate::config::{Config, ViewMode};
 /// the sidebar or the status bar resizes the text area, which re-wraps the
 /// section and moves every inline image exactly like a width change does.
 #[derive(PartialEq)]
-struct LayoutKey {
+pub(crate) struct LayoutKey {
     view_mode: ViewMode,
     side_padding: u16,
     page_gap: u16,
@@ -35,7 +35,7 @@ struct LayoutKey {
     show_status: bool,
 }
 
-fn layout_key(c: &Config) -> LayoutKey {
+pub(crate) fn layout_key(c: &Config) -> LayoutKey {
     LayoutKey {
         view_mode: c.view_mode,
         side_padding: c.side_padding,
@@ -166,8 +166,13 @@ impl App {
             }
             Action::NextAnchor => reader.next_anchor(),
             Action::PrevAnchor => reader.prev_anchor(),
+            // Esc peels one layer at a time: the link cursor first, then the search
+            // highlight. Matches used to stay lit with no key that would dismiss
+            // them — the only way out was searching for something else.
             Action::ClearAnchor => {
-                reader.clear_anchor();
+                if !reader.clear_anchor() {
+                    reader.clear_search_highlight();
+                }
             }
             Action::Expand => {
                 if reader.focus == Focus::Sidebar {
@@ -236,7 +241,15 @@ impl App {
             }
             Action::HistBack => reader.history_back(),
             Action::HistForward => reader.history_forward(),
-            Action::Search => reader.start_search(),
+            // With the sidebar focused, `/` filters the contents list instead of
+            // opening the in-book search — the same key, scoped to the focused pane.
+            Action::Search => {
+                if reader.focus == Focus::Sidebar {
+                    reader.start_sidebar_filter();
+                } else {
+                    reader.start_search();
+                }
+            }
             Action::SearchNext => reader.search_next(),
             Action::SearchPrev => reader.search_prev(),
             Action::AddBookmark => {
