@@ -9,7 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
-use crate::app::{App, Mode, Overlay, SettingItem, SettingRow, settings_tabs, tab_rows};
+use crate::app::{App, Mode, Overlay, SettingItem, SettingRow, settings_tabs, visible_rows};
 use crate::config::Config;
 use crate::theme::Role;
 use crate::ui::TextInput;
@@ -23,6 +23,17 @@ pub fn render(f: &mut Frame, app: &mut App) {
     };
     let (scope_mode, active_tab, sel_row) = (state.scope, state.tab, state.row);
     let adding = state.adding.as_ref();
+    let query = state.active_query().to_string();
+    let filtering = state.filtering();
+    let match_count = if state.filtering() {
+        visible_rows(state.scope, state.tab, &query, &app.config)
+            .iter()
+            .filter(|r| matches!(r, SettingRow::Item(_)))
+            .count()
+    } else {
+        0
+    };
+    let typing_filter = state.filter.is_some();
     let theme = app.config.theme;
     let bold = app.config.bold_borders;
     let area = super::overlay_rect(f.area(), app.overlay_large);
@@ -36,10 +47,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let tabs = settings_tabs(scope_mode, &app.config);
     // The Sources tab adds a delete affordance, so its help line differs.
     let is_sources = tabs.get(active_tab).is_some_and(|t| t.title == "Sources");
-    let help = if is_sources {
-        " Tab section · ↑↓ move · ⏎ act · d delete · q close "
+    let help = if typing_filter {
+        " type to filter · ↑↓ move · ←→ change · ⏎ keep · Esc clear "
+    } else if filtering {
+        " ↑↓ move · ←→ change · / refine · r/R reset · Esc clear filter "
+    } else if is_sources {
+        " Tab section · ↑↓ move · ⏎ act · d delete · / search · q close "
     } else {
-        " Tab section · ↑↓ move · ←→ change · q close "
+        " Tab section · ↑↓ move · ←→ change · r/R reset · / search · q close "
     };
 
     let block = super::overlay_frame(theme, bold)
@@ -54,15 +69,37 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // The focused option's one-line explanation, pinned to the bottom so the body
+    // above never reflows as the cursor moves. Wrapped to at most two rows; a
+    // cramped window drops it entirely rather than eating the options.
+    let help_text = focused_help(scope_mode, active_tab, sel_row, &query, &app.config);
+    let help_lines = help_text
+        .map(|t| wrap_help(t, inner.width.saturating_sub(4)).len() as u16)
+        .unwrap_or(0);
+    // 2 rows of chrome (rule + blank) only pay for themselves with room to spare.
+    let help_h = if help_lines > 0 && inner.height > help_lines + 8 {
+        help_lines + 2
+    } else {
+        0
+    };
+
     let chunks = Layout::vertical([
-        Constraint::Length(1), // tab bar
-        Constraint::Length(1), // divider rule
-        Constraint::Length(1), // spacer
-        Constraint::Min(0),    // body
+        Constraint::Length(1),      // tab bar
+        Constraint::Length(1),      // divider rule
+        Constraint::Length(1),      // spacer
+        Constraint::Min(0),         // body
+        Constraint::Length(help_h), // help pane
     ])
     .split(inner);
 
-    let tab_hits = render_tab_bar(f, chunks[0], &tabs, active_tab, theme);
+    // Filtering searches every tab, so the tab strip would be misleading — the
+    // query line replaces it and no tab is clickable while it's up.
+    let tab_hits = if filtering {
+        render_filter_line(f, chunks[0], &query, typing_filter, match_count, theme);
+        Vec::new()
+    } else {
+        render_tab_bar(f, chunks[0], &tabs, active_tab, theme)
+    };
 
     // Divider under the tabs.
     f.render_widget(
@@ -80,11 +117,104 @@ pub fn render(f: &mut Frame, app: &mut App) {
         scope_mode,
         active_tab,
         sel_row,
+        &query,
         adding,
         theme,
     );
+
+    if help_h > 0
+        && let Some(text) = help_text
+    {
+        render_help(f, chunks[4], text, theme);
+    }
     app.mouse.overlay_tabs = tab_hits;
     app.mouse.overlay_rows = row_hits;
+}
+
+/// The focused row's help text, or `None` when the cursor sits on a section
+/// header or the tab is empty.
+fn focused_help(
+    scope: Mode,
+    tab: usize,
+    row: usize,
+    query: &str,
+    config: &Config,
+) -> Option<&'static str> {
+    match visible_rows(scope, tab, query, config).into_iter().nth(row) {
+        Some(SettingRow::Item(item)) => Some(item.help()),
+        _ => None,
+    }
+}
+
+/// Greedy word-wrap of the help sentence to `width`, capped at two rows so the
+/// pane's height never surprises the layout above it.
+fn wrap_help(text: &str, width: u16) -> Vec<String> {
+    let width = width.max(20) as usize;
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match out.last_mut() {
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => {
+                if out.len() == 2 {
+                    // Out of rows — mark the truncation rather than dropping words silently.
+                    if let Some(line) = out.last_mut() {
+                        let keep: String = line.chars().take(width.saturating_sub(1)).collect();
+                        *line = format!("{}…", keep.trim_end());
+                    }
+                    break;
+                }
+                out.push(word.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The help pane: a dotted rule, then the wrapped sentence in the muted role.
+fn render_help(f: &mut Frame, area: Rect, text: &str, theme: crate::theme::Theme) {
+    let mut lines = vec![Line::styled(
+        "┈".repeat(area.width as usize),
+        theme.style(Role::Hint),
+    )];
+    lines.extend(
+        wrap_help(text, area.width.saturating_sub(4))
+            .into_iter()
+            .map(|l| Line::styled(format!("  {l}"), theme.style(Role::Muted))),
+    );
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// The `/` filter line, shown in place of the tab strip while a query is active:
+/// the query with a block cursor while typing, and the match count on the right.
+fn render_filter_line(
+    f: &mut Frame,
+    area: Rect,
+    query: &str,
+    typing: bool,
+    matches: usize,
+    theme: crate::theme::Theme,
+) {
+    let cursor = if typing { "█" } else { "" };
+    let left = format!("  /{query}{cursor}");
+    let right = match matches {
+        0 => "  no matches  ".to_string(),
+        1 => "  1 match  ".to_string(),
+        n => format!("  {n} matches  "),
+    };
+    let gap = (area.width as usize)
+        .saturating_sub(left.chars().count() + right.chars().count())
+        .max(1);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(left, theme.style(Role::Accent)),
+            Span::raw(" ".repeat(gap)),
+            Span::styled(right, theme.style(Role::Muted)),
+        ])),
+        area,
+    );
 }
 
 /// The pill-style tab strip, the active tab filled with the accent. Returns each
@@ -155,10 +285,11 @@ fn render_body(
     scope: Mode,
     tab: usize,
     sel_row: usize,
+    query: &str,
     adding: Option<&TextInput>,
     theme: crate::theme::Theme,
 ) -> Vec<(usize, Rect)> {
-    let rows = tab_rows(scope, tab, config);
+    let rows = visible_rows(scope, tab, query, config);
     let mut lines: Vec<Line> = Vec::new();
     let mut sel_line = 0usize;
     // (row index in `rows`, line index) for each clickable option (headers excluded).
@@ -195,9 +326,12 @@ fn render_body(
     let visible: Vec<Line> = lines.into_iter().skip(offset).take(h).collect();
     f.render_widget(Paragraph::new(visible), area);
 
-    // A slim scrollbar only when the tab overflows the body.
+    // A slim scrollbar only when the tab overflows the body. `content_length` is
+    // the number of scroll *positions*, not of lines: ratatui clamps `position` to
+    // `content_length - 1`, so passing the line count leaves the thumb short of the
+    // bottom by exactly one viewport (a full tab parked the thumb mid-track).
     if total > h {
-        let mut sb = ScrollbarState::new(total).position(offset);
+        let mut sb = ScrollbarState::new(max_off + 1).position(offset);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -275,15 +409,20 @@ fn value_line(
     let label = item.label();
     let value = item.value(config);
     let pad = VALUE_COL.saturating_sub(label.chars().count() + 4);
+    // A 4-cell gutter carrying one mark: a dot when the value differs from its
+    // default. The selection needs no arrow — the highlight bar already says which
+    // row it is — so both states use the same gutter and the label column is fixed.
+    let dot = if item.is_default(config) { ' ' } else { '●' };
     if selected {
         crate::view::rounded_line(
-            format!("  ▸ {label}{}{value}", " ".repeat(pad)),
+            format!(" {dot}  {label}{}{value}", " ".repeat(pad)),
             width,
             theme,
         )
     } else {
         Line::from(vec![
-            Span::styled(format!("    {label}"), theme.style(Role::Body)),
+            Span::styled(format!(" {dot}"), theme.style(Role::Accent)),
+            Span::styled(format!("  {label}"), theme.style(Role::Body)),
             Span::raw(" ".repeat(pad)),
             Span::styled(value, Style::default().fg(theme.color(Role::Heading))),
         ])
@@ -298,7 +437,7 @@ fn action_line(
     theme: crate::theme::Theme,
 ) -> Line<'static> {
     if selected {
-        crate::view::rounded_line(format!("  ▸ {text}"), width, theme)
+        crate::view::rounded_line(format!("    {text}"), width, theme)
     } else {
         Line::from(Span::styled(
             format!("    {text}"),
@@ -318,11 +457,11 @@ fn source_line(
     if !selected {
         return Line::from(Span::styled(format!("    {path}"), theme.style(Role::Body)));
     }
-    // Compose "▸ <path>  …  del" so the hint sits at the bar's right edge,
+    // Compose "<path>  …  del" so the hint sits at the bar's right edge,
     // trimming the path (with an ellipsis) when it would otherwise collide.
     let inner = (width as usize).saturating_sub(2);
     let del = "del";
-    let prefix = "  ▸ ";
+    let prefix = "    ";
     let budget = inner.saturating_sub(prefix.chars().count() + del.chars().count() + 1);
     let shown = truncate_to(path, budget);
     let left = format!("{prefix}{shown}");
@@ -353,4 +492,43 @@ fn truncate_to(s: &str, max: usize) -> String {
     let mut out: String = s.chars().take(max - 1).collect();
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::layout::Rect;
+    use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget};
+
+    /// The scrollbar thumb must actually reach the bottom of the track when the
+    /// list is scrolled to its end. `content_length` is the count of scroll
+    /// positions; passing the line count instead (the original bug) parked the
+    /// thumb a full viewport short — a tab scrolled to the end showed it mid-track.
+    #[test]
+    fn a_fully_scrolled_list_puts_the_thumb_at_the_bottom() {
+        let (total, h) = (30usize, 18u16);
+        let max_off = total - h as usize;
+        let area = Rect::new(0, 0, 20, h);
+
+        let render = |content_length: usize, position: usize| {
+            let mut buf = ratatui::buffer::Buffer::empty(area);
+            let mut state = ScrollbarState::new(content_length).position(position);
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .render(area, &mut buf, &mut state);
+            // The rows of the scrollbar column carrying the thumb glyph.
+            (0..h)
+                .filter(|&y| buf[(area.width - 1, y)].symbol() == "█")
+                .collect::<Vec<_>>()
+        };
+
+        let fixed = render(max_off + 1, max_off);
+        assert!(
+            fixed.contains(&(h - 1)),
+            "thumb should touch the last row, got rows {fixed:?}"
+        );
+        // And the top still parks it at the top.
+        let top = render(max_off + 1, 0);
+        assert!(top.contains(&0), "thumb should start at row 0, got {top:?}");
+    }
 }

@@ -103,8 +103,57 @@ impl Reader {
         self.outline_visible().iter().position(|&oi| oi == active)
     }
 
+    /// The active sidebar filter, lowercased, or `None` when not filtering.
+    pub fn sidebar_query(&self) -> Option<String> {
+        let q = self.sidebar_filter.as_ref()?.text().trim().to_lowercase();
+        (!q.is_empty()).then_some(q)
+    }
+
+    /// Open the contents filter (`/` with the sidebar focused), starting empty.
+    pub fn start_sidebar_filter(&mut self) {
+        self.sidebar_filter = Some(crate::ui::TextInput::new());
+        self.sidebar_sel = 0;
+        self.sidebar_offset = 0;
+    }
+
+    /// Close the filter, keeping the cursor on whatever it had landed on. Returns
+    /// whether a filter was actually open.
+    pub fn clear_sidebar_filter(&mut self) -> bool {
+        if self.sidebar_filter.is_none() {
+            return false;
+        }
+        // Resolve the highlighted entry *before* dropping the filter, then restore
+        // the cursor onto that same entry in the unfiltered list — otherwise the
+        // index would point at a different chapter once the list grows back.
+        let landed = self.selected_outline_index();
+        self.sidebar_filter = None;
+        if let Some(oi) = landed
+            && let Some(row) = self.outline_visible().iter().position(|&i| i == oi)
+        {
+            self.sidebar_sel = row;
+        }
+        self.center_sidebar();
+        true
+    }
+
+    /// The outline index under the sidebar cursor, filter-aware.
+    pub fn selected_outline_index(&self) -> Option<usize> {
+        self.outline_visible().get(self.sidebar_sel).copied()
+    }
+
     /// Outline indices currently visible (respecting collapsed parents).
     pub fn outline_visible(&self) -> Vec<usize> {
+        // A filter searches the whole outline and ignores collapse state: a match
+        // hidden inside a folded parent would otherwise be unreachable.
+        if let Some(q) = self.sidebar_query() {
+            return self
+                .outline
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.label.to_lowercase().contains(&q))
+                .map(|(i, _)| i)
+                .collect();
+        }
         let mut vis = Vec::new();
         let mut hide_depth: Option<usize> = None;
         for (i, item) in self.outline.iter().enumerate() {
@@ -174,5 +223,96 @@ impl Reader {
                 self.sidebar_sel = pos;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::{para, reader_with};
+    use crate::document::OutlineItem;
+
+    fn entry(label: &str, depth: usize, section: usize) -> OutlineItem {
+        OutlineItem {
+            label: label.into(),
+            depth,
+            section,
+            locator: None,
+        }
+    }
+
+    /// A nested outline where the parent is collapsed, so the filter has something
+    /// to reach past.
+    fn outlined() -> crate::app::Reader {
+        let mut r = reader_with(vec![para()]);
+        r.outline = vec![
+            entry("Boolean Algebra", 0, 0),
+            entry("Karnaugh Maps", 1, 0),
+            entry("Logic Gates", 1, 0),
+            entry("Functions", 0, 0),
+            entry("Karnaugh Revisited", 1, 0),
+        ];
+        r
+    }
+
+    /// The filter matches on label, case-insensitively, across the whole outline.
+    #[test]
+    fn filter_narrows_the_contents_to_matches() {
+        let mut r = outlined();
+        r.start_sidebar_filter();
+        if let Some(i) = r.sidebar_filter.as_mut() {
+            i.set("karn");
+        }
+        let vis = r.outline_visible();
+        assert_eq!(vis, vec![1, 4], "both Karnaugh entries, nothing else");
+    }
+
+    /// A match inside a collapsed parent must still be reachable — filtering
+    /// deliberately ignores fold state, or the entry could not be selected at all.
+    #[test]
+    fn filter_reaches_inside_a_collapsed_parent() {
+        let mut r = outlined();
+        r.collapsed.insert(0);
+        assert!(
+            !r.outline_visible().contains(&1),
+            "precondition: the child is folded away"
+        );
+        r.start_sidebar_filter();
+        if let Some(i) = r.sidebar_filter.as_mut() {
+            i.set("karnaugh maps");
+        }
+        assert_eq!(
+            r.outline_visible(),
+            vec![1],
+            "the folded match is reachable"
+        );
+    }
+
+    /// Clearing the filter keeps the cursor on the entry it landed on, rather than
+    /// leaving the index pointing at whatever now occupies that row.
+    #[test]
+    fn clearing_the_filter_keeps_the_highlighted_entry() {
+        let mut r = outlined();
+        r.start_sidebar_filter();
+        if let Some(i) = r.sidebar_filter.as_mut() {
+            i.set("revisited");
+        }
+        assert_eq!(r.selected_outline_index(), Some(4));
+        assert!(r.clear_sidebar_filter());
+        assert!(r.sidebar_filter.is_none());
+        assert_eq!(
+            r.selected_outline_index(),
+            Some(4),
+            "cursor follows the entry, not the row number"
+        );
+    }
+
+    /// An empty query is not a filter — the collapse-aware list comes back.
+    #[test]
+    fn an_empty_query_leaves_the_outline_alone() {
+        let mut r = outlined();
+        let full = r.outline_visible();
+        r.start_sidebar_filter();
+        assert_eq!(r.outline_visible(), full);
+        assert!(r.sidebar_query().is_none());
     }
 }

@@ -81,12 +81,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let body = chunks[1];
     let h = body.height as usize;
     let total = lines.len();
-    let offset = sel_line.saturating_sub(h / 2).min(total.saturating_sub(h));
+    let max_off = total.saturating_sub(h);
+    let offset = sel_line.saturating_sub(h / 2).min(max_off);
     let visible: Vec<Line> = lines.into_iter().skip(offset).take(h).collect();
     f.render_widget(Paragraph::new(visible), body);
 
+    // `content_length` counts scroll positions, not lines — see `view::settings`.
     if total > h {
-        let mut sb = ScrollbarState::new(total).position(offset);
+        let mut sb = ScrollbarState::new(max_off + 1).position(offset);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)

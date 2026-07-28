@@ -132,12 +132,30 @@ pub fn render(f: &mut Frame, app: &mut App) {
 }
 
 fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
+    // While the contents filter is open, the pane's footer becomes the query line
+    // with a live match count, so the sidebar explains its own narrowed state.
+    let filter_footer = reader.sidebar_filter.as_ref().map(|input| {
+        let n = reader.outline_visible().len();
+        let count = match n {
+            0 => "no matches".to_string(),
+            1 => "1 match".to_string(),
+            n => format!("{n} matches"),
+        };
+        format!(" /{}\u{2588} · {count} ", input.text())
+    });
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.style(Role::Border))
         .title(Span::styled(" Contents ", theme.style(Role::Title)))
         .style(theme.text_style());
+    let block = match &filter_footer {
+        Some(text) => block.title_bottom(
+            Line::from(Span::styled(text.clone(), theme.style(Role::Accent)))
+                .alignment(Alignment::Center),
+        ),
+        None => block,
+    };
     let inner = block.inner(area);
     f.render_widget(block, area);
 

@@ -5,6 +5,7 @@
 use super::*;
 
 mod apply;
+pub(crate) use apply::{LayoutKey, layout_key};
 mod overlays;
 
 impl App {
@@ -122,6 +123,17 @@ impl App {
             self.search_key(key);
             return;
         }
+        // The sidebar's contents filter is a focused text input for the same reason
+        // as the search prompt above — it must see letters before global shortcuts.
+        if self.mode == Mode::Reader
+            && self
+                .reader
+                .as_ref()
+                .is_some_and(|r| r.sidebar_filter.is_some())
+        {
+            self.sidebar_filter_key(key);
+            return;
+        }
         // Visual (vim-style) selection captures every key as a motion/command until
         // it's committed or cancelled, so global shortcuts don't fire mid-select.
         if self.mode == Mode::Reader && self.reader.as_ref().is_some_and(|r| r.selection_active()) {
@@ -156,6 +168,8 @@ impl App {
                 tab: 0,
                 row: first_setting_row(scope, 0, &self.config),
                 adding: None,
+                filter: None,
+                query: String::new(),
             });
             return;
         }

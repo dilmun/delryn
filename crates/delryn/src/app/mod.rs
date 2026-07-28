@@ -25,6 +25,7 @@ pub use confirm::PendingConfirm;
 mod settings;
 pub use settings::{
     SettingItem, SettingRow, SettingTab, Settings, first_setting_row, settings_tabs, tab_rows,
+    visible_rows,
 };
 
 mod mouse;
@@ -2038,6 +2039,8 @@ mod tests {
             tab: 0,
             row: first_setting_row(Mode::Library, 0, &app.config),
             adding: None,
+            filter: None,
+            query: String::new(),
         });
         // Two tabs + a couple of option rows (real geometry is captured at render).
         app.mouse.overlay_tabs = vec![(0, Rect::new(0, 0, 12, 1)), (1, Rect::new(13, 0, 12, 1))];
