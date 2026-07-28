@@ -1582,3 +1582,59 @@ fn inline_spans_stay_inline_without_a_block_rule() {
         "no block rule → one paragraph"
     );
 }
+
+/// Springer pairs an affiliation label with its value as an inline span beside a
+/// block sibling. The block ends the inline run, so `(1)` was emitted as its own
+/// paragraph and rendered stranded on a line of its own, a blank line above the
+/// institution it labels. It is joined onto the value now. (Real markup from
+/// *Artificial Intelligence and Natural Language*, AINL 2022.)
+#[test]
+fn an_affiliation_label_joins_the_line_it_labels() {
+    let html = r#"<div class="Affiliations">
+        <div class="Affiliation" id="Aff7"><span class="AffiliationNumber">(1)</span>
+        <div class="AffiliationText">Novosibirsk State University, Novosibirsk, Russia</div></div>
+        <div class="Affiliation" id="Aff8"><span class="AffiliationNumber">(2)</span>
+        <div class="AffiliationText">Kazan Federal University, Kazan, Russia</div></div>
+        </div>"#;
+    let texts = para_texts(&parse_blocks(html));
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("(1)") && t.contains("Novosibirsk State University")),
+        "label and institution belong on one line: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.trim() == "(1)" || t.trim() == "(2)"),
+        "no marker left stranded on its own: {texts:?}"
+    );
+}
+
+/// The join is narrow on purpose: only a paragraph that is *nothing but* a marker
+/// qualifies. Prose that merely starts with a number, or a real list item, must
+/// keep its own paragraph — collapsing those would corrupt ordinary body text.
+#[test]
+fn ordinary_paragraphs_are_never_joined() {
+    let cases = [
+        // A short sentence, not a marker.
+        r#"<p>Yes.</p><p>The next paragraph.</p>"#,
+        // Prose opening with a number.
+        r#"<p>1975 was a good year.</p><p>The next paragraph.</p>"#,
+        // A genuine list item carries a marker and is left alone.
+        r#"<ol><li>1</li><li>2</li></ol>"#,
+    ];
+    for html in cases {
+        let texts = para_texts(&parse_blocks(html));
+        assert!(
+            texts.len() >= 2,
+            "paragraphs were wrongly merged for {html:?}: {texts:?}"
+        );
+    }
+}
+
+/// A stranded marker with nothing after it stays as it is, rather than being
+/// dropped or panicking at the end of the block list.
+#[test]
+fn a_trailing_marker_survives_with_nothing_to_join() {
+    let texts = para_texts(&parse_blocks(r#"<p>Body text.</p><p>(3)</p>"#));
+    assert_eq!(texts.last().map(String::as_str), Some("(3)"));
+}
