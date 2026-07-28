@@ -151,18 +151,16 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
             SegmentId::Context,
             Zone::Left,
             9,
-            crate::view::pill_spans_on(
-                format!("VISUAL · {marked} selected"),
-                theme,
-                theme.status_bg,
-            ),
+            // Capped against the page, not a band: the bar floats now, so the
+            // pill's rounded ends have the page behind them like every other pill.
+            crate::view::pill_spans(format!("VISUAL · {marked} selected"), theme),
         );
     } else if marked > 0 {
         bar.add(
             SegmentId::Context,
             Zone::Left,
             9,
-            crate::view::pill_spans_on(format!("{marked} selected"), theme, theme.status_bg),
+            crate::view::pill_spans(format!("{marked} selected"), theme),
         );
     } else if app.library.filtering || !app.library.filter.is_empty() {
         bar.text(

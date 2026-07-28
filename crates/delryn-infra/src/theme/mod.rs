@@ -62,8 +62,6 @@ pub struct Theme {
     pub marker: Color,
     /// Inline code / preformatted fallback.
     pub code_fg: Color,
-    pub status_fg: Color,
-    pub status_bg: Color,
     /// Sidebar selection / current-chapter accent.
     pub accent: Color,
     /// Errors / invalid input / destructive actions.

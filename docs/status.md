@@ -13,7 +13,7 @@ Today the status row is:
 - **Coupled to the App god-object** — `legend(app)` is one long `if let` cascade
   over the overlay fields, hardcoding each overlay's context + key hints inline.
 - **Not configurable** — content, order, and presence are fixed in code.
-- **Coarsely themed** — only `status_fg`/`status_bg` (two colours total).
+- **Coarsely themed** — one flat band, two colours total.
 
 ## Model: zones + segments
 

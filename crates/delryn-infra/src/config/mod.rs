@@ -320,7 +320,10 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            side_padding: 6,
+            // Wide enough to read like a book rather than a terminal: the column
+            // keeps a tenth of the pane as margin on each side, which lands a
+            // typical window near the ~66-character measure prose is set to.
+            side_padding: 10,
             page_gap: 5,
             cover_offset: false,
             reading_direction: ReadingDirection::default(),
