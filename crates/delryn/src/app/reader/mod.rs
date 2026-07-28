@@ -276,6 +276,13 @@ pub struct Reader {
     /// starts at the same screen row it was on — the reflow grows/shrinks *below* it
     /// instead of shoving the reader's focus around. Overrides `pending_frac`.
     pending_code_hold: Option<(usize, usize)>,
+    /// Land at the bottom of the section once it's wrapped — set when scrolling up
+    /// past a section top, where the previous section's last line isn't known yet
+    /// (`load` forces a re-wrap, so the line count only exists after the next
+    /// `ensure_wrapped`). A flag rather than a `usize::MAX` scroll sentinel: the
+    /// layout plan reads `scroll` before the wrap resolves it, so a sentinel leaked
+    /// into the renderer and overflowed the gutter's `top + row`.
+    pending_bottom: bool,
     /// The active number-badge pick-mode (`F` for folds, `I` for figures), or
     /// `None`. While set, the view badges each visible element and a digit acts on it.
     pub hint: Option<Hint>,
@@ -389,6 +396,7 @@ impl Reader {
             pending_frac: None,
             pending_image: None,
             pending_code: None,
+            pending_bottom: false,
             pending_code_hold: None,
             hint: None,
             overlay_occlude: None,
@@ -497,9 +505,9 @@ impl Reader {
     fn visible_image_targets(&self) -> (HashSet<usize>, HashSet<usize>) {
         let mut figures = HashSet::new();
         let mut inline = HashSet::new();
-        // `scroll` is transiently `usize::MAX` after scrolling up past a section top (clamped
-        // to the bottom next draw), so add saturating — `scroll + span` would otherwise
-        // overflow and panic. A `MAX` start clamps to `len`, giving an empty (no-op) range.
+        // Read before the wrap settles the scroll, so clamp both ends rather than
+        // trusting `scroll` to index `lines` — an out-of-range start yields an empty
+        // (no-op) range instead of panicking.
         let start = self.scroll.min(self.lines.len());
         let end = self
             .scroll
@@ -1077,7 +1085,7 @@ impl Reader {
             self.scroll = self.scroll.saturating_sub(n);
         } else if !self.chapter_lock && self.section > 0 {
             self.load(self.section - 1);
-            self.scroll = usize::MAX; // clamped to the bottom on next draw
+            self.pending_bottom = true; // land at its last page once wrapped
         }
     }
 
@@ -1203,6 +1211,11 @@ impl Reader {
 
     /// Apply a pending resume fraction or figure jump once the section is wrapped.
     pub fn resolve_pending(&mut self) {
+        // Entered this section from below: its last page is only knowable now that
+        // the section is wrapped. Resolved first so a targeted jump below wins.
+        if std::mem::take(&mut self.pending_bottom) {
+            self.scroll = self.max_scroll();
+        }
         if let Some(frac) = self.pending_frac.take() {
             let n = self.lines.len();
             self.scroll = ((frac * n as f32).round() as usize).min(n.saturating_sub(1));
@@ -2281,6 +2294,42 @@ mod tests {
         assert!(
             !r.following_pending(),
             "nothing pending when everything's cached"
+        );
+    }
+
+    /// Scrolling up past a section top used to park `scroll` at `usize::MAX` as a
+    /// "clamped to the bottom next draw" sentinel. But the layout plan snapshots
+    /// `scroll` *before* the wrap can resolve it (settling needs the line count,
+    /// which needs the plan's measure), so the sentinel reached the renderer and
+    /// overflowed the bookmark gutter's `top + row` — delryn panicked on crossing a
+    /// chapter boundary upward. It's a pending flag now, resolved once lines exist.
+    #[test]
+    fn scrolling_up_across_a_section_boundary_leaves_a_usable_scroll() {
+        let mut r = Reader::new(Box::new(MockDoc::new(vec![
+            vec![para(), para(), para()],
+            vec![para()],
+        ])))
+        .unwrap();
+        r.last_measure = 40;
+        r.page_lines = 4;
+        r.viewport_lines = 4;
+        r.load(1);
+        r.ensure_wrapped(40);
+        assert_eq!((r.section, r.scroll), (1, 0), "at the second section's top");
+
+        r.scroll_up(1);
+        assert_eq!(r.section, 0, "flows into the previous section");
+        assert_ne!(r.scroll, usize::MAX, "no sentinel escapes into the frame");
+
+        // What the draw path runs before handing the columns to the renderer.
+        r.ensure_wrapped(40);
+        r.resolve_pending();
+        r.clamp_scroll();
+        assert!(r.max_scroll() > 0, "fixture section is taller than a page");
+        assert_eq!(
+            r.scroll,
+            r.max_scroll(),
+            "lands on that section's last page"
         );
     }
 

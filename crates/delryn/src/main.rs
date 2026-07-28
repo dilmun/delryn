@@ -137,6 +137,13 @@ fn main() -> Result<()> {
     // escapes into the shell. Chain a hook that takes those down first, then defers to it.
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // Persist the panic (message, location, backtrace) to a durable, append-only
+        // crash log *before* anything restores the terminal — the TUI's stderr redirect
+        // (`StderrRedirect`) is truncated on launch and shared between instances, so a
+        // crash trace would otherwise be lost the next time the reader opens. This file
+        // survives relaunches and concurrent instances, so a reproduced crash is always
+        // recoverable for diagnosis.
+        write_crash_log(info);
         let _ = execute!(
             io::stdout(),
             Print(delryn::media::delete_all_images_seq()),
@@ -154,6 +161,45 @@ fn main() -> Result<()> {
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
+}
+
+/// The durable crash-log path: `$TMPDIR/delryn-crash.log`. Append-only so a reproduced
+/// crash is never clobbered by a relaunch or a second running instance (unlike the
+/// truncated stderr redirect).
+fn crash_log_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("delryn-crash.log")
+}
+
+/// Append one panic (message, source location, and a full backtrace) to the crash log.
+/// Called from the panic hook while the terminal is still in raw mode, so it must not
+/// print to stderr/stdout; it only writes the file. Best-effort — any I/O error is
+/// swallowed, since we're already unwinding.
+fn write_crash_log(info: &std::panic::PanicHookInfo<'_>) {
+    use std::io::Write;
+    let msg = info
+        .payload()
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-string panic payload>");
+    let loc = info
+        .location()
+        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+        .unwrap_or_else(|| "<unknown location>".to_string());
+    // `force_capture` reads RUST_BACKTRACE-independent frames, so a user needn't set the
+    // env var to get a usable trace.
+    let bt = std::backtrace::Backtrace::force_capture();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(crash_log_path())
+    {
+        let _ = writeln!(
+            f,
+            "\n===== delryn panic =====\nversion: {}\nat: {loc}\nmessage: {msg}\nbacktrace:\n{bt}\n========================",
+            env!("CARGO_PKG_VERSION"),
+        );
+    }
 }
 
 /// While alive, points the process's stderr (fd 2) at a log file, so a dependency's stray
