@@ -108,6 +108,7 @@ pub fn parse_blocks_with_css(xhtml: &str, extra_css: &str) -> Vec<Block> {
     let mut out = Vec::new();
     walk_children(body_or_root(&doc), &Ctx::default(), &mut out);
     attach_trailing_captions(&mut out);
+    join_stranded_labels(&mut out);
 
     BLOCK_CLASSES.with_borrow_mut(HashSet::clear); // don't leak across sections
     out
@@ -151,6 +152,60 @@ fn attach_trailing_captions(blocks: &mut Vec<Block>) {
             if let Block::Image { caption, .. } = &mut blocks[i] {
                 *caption = spans;
             }
+        }
+        i += 1;
+    }
+}
+
+/// Whether a paragraph's whole text is a bare reference marker — `(1)`, `2.`,
+/// `[a]`, `†` — rather than prose. Publishers emit these as a label beside the
+/// thing they mark; on their own they are meaningless.
+fn is_stranded_label(text: &str) -> bool {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^[\(\[]?\s*(?:\d{1,3}|[a-zA-Z]|[ivxIVX]{1,4}|[*†‡§¶])\s*[\)\]]?\.?$").unwrap()
+    });
+    let t = text.trim();
+    // Bounded so a genuinely short sentence can never qualify.
+    !t.is_empty() && t.chars().count() <= 6 && RE.is_match(t)
+}
+
+/// Join a paragraph that is nothing but a reference marker onto the paragraph
+/// that follows it.
+///
+/// Springer-style markup pairs a label with its value as an inline span beside a
+/// block sibling — `<span class="AffiliationNumber">(1)</span><div
+/// class="AffiliationText">Novosibirsk State University…</div>`. The block child
+/// ends the inline run, so the label is emitted as its own paragraph and lands
+/// stranded on a line of its own, a blank line away from the text it labels.
+///
+/// Only a paragraph whose *entire* text is a marker is joined, and only onto a
+/// following plain paragraph — never a heading, a list item, or an image — so
+/// ordinary prose and real list numbering are untouched.
+fn join_stranded_labels(blocks: &mut Vec<Block>) {
+    let mut i = 0;
+    while i + 1 < blocks.len() {
+        let is_label = matches!(
+            &blocks[i],
+            Block::Para { spans, marker: None, quote: false, .. }
+                if is_stranded_label(&spans.iter().map(|s| s.text.as_str()).collect::<String>())
+        );
+        let next_takes_it = matches!(
+            &blocks[i + 1],
+            Block::Para { spans, marker: None, .. } if !spans.is_empty()
+        );
+        if is_label && next_takes_it {
+            let Block::Para { spans: label, .. } = blocks.remove(i) else {
+                unreachable!("matched Para above")
+            };
+            let Block::Para { spans, .. } = &mut blocks[i] else {
+                unreachable!("matched Para above")
+            };
+            // The label keeps its own styling; one space separates it from the value.
+            let mut joined = label;
+            joined.push(Span::plain(" "));
+            joined.append(spans);
+            *spans = joined;
+            continue; // `i` now indexes the merged paragraph — don't skip past it
         }
         i += 1;
     }

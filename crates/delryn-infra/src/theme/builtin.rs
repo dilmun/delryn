@@ -38,8 +38,6 @@ pub const AUTO: Theme = Theme {
     muted: Color::Rgb(0x86, 0x8e, 0x9a),
     marker: Color::Rgb(229, 192, 123),
     code_fg: Color::Rgb(152, 195, 121),
-    status_fg: Color::Black,
-    status_bg: Color::Gray,
     accent: Color::Rgb(137, 180, 250),
     danger: Color::Rgb(0xe0, 0x5a, 0x5a),
     syntect: "base16-ocean.dark",
@@ -55,8 +53,6 @@ pub const DARK: Theme = Theme {
     muted: Color::Rgb(0x6c, 0x70, 0x86),
     marker: Color::Rgb(0xfa, 0xb3, 0x87),
     code_fg: Color::Rgb(0xa6, 0xe3, 0xa1),
-    status_fg: Color::Rgb(0x1e, 0x1e, 0x2e),
-    status_bg: Color::Rgb(0x89, 0xb4, 0xfa),
     accent: Color::Rgb(0xf5, 0xc2, 0xe7),
     danger: Color::Rgb(0xf3, 0x8b, 0xa8),
     syntect: "base16-mocha.dark",
@@ -72,8 +68,6 @@ pub const OLED: Theme = Theme {
     muted: Color::Rgb(0x5a, 0x5a, 0x5a),
     marker: Color::Rgb(0xff, 0xb4, 0x54),
     code_fg: Color::Rgb(0x8e, 0xc0, 0x7c),
-    status_fg: Color::Rgb(0xd0, 0xd0, 0xd0),
-    status_bg: Color::Rgb(0x18, 0x18, 0x18),
     accent: Color::Rgb(0x4e, 0xa1, 0xff),
     danger: Color::Rgb(0xff, 0x5a, 0x5a),
     syntect: "base16-ocean.dark",
@@ -89,8 +83,6 @@ pub const HIGH_CONTRAST: Theme = Theme {
     muted: Color::Rgb(0xc0, 0xc0, 0xc0),
     marker: Color::Rgb(0x00, 0xff, 0x00),
     code_fg: Color::Rgb(0x00, 0xff, 0x00),
-    status_fg: Color::Rgb(0x00, 0x00, 0x00),
-    status_bg: Color::Rgb(0xff, 0xff, 0xff),
     accent: Color::Rgb(0xff, 0xff, 0x00),
     danger: Color::Rgb(0xff, 0x00, 0x00),
     syntect: "base16-ocean.dark",
@@ -106,8 +98,6 @@ pub const SOLARIZED_DARK: Theme = Theme {
     muted: Color::Rgb(0x58, 0x6e, 0x75),
     marker: Color::Rgb(0xcb, 0x4b, 0x16),
     code_fg: Color::Rgb(0x2a, 0xa1, 0x98),
-    status_fg: Color::Rgb(0x93, 0xa1, 0xa1),
-    status_bg: Color::Rgb(0x07, 0x36, 0x42),
     accent: Color::Rgb(0x26, 0x8b, 0xd2),
     danger: Color::Rgb(0xdc, 0x32, 0x2f),
     syntect: "Solarized (dark)",
@@ -123,8 +113,6 @@ pub const SOLARIZED_LIGHT: Theme = Theme {
     muted: Color::Rgb(0x93, 0xa1, 0xa1),
     marker: Color::Rgb(0xcb, 0x4b, 0x16),
     code_fg: Color::Rgb(0x2a, 0xa1, 0x98),
-    status_fg: Color::Rgb(0x58, 0x6e, 0x75),
-    status_bg: Color::Rgb(0xee, 0xe8, 0xd5),
     accent: Color::Rgb(0x26, 0x8b, 0xd2),
     danger: Color::Rgb(0xdc, 0x32, 0x2f),
     syntect: "Solarized (light)",
@@ -140,8 +128,6 @@ pub const DRACULA: Theme = Theme {
     muted: Color::Rgb(0x62, 0x72, 0xa4),
     marker: Color::Rgb(0xff, 0xb8, 0x6c),
     code_fg: Color::Rgb(0x50, 0xfa, 0x7b),
-    status_fg: Color::Rgb(0xf8, 0xf8, 0xf2),
-    status_bg: Color::Rgb(0x44, 0x47, 0x5a),
     accent: Color::Rgb(0xff, 0x79, 0xc6),
     danger: Color::Rgb(0xff, 0x55, 0x55),
     syntect: "base16-mocha.dark",
@@ -157,8 +143,6 @@ pub const GRUVBOX: Theme = Theme {
     muted: Color::Rgb(0x92, 0x83, 0x74),
     marker: Color::Rgb(0xfe, 0x80, 0x19),
     code_fg: Color::Rgb(0xb8, 0xbb, 0x26),
-    status_fg: Color::Rgb(0x28, 0x28, 0x28),
-    status_bg: Color::Rgb(0xa8, 0x99, 0x84),
     accent: Color::Rgb(0xfa, 0xbd, 0x2f),
     danger: Color::Rgb(0xfb, 0x49, 0x34),
     syntect: "base16-eighties.dark",
@@ -168,15 +152,49 @@ pub const LIGHT: Theme = Theme {
     name: "light",
     bg: Some(Color::Rgb(0xff, 0xff, 0xff)),
     fg: Color::Rgb(0x1a, 0x1a, 0x1a),
-    heading: Color::Rgb(0x00, 0x00, 0x00),
+    // Was pure black against near-black body ink — indistinguishable, so headings
+    // read as nothing but bold prose. A deep amber separates them at a glance and
+    // stays clear of the blue used for links.
+    heading: Color::Rgb(0x8a, 0x4a, 0x00),
     quote: Color::Rgb(0x6a, 0x6a, 0x6a),
     link: Color::Rgb(0x0b, 0x5c, 0xad),
     muted: Color::Rgb(0x9a, 0x9a, 0x9a),
     marker: Color::Rgb(0xb3, 0x59, 0x00),
     code_fg: Color::Rgb(0x0a, 0x6b, 0x3a),
-    status_fg: Color::Rgb(0x1a, 0x1a, 0x1a),
-    status_bg: Color::Rgb(0xe6, 0xe6, 0xe6),
     accent: Color::Rgb(0x0b, 0x5c, 0xad),
     danger: Color::Rgb(0xc0, 0x28, 0x28),
     syntect: "InspiredGitHub",
 };
+
+#[cfg(test)]
+mod contrast_tests {
+    use super::*;
+
+    fn rgb(c: Color) -> Option<(i32, i32, i32)> {
+        match c {
+            Color::Rgb(r, g, b) => Some((r as i32, g as i32, b as i32)),
+            _ => None,
+        }
+    }
+
+    /// A heading has to be visibly *different ink* from body text, not merely bold.
+    /// The `light` theme shipped `#000000` headings over `#1a1a1a` body — a
+    /// difference of 26/255 on one axis, invisible in practice, so every section
+    /// title in a paper read as plain bold prose.
+    #[test]
+    fn every_theme_separates_heading_ink_from_body_ink() {
+        for t in BUILTINS {
+            let (Some(h), Some(f)) = (rgb(t.heading), rgb(t.fg)) else {
+                continue; // a theme deferring to the terminal's own palette
+            };
+            let distance = (h.0 - f.0).abs() + (h.1 - f.1).abs() + (h.2 - f.2).abs();
+            assert!(
+                distance >= 90,
+                "{}: heading {:?} is too close to body {:?} (distance {distance})",
+                t.name,
+                t.heading,
+                t.fg
+            );
+        }
+    }
+}

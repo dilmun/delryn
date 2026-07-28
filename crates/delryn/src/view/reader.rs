@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, Padding, Paragraph};
 
 use ratatui_image::picker::Picker;
 
@@ -112,21 +112,62 @@ pub fn render(f: &mut Frame, app: &mut App) {
     last_layout.content = Some(content_area);
 
     if let Some(sb) = sidebar_area {
-        reader.update_sidebar_view(sb.height.saturating_sub(2) as usize);
+        reader.update_sidebar_view(sb.height.saturating_sub(sidebar_chrome(reader)) as usize);
         render_sidebar(f, sb, reader, theme);
+        render_divider(f, sb, body, theme);
     }
     render_content(f, content_area, reader, config, theme, images);
     if reader.selection_active() {
-        let style = theme.style(Role::StatusBar);
-        let hint = if reader.selection_selecting() {
-            " SELECT · h/l/w/b/j/k extend · ^d/^u ½page · y copy · 1-5/H highlight · a note · K look up · Esc "
+        // The bar floats, so the mode can't announce itself with a coloured band
+        // any more: it takes a pill, and the keys stay dim beside it.
+        let (mode, keys) = if reader.selection_selecting() {
+            (
+                "SELECT",
+                " h/l/w/b/j/k extend · ^d/^u ½page · y copy · 1-5/H highlight · a note · K look up · Esc ",
+            )
         } else {
-            " CURSOR · h/l/w/b/j/k move · ^d/^u ½page · v select · m bookmark · H highlight · a note · K look up · Esc "
+            (
+                "CURSOR",
+                " h/l/w/b/j/k move · ^d/^u ½page · v select · m bookmark · H highlight · a note · K look up · Esc ",
+            )
         };
-        f.render_widget(Paragraph::new(Line::raw(hint)).style(style), status);
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(crate::view::pill_spans(mode, theme));
+        spans.push(Span::styled(keys, theme.style(Role::StatusDim)));
+        f.render_widget(
+            Paragraph::new(Line::from(spans)).style(theme.style(Role::StatusBar)),
+            status,
+        );
     } else if show_status {
         crate::view::status::render_reader(f, status, reader, config, theme);
     }
+}
+
+/// Rows the borderless sidebar spends on its own chrome: the title, plus the
+/// filter line when the contents filter is open. Keeps the scroll viewport the
+/// reader computes in step with what [`render_sidebar`] actually leaves for rows.
+fn sidebar_chrome(reader: &Reader) -> u16 {
+    1 + u16::from(reader.sidebar_filter.is_some())
+}
+
+/// A single hairline between the TOC and the text, drawn in the one-cell gap the
+/// split already reserves. It replaces the sidebar's box: one quiet rule is
+/// enough to separate the panes, where four sides of border framed the contents
+/// as a widget and boxed the prose in beside it.
+fn render_divider(f: &mut Frame, sidebar: Rect, body: Rect, theme: Theme) {
+    let x = sidebar.x + sidebar.width;
+    if x >= body.x + body.width {
+        return;
+    }
+    let rule = Rect {
+        x,
+        y: body.y,
+        width: 1,
+        height: body.height,
+    };
+    let style = theme.style(Role::Border);
+    let lines: Vec<Line> = (0..body.height).map(|_| Line::raw("│")).collect();
+    f.render_widget(Paragraph::new(Text::from(lines)).style(style), rule);
 }
 
 fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
@@ -141,11 +182,13 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
         };
         format!(" /{}\u{2588} · {count} ", input.text())
     });
+    // Borderless: no box, just a title row and a column of air on each side. Only
+    // the horizontal padding is ours to set — a block already reserves the top row
+    // for its title and the bottom row for a `title_bottom`, borders or not, which
+    // is exactly the chrome `sidebar_chrome` counts.
     let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::Border))
-        .title(Span::styled(" Contents ", theme.style(Role::Title)))
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(" Contents", theme.style(Role::Title)))
         .style(theme.text_style());
     let block = match &filter_footer {
         Some(text) => block.title_bottom(
@@ -947,7 +990,18 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, decor: &LineDecor) -> Line<'stat
 fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
     // The line kind's base role — Heading/Quote/Math carry their own emphasis.
     let role = match kind {
-        LineKind::Heading(_) => Role::Heading,
+        // Grade the heading by depth. Every level used to resolve to one role, so a
+        // section and its subsection looked identical and a numbered paper read as
+        // undifferentiated bold text. A terminal has no font sizes or weights to
+        // grade with, so the tiers are carried by colour, bold, and italic:
+        // accent+bold for a chapter title, heading+bold for a section, heading+italic
+        // below that, and muted for the deepest levels.
+        LineKind::Heading(level) => match level {
+            0 | 1 => Role::Title,
+            2 => Role::Heading,
+            3 => Role::Subheading,
+            _ => Role::Muted,
+        },
         LineKind::Quote => Role::Quote,
         LineKind::Math => Role::Math, // display equations, accented
         // Rules, the code gutter / unhighlighted code, and footnotes read muted.

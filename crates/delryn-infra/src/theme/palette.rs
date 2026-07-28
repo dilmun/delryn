@@ -28,10 +28,6 @@ pub struct Palette {
     pub code: Option<String>,
     #[serde(default)]
     pub danger: Option<String>,
-    #[serde(default)]
-    pub status_fg: Option<String>,
-    #[serde(default)]
-    pub status_bg: Option<String>,
 }
 
 /// Parse a `#rrggbb` or `#rgb` hex string into an RGB colour.

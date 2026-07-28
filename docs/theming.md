@@ -19,7 +19,7 @@ and adding a new themeable element is one entry — not an edit to every theme.
 
 1. **Palette** (`palette.rs`) — the named swatches a theme author fills in
    (`bg`, `text`, `accent`, `heading`, `quote`, `link`, `muted`, `marker`,
-   `code`, `danger`, `status_fg`, `status_bg`). Only `bg`/`text` are required;
+   `code`, `danger`). Only `bg`/`text` are required;
    the rest derive (see `load.rs`).
 2. **`Theme`** (`mod.rs`) — the flat, fully-resolved swatches: a `Copy` struct of
    concrete `Color`s. This is the *resolved palette* the role map reads from. A
