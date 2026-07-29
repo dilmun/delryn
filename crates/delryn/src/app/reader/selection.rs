@@ -9,6 +9,7 @@
 //!   whitespace-normalized string and re-find a stored quote's exact cells after a
 //!   reflow, so a sub-line highlight re-washes the same characters at any width.
 
+use crate::HighlightColor;
 use crate::layout::DisplayLine;
 
 use super::Reader;
@@ -54,6 +55,26 @@ impl Reader {
     /// Leave cursor/selection mode.
     pub fn cancel_selection(&mut self) {
         self.select = None;
+    }
+
+    /// Step the pen to the next highlight colour, returning it to report.
+    ///
+    /// The live selection is washed in the pen, so this changes what is on screen
+    /// immediately: the colour is chosen by looking at it on the actual words,
+    /// rather than committed blind and corrected afterwards.
+    pub fn cycle_pen(&mut self) -> HighlightColor {
+        let i = HighlightColor::ALL
+            .iter()
+            .position(|&c| c == self.pen)
+            .unwrap_or(0);
+        self.pen = HighlightColor::ALL[(i + 1) % HighlightColor::ALL.len()];
+        self.pen
+    }
+
+    /// The colour to wash the live selection in — `None` when nothing is anchored
+    /// yet, since there is no range to preview.
+    pub fn selection_pen(&self) -> Option<HighlightColor> {
+        self.selection_selecting().then_some(self.pen)
     }
 
     /// The selected text (whitespace-normalized), or empty if nothing is anchored.

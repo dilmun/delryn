@@ -124,7 +124,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let (mode, keys) = if reader.selection_selecting() {
             (
                 "SELECT",
-                " h/l/w/b/j/k extend · ^d/^u ½page · y copy · 1-5/H highlight · a note · K look up · Esc ",
+                " h/l/w/b/j/k extend · y copy · ⏎/H highlight · c colour · a note · K look up · Esc ",
             )
         } else {
             (
@@ -134,6 +134,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
         };
         let mut spans = vec![Span::raw(" ")];
         spans.extend(crate::view::pill_spans(mode, theme));
+        // The pen, shown in its own colour while selecting, so the palette the
+        // `c` key steps through is visible without committing anything.
+        if let Some(pen) = reader.selection_pen() {
+            let (bg, fg) = pen.wash();
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!(" {} ", pen.label()),
+                Style::default().bg(bg).fg(fg),
+            ));
+        }
         spans.push(Span::styled(keys, theme.style(Role::StatusDim)));
         f.render_widget(
             Paragraph::new(Line::from(spans)).style(theme.style(Role::StatusBar)),
@@ -855,6 +865,9 @@ struct LineDecor<'a> {
     highlights: &'a [(usize, usize, HighlightColor)],
     /// The visual selection's character range on this line, if any.
     selection: Option<(usize, usize)>,
+    /// The colour the selection is washed in — the pen the highlight would be
+    /// made with, so the range on screen is a preview of the result.
+    pen: Option<HighlightColor>,
     /// The visual caret's column on this line, if the caret is here.
     caret: Option<usize>,
 }
@@ -871,6 +884,7 @@ fn line_decor<'a>(
         cursor: sel.filter(|h| h.line == idx).map(|h| (h.start, h.end)),
         highlights: reader.highlight_spans(idx),
         selection: reader.selection_span_on(idx),
+        pen: reader.selection_pen(),
         caret: reader
             .selection_caret()
             .filter(|(l, _)| *l == idx)
@@ -933,7 +947,16 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, decor: &LineDecor) -> Line<'stat
     // The link cursor and the visual caret both stand out via reverse video; the
     // visual *selection* uses the accent selection style.
     let cursor_style = theme.style(Role::Cursor);
-    let selection_style = theme.style(Role::Selection);
+    // While selecting, the range is washed in the pen rather than the generic
+    // accent: what's on screen is then exactly the highlight that `H` would
+    // commit, so the colour is picked by looking at it on the words themselves.
+    let selection_style = match decor.pen {
+        Some(c) => {
+            let (bg, fg) = c.wash();
+            Style::default().bg(bg).fg(fg)
+        }
+        None => theme.style(Role::Selection),
+    };
     let (cs, ce) = decor.cursor.unwrap_or((usize::MAX, usize::MAX));
     let (ss, se) = decor.selection.unwrap_or((usize::MAX, usize::MAX));
 

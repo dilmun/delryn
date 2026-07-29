@@ -588,17 +588,33 @@ impl App {
                     r.copy_selection();
                 }
             }
-            // Highlight the selected range, else cycle the caret line's highlight.
-            // Either way the selection survives, so `H` again walks the palette.
-            KeyCode::Char('H') => {
+            // Step the pen. The selection is washed in it, so this recolours what
+            // is on screen — the colour is chosen by looking at it on the words
+            // rather than committed and corrected afterwards.
+            KeyCode::Char('c') | KeyCode::Tab => {
+                if let Some(r) = self.reader.as_mut() {
+                    let pen = r.cycle_pen();
+                    r.flash = Some(format!("pen: {}", pen.label()));
+                }
+            }
+            // Commit the selection in the pen's colour, keeping the selection so
+            // the colour can still be changed and re-applied.
+            KeyCode::Char('H') | KeyCode::Enter => {
                 if selecting {
-                    self.highlight_selection(None);
+                    let pen = self.reader.as_ref().map(|r| r.pen);
+                    self.highlight_selection(pen);
                 } else {
                     self.apply(Action::AddHighlight);
                 }
             }
+            // A digit picks a colour outright: it sets the pen and commits, so the
+            // palette is reachable in one key when the choice is already known.
             KeyCode::Char(c) if selecting && ('1'..='5').contains(&c) => {
-                self.highlight_selection(Some(HighlightColor::ALL[c as usize - '1' as usize]));
+                let color = HighlightColor::ALL[c as usize - '1' as usize];
+                if let Some(r) = self.reader.as_mut() {
+                    r.pen = color;
+                }
+                self.highlight_selection(Some(color));
             }
             // Look up the selected phrase, else the word under the caret (vim `K`),
             // in the dictionary + Wikipedia panel. Leaves the selection intact.

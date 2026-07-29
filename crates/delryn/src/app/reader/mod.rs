@@ -116,6 +116,10 @@ pub struct Reader {
     pub code_fold_flip: Vec<usize>,
     /// Word-wrap table cells (set each render from config).
     pub table_wrap: bool,
+    /// The colour the next highlight will be made in, and the colour the live
+    /// selection is washed in so it previews the result before it is committed.
+    /// Kept for the session so a reader who picked a colour keeps using it.
+    pub pen: HighlightColor,
     /// Full justification + converter-spacing tidy (set each render from config).
     pub justify: bool,
     /// Break long words at algorithmic hyphenation points (set each render from
@@ -354,6 +358,7 @@ impl Reader {
             code_fold_threshold: 20,
             code_fold_flip: Vec::new(),
             table_wrap: true,
+            pen: HighlightColor::ALL[0],
             justify: false,
             hyphenate: false,
             tidy_spacing: true,
@@ -1660,6 +1665,40 @@ mod tests {
             Some("Chapter 2")
         );
         assert_eq!(r.chapter_title(), "Chapter 2");
+    }
+
+    /// The pen is what a highlight will be made in, and it is only *previewed*
+    /// once there is a range to preview — in cursor mode there is nothing to wash,
+    /// so the selection keeps its ordinary accent styling.
+    #[test]
+    fn the_pen_previews_only_once_something_is_selected() {
+        let mut r = reader_with(vec![para()]);
+        r.viewport_lines = 10;
+        r.page_lines = 10;
+        r.visible_span = 10;
+
+        r.start_selection();
+        assert_eq!(r.selection_pen(), None, "cursor mode previews nothing");
+
+        r.toggle_selection_anchor();
+        assert_eq!(
+            r.selection_pen(),
+            Some(r.pen),
+            "the range washes in the pen"
+        );
+
+        // Stepping the pen changes what is on screen, and wraps round the palette
+        // so every colour is reachable with the one key.
+        let first = r.pen;
+        let mut seen = vec![first];
+        for _ in 1..HighlightColor::ALL.len() {
+            seen.push(r.cycle_pen());
+        }
+        assert_eq!(seen.len(), HighlightColor::ALL.len());
+        for c in HighlightColor::ALL {
+            assert!(seen.contains(&c), "{} is reachable", c.label());
+        }
+        assert_eq!(r.cycle_pen(), first, "and wraps back round");
     }
 
     // Cursor mode: `V` starts a movable caret with no anchor (nothing selected);
