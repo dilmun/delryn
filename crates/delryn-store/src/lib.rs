@@ -606,6 +606,19 @@ mod tests {
             .unwrap();
         assert_eq!(recoloured.color, 4);
 
+        // The insert reports its row id, which is how the caller recolours the
+        // highlight it just made instead of stacking a second one over it.
+        let id = store
+            .add_highlight(p, 5, "another line", 1)
+            .expect("insert reports its id");
+        store.set_annotation_color(id, 3);
+        let by_id = store
+            .list_annotations(p)
+            .into_iter()
+            .find(|a| a.id == id)
+            .expect("the reported id addresses the new row");
+        assert_eq!((by_id.section, by_id.color), (5, 3));
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

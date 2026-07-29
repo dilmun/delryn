@@ -223,12 +223,8 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
     bar
 }
 
-/// The active overlay's bar (context + key hints), if one is open. The bottom-row
-/// prompt owns the row itself, so it's deliberately skipped.
+/// The active overlay's bar (context + key hints), if one is open.
 pub fn overlay_bar(app: &App, theme: Theme) -> Option<StatusBar> {
-    if matches!(app.overlay, Overlay::Prompt(_)) {
-        return None;
-    }
     let (context, keys) = legend(app)?;
     let mut bar = StatusBar::new();
     bar.text(

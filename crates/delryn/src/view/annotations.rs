@@ -21,25 +21,28 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 }
 
+/// The rename / move-to-folder / note-commentary prompt, as a modal.
+///
+/// It used to be a single line painted over the status row, which is where every
+/// other text entry started and none of them stayed: a caret appearing in the
+/// chrome is easy to miss entirely, and until you notice it the keyboard has
+/// silently stopped driving the reader.
 fn render_prompt(f: &mut Frame, app: &App, prompt: &Prompt) {
-    let theme = app.config.theme;
-    let area = f.area();
-    let row = Rect {
-        x: area.x,
-        y: area.y + area.height.saturating_sub(1),
-        width: area.width,
-        height: 1,
+    let (title, note) = match &prompt.kind {
+        PromptKind::Name(_) => ("Name bookmark", Some("Empty restores the quoted text.")),
+        PromptKind::Folder(_) => ("Move to folder", Some("Empty leaves it ungrouped.")),
+        PromptKind::NewNote { quote, .. } => ("New note", Some(quote.as_str())),
+        PromptKind::EditNote(_) => ("Edit note", None),
     };
-    f.render_widget(Clear, row);
-    let style = theme.style(Role::StatusBar);
-    let label = match prompt.kind {
-        PromptKind::Name(_) => "name",
-        PromptKind::Folder(_) => "folder",
-        PromptKind::NewNote { .. } | PromptKind::EditNote(_) => "note",
-    };
-    f.render_widget(
-        Paragraph::new(Line::raw(format!("{label}: {}▏", prompt.input.text()))).style(style),
-        row,
+    crate::view::dialog::prompt(
+        f,
+        title,
+        note,
+        prompt.input.text(),
+        prompt.input.cursor(),
+        "⏎ save · ^U clear · Esc cancel",
+        app.config.theme,
+        app.config.bold_borders,
     );
 }
 

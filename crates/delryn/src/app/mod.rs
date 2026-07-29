@@ -808,6 +808,7 @@ impl App {
                 | Overlay::WordLookup(_)
                 | Overlay::CodeView(_)
                 | Overlay::TagEdit(_)
+                | Overlay::Prompt(_)
         )
     }
 

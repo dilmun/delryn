@@ -589,15 +589,16 @@ impl App {
                 }
             }
             // Highlight the selected range, else cycle the caret line's highlight.
+            // Either way the selection survives, so `H` again walks the palette.
             KeyCode::Char('H') => {
                 if selecting {
-                    self.highlight_selection(HighlightColor::ALL[0]);
+                    self.highlight_selection(None);
                 } else {
                     self.apply(Action::AddHighlight);
                 }
             }
             KeyCode::Char(c) if selecting && ('1'..='5').contains(&c) => {
-                self.highlight_selection(HighlightColor::ALL[c as usize - '1' as usize]);
+                self.highlight_selection(Some(HighlightColor::ALL[c as usize - '1' as usize]));
             }
             // Look up the selected phrase, else the word under the caret (vim `K`),
             // in the dictionary + Wikipedia panel. Leaves the selection intact.
@@ -636,8 +637,13 @@ impl App {
         }
     }
 
-    /// Highlight the current selection in `color`, then leave visual mode.
-    fn highlight_selection(&mut self, color: HighlightColor) {
+    /// Highlight the current selection, **keeping** it live.
+    ///
+    /// Dropping the selection the instant it was highlighted meant the colour was
+    /// whatever the first press happened to pick: to change it you had to reselect
+    /// the same span from scratch. Holding the selection lets a repeated `H` walk
+    /// the palette over the same words, and `Esc` is what ends it.
+    fn highlight_selection(&mut self, color: Option<HighlightColor>) {
         let Some((section, quote)) = self
             .reader
             .as_ref()
@@ -645,19 +651,14 @@ impl App {
         else {
             return;
         };
-        if let Some(r) = self.reader.as_mut() {
-            r.cancel_selection();
-        }
-        if quote.is_empty() || self.session.book_path.is_empty() {
+        let Some(store) = &self.session.store else {
             return;
-        }
-        if let Some(store) = &self.session.store {
-            store.add_highlight(&self.session.book_path, section, &quote, color.index());
-        }
-        if let Some(r) = self.reader.as_mut() {
-            r.flash = Some(format!("highlight: {}", color.label()));
-        }
+        };
+        let flash = highlight_quote(store, &self.session.book_path, section, &quote, color);
         self.sync_reader_bookmarks();
+        if let (Some(r), Some(msg)) = (self.reader.as_mut(), flash) {
+            r.flash = Some(msg);
+        }
     }
 
     /// Open the note prompt anchored to the current selection, then leave visual
@@ -705,5 +706,56 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+/// Highlight the text anchored at `(section, quote)`, returning the flash to show.
+///
+/// `Some(color)` paints that palette entry; `None` advances whatever is already
+/// there to the next one, and clears it past the last — so one key both applies
+/// and removes. Either way an existing highlight over the same words is
+/// *recoloured* rather than buried under a second one.
+///
+/// Free-standing rather than a method: the caret-line caller already holds a
+/// mutable borrow of the reader when it needs this, and taking `&mut App` here
+/// would collide with it. Shared by that caller and the selection so the two
+/// can't drift into answering the same keypress differently.
+pub(crate) fn highlight_quote(
+    store: &crate::store::Store,
+    book_path: &str,
+    section: usize,
+    quote: &str,
+    color: Option<HighlightColor>,
+) -> Option<String> {
+    if quote.is_empty() || book_path.is_empty() {
+        return None;
+    }
+    let existing = store
+        .list_annotations(book_path)
+        .into_iter()
+        .find(|a| a.is_highlight() && a.section == section && a.quote == quote);
+    let current = existing
+        .as_ref()
+        .map(|a| HighlightColor::from_index(a.color));
+    // An explicit colour is applied as asked; `None` steps the cycle, which runs
+    // off the end into "no highlight at all".
+    let next = match color {
+        Some(c) => Some(c),
+        None => HighlightColor::cycle(current),
+    };
+    match (next, existing) {
+        (Some(c), Some(a)) => {
+            store.set_annotation_color(a.id, c.index());
+            Some(format!("highlight: {}", c.label()))
+        }
+        (Some(c), None) => {
+            store.add_highlight(book_path, section, quote, c.index());
+            Some(format!("highlight: {}", c.label()))
+        }
+        (None, Some(a)) => {
+            store.delete_annotation(a.id);
+            Some("highlight removed".into())
+        }
+        (None, None) => None,
     }
 }
