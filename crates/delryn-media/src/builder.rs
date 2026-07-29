@@ -13,6 +13,7 @@ use ratatui_image::picker::Picker;
 
 use crate::decode::decode;
 use crate::recolor::{RenderPolicy, render_for_theme};
+use crate::resize::resize_exact;
 use crate::sizing::{FitBox, SizeHint, SizeSpec, target_cells};
 
 /// Which per-section index space a built image belongs to, so a figure's `idx` and
@@ -230,7 +231,7 @@ fn build_geometry(picker: &Picker, bytes: &[u8], fit: FitBox, spec: SizeSpec) ->
         // the text row's optical axis of a transparent whole-cell canvas.
         (true, Some(ink)) => {
             let f = crate::sizing::inline_fit(fit, ink, f64::from(fit.math_scale) / 100.0);
-            let glyph = resize_simd(&img, f.draw_w.max(1), f.draw_h.max(1)).into_rgba8();
+            let glyph = resize_exact(&img, f.draw_w.max(1), f.draw_h.max(1)).into_rgba8();
             Some(Geometry::Inline { glyph, cols, rows })
         }
         // Everything else (figures, display equations, pages): aspect-preserving fit into the
@@ -245,7 +246,7 @@ fn build_geometry(picker: &Picker, bytes: &[u8], fit: FitBox, spec: SizeSpec) ->
                 (f64::from(bw) / f64::from(sw.max(1))).min(f64::from(bh) / f64::from(sh.max(1)));
             let tw = (f64::from(sw) * scale).round().max(1.0) as u32;
             let th = (f64::from(sh) * scale).round().max(1.0) as u32;
-            let img = resize_simd(&img, tw, th).into_rgba8();
+            let img = resize_exact(&img, tw, th).into_rgba8();
             Some(Geometry::Figure { img })
         }
     }
@@ -334,35 +335,6 @@ fn build_plan(
     let fs = picker.font_size();
     let geo = build_geometry(picker, bytes, fit, spec)?;
     finish_theme(geo, policy, (fs.width, fs.height))
-}
-
-/// Exact-size resize of `img` to `dw`×`dh` with a **SIMD** Lanczos3 convolution
-/// (`fast_image_resize` auto-detects SSE4.1/AVX2/NEON at runtime). Resize is the #2
-/// cost of a build after decode — measured 51–260µs with `image`'s scalar Lanczos3 on
-/// the book's rasters — and this is ~5× faster for the same kernel, so it stays sharp.
-/// Alpha is handled (premultiplied) so transparent inline glyphs resize cleanly. Falls
-/// back to `image`'s scalar resize if the SIMD path can't accept the buffer.
-fn resize_simd(img: &image::DynamicImage, dw: u32, dh: u32) -> image::DynamicImage {
-    use fast_image_resize::images::Image as FirImage;
-    use fast_image_resize::{PixelType, Resizer};
-
-    let (dw, dh) = (dw.max(1), dh.max(1));
-    let rgba = img.to_rgba8();
-    let (sw, sh) = rgba.dimensions();
-    let fallback = || img.resize_exact(dw, dh, image::imageops::FilterType::Lanczos3);
-
-    let Ok(src) = FirImage::from_vec_u8(sw, sh, rgba.into_raw(), PixelType::U8x4) else {
-        return fallback();
-    };
-    let mut dst = FirImage::new(dw, dh, PixelType::U8x4);
-    // Default `ResizeOptions` is `Convolution(Lanczos3)` with alpha handling on.
-    if Resizer::new().resize(&src, &mut dst, None).is_err() {
-        return fallback();
-    }
-    match image::RgbaImage::from_raw(dw, dh, dst.into_vec()) {
-        Some(buf) => image::DynamicImage::ImageRgba8(buf),
-        None => fallback(),
-    }
 }
 
 /// A request to build one image's protocol off the main thread.

@@ -9,6 +9,7 @@ mod kitty;
 mod page;
 mod profile;
 mod recolor;
+mod resize;
 mod sizing;
 
 pub use delryn_infra::config::{ImageFit, ImageMode};
@@ -27,4 +28,5 @@ pub use recolor::{
     Ink, RenderPolicy, flatten_onto, is_line_art, recolor_ink, render_for_theme, theme_invert,
     theme_page_png,
 };
+pub use resize::{fit_to_box, resize_exact};
 pub use sizing::{FitBox, SizeHint, SizeSpec, target_cells};

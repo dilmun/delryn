@@ -64,6 +64,16 @@ delryn-eqn = { path = "crates/delryn-eqn" }
 [profile.dev.package."*"]
 opt-level = 2
 
+# …but that glob covers dependencies only, and delryn's *own* per-pixel image code lives
+# here: the theme recolour/invert, the equation ink profiler, and the resamplers in
+# `delryn-media`. Left unoptimized those loops ran 40–100× slower in the debug binary
+# (`cargo build -p delryn`) than in release — theming one 1.3 MP figure cost 770 ms
+# instead of 20 ms, and profiling one cost ~1 s — so a figure took about a second to
+# appear and every arrow key in the image viewer stalled. The crate is small and changes
+# rarely, so optimizing it costs almost nothing in rebuild time.
+[profile.dev.package.delryn-media]
+opt-level = 2
+
 # Vendored ratatui-image patched to transmit Kitty images as PNG (f=100) rather
 # than raw RGBA (f=32), so large figures don't stall the terminal. See
 # vendor/ratatui-image/src/protocol/kitty.rs (delryn patch).
