@@ -138,7 +138,16 @@ pub(super) fn wrap_spans(
             hyphenate_word(word);
         }
     }
-    let lines = fill_lines(words, width, first_prefix, cont_prefix);
+    // Justified prose is broken optimally (Knuth–Plass): the greedy fill decides each line
+    // before it has seen the next, so slack piles up wherever a line happens to end, and
+    // down a column those stretched gaps line up into rivers. Ragged-right text keeps the
+    // greedy fill — with no stretching there is no badness to minimise, and the optimiser's
+    // objective would be measuring something it doesn't render.
+    let lines = fit
+        .justify
+        .then(|| optimal_lines(&words, width, first_prefix, cont_prefix))
+        .flatten()
+        .unwrap_or_else(|| fill_lines(words, width, first_prefix, cont_prefix));
     emit_lines(
         lines,
         width,
@@ -282,6 +291,81 @@ fn hyphenate_word(word: &mut Vec<Vec<Glyph>>) {
         start = end;
     }
     word.push(seg[start..].to_vec());
+}
+
+/// Phase 2a — optimal line breaking for justified prose.
+///
+/// Flattens the word/segment structure into the atom sequence [`linebreak`] works on — one
+/// atom per break-segment, with the join between each pair recording whether breaking there
+/// costs a dropped space or a shown hyphen — then rebuilds the chosen breaking as
+/// [`Piece`]s for [`emit_lines`].
+///
+/// `None` when the paragraph admits no breaking within tolerance (a token wider than the
+/// column, or a word that would be left alone on a line with slack it has no gaps to
+/// absorb). The caller then falls back to the greedy fill, which always produces something
+/// — for those paragraphs the output is exactly what it was before.
+fn optimal_lines(
+    words: &[Vec<Vec<Glyph>>],
+    width: usize,
+    first: &str,
+    cont: &str,
+) -> Option<Vec<Vec<Piece>>> {
+    use super::linebreak::{Join, break_paragraph};
+
+    // One atom per segment; segments of one word join with a hyphen point, words with a space.
+    let mut atoms: Vec<&[Glyph]> = Vec::new();
+    let mut joins: Vec<Join> = Vec::new();
+    for (wi, word) in words.iter().enumerate() {
+        if wi > 0 {
+            joins.push(Join::Space);
+        }
+        for (si, seg) in word.iter().enumerate() {
+            if si > 0 {
+                joins.push(Join::Hyphen);
+            }
+            atoms.push(seg);
+        }
+    }
+    if atoms.is_empty() {
+        return Some(Vec::new());
+    }
+    let widths: Vec<usize> = atoms.iter().map(|a| cells_width(a)).collect();
+    let ends = break_paragraph(
+        &widths,
+        &joins,
+        avail(width, first, cont, 0),
+        avail(width, first, cont, 1),
+        MAX_GAP_STRETCH,
+    )?;
+
+    // Rebuild pieces: atoms joined by a hyphen point *inside* a line are one word and run
+    // together with no space, so they coalesce into a single piece; a space join closes the
+    // piece. The piece a line ends on carries the hyphen when the break was mid-word.
+    let n = atoms.len();
+    let mut lines = Vec::with_capacity(ends.len());
+    let mut start = 0usize;
+    for &end in &ends {
+        let mut pieces: Vec<Piece> = Vec::new();
+        let mut cells: Vec<Glyph> = Vec::new();
+        for k in start..end {
+            cells.extend_from_slice(atoms[k]);
+            // Close the piece unless the next atom is the rest of this same word.
+            let joined_to_next = k + 1 < end && joins[k] == Join::Hyphen;
+            if !joined_to_next && k + 1 < end {
+                pieces.push(Piece {
+                    cells: std::mem::take(&mut cells),
+                    hyphen: false,
+                });
+            }
+        }
+        pieces.push(Piece {
+            cells,
+            hyphen: end < n && joins[end - 1] == Join::Hyphen,
+        });
+        lines.push(pieces);
+        start = end;
+    }
+    Some(lines)
 }
 
 /// Phase 2 — greedy line fill, breaking over-long words at soft hyphens when it
@@ -1012,6 +1096,78 @@ mod tests {
         assert_eq!(extras.iter().sum::<usize>(), 6);
         assert!(extras.iter().all(|&e| e >= 1), "{extras:?}");
         assert_eq!(gap_extra(0, 0, 3), 0, "a single-piece line has no gaps");
+    }
+
+    /// Optimal breaking takes the paragraph apart into atoms and puts it back together, so
+    /// the first thing to establish is that nothing is lost, duplicated or reordered on the
+    /// way — and that every line still fits the column.
+    #[test]
+    fn optimal_breaking_preserves_the_text_and_the_column() {
+        let text = "The consideration of extraordinary circumstances requires that every \
+                    participating organisation demonstrate a comprehensive understanding of \
+                    the underlying methodology before any interpretation of the accumulated \
+                    measurements can reasonably be attempted or defended";
+        for width in [34usize, 52, 72] {
+            let opts = WrapOpts {
+                width,
+                justify: true,
+                hyphenate: true,
+                para_spacing: 0,
+                ..Default::default()
+            };
+            let lines = wrap_blocks(&[para(text)], &opts, &[]);
+            for l in &lines {
+                assert!(
+                    super::display_width(l.text().as_str()) <= width,
+                    "line overruns the {width}-cell column: {:?}",
+                    l.text()
+                );
+            }
+            // `logical_text` drops the hyphens the wrapper inserted at line ends. A line
+            // that ended on one is mid-word, so the next line continues it with no space —
+            // rejoining with a space there would split `demonstrate` into two words.
+            let mut joined = String::new();
+            for l in &lines {
+                joined.push_str(&l.logical_text());
+                if l.break_hyphen_col().is_none() {
+                    joined.push(' ');
+                }
+            }
+            let flat: Vec<String> = joined.split_whitespace().map(str::to_string).collect();
+            let want: Vec<String> = text.split_whitespace().map(str::to_string).collect();
+            assert_eq!(flat, want, "text round-trips at width {width}");
+        }
+    }
+
+    /// What the optimiser buys: it only ever chooses lines it can actually justify, so a
+    /// justified paragraph has no ragged inner line — no hole part-way down the column.
+    /// The greedy fill has no such guarantee; it can strand a line it cannot close.
+    #[test]
+    fn optimal_breaking_leaves_no_ragged_inner_line() {
+        let text = "The consideration of extraordinary circumstances requires that every \
+                    participating organisation demonstrate a comprehensive understanding of \
+                    the underlying methodology before any interpretation of the accumulated \
+                    measurements can reasonably be attempted or defended";
+        let width = 52;
+        let opts = WrapOpts {
+            width,
+            justify: true,
+            hyphenate: true,
+            para_spacing: 0,
+            ..Default::default()
+        };
+        let lines: Vec<String> = texts(&wrap_blocks(&[para(text)], &opts, &[]))
+            .into_iter()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert!(lines.len() >= 4, "a paragraph of several lines: {lines:?}");
+        for l in &lines[..lines.len() - 1] {
+            assert_eq!(
+                super::display_width(l),
+                width,
+                "inner line stops short of the edge: {l:?}"
+            );
+        }
     }
 
     /// The backstop: a line that *can't* be closed sensibly — short words stranded

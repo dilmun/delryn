@@ -12,6 +12,7 @@
 
 mod blocks;
 mod code;
+mod linebreak;
 mod spans;
 mod table;
 mod width;
