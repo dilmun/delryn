@@ -96,6 +96,7 @@ fn emit_fold_marker(
         fg: None,
         anchor: None,
         math: None,
+        break_hyphen: false,
     }];
     pad_to_width(&mut runs, width);
     out.push(DisplayLine {
@@ -117,6 +118,7 @@ fn emit_label(name: &str, width: usize, code_idx: usize, out: &mut Vec<DisplayLi
             fg: None,
             anchor: None,
             math: None,
+            break_hyphen: false,
         });
     }
     runs.push(Run {
@@ -129,6 +131,7 @@ fn emit_label(name: &str, width: usize, code_idx: usize, out: &mut Vec<DisplayLi
         fg: None,
         anchor: None,
         math: None,
+        break_hyphen: false,
     });
     pad_to_width(&mut runs, width);
     out.push(DisplayLine {
@@ -156,6 +159,7 @@ fn emit_wrapped_line(
             fg: None,
             anchor: None,
             math: None,
+            break_hyphen: false,
         }];
         full.append(&mut line_runs);
         pad_to_width(&mut full, width);
@@ -182,6 +186,7 @@ fn emit_panned_line(
         fg: None,
         anchor: None,
         math: None,
+        break_hyphen: false,
     }];
     full.extend(shift_runs(runs, hscroll, avail));
     pad_to_width(&mut full, width);
@@ -203,6 +208,7 @@ fn pad_to_width(runs: &mut Vec<Run>, width: usize) {
             fg: None,
             anchor: None,
             math: None,
+            break_hyphen: false,
         });
     }
 }
@@ -237,6 +243,7 @@ fn shift_runs(runs: Vec<Run>, skip: usize, avail: usize) -> Vec<Run> {
                 fg: run.fg,
                 anchor: None,
                 math: None,
+                break_hyphen: false,
             });
         }
     }
@@ -265,6 +272,7 @@ fn pack_runs(runs: Vec<Run>, avail: usize) -> Vec<Vec<Run>> {
                 fg: run.fg,
                 anchor: None,
                 math: None,
+                break_hyphen: false,
             });
             len += take;
             idx += take;

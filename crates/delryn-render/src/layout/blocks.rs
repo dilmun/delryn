@@ -17,6 +17,7 @@ pub(super) fn emit_rule(width: usize, out: &mut Vec<DisplayLine>) {
             fg: None,
             anchor: None,
             math: None,
+            break_hyphen: false,
         }],
         kind: LineKind::Rule,
     });
@@ -136,6 +137,7 @@ pub(super) fn emit_image(
                 fg: None,
                 anchor: None,
                 math: None,
+                break_hyphen: false,
             }],
             kind: LineKind::Body,
         });
@@ -209,6 +211,7 @@ fn push_right_aligned(line: &mut DisplayLine, text: &str, width: usize) {
         fg: None,
         anchor: None,
         math: None,
+        break_hyphen: false,
     });
 }
 
@@ -226,6 +229,7 @@ fn center_line(line: &mut DisplayLine, width: usize) {
                 fg: None,
                 anchor: None,
                 math: None,
+                break_hyphen: false,
             },
         );
     }
@@ -267,6 +271,7 @@ pub(super) fn emit_math(tex: &str, width: usize, number: Option<&str>, out: &mut
                 fg: None,
                 anchor: None,
                 math: None,
+                break_hyphen: false,
             }],
             kind: LineKind::Math,
         });
@@ -307,6 +312,7 @@ pub(super) fn emit_callout(
                 fg: None,
                 anchor: None,
                 math: None,
+                break_hyphen: false,
             },
             Run {
                 text: head,
@@ -317,6 +323,7 @@ pub(super) fn emit_callout(
                 fg: None,
                 anchor: None,
                 math: None,
+                break_hyphen: false,
             },
         ],
         kind: LineKind::Quote,
@@ -346,6 +353,7 @@ pub(super) fn emit_footnote(
         fg: None,
         anchor: None,
         math: None,
+        break_hyphen: false,
     };
     match out.get_mut(start).and_then(|l| l.runs.first_mut()) {
         // Replace the first body line's indent prefix with the label.
@@ -403,6 +411,7 @@ fn wrap_nested(
             fg: None,
             anchor: None,
             math: None,
+            break_hyphen: false,
         });
         runs.extend(line.runs);
         out.push(DisplayLine { runs, kind });

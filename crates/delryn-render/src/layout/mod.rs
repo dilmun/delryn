@@ -44,6 +44,10 @@ pub struct Run {
     /// paints a small equation raster over (see the reader's inline-math draw pass);
     /// `None` for all ordinary text.
     pub math: Option<usize>,
+    /// This run is the `-` the wrapper added because it broke a word across the
+    /// line end. It is on screen but **not part of the text** — see
+    /// [`DisplayLine::logical_text`].
+    pub break_hyphen: bool,
 }
 
 /// What a display line represents, so the view can style it by theme.
@@ -86,9 +90,47 @@ impl DisplayLine {
         }
     }
 
-    /// Plain concatenated text (for search / jump-target matching).
+    /// Plain concatenated text — exactly the cells on screen, so a column index
+    /// into it is a screen column. Use it for anything positional (washing a
+    /// highlight, placing the caret).
     pub fn text(&self) -> String {
         self.runs.iter().map(|r| r.text.as_str()).collect()
+    }
+
+    /// The column of the hyphen this line ends with **because the wrapper broke a
+    /// word there**, if it has one.
+    ///
+    /// That hyphen is on screen but belongs to no word: the two halves it
+    /// separates are one word, and where the break falls changes with the column
+    /// width. Anything that matches or stores text — a highlight's quote, a copy,
+    /// a search — has to skip it, or the text it captured stops matching the
+    /// moment the paragraph re-wraps and the break lands somewhere else.
+    pub fn break_hyphen_col(&self) -> Option<usize> {
+        let last = self.runs.last()?;
+        if !last.break_hyphen {
+            return None;
+        }
+        Some(
+            self.runs[..self.runs.len() - 1]
+                .iter()
+                .map(|r| r.text.chars().count())
+                .sum(),
+        )
+    }
+
+    /// The line's text as *words*, with any wrap hyphen dropped. Differs from
+    /// [`Self::text`] only on a line that broke mid-word, so it is not
+    /// column-aligned with the screen — match with it, position with `text`.
+    pub fn logical_text(&self) -> String {
+        match self.break_hyphen_col() {
+            None => self.text(),
+            Some(_) => self
+                .runs
+                .iter()
+                .filter(|r| !r.break_hyphen)
+                .map(|r| r.text.as_str())
+                .collect(),
+        }
     }
 }
 

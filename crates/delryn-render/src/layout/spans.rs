@@ -65,17 +65,16 @@ const MAX_HYPHENATE_LEN: usize = 40;
 /// noise rather than as a continued word, so both sides are held to three.
 const HYPHEN_EDGE_MIN: usize = 3;
 
-/// The most a justified line will widen an inter-word gap, in extra cells.
+/// The most a justified line will widen an inter-word gap, in extra cells, before
+/// it is left ragged instead.
 ///
-/// Justification distributes a line's leftover columns across its gaps. When
-/// there is little to give away that is invisible, but a line that has to hand
-/// out five or six cells opens holes the eye follows *down* the paragraph
-/// instead of across it. Past this limit the line is left ragged: an uneven right
-/// edge on the occasional line costs less than a river through the page.
-///
-/// Hyphenation is what makes the limit affordable — with break points inside
-/// words most lines end up needing a cell or two at most.
-const MAX_GAP_STRETCH: usize = 1;
+/// This is a backstop, not a style: it has to be loose enough that ordinary lines
+/// always reach the edge, because one short line among flush neighbours reads as
+/// a hole in the paragraph — worse than the spacing it saved. What it catches is
+/// the line that *cannot* be closed sensibly: two or three short words stranded
+/// before a token too long to break, where filling the row means a dozen cells
+/// between each word. At four spaces a gap has stopped being word spacing.
+const MAX_GAP_STRETCH: usize = 3;
 
 /// A piece of a word placed on a line: its glyphs plus whether a hyphen follows
 /// (true when a long word was broken at a soft hyphen).
@@ -110,7 +109,7 @@ pub(super) struct InlineMathDims<'a> {
 /// How prose is fitted to the column: whether inner lines are padded out to both
 /// edges, and whether words may be broken to help them get there. The two travel
 /// together because they are one decision — justification without hyphenation is
-/// what opens the wide gaps (see [`MAX_GAP_STRETCH`]).
+/// what opens the wide gaps, because there is nowhere else to take the slack from.
 #[derive(Clone, Copy, Default)]
 pub(super) struct ProseFit {
     pub justify: bool,
@@ -391,9 +390,12 @@ fn emit_lines(
             .map(|p| cells_width(&p.cells) + usize::from(p.hyphen))
             .sum();
         let gaps = line.len().saturating_sub(1);
-        // What justification would have to give away to reach the right edge. A
-        // line that can be closed cheaply is justified; one that would need wide
-        // gaps is left ragged instead of opening a river (see `MAX_GAP_STRETCH`).
+        // Ordinary lines all reach the right edge — a short line among flush
+        // neighbours reads as a hole in the paragraph, which is worse than the
+        // spacing it was avoiding. The limit is only a backstop for the
+        // pathological line: a couple of short words stranded before a token too
+        // long to break, where filling the row would leave a dozen cells between
+        // each. Those stay ragged (see `MAX_GAP_STRETCH`).
         let room = avail(width, first, cont, li).saturating_sub(pieces_w + gaps);
         let justify_line =
             justify_body && li != last && gaps >= 1 && room <= gaps * MAX_GAP_STRETCH;
@@ -407,6 +409,7 @@ fn emit_lines(
                 fg: None,
                 anchor: None,
                 math: None,
+                break_hyphen: false,
             });
         }
         for (pi, piece) in line.iter().enumerate() {
@@ -422,6 +425,7 @@ fn emit_lines(
                     fg: None,
                     anchor: None,
                     math: None,
+                    break_hyphen: false,
                 });
             }
             push_word_runs(&piece.cells, &mut runs);
@@ -433,6 +437,9 @@ fn emit_lines(
                     fg: None,
                     anchor: None,
                     math: None,
+                    // Flagged so anchoring/search can skip it: the word it splits
+                    // is one word, and this break moves with the column width.
+                    break_hyphen: true,
                 });
             }
         }
@@ -1007,9 +1014,9 @@ mod tests {
         assert_eq!(gap_extra(0, 0, 3), 0, "a single-piece line has no gaps");
     }
 
-    /// Justification pads the gaps between words, so a line with little text and
-    /// far to reach would open holes the eye follows down the page. Past the limit
-    /// the line is left ragged instead.
+    /// The backstop: a line that *can't* be closed sensibly — short words stranded
+    /// before an unbreakable token — stays ragged rather than putting a dozen cells
+    /// between each word. Ordinary lines are unaffected and still reach the edge.
     #[test]
     fn a_line_needing_wide_gaps_is_left_ragged() {
         // Three short words on a wide column: closing it would cost many cells per

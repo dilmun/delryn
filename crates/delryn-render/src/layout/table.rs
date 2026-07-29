@@ -116,6 +116,7 @@ fn table_row(
                     fg: None,
                     anchor: None,
                     math: None,
+                    break_hyphen: false,
                 }],
                 kind: LineKind::Table { shaded },
             }
@@ -173,6 +174,7 @@ pub(super) fn wrap_table(
                 fg: None,
                 anchor: None,
                 math: None,
+                break_hyphen: false,
             }],
             kind: LineKind::Table { shaded: false },
         });

@@ -131,7 +131,11 @@ impl Reader {
                     &[],
                 );
                 for (li, line) in lines.iter().enumerate() {
-                    if matcher.matches(&line.text()) {
+                    // Matched against the line's *words*, so a term whose word the
+                    // wrapper split across the line end is still found — the
+                    // hyphen it added is on screen, not in the text. Only the line
+                    // index is kept, so dropping a character can't shift anything.
+                    if matcher.matches(&line.logical_text()) {
                         self.search.matches.push((s, li));
                     }
                 }
