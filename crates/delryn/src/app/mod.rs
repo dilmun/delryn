@@ -60,6 +60,7 @@ pub use reader::{
     place_page, raster_width_for_crispness,
 };
 
+mod figure_scan;
 mod image_view;
 pub use image_view::{Figure, ImageViewer};
 
@@ -304,6 +305,10 @@ pub struct App {
     pub library: LibraryState,
     /// Background loader for library covers (load + decode off the render loop).
     cover_loader: cover_loader::CoverLoader,
+    /// The whole-book figure scan feeding the image viewer's book scope, while one is
+    /// running. Dropped when the viewer closes or returns to chapter scope, which
+    /// cancels the worker.
+    figure_scan: Option<figure_scan::FigureScan>,
     /// Receiver for async Open Library results (search / cover), if a request
     /// from the editor's Online tab is in flight.
     pub online_rx: Option<Receiver<OnlineMsg>>,
@@ -476,6 +481,7 @@ impl App {
             },
             library: LibraryState::default(),
             cover_loader: cover_loader::CoverLoader::new(),
+            figure_scan: None,
             online_rx: None,
             define_rx: None,
             dup_scan: None,
@@ -521,6 +527,7 @@ impl App {
             },
             library: LibraryState::default(),
             cover_loader: cover_loader::CoverLoader::new(),
+            figure_scan: None,
             online_rx: None,
             define_rx: None,
             dup_scan: None,

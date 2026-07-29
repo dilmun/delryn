@@ -732,18 +732,17 @@ impl Reader {
         ));
     }
 
-    /// Gather the renderable figures for the image viewer: the current chapter
-    /// only, or every section in the book (decoding as needed) when `whole_book`.
-    pub fn figures(&mut self, whole_book: bool) -> Vec<super::Figure> {
+    /// The renderable figures of the chapter being read, from its already-decoded
+    /// blocks — free, so the image viewer opens instantly.
+    ///
+    /// Book scope adds the rest of the sections through
+    /// [`FigureScan`](super::figure_scan::FigureScan), off the render thread. It used to
+    /// be gathered here instead, by decoding every section inline: on a 550-figure book
+    /// that froze the UI for seconds and pulled the whole book's blocks into the section
+    /// cache (which `fetch_blocks` fills but never evicts).
+    pub fn chapter_figures(&self) -> Vec<super::Figure> {
         let mut out = Vec::new();
-        if whole_book {
-            for s in 0..self.doc.section_count() {
-                let blocks = self.fetch_blocks(s);
-                super::image_view::collect_figures(&blocks, s, &mut out);
-            }
-        } else {
-            super::image_view::collect_figures(&self.blocks, self.section, &mut out);
-        }
+        super::image_view::collect_figures(&self.blocks, self.section, &mut out);
         out
     }
 
@@ -2483,7 +2482,7 @@ mod tests {
         );
         // The badge index and the viewer's figure list must agree exactly, or the
         // nearest-match in `select_image` opens the wrong figure.
-        let figs = r.figures(false);
+        let figs = r.chapter_figures();
         assert_eq!(figs.len(), 1, "the viewer lists only the real figure");
         assert_eq!(figs[0].image_index, 1, "and under the badged index");
     }

@@ -285,7 +285,8 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
             || app.cover_pending()
             || app.preview_pending()
             || app.dup_scan_pending()
-            || app.scan_pending();
+            || app.scan_pending()
+            || app.figure_scan_pending();
         let timeout = if dirty || busy {
             FRAME.saturating_sub(last_draw.elapsed())
         } else {
@@ -343,6 +344,11 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         }
         // Rebuild the detail-pane cover once the selection settles (debounced).
         if app.tick_cover() {
+            dirty = true;
+        }
+        // Merge whole-book figures into the open image viewer as the background scan
+        // finishes each section, so book scope fills in instead of freezing on open.
+        if app.poll_figure_scan() {
             dirty = true;
         }
         // Fetch the editor's Cover-tab preview when the highlighted result settles.

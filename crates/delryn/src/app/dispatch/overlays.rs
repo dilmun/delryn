@@ -32,7 +32,7 @@ impl App {
         let Some(reader) = self.reader.as_mut() else {
             return;
         };
-        let figs = reader.figures(false);
+        let figs = reader.chapter_figures();
         let mut viewer = ImageViewer::new(figs, false);
         if let Some(v) = viewer.as_mut() {
             v.select_image(image_index);
@@ -116,6 +116,11 @@ impl App {
     }
 
     /// Rebuild the viewer toggling between current-chapter and whole-book scope.
+    ///
+    /// Both scopes start from the chapter already decoded, so the toggle is instant
+    /// either way; book scope then starts a background [`FigureScan`] that merges the
+    /// remaining sections in as they finish. Switching back to chapter scope drops the
+    /// scan, which cancels the worker.
     fn toggle_image_scope(&mut self) {
         let Overlay::ImageView(v) = &self.overlay else {
             return;
@@ -124,14 +129,57 @@ impl App {
         let Some(reader) = self.reader.as_mut() else {
             return;
         };
-        let figs = reader.figures(whole);
+        let figs = reader.chapter_figures();
         // Keep the viewer open even if the new scope is empty (shouldn't be).
         let Some(new_viewer) = ImageViewer::new(figs, whole) else {
             return;
         };
+        self.figure_scan = whole.then(|| {
+            crate::app::figure_scan::FigureScan::start(
+                reader.doc.loader(),
+                crate::app::figure_scan::scan_order(reader.doc.section_count(), reader.section),
+            )
+        });
         // Free the outgoing viewer's terminal image before it's replaced.
         self.retire_image_viewer();
         self.overlay = Overlay::ImageView(new_viewer);
+    }
+
+    /// Merge any sections the whole-book figure scan finished into the open viewer.
+    /// Returns whether anything changed (so the loop redraws).
+    pub fn poll_figure_scan(&mut self) -> bool {
+        let Some(scan) = self.figure_scan.as_mut() else {
+            return false;
+        };
+        let done = scan.drain();
+        let still_running = scan.pending();
+        let Overlay::ImageView(v) = &mut self.overlay else {
+            // The viewer closed without the scan being dropped — stop the worker.
+            self.figure_scan = None;
+            return false;
+        };
+        let changed = !done.is_empty();
+        for s in done {
+            v.merge_section(s.section, s.figures);
+        }
+        if !still_running {
+            self.figure_scan = None;
+        }
+        changed
+    }
+
+    /// Whether the whole-book figure scan is still running (keeps the loop awake).
+    pub fn figure_scan_pending(&self) -> bool {
+        self.figure_scan.as_ref().is_some_and(|s| s.pending())
+    }
+
+    /// `(sections scanned, total)` while the whole-book scan runs, for the viewer's
+    /// title; `None` once it has finished (or was never started).
+    pub fn figure_scan_progress(&self) -> Option<(usize, usize)> {
+        self.figure_scan
+            .as_ref()
+            .filter(|s| s.pending())
+            .map(|s| s.progress())
     }
 
     /// Free the open image viewer's last shown terminal image (before the viewer
@@ -149,6 +197,7 @@ impl App {
     /// then drop the overlay).
     fn close_image_viewer(&mut self) {
         self.retire_image_viewer();
+        self.figure_scan = None; // cancels the worker at its next section boundary
         self.overlay = Overlay::None;
     }
 
