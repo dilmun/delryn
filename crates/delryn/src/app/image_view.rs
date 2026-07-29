@@ -6,7 +6,7 @@ use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 
 use crate::document::Block;
-use crate::media::{RenderPolicy, decode, image_dimensions, render_for_theme};
+use crate::media::{RenderPolicy, decode, fit_to_box, image_dimensions, render_for_theme};
 
 /// One figure available in the viewer: its display name, source location, raw
 /// bytes (for save + protocol build), and pixel size.
@@ -105,10 +105,11 @@ pub struct ImageViewer {
     /// Editing the save destination path (a prompt prefilled with the default).
     pub saving: bool,
     pub save_path: String,
-    /// Lazily-built protocol for the selected figure, with the (figs index,
-    /// render policy) it was built for — so changing the image mode rebuilds it.
+    /// Lazily-built protocol for the selected figure, with the (figs index, render
+    /// policy, display box in px) it was built for — so changing the image mode, or
+    /// resizing the terminal, rebuilds it.
     proto: Option<StatefulProtocol>,
-    proto_for: Option<(usize, RenderPolicy)>,
+    proto_for: Option<(usize, RenderPolicy, (u32, u32))>,
     /// Terminal (Kitty) image ids the viewer has finished with — superseded by a
     /// figure change / mode toggle / filter, or the shown image at close. Drained
     /// into the app's delete stream so each rebuild frees its old resident image;
@@ -189,23 +190,35 @@ impl ImageViewer {
         self.sel = (self.sel as isize + delta).rem_euclid(n) as usize;
     }
 
-    /// Build (or reuse) the protocol for the selected figure under `policy`
-    /// (the active image mode — faithful / invert / auto).
+    /// Build (or reuse) the protocol for the selected figure under `policy` (the active
+    /// image mode — faithful / invert / auto), scaled for a `box_px`-pixel display area.
+    ///
+    /// The figure is **fitted to the display box before it is themed**. A book figure is
+    /// routinely 1–2 megapixels while the box is a few hundred pixels across, and theming
+    /// is a per-pixel pass: done at source resolution it cost 20–770 ms *per arrow key*,
+    /// on the render thread, which is what made stepping through figures stall. Fitting
+    /// first makes that pass cost what the screen shows. It also hands `StatefulImage` a
+    /// raster that already matches its area, so the widget's own resample becomes a no-op
+    /// and the Lanczos3 fit here is what the reader sees — `Resize::Scale(None)` falls back
+    /// to `FilterType::Nearest`, which is the wrong kernel for the text and line art book
+    /// figures are made of.
     pub fn ensure_proto(
         &mut self,
         picker: &Picker,
         policy: RenderPolicy,
+        box_px: (u32, u32),
     ) -> Option<&mut StatefulProtocol> {
         let fi = *self.view.get(self.sel)?;
-        if self.proto_for != Some((fi, policy)) {
+        if self.proto_for != Some((fi, policy, box_px)) {
             // Free the outgoing image's terminal data before overwriting the
             // protocol, else its Kitty id is leaked (a new random id is minted
             // below) and the resident image lingers forever.
             self.retire_current();
             self.proto = decode(&self.figs[fi].bytes).map(|img| {
-                picker.new_resize_protocol(render_for_theme(&img, policy.tint, policy.mode))
+                let fitted = fit_to_box(&img, box_px.0, box_px.1);
+                picker.new_resize_protocol(render_for_theme(&fitted, policy.tint, policy.mode))
             });
-            self.proto_for = Some((fi, policy));
+            self.proto_for = Some((fi, policy, box_px));
         }
         self.proto.as_mut()
     }
@@ -385,6 +398,10 @@ mod tests {
         }
     }
 
+    /// A stand-in display box; the identity/lifecycle tests only care that the same box
+    /// reuses a protocol and a different figure/mode mints a new one.
+    const BOX: (u32, u32) = (64, 64);
+
     fn id_of(proto: Option<&mut StatefulProtocol>) -> u32 {
         proto
             .and_then(|p| p.image_id())
@@ -399,13 +416,13 @@ mod tests {
         let picker = kitty_picker();
         let mut viewer = ImageViewer::new(vec![fig("a")], false).unwrap();
 
-        let id_a = id_of(viewer.ensure_proto(&picker, policy(ImageMode::Faithful)));
+        let id_a = id_of(viewer.ensure_proto(&picker, policy(ImageMode::Faithful), BOX));
         assert!(
             viewer.take_deletes().is_empty(),
             "nothing to free on first build"
         );
 
-        let id_b = id_of(viewer.ensure_proto(&picker, policy(ImageMode::InvertBackgrounds)));
+        let id_b = id_of(viewer.ensure_proto(&picker, policy(ImageMode::InvertBackgrounds), BOX));
         assert_ne!(id_a, id_b, "mode change mints a new id");
         assert_eq!(
             viewer.take_deletes(),
@@ -414,7 +431,7 @@ mod tests {
         );
 
         // Re-rendering the same mode neither rebuilds nor deletes.
-        viewer.ensure_proto(&picker, policy(ImageMode::InvertBackgrounds));
+        viewer.ensure_proto(&picker, policy(ImageMode::InvertBackgrounds), BOX);
         assert!(viewer.take_deletes().is_empty());
 
         // Closing frees the last shown image too.
@@ -429,12 +446,33 @@ mod tests {
         let mut viewer = ImageViewer::new(vec![fig("a"), fig("b")], false).unwrap();
         let pol = policy(ImageMode::Faithful);
 
-        let id0 = id_of(viewer.ensure_proto(&picker, pol));
+        let id0 = id_of(viewer.ensure_proto(&picker, pol, BOX));
         let _ = viewer.take_deletes();
 
         viewer.move_sel(1);
-        let id1 = id_of(viewer.ensure_proto(&picker, pol));
+        let id1 = id_of(viewer.ensure_proto(&picker, pol, BOX));
         assert_ne!(id0, id1);
+        assert_eq!(viewer.take_deletes(), vec![id0]);
+    }
+
+    // The figure is rasterised for a specific display box, so a resized terminal must
+    // rebuild it (and free the old one) rather than stretch the raster it built for the
+    // previous size.
+    #[test]
+    fn a_resized_display_box_rebuilds_and_frees_the_old_image() {
+        let picker = kitty_picker();
+        let mut viewer = ImageViewer::new(vec![fig("a")], false).unwrap();
+        let pol = policy(ImageMode::Faithful);
+
+        let id0 = id_of(viewer.ensure_proto(&picker, pol, BOX));
+        let _ = viewer.take_deletes();
+
+        // Same box: reused, nothing freed.
+        assert_eq!(id_of(viewer.ensure_proto(&picker, pol, BOX)), id0);
+        assert!(viewer.take_deletes().is_empty());
+
+        let id1 = id_of(viewer.ensure_proto(&picker, pol, (128, 128)));
+        assert_ne!(id0, id1, "a new box mints a new id");
         assert_eq!(viewer.take_deletes(), vec![id0]);
     }
 }

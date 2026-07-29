@@ -144,9 +144,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
         detail_rect,
     );
 
-    // The image: Scale fills the slot (it upscales small figures; Fit would not).
+    // The image: Scale fills the slot (it upscales small figures; Fit would not). The
+    // protocol is built already fitted to this slot's pixels — see `ensure_proto` — so
+    // the widget's own (nearest-neighbour) resample has nothing left to do.
+    let box_px = (
+        u32::from(iw) * u32::from(font.width.max(1)),
+        u32::from(ih) * u32::from(font.height.max(1)),
+    );
     if dims.is_some()
-        && let Some(proto) = viewer.ensure_proto(picker, policy)
+        && let Some(proto) = viewer.ensure_proto(picker, policy, box_px)
     {
         f.render_stateful_widget(
             StatefulImage::default().resize(Resize::Scale(None)),
