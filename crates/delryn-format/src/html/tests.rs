@@ -774,6 +774,36 @@ fn figure_caption_attaches_to_the_image() {
 }
 
 #[test]
+fn figure_caption_number_is_spaced_off_the_title() {
+    // Springer's shape: the label is an inline <span> and the title a *block* <p>,
+    // siblings with no whitespace between them. A browser breaks the line at the <p>,
+    // so the source never needs a space — but a caption renders as one line here, and
+    // flattening the subtree inline glued them ("Fig. 8.2Decision rules…").
+    let blocks = parse_blocks(
+        r#"<html><body><figure>
+            <img alt="" src="../images/f8_2.png"/>
+            <figcaption class="Caption"><div class="CaptionContent"><span class="CaptionNumber">Fig. 8.2</span><p class="SimplePara">Decision rules for strategy selection</p></div></figcaption>
+        </figure></body></html>"#,
+    );
+    let (_, caption) = first_captioned_image(&blocks).expect("captioned image");
+    assert_eq!(caption, "Fig. 8.2 Decision rules for strategy selection");
+}
+
+#[test]
+fn a_caption_the_block_walk_cannot_flatten_still_yields_its_text() {
+    // `coalesce_caption_spans` keeps only paragraphs/headings, so a caption whose text
+    // the block walk drops must fall back to the flat inline walk rather than come back
+    // empty — losing a caption entirely is far worse than losing a space.
+    let blocks = parse_blocks(
+        r#"<html><body><figure>
+            <img alt="" src="p.png"/><figcaption>bare caption text</figcaption>
+        </figure></body></html>"#,
+    );
+    let (_, caption) = first_captioned_image(&blocks).expect("captioned image");
+    assert_eq!(caption, "bare caption text");
+}
+
+#[test]
 fn imagewrap_div_with_caption_class_merges() {
     // No <figure>/<figcaption>: a `<div class="imagewrap">` holding one image and
     // a caption-classed `<p>` (Pearson-style). The caption-class marker makes it a

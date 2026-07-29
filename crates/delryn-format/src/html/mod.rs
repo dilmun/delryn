@@ -586,7 +586,7 @@ fn emit_figure(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
         src: img_src(img).unwrap_or_default(),
         alt: img.attr("alt").unwrap_or("").to_string(),
         data: Vec::new(),
-        caption: figure_caption_spans(node),
+        caption: figure_caption_spans(node, ctx),
         math: false,
         width: parse_img_width(img.attr("width"), img.attr("style")),
         ink: None,
@@ -597,7 +597,7 @@ fn emit_figure(node: NodeRef<Node>, ctx: &Ctx, out: &mut Vec<Block>) {
 /// caption-classed element (`<p class="…Caption">`), else the first non-empty
 /// heading/paragraph beside the image (publishers mark captions up as any of
 /// these rather than always a `<figcaption>`). Empty when there is no caption.
-fn figure_caption_spans(figure: NodeRef<Node>) -> Vec<Span> {
+fn figure_caption_spans(figure: NodeRef<Node>, ctx: &Ctx) -> Vec<Span> {
     let is_el = |d: &NodeRef<Node>, pred: &dyn Fn(&scraper::node::Element) -> bool| matches!(d.value(), Node::Element(e) if pred(e));
     let caption_node = figure
         .descendants()
@@ -617,7 +617,34 @@ fn figure_caption_spans(figure: NodeRef<Node>) -> Vec<Span> {
                 }) && inline_spans(*d).iter().any(|s| !s.text.trim().is_empty())
             })
         });
-    caption_node.map(inline_spans).unwrap_or_default()
+    caption_node
+        .map(|n| caption_line_spans(n, ctx))
+        .unwrap_or_default()
+}
+
+/// One line of caption spans from a caption element, bridging the block boundaries the
+/// source left unspaced.
+///
+/// Publishers ship the label and the title as *siblings* with no whitespace between
+/// them — `<span class="CaptionNumber">Fig. 8.2</span><p class="SimplePara">Decision
+/// rules…</p>`. A browser breaks the line at the block `<p>`, so the space is never
+/// needed there; delryn renders a caption as one line, so flattening the subtree inline
+/// glued them into "Fig. 8.2Decision rules…". Routing through the same walk +
+/// [`coalesce_caption_spans`] that [`emit_caption`] uses for standalone caption wrappers
+/// puts the boundary back as a single space.
+///
+/// Falls back to the flat inline walk when the block walk yields no text — a caption
+/// built from something [`coalesce_caption_spans`] drops (it keeps only paragraphs and
+/// headings) must not come back empty.
+fn caption_line_spans(node: NodeRef<Node>, ctx: &Ctx) -> Vec<Span> {
+    let mut inner = Vec::new();
+    walk_children(node, ctx, &mut inner);
+    let spans = coalesce_caption_spans(inner);
+    if spans.iter().any(|s| !s.text.trim().is_empty()) {
+        spans
+    } else {
+        inline_spans(node)
+    }
 }
 
 /// The authored display width of an `<img>`, from its inline CSS `width` (which
