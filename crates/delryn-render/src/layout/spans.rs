@@ -355,6 +355,21 @@ fn fill_lines(
     lines
 }
 
+/// Extra cells for gap `i` of `gaps`, spreading `slack` cells evenly along the
+/// line.
+///
+/// The obvious `slack / gaps` plus a remainder handed to the first few gaps puts
+/// every widened gap at the *start* of the line, so a line needing two cells
+/// reads as `The  development  of the corpus of…` — a cluster of holes at the
+/// left margin and nothing after. Interpolating instead places them apart, which
+/// is the same total spread thin enough not to be seen.
+fn gap_extra(i: usize, gaps: usize, slack: usize) -> usize {
+    if gaps == 0 {
+        return 0;
+    }
+    (i + 1) * slack / gaps - i * slack / gaps
+}
+
 /// Phase 3 — emit. Full justification (when enabled, body only) distributes the
 /// leftover columns across inter-word gaps — never on the last line of the
 /// paragraph or a single-piece line.
@@ -397,7 +412,7 @@ fn emit_lines(
         for (pi, piece) in line.iter().enumerate() {
             if pi > 0 {
                 let extra = if justify_line {
-                    slack / gaps + usize::from(pi - 1 < slack % gaps)
+                    gap_extra(pi - 1, gaps, slack)
                 } else {
                     0
                 };
@@ -539,6 +554,7 @@ fn stripped_suffix(prev: &Span, next: &Span) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::super::{DisplayLine, LineKind, Run, WrapOpts, wrap_blocks};
+    use super::gap_extra;
     use delryn_model::{Anchor, Block, Inline, Span, SpanMath};
 
     fn texts(lines: &[DisplayLine]) -> Vec<String> {
@@ -966,6 +982,29 @@ mod tests {
             "data-|base",
             "broken at the author's point"
         );
+    }
+
+    /// The widened gaps have to be spread along the line. Handing the remainder to
+    /// the first gaps clusters every hole at the left margin, which is exactly the
+    /// pattern that reads as broken spacing.
+    #[test]
+    fn justification_spreads_its_slack_along_the_line() {
+        let gaps = 8;
+        for slack in 1..=gaps {
+            let extras: Vec<usize> = (0..gaps).map(|i| gap_extra(i, gaps, slack)).collect();
+            assert_eq!(extras.iter().sum::<usize>(), slack, "all of it is placed");
+            // Never front-loaded: the widened gaps reach past the first half.
+            let widest = extras.iter().rposition(|&e| e > 0).unwrap();
+            assert!(
+                widest >= gaps / 2,
+                "slack {slack} bunched at the start: {extras:?}"
+            );
+        }
+        // Beyond one each, every gap widens and the remainder still spreads.
+        let extras: Vec<usize> = (0..4).map(|i| gap_extra(i, 4, 6)).collect();
+        assert_eq!(extras.iter().sum::<usize>(), 6);
+        assert!(extras.iter().all(|&e| e >= 1), "{extras:?}");
+        assert_eq!(gap_extra(0, 0, 3), 0, "a single-piece line has no gaps");
     }
 
     /// Justification pads the gaps between words, so a line with little text and

@@ -195,14 +195,16 @@ impl ReadingMode {
                 continuous: false,
                 chapter_lock: false,
             },
-            // Deep, careful reading of one chapter: a book's measure, justified,
-            // open line spacing, and stay put in the chapter.
+            // Deep, careful reading of one chapter: a book's measure, open line
+            // spacing, and stay put in the chapter. Not justified — hyphenation
+            // already tightens the right edge, and the only thing justification
+            // adds on top of it is wider spaces between the words.
             ReadingMode::Study => ReadingProfile {
                 side_padding: 12,
                 max_measure: 66,
                 line_spacing: 1,
                 paragraph_spacing: 1,
-                justify: true,
+                justify: false,
                 continuous: false,
                 chapter_lock: true,
             },
