@@ -12,14 +12,16 @@
 use super::*;
 
 impl Reader {
-    /// Total pages in the current section (for the page indicator).
+    /// Total pages in the current section (for the page indicator). A two-page spread
+    /// counts *spreads*, not columns — the indicator should agree with what one turn
+    /// advances, or a 10-spread chapter reads as 20 pages that take 10 presses.
     pub fn page_count(&self) -> usize {
-        self.lines.len().div_ceil(self.page_lines.max(1)).max(1)
+        self.lines.len().div_ceil(self.reading_step()).max(1)
     }
 
     /// 1-based page number of the current position within the section.
     pub fn current_page(&self) -> usize {
-        self.scroll / self.page_lines.max(1) + 1
+        self.scroll / self.reading_step() + 1
     }
 
     /// Whether the document renders each section as a full-page image (PDF), so
@@ -325,7 +327,9 @@ impl Reader {
     /// Snap the position to the start of its page (so paged mode shows a clean
     /// page boundary after toggling in or resizing).
     pub fn snap_to_page(&mut self) {
-        let page = self.page_lines.max(1);
+        // A spread's page unit is the *pair* of columns, not one of them — snapping to a
+        // column boundary would leave the right column's text due to slide into the left.
+        let page = self.reading_step();
         self.scroll = self.scroll / page * page;
         self.scroll_pending = 0;
     }

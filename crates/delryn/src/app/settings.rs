@@ -248,7 +248,10 @@ impl SettingItem {
             SettingItem::TableWrap => {
                 "Wrap text inside table cells instead of letting wide tables scroll."
             }
-            SettingItem::Paged => "Move a whole screen at a time instead of scrolling by line.",
+            SettingItem::Paged => {
+                "Turn whole pages and keep the position on a page boundary, instead of \
+                 scrolling by line. (A two-page spread always turns a whole spread.)"
+            }
             SettingItem::Continuous => {
                 "Flow the next chapter in as you reach the bottom, with no break between them."
             }

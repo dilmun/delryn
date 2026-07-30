@@ -70,21 +70,33 @@ impl Reader {
             && !self.chapter_lock
     }
 
-    /// Whether reflowed text **flows across section boundaries** right now — the
-    /// render buffer and scroll pull in following sections to fill the viewport
-    /// (and both two-page columns), so a short chapter never leaves a blank column
-    /// or a gap. Always on for the **two-page spread** (a spread with a half-empty
-    /// column reads wrong); on for single-column **Center** only when the
-    /// `continuous` toggle is set. Excludes paged docs, page-snap, and chapter-lock
-    /// (which page per section by design). This gates the flow machinery;
-    /// [`continuous_active`](Self::continuous_active) still reports the toggle for
-    /// the status line.
+    /// Whether reflowed text **flows across section boundaries** right now — the render
+    /// buffer and the scroll pull in following sections, so the next chapter arrives with
+    /// no break rather than starting fresh.
+    ///
+    /// This is exactly the "Continuous scroll" setting, and it now means the same thing in
+    /// both view modes. It used to be forced on for a two-page spread, on the grounds that
+    /// a spread with a half-empty column reads wrong — but that made the setting **inert**
+    /// in the one view where the reader most wants the choice, so a spread with the toggle
+    /// off now starts each chapter on a fresh spread (a blank tail column being exactly
+    /// what "don't flow chapters together" asks for). Page mode no longer suppresses it
+    /// either: snapping to page boundaries and flowing chapters are separate choices, and
+    /// pages that flow across a chapter break are coherent.
+    ///
+    /// Motion granularity is a *different* question — see
+    /// [`scrolls_by_rows`](Self::scrolls_by_rows).
     pub fn reflow_flows(&self) -> bool {
-        !self.is_paged_image()
-            && !self.paged
-            && !self.chapter_lock
-            && (self.view_mode == ViewMode::TwoPage
-                || (self.continuous && self.view_mode == ViewMode::Center))
+        !self.is_paged_image() && !self.chapter_lock && self.continuous
+    }
+
+    /// Whether reading motion scrolls by **rows** rather than turning a whole page.
+    ///
+    /// A two-page spread never does. A step smaller than the spread slides the right
+    /// column's text into the left one, so most of the screen becomes text just read,
+    /// arriving on the other side — a spread is a page, and pages turn. A single column
+    /// scrolls by rows unless Page mode asks it to turn.
+    pub fn scrolls_by_rows(&self) -> bool {
+        !self.is_paged_image() && !self.paged && !self.text_spread()
     }
 
     /// Whether continuous *paged* (PDF page-stacking) scroll is active: the flag is

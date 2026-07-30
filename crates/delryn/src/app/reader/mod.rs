@@ -1298,6 +1298,15 @@ impl Reader {
         {
             self.scroll = start.saturating_sub(offset);
         }
+        // Page mode asks for the position to *stay* on a page boundary, not merely to move
+        // by one: a jump, a search hit or a chapter crossing would otherwise leave the view
+        // resting mid-page, and every turn after it inherits that offset. Applied last so
+        // it snaps whatever the resolutions above landed on. With Page mode off the
+        // position is free to rest anywhere, which is what makes the setting observable in
+        // a spread — where motion turns a whole spread either way.
+        if self.paged && !self.is_paged_image() {
+            self.snap_to_page();
+        }
     }
 
     /// Overall reading progress in `[0, 1]`.
@@ -1930,19 +1939,55 @@ mod tests {
         assert_eq!(r.scroll, 2, "kept the leftover offset past the boundary");
     }
 
+    /// Chapter flow follows the Continuous setting in *both* view modes. It used to be
+    /// forced on for a two-page spread, which made the setting inert in the one view where
+    /// the reader most wants the choice — the "Pagination options have no effect" report.
     #[test]
-    fn reflow_flows_for_two_page_always_center_needs_the_toggle() {
+    fn chapter_flow_follows_the_continuous_setting_in_both_views() {
         let mut r = continuous_reader(3); // continuous = true, view_mode = Center
-        assert!(r.reflow_flows(), "center + continuous flows");
-        r.continuous = false;
-        assert!(!r.reflow_flows(), "center without the toggle does not flow");
-        r.view_mode = ViewMode::TwoPage;
-        assert!(
-            r.reflow_flows(),
-            "two-page flows across chapters even off-toggle"
-        );
+        for mode in [ViewMode::Center, ViewMode::TwoPage] {
+            r.view_mode = mode;
+            r.continuous = true;
+            assert!(r.reflow_flows(), "{mode:?}: the toggle flows chapters");
+            r.continuous = false;
+            assert!(
+                !r.reflow_flows(),
+                "{mode:?}: without it each chapter starts fresh"
+            );
+        }
+        // Page mode no longer suppresses flow: snapping and chapter flow are separate
+        // choices, and pages that flow across a chapter break are coherent.
+        r.continuous = true;
+        r.paged = true;
+        assert!(r.reflow_flows(), "page mode still flows chapters");
         r.chapter_lock = true;
-        assert!(!r.reflow_flows(), "chapter-lock keeps per-section paging");
+        assert!(!r.reflow_flows(), "chapter-lock stops at the boundary");
+    }
+
+    /// The two settings drive different things, so each has to be observable on its own:
+    /// Continuous decides whether the next chapter joins on, Page mode decides whether the
+    /// position stays on a page boundary. Motion in a spread turns a whole spread either
+    /// way — a partial step is what slides text between the columns.
+    #[test]
+    fn page_mode_and_continuous_control_different_things() {
+        let mut r = continuous_reader(3);
+        r.page_lines = 8;
+        r.visible_span = 16;
+        r.view_mode = ViewMode::TwoPage;
+
+        // Motion: a spread turns a spread, with Page mode on or off.
+        for paged in [false, true] {
+            r.paged = paged;
+            assert!(!r.scrolls_by_rows(), "a spread never scrolls by rows");
+            assert_eq!(r.reading_step(), 16, "and turns the whole spread");
+        }
+        // A single column takes Page mode's word for it.
+        r.view_mode = ViewMode::Center;
+        r.paged = false;
+        assert!(r.scrolls_by_rows(), "one column scrolls by rows");
+        r.paged = true;
+        assert!(!r.scrolls_by_rows(), "page mode turns pages instead");
+        assert_eq!(r.reading_step(), 8, "by its own height");
     }
 
     #[test]
