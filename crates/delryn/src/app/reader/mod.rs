@@ -499,6 +499,29 @@ impl Reader {
             .map(|(_, idx)| idx)
     }
 
+    /// Whether the view is a **reflowed two-page spread** — two text columns side by
+    /// side, the right continuing from the left. (A paged document's two-page view is a
+    /// facing-page image spread, which pages rather than scrolls.)
+    pub fn text_spread(&self) -> bool {
+        self.view_mode == ViewMode::TwoPage && !self.is_paged_image()
+    }
+
+    /// How far a reading motion advances, in lines.
+    ///
+    /// A spread has to move by its **whole** height. Any smaller step — a row for `j`, a
+    /// column for `PageDown` — slides the right column's content into the left one, so
+    /// most of the screen is text you just read, arriving on the other side of the
+    /// spread. Turning both pages at once is what a book does, and it is the only step
+    /// that never repeats content. Outside a spread this is the single column height, so
+    /// `PageDown` is unchanged.
+    pub fn reading_step(&self) -> usize {
+        if self.text_spread() {
+            self.visible_span.max(1)
+        } else {
+            self.page_lines.max(1)
+        }
+    }
+
     /// Lines of `self.lines` on screen at once. A two-page reflow spread stacks two
     /// column-heights side by side, so its second column is in view too; every other
     /// view shows a single column-height.
@@ -1756,6 +1779,43 @@ mod tests {
             r.selection_down();
         }
         assert!(r.scroll > 0, "past the visible span the follow scrolls");
+    }
+
+    /// A spread has to move by its whole height. Any smaller step slides the right
+    /// column's text into the left one, so the reader is shown most of what they just
+    /// read — the "right shows in left, pages keep repeating" complaint.
+    #[test]
+    fn a_spread_reads_a_whole_spread_at_a_time() {
+        let big = Block::Para {
+            spans: vec![Span::plain("lorem ipsum dolor sit amet ".repeat(120))],
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let mut r = reader_with(vec![big]);
+        r.page_lines = 8;
+        r.visible_span = 16; // two 8-line columns
+        r.view_mode = ViewMode::TwoPage;
+        assert!(r.text_spread(), "a reflowed two-page view is a text spread");
+        assert_eq!(
+            r.reading_step(),
+            16,
+            "a motion moves the whole spread, not one column"
+        );
+
+        // Consecutive spreads must not overlap: what the step reveals is entirely new.
+        let before = r.scroll..r.scroll + r.visible_span;
+        r.scroll_down(r.reading_step());
+        let after = r.scroll..r.scroll + r.visible_span;
+        assert_eq!(
+            after.start, before.end,
+            "the next spread starts where the last ended"
+        );
+
+        // A single column keeps the ordinary page step.
+        r.view_mode = ViewMode::Center;
+        assert!(!r.text_spread());
+        assert_eq!(r.reading_step(), 8, "one column pages by its own height");
     }
 
     // Ctrl-d / Ctrl-u jump the caret by half the visible span.

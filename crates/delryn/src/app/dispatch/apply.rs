@@ -498,6 +498,34 @@ fn apply_nav(reader: &mut Reader, action: Action, paged: bool, flip_ready: bool)
         }
     }
 
+    // A reflowed two-page spread reads like a book, so it turns like one: every content
+    // motion moves the *whole* spread. A partial step (a row for `j`, a column for
+    // PageDown) slides the right column's text into the left one, so the reader is shown
+    // most of what they just read — on the other side of the screen. Stepping by exactly
+    // the spread height is the only motion that never repeats content, in continuous mode
+    // and page mode alike. Turns are instant rather than eased: animating a page turn
+    // scrolls the migration past the reader's eyes, which is the effect being removed.
+    if reader.text_spread() && reader.focus == Focus::Content {
+        let step = reader.reading_step();
+        let spreads = match action {
+            Action::Down(n) => Some(n as isize),
+            Action::Up(n) => Some(-(n as isize)),
+            // A spread has no meaningful half-step — half of it is one column, which is
+            // the migration this exists to avoid — so half and full both turn one spread.
+            Action::HalfDown | Action::PageDown => Some(1),
+            Action::HalfUp | Action::PageUp => Some(-1),
+            _ => None,
+        };
+        if let Some(spreads) = spreads {
+            if spreads >= 0 {
+                reader.scroll_down(spreads.unsigned_abs() * step);
+            } else {
+                reader.scroll_up(spreads.unsigned_abs() * step);
+            }
+            return;
+        }
+    }
+
     let page_forward = |r: &mut Reader| {
         if flip_ready {
             r.page_forward();
