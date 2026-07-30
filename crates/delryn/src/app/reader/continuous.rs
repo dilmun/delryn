@@ -91,12 +91,14 @@ impl Reader {
 
     /// Whether reading motion scrolls by **rows** rather than turning a whole page.
     ///
-    /// A two-page spread never does. A step smaller than the spread slides the right
-    /// column's text into the left one, so most of the screen becomes text just read,
-    /// arriving on the other side — a spread is a page, and pages turn. A single column
-    /// scrolls by rows unless Page mode asks it to turn.
+    /// This is exactly the Page mode setting, in both view modes — off scrolls, on turns.
+    /// A spread was briefly excluded (it always turned, on the grounds that a partial step
+    /// slides the right column's text into the left one), but that left Page mode with
+    /// nothing to do in two-page, and a setting that does nothing is worse than one whose
+    /// effect the reader can choose not to like. Turning it **on** in a spread is the way
+    /// to get book-like page turns; leaving it off scrolls, columns sliding and all.
     pub fn scrolls_by_rows(&self) -> bool {
-        !self.is_paged_image() && !self.paged && !self.text_spread()
+        !self.is_paged_image() && !self.paged
     }
 
     /// Whether continuous *paged* (PDF page-stacking) scroll is active: the flag is

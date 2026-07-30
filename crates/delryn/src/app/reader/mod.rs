@@ -1304,7 +1304,14 @@ impl Reader {
         // it snaps whatever the resolutions above landed on. With Page mode off the
         // position is free to rest anywhere, which is what makes the setting observable in
         // a spread — where motion turns a whole spread either way.
-        if self.paged && !self.is_paged_image() {
+        //
+        // Not while a cursor is active, though: `follow_caret` scrolls the *minimum* needed
+        // to bring the caret in at the bottom edge, and snapping rounds the window start
+        // back down — which moves the window end down with it and puts the caret off-screen
+        // again. Every keypress would then re-follow and re-snap, stranding the caret below
+        // the fold. Caret navigation is line-granular by nature, so while it is driving the
+        // position it owns it; the snap resumes when the cursor is dismissed.
+        if self.paged && !self.is_paged_image() && self.select.is_none() {
             self.snap_to_page();
         }
     }
@@ -1964,6 +1971,49 @@ mod tests {
         assert!(!r.reflow_flows(), "chapter-lock stops at the boundary");
     }
 
+    /// Page mode holds the position on a page boundary, but the caret follow scrolls the
+    /// *minimum* needed to bring the caret in at the bottom edge. Snapping that back down
+    /// moves the window end down with it and puts the caret off-screen, so every keypress
+    /// re-follows and re-snaps and the caret is stranded below the fold. While a cursor is
+    /// driving the position it owns it.
+    #[test]
+    fn page_snapping_never_strands_the_caret_off_screen() {
+        let big = Block::Para {
+            spans: vec![Span::plain("lorem ipsum dolor sit amet ".repeat(80))],
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let mut r = reader_with(vec![big]);
+        r.page_lines = 10;
+        r.visible_span = 10;
+        r.paged = true; // page mode: the position snaps to a page boundary
+        assert!(r.lines.len() > 40, "enough lines to page through");
+
+        r.start_selection();
+        // Walk the caret well past the first page.
+        for _ in 0..15 {
+            r.selection_down();
+        }
+        r.resolve_pending();
+        let caret = r.selection_caret().map(|(l, _)| l).expect("a caret");
+        assert!(
+            (r.scroll..r.scroll + r.visible_span).contains(&caret),
+            "caret {caret} is off-screen at scroll {} (span {})",
+            r.scroll,
+            r.visible_span
+        );
+
+        // Dismissed, the snap resumes and the position lands on a page boundary.
+        r.cancel_selection();
+        r.resolve_pending();
+        assert_eq!(
+            r.scroll % r.page_lines,
+            0,
+            "snapped once the cursor is gone"
+        );
+    }
+
     /// The two settings drive different things, so each has to be observable on its own:
     /// Continuous decides whether the next chapter joins on, Page mode decides whether the
     /// position stays on a page boundary. Motion in a spread turns a whole spread either
@@ -1975,18 +2025,19 @@ mod tests {
         r.visible_span = 16;
         r.view_mode = ViewMode::TwoPage;
 
-        // Motion: a spread turns a spread, with Page mode on or off.
-        for paged in [false, true] {
-            r.paged = paged;
-            assert!(!r.scrolls_by_rows(), "a spread never scrolls by rows");
-            assert_eq!(r.reading_step(), 16, "and turns the whole spread");
-        }
-        // A single column takes Page mode's word for it.
+        // Page mode is the flip/scroll switch in *both* views — a setting that does
+        // nothing in one of them is the bug being fixed here.
+        r.paged = false;
+        assert!(r.scrolls_by_rows(), "spread, page mode off: scrolls");
+        r.paged = true;
+        assert!(!r.scrolls_by_rows(), "spread, page mode on: turns");
+        assert_eq!(r.reading_step(), 16, "and a spread's page is both columns");
+
         r.view_mode = ViewMode::Center;
         r.paged = false;
-        assert!(r.scrolls_by_rows(), "one column scrolls by rows");
+        assert!(r.scrolls_by_rows(), "one column, page mode off: scrolls");
         r.paged = true;
-        assert!(!r.scrolls_by_rows(), "page mode turns pages instead");
+        assert!(!r.scrolls_by_rows(), "one column, page mode on: turns");
         assert_eq!(r.reading_step(), 8, "by its own height");
     }
 
