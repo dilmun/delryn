@@ -60,21 +60,26 @@ fn transmit_seq(id: u32, png: &[u8]) -> String {
     media::transmit_image_seq(id, png)
 }
 
-/// Write `png` to a fresh temp file (in `$TMPDIR`, which Ghostty accepts) and
-/// return the file-transmit escape. The terminal reads then deletes the file
-/// (`t=t`), so each call uses a unique name.
+/// Write `png` to a fresh temp file and return the file-transmit escape. The
+/// terminal reads then deletes the file (`t=t`), so each call uses a unique name.
+///
+/// These live in [`paths::runtime_dir`] — our own `0700` directory — rather than
+/// straight in `$TMPDIR`. On Linux that is the shared `/tmp`, where a predictable
+/// name can be pre-created as a symlink by another local user and this truncating
+/// write would follow it. The kitty spec's requirement that the *path* contain
+/// `tty-graphics-protocol` is still met by the filename.
 fn transmit_via_file(id: u32, png: &[u8]) -> Option<String> {
     let n = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-    let mut path = std::env::temp_dir();
-    path.push(format!("{TEMP_STEM}-{n}.png"));
+    let path = crate::paths::runtime_dir().join(format!("{TEMP_STEM}-{n}.png"));
     std::fs::write(&path, png).ok()?;
     Some(media::transmit_file_seq(id, &path.to_string_lossy()))
 }
 
 /// Best-effort sweep of any page temp files the terminal didn't delete (it should
-/// remove `t=t` files itself). Cheap; run when tearing the deck down.
+/// remove `t=t` files itself). Cheap; run when tearing the deck down. Scoped to our
+/// own runtime directory, so it can only ever remove files we wrote.
 fn temp_cleanup() {
-    if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+    if let Ok(entries) = std::fs::read_dir(crate::paths::runtime_dir()) {
         for e in entries.flatten() {
             let name = e.file_name();
             let name = name.to_string_lossy();
@@ -85,9 +90,9 @@ fn temp_cleanup() {
     }
 }
 
-/// Append a line to `/tmp/delryn-kitty.log` when `DELRYN_KITTY_LOG` is set — a
-/// diagnostic for the placement decisions, since terminal graphics can't be
-/// observed from tests. Zero cost when the env var is unset.
+/// Append a line to `<runtime dir>/delryn-kitty.log` when `DELRYN_KITTY_LOG` is
+/// set — a diagnostic for the placement decisions, since terminal graphics can't
+/// be observed from tests. Zero cost when the env var is unset.
 fn dbg_log(msg: &dyn std::fmt::Display) {
     if std::env::var_os("DELRYN_KITTY_LOG").is_none() {
         return;
@@ -96,7 +101,7 @@ fn dbg_log(msg: &dyn std::fmt::Display) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("/tmp/delryn-kitty.log")
+        .open(crate::paths::runtime_dir().join("delryn-kitty.log"))
     {
         let _ = writeln!(f, "{msg}");
     }

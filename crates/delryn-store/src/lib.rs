@@ -81,6 +81,22 @@ CREATE TABLE IF NOT EXISTS dup_links (
 );
 ";
 
+/// Narrow an existing file to owner-only. Best-effort and silent: the file may
+/// not exist yet (a sidecar SQLite hasn't created), or the filesystem may not
+/// carry Unix modes at all.
+fn restrict_to_owner(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if path.exists() {
+            let mode = delryn_infra::paths::PRIVATE_MODE;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// Current schema version. Bump when you append a migration step in [`migrate`].
 const USER_VERSION: i64 = 3;
 
@@ -324,8 +340,9 @@ impl Store {
     /// Open (creating if needed) the database under the config directory.
     pub fn open_default() -> Result<Store> {
         let dir = delryn_infra::paths::config_dir();
-        std::fs::create_dir_all(&dir)?;
-        let conn = Connection::open(dir.join("delryn.db"))?;
+        delryn_infra::paths::create_private_dir(&dir)?;
+        let path = dir.join("delryn.db");
+        let conn = Connection::open(&path)?;
         // A background library scan opens its own connection and writes while the
         // UI reads. WAL lets those overlap without `SQLITE_BUSY` (readers never
         // block the writer); the busy_timeout covers the rarer two-writer overlap
@@ -333,6 +350,13 @@ impl Store {
         // rejects WAL simply keeps the default journal.
         let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
+        // The database holds reading history, notes and highlights — on a shared
+        // machine that is nobody else's business, and SQLite creates its files
+        // with the default umask (0644). Tighten it and the two WAL sidecars,
+        // which only exist once the pragma above has run.
+        restrict_to_owner(&path);
+        restrict_to_owner(&dir.join("delryn.db-wal"));
+        restrict_to_owner(&dir.join("delryn.db-shm"));
         migrate(&conn)?;
         Ok(Store { conn })
     }
