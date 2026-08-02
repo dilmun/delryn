@@ -23,18 +23,66 @@ const FRAME: Duration = Duration::from_millis(8);
 /// How long to block waiting for input when there is nothing to redraw.
 const IDLE: Duration = Duration::from_millis(250);
 
+/// `--help` / `-h` text. Mirrors the README's Usage section.
+const USAGE: &str = "\
+delryn — a fast, keyboard-driven terminal reader for EPUB, PDF, and MOBI/AZW3.
+
+USAGE:
+    delryn                       open the library
+    delryn <FILE>                open a book straight away (EPUB / PDF / MOBI / AZW3)
+    delryn <DIR>...              register folder(s) as library sources, then open
+
+OPTIONS:
+    -a, --add <DIR>...           register + index folder(s), no UI
+        --rescan                 re-read metadata for every book, prune missing files
+        --index                  build the full-text search index
+        --export-annotations     dump all notes & bookmarks as Markdown to stdout
+    -h, --help                   show this help and exit
+    -V, --version                show the version and exit
+
+ENVIRONMENT:
+    DELRYN_SYNC=0                disable synchronized output (DEC 2026)
+    DELRYN_PDFIUM_DIR=<DIR>      where to look for the bundled libpdfium
+
+Images, PDF pages, and graphical math need a terminal that speaks the Kitty
+graphics protocol. Full documentation: https://github.com/dilmun/delryn";
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let first = args.first().map(String::as_str);
+
+    if matches!(first, Some("--help" | "-h")) {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    if matches!(first, Some("--version" | "-V")) {
+        println!("delryn {}", delryn::VERSION);
+        return Ok(());
+    }
+    // An unrecognized option used to fall through to "open this as a book", so a
+    // typo (`--rescn`) was reported as an unsupported *file type* rather than an
+    // unknown flag. A bare "-" is left alone: it's a legal, if odd, filename.
+    if let Some(flag) = first
+        && flag.starts_with('-')
+        && flag != "-"
+        && !matches!(
+            flag,
+            "--add" | "-a" | "--rescan" | "--index" | "--export-annotations"
+        )
+    {
+        eprintln!("delryn: unknown option '{flag}'\nTry 'delryn --help' for usage.");
+        std::process::exit(2);
+    }
 
     // `delryn --add <dir> [dir…]`: register library folder(s), scan, and exit.
-    if matches!(args.first().map(String::as_str), Some("--add" | "-a")) {
+    if matches!(first, Some("--add" | "-a")) {
         return add_library(&args[1..]);
     }
 
     // `delryn --rescan`: re-read metadata for every known book (backfills new
     // fields like series/publisher for an already-indexed library), then exit.
-    if matches!(args.first().map(String::as_str), Some("--rescan")) {
-        let config = Config::load();
+    if matches!(first, Some("--rescan")) {
+        let config = load_config_reporting();
         match Store::open_default() {
             Ok(store) => {
                 let n = library::rescan(&config.library_paths, &store);
@@ -47,7 +95,7 @@ fn main() -> Result<()> {
     }
 
     // `delryn --index`: build the full-text search index, then exit.
-    if matches!(args.first().map(String::as_str), Some("--index")) {
+    if matches!(first, Some("--index")) {
         match Store::open_default() {
             Ok(store) => println!(
                 "Full-text indexed {} book(s).",
@@ -59,10 +107,7 @@ fn main() -> Result<()> {
     }
 
     // `delryn --export-annotations`: dump bookmarks/notes as Markdown, then exit.
-    if matches!(
-        args.first().map(String::as_str),
-        Some("--export-annotations")
-    ) {
+    if matches!(first, Some("--export-annotations")) {
         if let Ok(store) = Store::open_default() {
             let mut last_path = String::new();
             let mut last_folder: Option<String> = None;
@@ -87,6 +132,15 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+
+    // Report an unreadable config now, on the primary screen, before the alt
+    // screen hides it. `App::library` / `App::open_book` load it again, but by
+    // then the damaged file has been moved aside, so they see a clean default and
+    // the warning is said exactly once.
+    let _ = load_config_reporting();
+    // One version string for the whole app: `--version`, the crash log, and the
+    // User-Agent the online providers send.
+    delryn::online::set_version(delryn::VERSION);
 
     // Detect the terminal's image protocol before entering the alt screen. The
     // same query reports the terminal's background colour, which the `terminal`
@@ -130,6 +184,14 @@ fn main() -> Result<()> {
         .map(|v| v != "0")
         .unwrap_or(true);
 
+    // Ask to be told about SIGTERM/SIGHUP rather than dying on them: the default
+    // disposition kills the process outright, which left the terminal in the
+    // alternate screen with mouse reporting and raw mode still on (the user had to
+    // run `reset`), and skipped `on_exit` — losing the reading position and the
+    // session's reading time. Now they just end the loop, so the ordinary teardown
+    // below runs. Ctrl-C needs no handling: raw mode delivers it as a key event.
+    install_termination_handlers();
+
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
     // ratatui's panic hook restores raw mode + the alt screen, but not the app-specific
@@ -163,11 +225,61 @@ fn main() -> Result<()> {
     result
 }
 
-/// The durable crash-log path: `$TMPDIR/delryn-crash.log`. Append-only so a reproduced
-/// crash is never clobbered by a relaunch or a second running instance (unlike the
-/// truncated stderr redirect).
+/// Set when SIGTERM or SIGHUP arrives, polled by the event loop.
+static TERMINATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Signal handler. The only thing it does is set an atomic flag — the one useful
+/// operation that is genuinely async-signal-safe. All the real work (restoring the
+/// terminal, saving progress) happens back on the main thread once the loop sees it.
+#[cfg(unix)]
+extern "C" fn on_terminate(_sig: libc::c_int) {
+    TERMINATE.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Route SIGTERM/SIGHUP to [`on_terminate`] instead of the default "die now".
+#[cfg(unix)]
+fn install_termination_handlers() {
+    // SAFETY: `signal` installs our handler for two specific signals. The handler
+    // does nothing but store to a `static` atomic, so it is async-signal-safe and
+    // has no lifetime or aliasing requirements.
+    // Cast via a concrete fn *pointer*: a bare fn item is zero-sized, and casting
+    // it straight to an integer is the mistake `clippy::fn_to_numeric_cast_any`
+    // warns about.
+    let handler = on_terminate as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    unsafe {
+        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGHUP, handler);
+    }
+}
+
+#[cfg(not(unix))]
+fn install_termination_handlers() {}
+
+/// Has a termination signal arrived? Checked once per event-loop turn.
+fn terminating() -> bool {
+    TERMINATE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Load the config, printing any "couldn't read your settings" warning to stderr.
+///
+/// Loading is deliberately infallible — a reader whose config is damaged should
+/// still start — but it must not be *silent*: the fallback drops every setting and
+/// the whole library source list, and the user's only clue would be an empty
+/// library. [`Config::load_checked`] moves the damaged file aside first, so the
+/// warning can point at a file that still exists.
+fn load_config_reporting() -> Config {
+    let (config, warning) = Config::load_checked();
+    if let Some(w) = warning {
+        eprintln!("delryn: {w}");
+    }
+    config
+}
+
+/// The durable crash-log path: `<runtime dir>/delryn-crash.log`. Append-only so a
+/// reproduced crash is never clobbered by a relaunch or a second running instance
+/// (unlike the truncated stderr redirect).
 fn crash_log_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("delryn-crash.log")
+    delryn::paths::runtime_dir().join("delryn-crash.log")
 }
 
 /// Append one panic (message, source location, and a full backtrace) to the crash log.
@@ -197,7 +309,7 @@ fn write_crash_log(info: &std::panic::PanicHookInfo<'_>) {
         let _ = writeln!(
             f,
             "\n===== delryn panic =====\nversion: {}\nat: {loc}\nmessage: {msg}\nbacktrace:\n{bt}\n========================",
-            env!("CARGO_PKG_VERSION"),
+            delryn::VERSION,
         );
     }
 }
@@ -217,7 +329,8 @@ struct StderrRedirect {
 impl StderrRedirect {
     fn for_tui() -> Self {
         use std::os::fd::AsRawFd;
-        let Ok(file) = std::fs::File::create(std::env::temp_dir().join("delryn.log")) else {
+        let log = delryn::paths::runtime_dir().join("delryn.log");
+        let Ok(file) = std::fs::File::create(log) else {
             return Self { saved: None };
         };
         // SAFETY: `dup`/`dup2` act on the process's own stderr. `dup` saves the original
@@ -274,7 +387,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
     // fallback when it's unavailable (e.g. SSH/headless).
     let mut clipboard = arboard::Clipboard::new().ok();
 
-    while !app.should_quit {
+    while !app.should_quit && !terminating() {
         // Block for input — only until the next frame is due if a redraw is
         // pending or a scroll is animating, otherwise block long so an idle
         // reader costs ~0% CPU.
@@ -293,7 +406,15 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
             IDLE
         };
 
-        if event::poll(timeout)? {
+        // A signal interrupts the blocking poll, surfacing as `Interrupted`. That
+        // is the handler doing its job, not a failure — go round and let the loop
+        // condition see the flag.
+        let ready = match event::poll(timeout) {
+            Ok(r) => r,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        };
+        if ready {
             // Drain the whole burst before drawing.
             loop {
                 match event::read()? {
@@ -353,6 +474,11 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         }
         // Fetch the editor's Cover-tab preview when the highlighted result settles.
         app.tick_preview();
+
+        // Bank the reading position periodically, so an abrupt end (a signal, a
+        // closed terminal, a power cut) costs seconds rather than the whole
+        // chapter. Cheap: an `Instant` comparison until the interval elapses.
+        app.tick_autosave();
 
         // Ease pending scroll a few lines toward its target this frame.
         if app.step_scroll() {
@@ -434,6 +560,8 @@ fn add_library(dirs: &[String]) -> Result<()> {
         eprintln!("usage: delryn --add <dir> [dir…]");
         return Ok(());
     }
+    // Report (and back up) an unreadable config before anything writes over it.
+    let _ = load_config_reporting();
     register_library_dirs(dirs, false);
     let config = Config::load();
     match Store::open_default() {
@@ -524,13 +652,13 @@ fn draw(
     Ok(())
 }
 
-/// Append one PDF-frame timing line to `/tmp/delryn-kitty.log` (see `draw`).
+/// Append one PDF-frame timing line to `<runtime dir>/delryn-kitty.log` (see `draw`).
 fn log_page_timing(draw_us: u128, build_us: u128, write_us: u128, esc_bytes: usize) {
     use std::io::Write as _;
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("/tmp/delryn-kitty.log")
+        .open(delryn::paths::runtime_dir().join("delryn-kitty.log"))
     {
         let _ = writeln!(
             f,

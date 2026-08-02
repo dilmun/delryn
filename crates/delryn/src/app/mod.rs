@@ -5,7 +5,7 @@
 //! `DESIGN.md` §4, §6.
 
 use std::sync::mpsc::Receiver;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
@@ -406,10 +406,11 @@ fn build_reader(
     // with a cryptic error. See the Phase 5 plan in `TODO.md`.
     let fmt = crate::document::BookFormat::from_path(path);
     if !fmt.is_readable() {
-        anyhow::bail!(
-            "{} files aren't supported — EPUB, PDF, and MOBI/AZW3 open",
-            fmt.label()
-        );
+        // Every readable format returns true above, so this only ever fires for
+        // `Unknown` — interpolating `label()` here just produced the ungrammatical
+        // "this file type files aren't supported". Name the file instead, which is
+        // the useful half anyway when a mistyped flag lands here.
+        anyhow::bail!("{path}: unsupported file type — delryn opens EPUB, PDF, and MOBI/AZW3");
     }
     // PDF renders each page as an image, so it needs a graphics-capable terminal
     // (Kitty/iTerm2/sixel). Report cleanly rather than opening to blank pages.
@@ -478,6 +479,7 @@ impl App {
                 store,
                 book_path,
                 started: Some(Instant::now()),
+                last_autosave: Instant::now(),
             },
             library: LibraryState::default(),
             cover_loader: cover_loader::CoverLoader::new(),
@@ -524,6 +526,7 @@ impl App {
                 store,
                 book_path: String::new(),
                 started: None,
+                last_autosave: Instant::now(),
             },
             library: LibraryState::default(),
             cover_loader: cover_loader::CoverLoader::new(),
@@ -598,6 +601,30 @@ impl App {
 
     /// Save progress + reading time on quit.
     pub fn on_exit(&mut self) {
+        self.flush_reading_time();
+        self.save_progress();
+    }
+
+    /// How long the position may sit unsaved before the loop writes it out.
+    const AUTOSAVE_EVERY: Duration = Duration::from_secs(15);
+
+    /// Periodically persist the reading position and accrued reading time.
+    ///
+    /// Position used to reach the database only on a chapter change, on a settings
+    /// change, and at a clean exit — so anything that ended the process abruptly
+    /// (a signal, a terminal closing, the machine losing power) threw away
+    /// everything since the last chapter boundary, which in a long chapter is the
+    /// whole session. Called once per event-loop turn; does nothing until the
+    /// interval has elapsed, so the common case is one `Instant` comparison.
+    pub fn tick_autosave(&mut self) {
+        if self.reader.is_none() || self.session.book_path.is_empty() {
+            return;
+        }
+        if !self.session.autosave_due(Self::AUTOSAVE_EVERY) {
+            return;
+        }
+        // `flush_reading_time` also restarts the clock, so the time is banked in
+        // 15-second slices rather than lost wholesale on an abrupt exit.
         self.flush_reading_time();
         self.save_progress();
     }
@@ -882,6 +909,38 @@ mod tests {
             _ => panic!("metadata editor not open"),
         }
     }
+    /// The periodic save runs on every event-loop turn, so it must do nothing on
+    /// the library screen — there is no position to save there, and rearming the
+    /// clock would make an abrupt exit just after opening a book look as though it
+    /// had recently saved when nothing had been written.
+    ///
+    /// The interval itself is pinned by `Session::autosave_is_rate_limited_and_rearms`,
+    /// which doesn't need a `Reader` to construct.
+    #[test]
+    fn autosave_does_nothing_with_no_book_open() {
+        let _g = crate::test_env_guard();
+        let tmp = std::env::temp_dir().join(format!("delryn_autosave_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: serialized by `test_env_guard`; scopes the config dir to this test.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+
+        let mut app = App::library();
+        let clock = app.session.last_autosave;
+
+        // Well past the interval, but with no reader: still a no-op, clock intact.
+        app.session.last_autosave = Instant::now() - App::AUTOSAVE_EVERY - Duration::from_secs(1);
+        let stale = app.session.last_autosave;
+        app.tick_autosave();
+        assert_eq!(
+            app.session.last_autosave, stale,
+            "no reader: nothing saved, clock untouched"
+        );
+        let _ = clock;
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// Terminal images composite *above* the cell grid, so anything drawn over the
     /// page must report itself here or the images render on top of it. The dialogs
     /// were missed when they were status-bar lines: an in-book search opened over
