@@ -50,6 +50,11 @@ use super::{Reader, page_stack};
 /// Continuous-paged zoom: multiplicative step per keypress, and the bounds relative
 /// to fit-width (1.0). Zoom-out below 1.0 shrinks + centres pages (see more at
 /// once); zoom-in above 1.0 enlarges a single page past the viewport (pan to read).
+///
+/// Deliberately a different band from the single-page zoom in `reader::page_view`,
+/// which floors at its fit scale: these measure from different references (fit-width
+/// here, the active fit mode there) and zooming out means different things — more
+/// pages in the stack, versus a smaller page in the same empty viewport.
 const CONT_ZOOM_STEP: f32 = 1.25;
 const CONT_ZOOM_MIN: f32 = 0.25;
 const CONT_ZOOM_MAX: f32 = 4.0;

@@ -3,9 +3,6 @@
 
 use delryn_store::BookRow;
 
-/// Progress percent at/above which a book counts as finished (mirrors the query
-/// module's reading-status threshold).
-const FINISHED_PCT: u8 = 98;
 /// How many top authors to surface.
 const TOP_AUTHORS: usize = 5;
 
@@ -38,7 +35,7 @@ pub fn compute(books: &[BookRow], read_seconds: i64) -> LibraryStats {
     for b in books {
         match b.pct {
             0 => s.unread += 1,
-            p if p >= FINISHED_PCT => s.finished += 1,
+            p if p >= delryn_model::ReadingStatus::FINISHED_PCT => s.finished += 1,
             _ => s.reading += 1,
         }
         if b.favorite {

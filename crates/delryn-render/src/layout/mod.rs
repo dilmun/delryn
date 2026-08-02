@@ -182,6 +182,11 @@ pub struct WrapOpts<'a> {
     pub inline_math_rows: &'a [u16],
 }
 
+/// A **neutral baseline for tests**, not the app's shipped settings — the reader
+/// always builds `WrapOpts` from `Config`, which turns hyphenation, fold, and the
+/// code label on. Every optional transform is off here so a test exercises the one
+/// feature it names and reads its output without allowing for the others; flipping
+/// these to match `Config::default()` would silently re-baseline the layout suite.
 impl Default for WrapOpts<'_> {
     fn default() -> Self {
         WrapOpts {
