@@ -15,7 +15,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use crate::USER_AGENT;
+use crate::{agent, user_agent};
 
 const DICT_URL: &str = "https://api.dictionaryapi.dev/api/v2/entries/en";
 const WIKI_URL: &str = "https://en.wikipedia.org/api/rest_v1/page/summary";
@@ -186,8 +186,9 @@ fn parse_sdcv(json: &[u8], word: &str) -> Option<Definition> {
 /// `ureq` status error, so `.ok()?` yields `None` and the caller degrades.
 fn online_define(word: &str) -> Option<Definition> {
     let url = format!("{DICT_URL}/{}", enc_path(word));
-    let mut resp = ureq::get(&url)
-        .header("User-Agent", USER_AGENT)
+    let mut resp = agent()
+        .get(&url)
+        .header("User-Agent", user_agent())
         .call()
         .ok()?;
     let entries: Vec<ApiEntry> = resp.body_mut().read_json().ok()?;
@@ -232,8 +233,9 @@ fn parse_dict_api(entries: Vec<ApiEntry>, word: &str) -> Option<Definition> {
 /// article 404s into `None`.
 fn wikipedia(term: &str) -> Option<WikiSummary> {
     let url = format!("{WIKI_URL}/{}", enc_path(term));
-    let mut resp = ureq::get(&url)
-        .header("User-Agent", USER_AGENT)
+    let mut resp = agent()
+        .get(&url)
+        .header("User-Agent", user_agent())
         .call()
         .ok()?;
     let s: WikiResp = resp.body_mut().read_json().ok()?;
@@ -264,8 +266,9 @@ fn translate(text: &str, target: &str) -> Option<Translation> {
         enc_path(target),
         enc_path(text)
     );
-    let mut resp = ureq::get(&url)
-        .header("User-Agent", USER_AGENT)
+    let mut resp = agent()
+        .get(&url)
+        .header("User-Agent", user_agent())
         .call()
         .ok()?;
     let v: serde_json::Value = resp.body_mut().read_json().ok()?;

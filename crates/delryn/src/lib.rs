@@ -11,6 +11,19 @@ pub mod search;
 pub mod ui;
 pub mod view;
 
+/// The version delryn reports — in `--version`, in the crash log, and as the
+/// HTTP User-Agent.
+///
+/// Releases are cut by release-please from git, which deliberately never rewrites
+/// `Cargo.toml` (see `docs/RELEASING.md`), so `CARGO_PKG_VERSION` stops matching
+/// the release tag the moment the two diverge. The release build therefore passes
+/// the tag in as `DELRYN_VERSION`; a source build has no tag to speak of and falls
+/// back to the manifest, which is the honest answer there.
+pub const VERSION: &str = match option_env!("DELRYN_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 // Extracted layers, re-exported so existing `crate::{store, online, config, …}`
 // paths keep resolving.
 pub use delryn_format as document;
