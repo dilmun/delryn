@@ -257,10 +257,21 @@ single unit, so there is exactly one release version. release-please tracks it i
 `.release-please-manifest.json` and stamps it into the `vX.Y.Z` tag, the GitHub Release, and
 `CHANGELOG.md`. It does **not** touch any `Cargo.toml` or `Cargo.lock` — that's the whole point
 of the `simple` release-type, and it's why `cargo build --locked` CI can never be broken by a
-release. The crate `version` fields all inherit `[workspace.package].version` and are
-**cosmetic**: delryn is never published and has no `--version` flag, so nothing reads them. (If
-delryn ever grows a `--version`, stamp the release version in at build time from the tag rather
-than committing crate-version churn.)
+release. The crate `version` fields all inherit `[workspace.package].version` and, since delryn
+is never published to a registry, nothing downstream reads them.
+
+**The binary does not read them either — it is told the version at build time.** Three things
+report a version to a human or a server: `delryn --version`, the crash log, and the HTTP
+User-Agent. All three read `delryn::VERSION`, which prefers the `DELRYN_VERSION` environment
+variable set during the release build (`release-build.yml` passes the tag with its leading `v`
+stripped) and falls back to `CARGO_PKG_VERSION` for a source build, where there is no tag and
+the manifest is the honest answer. So a released binary reports its release version even though
+`Cargo.toml` still says something older — which is the point of not churning crate versions.
+
+> Left alone, this drifts silently: the manifest was `0.1.0` while the manifest-tracked release
+> version was `0.0.0`, and after the first release the crash log would have reported the wrong
+> version on every bug report. If you add another consumer of the version, read
+> `delryn::VERSION`, never `env!("CARGO_PKG_VERSION")`.
 
 **Source of truth.** The open **release PR always shows the exact next version** release-please
 picked — check it there. If it ever disagrees with this table, the fix is in

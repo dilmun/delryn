@@ -112,7 +112,17 @@ won't open.
 > [!NOTE]
 > **tmux / screen** intercept the graphics protocol, so images and PDF render blank inside
 > them — run delryn outside a multiplexer for now (passthrough is planned). **PDF** also needs
-> **libpdfium**, which is bundled in the release tarballs.
+> **libpdfium**, which is bundled in the release tarballs (pinned by SHA-256 and verified at
+> build time). PDFs are parsed by PDFium in-process and unsandboxed, as in most desktop
+> readers — open PDFs you trust.
+
+> [!NOTE]
+> **What talks to the network.** Only two things, both on demand and both optional: the
+> metadata/cover editor (Open Library, Google Books) and word lookup `K`. Lookup queries the
+> **Free Dictionary API** and **Wikipedia** by default and **translation is off** by default;
+> each is an independent toggle in Settings ▸ Lookup, and turning all three off — or installing
+> `sdcv` for offline StarDict lookup — makes delryn fully offline. Nothing is sent in the
+> background, and there is no telemetry.
 
 ---
 
@@ -161,6 +171,7 @@ delryn --add <dir>…          # register + index folder(s), no UI  (also: -a)
 delryn --rescan              # re-read metadata for every book, prune missing files
 delryn --index               # build the full-text search index
 delryn --export-annotations  # dump all notes & bookmarks as Markdown to stdout
+delryn --help                # usage  (also: -h)   ·   --version / -V
 ```
 
 ---
@@ -235,7 +246,9 @@ the essentials:
 ## Configuration
 
 delryn reads `~/.config/delryn/config.toml` (TOML), but everything is also editable **live in the
-app** — press `;` for the Settings overlay, which writes the file on close. Highlights: theme,
+app** — press `;` for the Settings overlay, which writes the file on close (atomically, and
+owner-only: the config and the library database hold your reading history, notes and
+highlights). Highlights: theme,
 typography (margins, max text width, line &amp; paragraph spacing, justify, hyphenation),
 pagination (page mode, continuous scroll, chapter lock), reading mode &amp; direction, image / math
 scaling, PDF trim, and a `[status]` block to compose the status bar (per-zone segment order,
