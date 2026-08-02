@@ -2,6 +2,7 @@
 name = "delryn-library"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # Library management: scanning/indexing today; collections, smart-collection
 # query, dedup, search orchestration, and statistics will join here.

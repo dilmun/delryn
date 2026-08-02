@@ -2,6 +2,7 @@
 name = "delryn-media"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 delryn-infra = { workspace = true }

@@ -49,3 +49,19 @@ jobs:
       - run: cargo fmt --all --check
       # `-D warnings` after `--` denies clippy's own lints (RUSTFLAGS only covers rustc lints).
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # Advisory scan, kept OUT of the required checks on purpose: a new advisory is
+  # published against the dependency tree, not against the pull request that
+  # happens to be open, so failing it here would block unrelated work on someone
+  # else's disclosure schedule. It reports; a human decides. Reachability is what
+  # matters — see the release audit's treatment of the quick-xml advisories, which
+  # are in the tree via syntect but never fed any input.
+  audit:
+    name: audit (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit

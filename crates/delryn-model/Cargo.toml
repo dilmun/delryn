@@ -2,6 +2,7 @@
 name = "delryn-model"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # Pure domain types and text heuristics — no I/O, no external dependencies.
 [dependencies]

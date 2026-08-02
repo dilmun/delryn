@@ -5,6 +5,10 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# The floor README promises. Edition 2024 needs 1.85, and nothing in the tree
+# needs newer; `resolver = "3"` reads this when picking dependency versions, so
+# it is enforced rather than aspirational. Bump it only alongside the README.
+rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/dilmun/delryn"
 
@@ -22,6 +26,7 @@ ego-tree = "0.11"
 epub = "2.1.5"
 html2text = "0.17.1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
+libc = "0.2"
 lru = "0.18.0"
 pdfium-render = "0.9.2"
 # RaTeX: pure-Rust math typesetting → PNG (KaTeX coverage, tiny-skia raster, embedded

@@ -52,7 +52,17 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build delryn
-        run: cargo build --release --locked --target ${{ matrix.target }} -p delryn
+        env:
+          # Stamp the release version into the binary. release-please never rewrites
+          # Cargo.toml (see docs/RELEASING.md), so CARGO_PKG_VERSION would otherwise
+          # drift from the tag — and it's what `--version`, the crash log, and the
+          # HTTP User-Agent all report.
+          DELRYN_VERSION: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # The tag is `vX.Y.Z`; the version is what follows the `v`.
+          export DELRYN_VERSION="${DELRYN_VERSION#v}"
+          cargo build --release --locked --target ${{ matrix.target }} -p delryn
 
       - name: Stage binary + bundled libpdfium
         run: |
@@ -61,9 +71,14 @@ jobs:
           mkdir -p "$staging"
           cp "target/${{ matrix.target }}/release/delryn" "$staging/"
           # Bundle libpdfium so PDFs work on download (delryn loads it from beside the binary).
-          curl -sSfL -o pdfium.tgz \
+          curl -sSfL -o "${{ matrix.pdfium_asset }}" \
             "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/${{ matrix.pdfium_asset }}"
-          tar -xzf pdfium.tgz "lib/${{ matrix.libname }}"
+          # This native library ends up inside the artifact users run, so verify it
+          # against the pinned digest rather than trusting the download. A release
+          # asset can be replaced upstream; a SHA-256 cannot.
+          grep " ${{ matrix.pdfium_asset }}\$" .github/pdfium-checksums.txt > expected.sha256
+          shasum -a 256 -c expected.sha256
+          tar -xzf "${{ matrix.pdfium_asset }}" "lib/${{ matrix.libname }}"
           cp "lib/${{ matrix.libname }}" "$staging/"
           # Include docs/licence when present (don't fail if they're absent).
           [ -f README.md ] && cp README.md "$staging/" || true

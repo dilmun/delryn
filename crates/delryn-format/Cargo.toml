@@ -2,6 +2,7 @@
 name = "delryn-format"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 delryn-model = { workspace = true }

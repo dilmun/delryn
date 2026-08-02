@@ -1,0 +1,21 @@
+# SHA-256 of the libpdfium release assets bundled into delryn's release tarballs.
+#
+# The release build downloads these from bblanchon/pdfium-binaries and ships the
+# native library inside the artifact users run. A GitHub release asset can be
+# replaced by its owner after the fact, so the tag alone is not an integrity
+# guarantee — these digests are. `release-build.yml` verifies the download
+# against this file and fails the build on any mismatch.
+#
+# Pinned to the release named by PDFIUM_RELEASE in .github/workflows/release-build.yml.
+# When bumping that (in lockstep with a pdfium-render upgrade), regenerate every
+# line here from the new assets:
+#
+#   for a in pdfium-linux-x64.tgz pdfium-mac-arm64.tgz pdfium-mac-x64.tgz; do
+#     curl -sSfL -O "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F<VER>/$a"
+#   done
+#   shasum -a 256 pdfium-*.tgz
+#
+# chromium/7763
+e3f0c66b2daad710cb6c8edd4a8c45c8902995e359dc0775917fc16e2e56349d  pdfium-linux-x64.tgz
+9acf49e46c68992cd40810e88264b1ad171805d02fd41c4cca336aad6653b333  pdfium-mac-arm64.tgz
+f455e0868ef7e5174a315de8789ee2b7a5544638d0ac7a3312ea7b68ebbc99cb  pdfium-mac-x64.tgz
