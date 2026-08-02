@@ -2,9 +2,15 @@
 name = "delryn-infra"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # Cross-cutting plumbing: data paths, config, theme (later: tasks, cache, export).
 [dependencies]
 ratatui.workspace = true
 serde.workspace = true
 toml.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# Owner/mode checks on the shared temp directory (`paths::runtime_dir`), so a
+# scratch dir another local user pre-created is detected rather than trusted.
+libc.workspace = true

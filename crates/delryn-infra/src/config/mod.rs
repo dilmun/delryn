@@ -530,12 +530,61 @@ impl Config {
     /// option enums / theme resolve through their serde helpers. The post-load
     /// fixups below re-impose the live invariants (clamps, known-column and
     /// format-order reconciliation) that the on-disk values aren't trusted to hold.
+    ///
+    /// Discards the salvage warning — use [`Config::load_checked`] anywhere the
+    /// user should hear that their settings could not be read.
     pub fn load() -> Config {
-        let Ok(text) = std::fs::read_to_string(config_path()) else {
-            return Config::default();
+        Config::load_checked().0
+    }
+
+    /// [`Config::load`], plus a user-facing warning when an existing config file
+    /// could not be read or parsed.
+    ///
+    /// A damaged file is **moved aside to `config.toml.bak` rather than left in
+    /// place**, because the alternative is silent, permanent data loss: falling
+    /// back to the defaults drops every setting *and* the whole `library_paths`
+    /// list, and the next [`Config::save`] would then write those defaults over
+    /// the only copy of the real ones. Renaming it first means the user's file
+    /// still exists to be repaired or copied from, and the warning tells them
+    /// where it went. Loading is still infallible — a reader that can't parse its
+    /// config should start, not refuse to.
+    pub fn load_checked() -> (Config, Option<String>) {
+        let path = config_path();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            // No config yet is the normal first-run path, not a problem worth
+            // reporting; anything else (unreadable, bad permissions) is.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return (Config::default(), None);
+            }
+            Err(e) => {
+                return (
+                    Config::default(),
+                    Some(format!(
+                        "could not read {}: {e} — starting with the default settings",
+                        path.display()
+                    )),
+                );
+            }
         };
-        let Ok(mut c) = toml::from_str::<Config>(&text) else {
-            return Config::default();
+        let mut c = match toml::from_str::<Config>(&text) {
+            Ok(c) => c,
+            Err(e) => {
+                let backup = path.with_extension("toml.bak");
+                let saved = std::fs::rename(&path, &backup).is_ok();
+                let note = if saved {
+                    format!("the previous file was kept as {}", backup.display())
+                } else {
+                    "the previous file could not be backed up".to_string()
+                };
+                return (
+                    Config::default(),
+                    Some(format!(
+                        "{} is not valid TOML ({e}) — starting with the default settings; {note}",
+                        path.display()
+                    )),
+                );
+            }
         };
         c.side_padding = c.side_padding.min(MAX_SIDE_PADDING);
         // 0 is a real value here (uncapped), so it survives the clamp intact.
@@ -555,17 +604,17 @@ impl Config {
         c.library_columns
             .retain(|k| LIB_COLUMNS.iter().any(|(key, _, _)| key == k));
         c.dup_format_order = normalize_format_order(std::mem::take(&mut c.dup_format_order));
-        c
+        (c, None)
     }
 
     /// Persist the current settings as the global defaults (best-effort).
+    ///
+    /// Atomic and owner-only via [`paths::write_private_atomic`]: settings are
+    /// saved on every Settings-overlay close, so a truncate-in-place write put
+    /// the user's whole configuration at risk on each one.
     pub fn save(&self) {
-        let path = config_path();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
         if let Ok(text) = toml::to_string_pretty(self) {
-            let _ = std::fs::write(path, text);
+            let _ = crate::paths::write_private_atomic(&config_path(), text.as_bytes());
         }
     }
 }
@@ -749,6 +798,107 @@ library_grid_size = "??"
         assert_eq!(back.dup_format_order, c.dup_format_order);
         assert!(!back.status.gauge);
         assert!(!back.focus_mode, "focus_mode is transient, never persisted");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A config file that can't be parsed — the shape a kill or power loss during
+    /// the old truncate-in-place save used to leave behind — must not be swallowed.
+    ///
+    /// Regression test for the worst failure this reader had: loading fell back to
+    /// `Config::default()` with no word to the user, which dropped every setting
+    /// *and* the entire `library_paths` list, and the next save wrote those
+    /// defaults over the only copy. Two things must hold: the user is told, and
+    /// their bytes still exist somewhere afterwards.
+    #[test]
+    fn a_corrupt_config_is_reported_and_preserved_not_silently_reset() {
+        let _g = crate::test_env_guard();
+        let dir = std::env::temp_dir().join(format!("delryn-cfg-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: serialized by `test_env_guard`; points config_dir at a scratch dir.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+
+        // Write a real config, then truncate it mid-value the way an interrupted
+        // write would.
+        let good = Config {
+            side_padding: 11,
+            library_paths: vec!["/books".into()],
+            ..Config::default()
+        };
+        good.save();
+        let path = config_path();
+        let whole = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, &whole[..40.min(whole.len())]).unwrap();
+
+        let (c, warning) = Config::load_checked();
+
+        let warning = warning.expect("a config that cannot be parsed is reported, never silent");
+        assert!(
+            warning.contains("default settings"),
+            "the warning says what happened instead: {warning}"
+        );
+
+        // The damaged file was moved aside, so the user's bytes survive the reset
+        // *and* the save that follows it.
+        let backup = path.with_extension("toml.bak");
+        assert!(backup.exists(), "the unparseable file is kept as .bak");
+        assert!(
+            warning.contains("bak"),
+            "the warning points at the backup: {warning}"
+        );
+        c.save();
+        assert!(
+            backup.exists(),
+            "saving over the reset config spares the .bak"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            whole[..40.min(whole.len())],
+            "the .bak holds the original bytes verbatim"
+        );
+
+        // …and a first run with no file at all is not an error.
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&backup);
+        let (fresh, warning) = Config::load_checked();
+        assert!(warning.is_none(), "no config yet is the normal first run");
+        assert_eq!(fresh.side_padding, Config::default().side_padding);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The saved file is replaced whole, never appended to or left half-written:
+    /// a long config followed by a short one leaves no tail of the old one behind.
+    #[test]
+    fn saving_replaces_the_file_atomically() {
+        let _g = crate::test_env_guard();
+        let dir = std::env::temp_dir().join(format!("delryn-cfg-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: serialized by `test_env_guard`; points config_dir at a scratch dir.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+
+        Config {
+            library_paths: vec!["/a/very/long/library/path/that/takes/up/room".into()],
+            ..Config::default()
+        }
+        .save();
+        Config {
+            library_paths: vec!["/b".into()],
+            ..Config::default()
+        }
+        .save();
+
+        let (back, warning) = Config::load_checked();
+        assert!(warning.is_none(), "the rewritten file parses cleanly");
+        assert_eq!(back.library_paths, vec!["/b".to_string()]);
+        assert!(
+            !std::fs::read_to_string(config_path())
+                .unwrap()
+                .contains("very/long"),
+            "no tail of the longer previous write survives"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
