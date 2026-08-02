@@ -388,11 +388,14 @@ impl App {
                 if self.config.paged {
                     reader.snap_to_page(); // start on a clean page boundary
                 }
+                // Page mode is the motion granularity only — whether chapters flow
+                // together is the separate "Continuous scroll" setting, so naming it
+                // here would report a state this key doesn't touch.
                 reader.flash = Some(
                     if self.config.paged {
-                        "page mode: on"
+                        "page mode: on (turn pages)"
                     } else {
-                        "page mode: off (continuous)"
+                        "page mode: off (scroll by rows)"
                     }
                     .to_string(),
                 );
