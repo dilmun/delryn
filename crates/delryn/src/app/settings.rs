@@ -171,8 +171,8 @@ impl SettingItem {
             SettingItem::GridSize => "Cover size",
             SettingItem::Column(key) => crate::config::LIB_COLUMNS
                 .iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, label)| *label)
+                .find(|(k, _, _)| *k == key)
+                .map(|(_, label, _)| *label)
                 .unwrap_or(key),
             SettingItem::DupConvertedDelete => "Converted copies: always delete",
             SettingItem::DupFormat(label) => label,
@@ -561,7 +561,7 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
             columns.extend(
                 crate::config::LIB_COLUMNS
                     .iter()
-                    .map(|(key, _)| I(Column(key))),
+                    .map(|(key, _, _)| I(Column(key))),
             );
             // Duplicate-resolver preferences: a converted-copies toggle and the
             // per-format keep priority (l/h on a format raises/lowers its rank).

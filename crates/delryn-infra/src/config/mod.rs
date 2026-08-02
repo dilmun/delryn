@@ -64,18 +64,22 @@ impl Default for StatusFields {
     }
 }
 
-/// The optional library list columns (key, display label), in display order.
-/// The star + Title columns are always shown; these can be toggled and also
-/// drop automatically on a narrow window.
-pub const LIB_COLUMNS: [(&str, &str); 8] = [
-    ("author", "Author"),
-    ("year", "Year"),
-    ("type", "Type"),
-    ("source", "Source"),
-    ("progress", "Progress"),
-    ("size", "Size"),
-    ("status", "Status"),
-    ("tags", "Tags"),
+/// The optional library list columns — `(key, display label, on by default)`, in
+/// display order. The star + Title columns are always shown; these can be toggled
+/// and also drop automatically on a narrow window.
+///
+/// Only the columns that place a book at a glance ship on. Type, Source, and Size
+/// are facts about the *file* rather than the reading — worth having when you go
+/// looking for them, noise in a table you scan every session.
+pub const LIB_COLUMNS: [(&str, &str, bool); 8] = [
+    ("author", "Author", true),
+    ("year", "Year", true),
+    ("type", "Type", false),
+    ("source", "Source", false),
+    ("progress", "Progress", true),
+    ("size", "Size", false),
+    ("status", "Status", true),
+    ("tags", "Tags", true),
 ];
 
 /// Bounds for the per-side text padding (percent of the content pane width).
@@ -348,7 +352,10 @@ impl Default for Config {
             page_gap: 5,
             cover_offset: false,
             reading_direction: ReadingDirection::default(),
-            pdf_trim: true,
+            // Off: a PDF opens as its author set it. The crop is a fix for books
+            // with wasteful margins, not something to apply to every page sight
+            // unseen — `x` turns it on where it helps.
+            pdf_trim: false,
             pdf_margin_pct: 6,
             line_spacing: 0,
             paragraph_spacing: 1,
@@ -387,7 +394,11 @@ impl Default for Config {
             library_paths: Vec::new(),
             library_layout: LibLayout::List,
             library_grid_size: GridSize::Medium,
-            library_columns: LIB_COLUMNS.iter().map(|(k, _)| k.to_string()).collect(),
+            library_columns: LIB_COLUMNS
+                .iter()
+                .filter(|(_, _, on)| *on)
+                .map(|(k, _, _)| k.to_string())
+                .collect(),
             dup_converted_delete: false,
             dup_format_order: DUP_FORMAT_ORDER.iter().map(|s| s.to_string()).collect(),
             lookup_sdcv: true,
@@ -542,7 +553,7 @@ impl Config {
         c.math_scale = c.math_scale.clamp(MIN_MATH_SCALE, MAX_MATH_SCALE);
         // Keep only known column keys; an empty list (all hidden) is valid.
         c.library_columns
-            .retain(|k| LIB_COLUMNS.iter().any(|(key, _)| key == k));
+            .retain(|k| LIB_COLUMNS.iter().any(|(key, _, _)| key == k));
         c.dup_format_order = normalize_format_order(std::mem::take(&mut c.dup_format_order));
         c
     }
