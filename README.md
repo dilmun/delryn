@@ -9,7 +9,7 @@
 </h1>
 
 A fast, keyboard-driven terminal reader for EPUB, PDF, and MOBI / AZW3 — with real
-graphics: syntax-highlighted code, tables, inline figures, and graphical LaTeX math.
+graphics: syntax-highlighted code, tables, inline figures, and typeset math.
 
 [![CI](https://github.com/dilmun/delryn/actions/workflows/ci.yml/badge.svg)](https://github.com/dilmun/delryn/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -59,11 +59,16 @@ graphics: syntax-highlighted code, tables, inline figures, and graphical LaTeX m
 **Formats &amp; rendering**
 - EPUB (reflowable), PDF (page-image), and MOBI / AZW3
 - Syntax-highlighted code (syntect), real tables, and footnotes &amp; cross-references
-- Inline figures &amp; diagrams, and graphical **LaTeX math** (RaTeX → images)
+- Inline figures &amp; diagrams, and **typeset math** — LaTeX *and* MathML, laid out by a
+  built-in engine and never left blank (typeset → publisher figure → Unicode)
 - DPI-independent equation &amp; image sizing, with theme-aware image recolour
 
 **Reading**
-- Continuous scroll or paged / page-flip; single column or **two-page spread**
+- Single column or **two-page spread**, which turns a whole spread at a time
+- **Page mode** (turn whole pages) and **continuous scroll** (chapters flow together)
+  as independent settings, in either view
+- Justified text with **hyphenation** (English patterns) and optimal (Knuth–Plass) line
+  breaking, and a capped measure so a maximised terminal still reads like a page
 - **RTL (manga)** direction, per-chapter lock, and a distraction-free focus mode
 - Jump by element type (code · table · math · figure); vim motions with counts
 - Code folding, plus fullscreen code and figure browsers
@@ -74,8 +79,10 @@ graphics: syntax-highlighted code, tables, inline figures, and graphical LaTeX m
 **Annotations, search &amp; lookup**
 - Bookmarks, colour highlights, and notes, in a tabbed annotations browser
 - **Vim-style visual selection** to copy, highlight, or note a range; Markdown export
+- A highlight **pen** — the selection is washed in the colour before you commit it, so
+  you pick by looking at it rather than blind
 - In-book search — **plain, regex, or fuzzy** — with match navigation and history
-- Word lookup — dictionary and Wikipedia, with translation
+- Word lookup (`K`) — dictionary and Wikipedia, with translation
 
 **Library**
 - Multi-folder sources with background scanning
@@ -186,8 +193,9 @@ the essentials:
 | Key | Action |
 | --- | --- |
 | `v` | center ⇄ two-page |
-| `p` | paged ⇄ continuous scroll |
-| `t` · `M` | cycle theme · reading preset (Study / Research / Presentation) |
+| `p` | page mode — turn whole pages ⇄ scroll by rows (continuous flow is a setting) |
+| `c` | chapter lock — stop at the chapter edge instead of flowing on |
+| `t` · `M` | cycle theme · reading preset (Default / Study / Research / Presentation) |
 | `[` `]` · `{` `}` | margin narrower / wider · line spacing |
 | `f` · `z` | focus (distraction-free) mode · toggle status bar |
 | `+` `-` `0` · `W` · `x` | (PDF) zoom / reset · fit mode · margin trim |
@@ -198,9 +206,11 @@ the essentials:
 
 | Key | Action |
 | --- | --- |
-| `m` · `H` · `a` | bookmark · highlight (cycles colour) · note |
+| `m` · `H` · `a` | bookmark · highlight (repeat to recolour) · note |
 | `'` | open annotations browser (Bookmarks / Notes / Highlights) |
-| `V` | visual selection → `y` copy · `H`/`1`–`5` highlight · `a` note |
+| `V` | cursor / visual selection (`v` or `Space` anchors it; `Esc` leaves) |
+| ↳ in `V` | `y` copy · `c`/`Tab` step the pen · `⏎`/`H` highlight · `1`–`5` pick a colour |
+| ↳ in `V` | `a` note · `m` bookmark the line · `K` look the word or phrase up |
 | `I` · `O` | figure browser · code browser (fullscreen, scroll + copy) |
 | `Z` · `F` | fold all long code · pick a visible code block to fold (`1`–`9`) |
 </details>
@@ -226,7 +236,8 @@ the essentials:
 
 delryn reads `~/.config/delryn/config.toml` (TOML), but everything is also editable **live in the
 app** — press `;` for the Settings overlay, which writes the file on close. Highlights: theme,
-typography (margins, max text width, line &amp; paragraph spacing, justify), reading mode &amp; direction, image / math
+typography (margins, max text width, line &amp; paragraph spacing, justify, hyphenation),
+pagination (page mode, continuous scroll, chapter lock), reading mode &amp; direction, image / math
 scaling, PDF trim, and a `[status]` block to compose the status bar (per-zone segment order,
 separator, clock). The same folder holds the library database, cover cache, and `themes/` for
 your own `*.toml` themes.
@@ -254,7 +265,7 @@ cargo test --workspace
 
 [MIT](LICENSE) © 2026 dilmun
 
-<sub>Built on ratatui, syntect, pdfium, RaTeX, and the epub / scraper / image crates — thank you to those projects.</sub>
+<sub>Built on ratatui, syntect, pdfium, RaTeX, hypher, and the epub / scraper / image crates — thank you to those projects.</sub>
 
 <div align="center">
 <br />
