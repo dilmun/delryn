@@ -134,10 +134,14 @@ pub struct Reader {
     pub paged: bool,
     /// Continuous scroll across sections (set each render, the raw config flag):
     /// the anchor's tail and the following heads share the viewport so a boundary
-    /// scrolls seamlessly. Reflow uses it single-column only; paged (PDF) uses it in
-    /// both Center (one stack) and TwoPage (spread stack). Inert in page-mode /
-    /// chapter-lock. See [`continuous_active`](Self::continuous_active) /
-    /// [`continuous_paged_active`](Self::continuous_paged_active).
+    /// scrolls seamlessly. Both variants work in Center and TwoPage — reflow joins
+    /// wrapped chapters, paged (PDF) stacks page images (one per band in Center, a
+    /// facing pair in TwoPage). Chapter-lock stops both; page-mode stops only the
+    /// paged variant, where snapping and stacking are the same axis. See
+    /// [`reflow_flows`](Self::reflow_flows) /
+    /// [`continuous_paged_active`](Self::continuous_paged_active), and
+    /// [`flows_across_sections`](Self::flows_across_sections) for "is it doing
+    /// anything right now".
     pub continuous: bool,
     /// Active view mode (set each render) — lets the continuous checks tell
     /// single-column (Center) from spread (TwoPage) without the view pre-gating the
@@ -1935,7 +1939,7 @@ mod tests {
     #[test]
     fn continuous_scroll_down_rolls_the_anchor_across_a_boundary() {
         let mut r = continuous_reader(3);
-        assert!(r.continuous_active());
+        assert!(r.reflow_flows());
         let l0 = r.lines.len();
         assert!(l0 > 2, "a multi-paragraph section wraps to several lines");
         // Sit near the section end, then scroll past it: the anchor rolls to the
@@ -2066,14 +2070,38 @@ mod tests {
         );
     }
 
+    /// The status bar's "continuous" indicator follows what the setting is *doing*,
+    /// not the view mode. It used to ask a Center-only, not-in-page-mode predicate
+    /// left over from before chapter flow and page snapping were separated — so a
+    /// spread or page mode flowed chapters with no indicator, and the setting read as
+    /// inert in the two cases that had just been fixed.
     #[test]
-    fn continuous_is_inert_when_chapter_locked_or_paged() {
-        let mut r = continuous_reader(3);
-        r.chapter_lock = true;
-        assert!(!r.continuous_active(), "chapter lock overrides continuous");
-        r.chapter_lock = false;
+    fn the_continuous_indicator_follows_the_flow_not_the_view_mode() {
+        let mut r = continuous_reader(3); // continuous = true, view_mode = Center
+        assert!(r.flows_across_sections(), "single column, continuous on");
+        r.view_mode = ViewMode::TwoPage;
+        assert!(r.flows_across_sections(), "a spread flows chapters too");
         r.paged = true;
-        assert!(!r.continuous_active(), "page mode overrides continuous");
+        assert!(r.flows_across_sections(), "page mode still flows chapters");
+        // Chapter lock is the one gate that stops *both* variants.
+        r.chapter_lock = true;
+        assert!(
+            !r.flows_across_sections(),
+            "chapter lock stops at the boundary"
+        );
+        r.chapter_lock = false;
+        r.continuous = false;
+        assert!(!r.flows_across_sections(), "off is off");
+
+        // The paged (PDF) variant lights the same indicator, but page mode *does*
+        // stop it — there, snapping to a page and stacking pages are one axis.
+        let mut p = continuous_paged_reader(4);
+        assert!(
+            p.flows_across_sections(),
+            "a PDF page stack is continuous too"
+        );
+        p.paged = true;
+        assert!(!p.flows_across_sections(), "page mode stops the stack");
     }
 
     fn table() -> Block {

@@ -59,17 +59,6 @@ const CONT_ZOOM_MAX: f32 = 4.0;
 const CONT_PAN_STEP: f32 = 0.2;
 
 impl Reader {
-    /// Whether continuous cross-section scroll is active right now: the flag is on
-    /// and the document is reflowable, single-column (Center), not page-mode, and
-    /// not chapter-locked.
-    pub fn continuous_active(&self) -> bool {
-        self.continuous
-            && !self.is_paged_image()
-            && self.view_mode == ViewMode::Center
-            && !self.paged
-            && !self.chapter_lock
-    }
-
     /// Whether reflowed text **flows across section boundaries** right now — the render
     /// buffer and the scroll pull in following sections, so the next chapter arrives with
     /// no break rather than starting fresh.
@@ -105,9 +94,23 @@ impl Reader {
     /// on for a paged-image document, not page-snap and not chapter-locked. Works in
     /// both Center (one page per band) and TwoPage (a facing pair per band, see
     /// [`continuous_two_page`](Self::continuous_two_page)). Mutually exclusive with
-    /// [`continuous_active`](Self::continuous_active) (which excludes paged docs).
+    /// [`reflow_flows`](Self::reflow_flows) (which excludes paged docs).
     pub fn continuous_paged_active(&self) -> bool {
         self.continuous && self.is_paged_image() && !self.paged && !self.chapter_lock
+    }
+
+    /// Whether the Continuous setting is having an effect right now, in **either**
+    /// variant: reflowed chapters joining ([`reflow_flows`](Self::reflow_flows)) or
+    /// PDF pages stacking ([`continuous_paged_active`](Self::continuous_paged_active)).
+    /// This is what the status bar's "continuous" indicator reports.
+    ///
+    /// It used to ask a third predicate that kept the pre-split gates — Center-only
+    /// and off in page mode — so a spread or page mode showed no indicator while
+    /// chapters flowed anyway, and the setting read as inert in exactly the two cases
+    /// the split had just fixed. The indicator follows the behaviour now, not the
+    /// view mode.
+    pub fn flows_across_sections(&self) -> bool {
+        self.reflow_flows() || self.continuous_paged_active()
     }
 
     /// Whether the continuous-paged stack shows a facing pair per band (TwoPage) vs.
