@@ -47,7 +47,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let mut lines: Vec<Line> = Vec::new();
     for (i, (name, member)) in p.shelves.iter().enumerate() {
         let selected = i == p.sel && p.new_name.is_none();
-        let marker = if selected { "▸ " } else { "  " };
+        let marker = "  ";
         let check = if *member { "[✓] " } else { "[ ] " };
         let label = format!("{marker}{check}{name}");
         if selected {
@@ -66,12 +66,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let new_selected = p.sel == p.new_row();
     if let Some(buf) = &p.new_name {
         lines.push(Line::from(vec![
-            Span::styled("▸ ＋ ", theme.style(Role::Accent)),
+            Span::styled("  ＋ ", theme.style(Role::Accent)),
             Span::styled(buf.clone(), Style::default().fg(theme.color(Role::Heading))),
             Span::styled("▏", theme.style(Role::Accent)),
         ]));
     } else {
-        let marker = if new_selected { "▸ " } else { "  " };
+        let marker = "  ";
         let label = format!("{marker}＋ New collection…");
         if new_selected {
             lines.push(crate::view::rounded_line(label, rows[1].width, theme));

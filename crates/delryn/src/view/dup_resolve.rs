@@ -147,7 +147,7 @@ fn member_line(
     theme: crate::theme::Theme,
     width: usize,
 ) -> Line<'static> {
-    let marker = if focused { "▸ " } else { "  " };
+    let marker = "  ";
     let (check, check_color) = if m.checked {
         ("[✗] del", theme.color(Role::Marker))
     } else {
@@ -233,7 +233,7 @@ pub fn render_ignored(f: &mut Frame, app: &mut App) {
         .enumerate()
         .map(|(i, group)| {
             let focused = i == v.cursor;
-            let marker = if focused { "▸ " } else { "  " };
+            let marker = "  ";
             let count = format!("{}× ", group.len());
             let names = group
                 .iter()

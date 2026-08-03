@@ -92,12 +92,17 @@ impl App {
             self.overlay = Overlay::None;
             return;
         }
+        let ctrl = key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL);
         let Overlay::WordLookup(wl) = &mut self.overlay else {
             return;
         };
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => wl.scroll = wl.scroll.saturating_add(1),
             KeyCode::Char('k') | KeyCode::Up => wl.scroll = wl.scroll.saturating_sub(1),
+            KeyCode::Char('n') if ctrl => wl.scroll = wl.scroll.saturating_add(1),
+            KeyCode::Char('p') if ctrl => wl.scroll = wl.scroll.saturating_sub(1),
             KeyCode::Char('d') | KeyCode::PageDown => wl.scroll = wl.scroll.saturating_add(10),
             KeyCode::Char('u') | KeyCode::PageUp => wl.scroll = wl.scroll.saturating_sub(10),
             KeyCode::Char('g') | KeyCode::Home => wl.scroll = 0,

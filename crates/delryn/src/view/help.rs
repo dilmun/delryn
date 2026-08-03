@@ -68,6 +68,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let view: Vec<Line> = lines.into_iter().skip(offset).take(h_rows).collect();
     f.render_widget(Paragraph::new(view), list);
 
+    // The popup's height is only known here, so hand it back: it's what bounds
+    // scrolling (`Help::max_scroll`) and sizes a page. Writing the clamped offset
+    // back keeps the two from drifting — after a resize the stored scroll can be
+    // past the new end, and this pulls it in on the first frame that shows it.
+    if let Overlay::Help(h) = &mut app.overlay {
+        h.visible = h_rows;
+        h.scroll = offset;
+    }
+
     let more = total.saturating_sub(offset + h_rows);
     let hint = if more > 0 {
         format!("j/k scroll  ·  {more} more below  ·  Esc close")

@@ -107,12 +107,13 @@ impl App {
         let Overlay::FolderFinder(p) = &mut self.overlay else {
             return;
         };
+        // The shared vim motions (j/k · arrows · Ctrl-n/p · Ctrl-d/u · g/G).
+        if let Some(ns) = crate::input::list_nav(key, p.sel, p.found.len(), 10) {
+            p.sel = ns;
+            return;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
-            KeyCode::Up | KeyCode::Char('k') => p.sel = p.sel.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => {
-                p.sel = (p.sel + 1).min(p.found.len().saturating_sub(1));
-            }
             KeyCode::Char(' ') => self.finder_toggle(),
             // `a` ticks everything, or clears when everything is already ticked.
             KeyCode::Char('a') => {

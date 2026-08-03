@@ -52,7 +52,7 @@ fn results_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
         .take(area.height as usize)
     {
         let selected = sel == Some(i);
-        let marker = if selected { "▸ " } else { "  " };
+        let marker = "  ";
         let series = match (&c.series, c.series_index) {
             (Some(s), Some(n)) => format!("  · {s} #{n}"),
             (Some(s), None) => format!("  · {s}"),
@@ -83,7 +83,7 @@ fn cover_list(f: &mut Frame, area: Rect, ed: &MetaEdit, theme: Theme) {
     let mut lines: Vec<Line> = Vec::new();
     for (i, h) in ed.cover_hits.iter().enumerate().take(area.height as usize) {
         let selected = i == s.row && !s.editing;
-        let marker = if selected { "▸ " } else { "  " };
+        let marker = "  ";
         let label = format!(
             "{marker}{}",
             crate::view::truncate(&h.source, area.width.saturating_sub(3) as usize)

@@ -245,6 +245,7 @@ the essentials:
 | Key | Action |
 | --- | --- |
 | `h` `j` `k` `l` · `Enter` `o` | move · open |
+| `Ctrl-n` `Ctrl-p` | next / previous in any list — including while typing a filter |
 | `/` · `s` `S` | filter · sort / reverse |
 | `f` · `0`–`5` · `m` | favorite · rate · reading status |
 | `e` · `T` · `c` | edit metadata · tags · add to collection |

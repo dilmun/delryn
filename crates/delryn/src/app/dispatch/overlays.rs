@@ -458,6 +458,12 @@ impl App {
         // While typing a filter, printable keys edit it; arrows still navigate.
         if a.filtering {
             if let Overlay::Annot(a) = &mut self.overlay {
+                // Before the `Char(c)` arm below, which would otherwise type the
+                // `n` of Ctrl-n into the filter.
+                if let Some(ns) = crate::input::list_nav_typing(key, a.sel, a.filtered().len()) {
+                    a.sel = ns;
+                    return;
+                }
                 match key.code {
                     KeyCode::Esc => {
                         a.filter.clear();
@@ -472,13 +478,6 @@ impl App {
                     KeyCode::Char(c) => {
                         a.filter.push(c);
                         a.sel = 0;
-                    }
-                    KeyCode::Up => a.sel = a.sel.saturating_sub(1),
-                    KeyCode::Down => {
-                        let n = a.filtered().len();
-                        if n > 0 {
-                            a.sel = (a.sel + 1).min(n - 1);
-                        }
                     }
                     _ => {}
                 }

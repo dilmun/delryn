@@ -80,7 +80,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .enumerate()
         .map(|(i, (found, ticked))| {
             let selected = i == p.sel;
-            let marker = if selected { "▸ " } else { "  " };
+            let marker = "  ";
             let check = if *ticked { "[✓] " } else { "[ ] " };
             let path = super::truncate(&home_relative(&found.path), path_w);
             let count = format!(" · {} book{}", found.books, plural(found.books));
