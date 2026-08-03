@@ -116,6 +116,13 @@ pub struct PageTarget {
     pub section: usize,
     pub rect: Rect,
     pub crop: Option<(u32, u32, u32, u32)>,
+    /// Width of the raster `crop` is expressed in — the same width
+    /// [`page_png`](crate::app::Reader::page_png) will serve for this section.
+    ///
+    /// A crop is meaningless without knowing which raster it indexes, and zooming
+    /// swaps the base raster for a wider crisp one (`reader::crisp`), so this is
+    /// part of the page's *data* identity, not of its placement.
+    pub raster_w: u32,
 }
 
 /// Tracks which pages are transmitted + on screen, and emits the escapes to move
@@ -128,10 +135,12 @@ pub struct PageDeck {
     /// The placements currently on screen (section + cell rect + crop). Drives the
     /// "already showing this" check and the loop's caught-up check.
     shown: Vec<PageTarget>,
-    /// Image data resident in the terminal, per section, with the theme/image policy
-    /// it was themed under. A page stays here across scroll frames (data reused); its
-    /// data is re-sent only when it first appears or its policy (theme/mode) changes.
-    resident: HashMap<usize, media::RenderPolicy>,
+    /// Image data resident in the terminal, per section, keyed by what makes the
+    /// bytes what they are: the theme/image policy it was themed under, and the
+    /// width of the raster it was rasterized at. A page stays here across scroll
+    /// frames (data reused); its data is re-sent only when it first appears, its
+    /// policy (theme/mode) changes, or zoom swaps in a different-resolution raster.
+    resident: HashMap<usize, (media::RenderPolicy, u32)>,
     /// The policy the shown placements were rendered under (part of `shows`).
     shown_policy: Option<media::RenderPolicy>,
 }
@@ -191,8 +200,8 @@ impl PageDeck {
         // its PNG ready. A page already resident under this policy is skipped.
         let mut pngs: HashMap<usize, Vec<u8>> = HashMap::new();
         for t in targets {
-            if self.resident.get(&t.section) == Some(&policy) {
-                continue; // resident under this policy — no PNG needed
+            if self.resident.get(&t.section) == Some(&(policy, t.raster_w)) {
+                continue; // these exact bytes are resident — no PNG needed
             }
             if let std::collections::hash_map::Entry::Vacant(slot) = pngs.entry(t.section) {
                 match png_for(t.section) {
@@ -204,16 +213,22 @@ impl PageDeck {
             }
         }
 
-        let now: std::collections::HashSet<usize> = targets.iter().map(|t| t.section).collect();
+        // What each target needs resident, so a page whose bytes changed is freed
+        // rather than re-placed with a crop that indexes a raster it no longer holds.
+        let now: HashMap<usize, (media::RenderPolicy, u32)> = targets
+            .iter()
+            .map(|t| (t.section, (policy, t.raster_w)))
+            .collect();
         let had: std::collections::HashSet<usize> = self.shown.iter().map(|t| t.section).collect();
         let mut out = Vec::new();
 
-        // Free pages leaving the view, or resident under a now-stale policy (frees
-        // their data + placements); the rest keep their resident data.
+        // Free pages leaving the view, or holding stale bytes — a superseded theme,
+        // or the base raster where the crisp one is now placed (frees their data +
+        // placements); the rest keep their resident data.
         let drop: Vec<usize> = self
             .resident
             .iter()
-            .filter(|(s, p)| !now.contains(s) || **p != policy)
+            .filter(|(s, have)| now.get(s) != Some(have))
             .map(|(s, _)| *s)
             .collect();
         for sec in drop {
@@ -233,7 +248,7 @@ impl PageDeck {
                     Self::id(sec),
                     pngs.get(&sec).expect("readiness checked above"),
                 ));
-                slot.insert(policy);
+                slot.insert((policy, t.raster_w));
             }
             out.push(media::place_image_seq(
                 Self::id(sec),
@@ -301,12 +316,16 @@ mod tests {
         Rect::new(x, 0, 40, 50)
     }
 
-    /// A whole-page (un-cropped) target at column `x`.
+    /// The base raster width the un-zoomed targets in these tests stand for.
+    const BASE_W: u32 = 1600;
+
+    /// A whole-page (un-cropped) target at column `x`, at the base raster width.
     fn tgt(section: usize, x: u16) -> PageTarget {
         PageTarget {
             section,
             rect: rect(x),
             crop: None,
+            raster_w: BASE_W,
         }
     }
 
@@ -424,6 +443,63 @@ mod tests {
         assert!(esc.contains("a=p"), "re-placed at the new crop");
     }
 
+    /// Zooming in swaps the base raster for a wider crisp one, and the new crop is
+    /// in *that* raster's coordinates. Section, policy and rect can all be
+    /// unchanged, so residency keyed on section+policy alone would keep the base
+    /// image up and apply crisp-sized crop coordinates to it — the terminal then
+    /// shows the wrong region, stretched to fill the cell box (reported as
+    /// "the text gets squashed after zooming in 3 times").
+    #[test]
+    fn a_crisper_raster_is_retransmitted_not_cropped_against_the_old_one() {
+        let mut deck = PageDeck::default();
+        let base = PageTarget {
+            section: 10,
+            rect: rect(0),
+            crop: Some((0, 0, 1600, 2070)),
+            raster_w: BASE_W,
+        };
+        deck.render(&[base], auto(), |_| Some(vec![1; 4]));
+
+        // Same page, same theme, same cell box — only the raster behind it changed.
+        let crisp = PageTarget {
+            crop: Some((410, 530, 1600, 2070)),
+            raster_w: BASE_W * 2,
+            ..base
+        };
+        let esc = deck.render(&[crisp], auto(), |_| Some(vec![2; 4])).join("");
+
+        assert!(esc.contains("a=d"), "the stale base raster is freed");
+        assert!(esc.contains("a=t"), "the crisp raster is transmitted");
+        assert!(esc.contains("a=p"), "and placed");
+        assert_eq!(
+            deck.resident.get(&10),
+            Some(&(auto(), BASE_W * 2)),
+            "the deck knows which raster it now holds"
+        );
+    }
+
+    /// The other half of the same rule: a pan at an unchanged raster width must
+    /// still reuse the resident data (this is what makes panning cheap).
+    #[test]
+    fn panning_within_one_raster_still_reuses_resident_data() {
+        let mut deck = PageDeck::default();
+        let t = PageTarget {
+            section: 10,
+            rect: rect(0),
+            crop: Some((0, 0, 800, 1000)),
+            raster_w: BASE_W * 2,
+        };
+        deck.render(&[t], auto(), |_| Some(vec![1; 4]));
+        let panned = PageTarget {
+            crop: Some((200, 300, 800, 1000)),
+            ..t
+        };
+        // `png_for` returns None to prove the resident data is reused.
+        let esc = deck.render(&[panned], auto(), |_| None).join("");
+        assert!(!esc.contains("a=t"), "no re-transmit for a pan");
+        assert!(esc.contains("a=p"), "just a re-place at the new crop");
+    }
+
     /// A cropped target (zoom/pan) places a source sub-rectangle: the placement
     /// carries the Kitty `x=/y=/w=/h=` params, and a crop change re-renders.
     #[test]
@@ -433,6 +509,7 @@ mod tests {
             section: 10,
             rect: rect(0),
             crop: Some((100, 200, 300, 400)),
+            raster_w: BASE_W,
         };
         let esc = deck
             .render(&[t], auto(), |s| Some(vec![s as u8; 4]))

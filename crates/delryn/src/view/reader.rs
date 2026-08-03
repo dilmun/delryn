@@ -606,17 +606,19 @@ fn capture_pdf_targets(
             // (its width is recorded on the reader so `page_png` serves matching
             // bytes to the deck). Spreads always keep the base — they sit at
             // fit-page and are already crisp.
-            let p = if single {
+            let (p, raster_w) = if single {
                 let want = raster_width_for_crispness(&base_p, base_dims, vp);
-                let (_w, dims) = reader.resolve_page_width(section, base_dims, want);
+                let (w, dims) = reader.resolve_page_width(section, base_dims, want);
                 if dims == base_dims {
-                    base_p
+                    (base_p, w)
                 } else {
                     let content = reader.page_content_box(section, dims);
-                    place_page(dims, content, vp, &view)
+                    (place_page(dims, content, vp, &view), w)
                 }
             } else {
-                base_p
+                // A spread never takes the crisp path, so it places the base raster —
+                // which is what `page_png` serves when nothing chose a width.
+                (base_p, reader.effective_width(section))
             };
             let align = if single {
                 PageAlign::Center
@@ -630,6 +632,7 @@ fn capture_pdf_targets(
                 section,
                 rect: Rect::new(x, y, p.cols, p.rows),
                 crop: p.crop,
+                raster_w,
             });
             if single {
                 room = p.room;

@@ -56,7 +56,7 @@ impl Reader {
     /// The raster width the view chose to display `section` at this frame — a crisp
     /// width once its raster + theming are ready, else the base width (also the
     /// default when the section wasn't placed this frame).
-    pub(super) fn effective_width(&self, section: usize) -> u32 {
+    pub fn effective_width(&self, section: usize) -> u32 {
         self.crisp
             .effective
             .get(&section)
