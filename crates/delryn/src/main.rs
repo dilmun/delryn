@@ -38,6 +38,7 @@ OPTIONS:
         --index                  build the full-text search index
         --export-annotations     dump all notes & bookmarks as Markdown to stdout
         --clear-cache            delete the cached page/figure/equation images
+        --terminal               report what this terminal says about its graphics
     -h, --help                   show this help and exit
     -V, --version                show the version and exit
 
@@ -68,7 +69,13 @@ fn main() -> Result<()> {
         && flag != "-"
         && !matches!(
             flag,
-            "--add" | "-a" | "--rescan" | "--index" | "--export-annotations" | "--clear-cache"
+            "--add"
+                | "-a"
+                | "--rescan"
+                | "--index"
+                | "--export-annotations"
+                | "--clear-cache"
+                | "--terminal"
         )
     {
         eprintln!("delryn: unknown option '{flag}'\nTry 'delryn --help' for usage.");
@@ -84,6 +91,16 @@ fn main() -> Result<()> {
     // rebuild on demand, so this only ever costs re-rendering.
     if matches!(first, Some("--clear-cache")) {
         return clear_caches();
+    }
+
+    // `delryn --terminal`: what this terminal says about itself and its graphics.
+    // Images in a terminal emulator fail in ways a screenshot can't explain — a
+    // protocol claimed but not implemented, a cell size reported in the wrong
+    // units — so this prints the answers rather than asking anyone to guess, and
+    // names the override to try. Runs the queries outside the alternate screen.
+    if matches!(first, Some("--terminal")) {
+        print!("{}", delryn::media::terminal_report());
+        return Ok(());
     }
 
     // `delryn --rescan`: re-read metadata for every known book (backfills new

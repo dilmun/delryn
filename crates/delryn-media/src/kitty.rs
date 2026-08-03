@@ -4,10 +4,27 @@ use std::fmt::Write as _;
 
 use ratatui_image::picker::Picker;
 
+use crate::termquery;
+
 /// Detect the terminal's image protocol + cell size by querying stdio. Returns
 /// `None` if there's no tty or detection fails (then images are unavailable).
 /// Call before entering the alternate screen / raw mode.
+///
+/// The handshake's answer is authoritative **except** on terminals that claim
+/// Kitty support without implementing the half `ratatui-image` renders with —
+/// unicode placeholders. There the image transmits, is never placed, and nothing
+/// appears at all: no picture, no fallback, and the rest of the UI looks perfect.
+/// iTerm2 ≥ 3.6 is exactly that: it answers the Kitty query `OK`, so detection
+/// picks Kitty and every cover vanishes. Its own protocol renders correctly, so
+/// the protocol is overridden after the query rather than before — blacklisting
+/// Kitty up front makes iTerm2 fall to Sixel (its device attributes advertise
+/// it), and blacklisting both fails the query outright, losing the queried cell
+/// size that sizes every image rect.
 pub fn detect_picker() -> Option<Picker> {
+    // Ask what the terminal *is* first, while stdin is still ours and before
+    // `from_query_stdio` starts its own conversation.
+    let name = identify_terminal();
+
     // Enable the OSC 11 background-colour query so the `terminal` theme can match
     // its real backdrop (read back via [`terminal_background`]). The query ends in
     // a Device Status Report every terminal answers, so it never hangs.
@@ -15,7 +32,162 @@ pub fn detect_picker() -> Option<Picker> {
         terminal_background_color_osc: true,
         ..Default::default()
     };
-    Picker::from_query_stdio_with_options(opts).ok()
+    let mut picker = Picker::from_query_stdio_with_options(opts).ok()?;
+
+    if wants_iterm2_protocol(name.as_deref()) {
+        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Iterm2);
+    }
+    // Last resort for a terminal whose self-report is wrong, or one not yet
+    // characterised. Applied over the detected picker so the queried cell size —
+    // which sizes every image rect — survives the override.
+    if let Some(forced) = forced_protocol() {
+        picker.set_protocol_type(forced);
+    }
+    // Same idea for the cell size, which sizes every image rect. Normally unset:
+    // the size the terminal reports is what the protocol places by, and delryn
+    // deliberately does not second-guess it — see `termquery::measured_cell_size`
+    // for the mismatch that tempts you to, and `terminal_report` for the numbers.
+    if let Some((cw, ch)) = forced_cell_size() {
+        let protocol = picker.protocol_type();
+        // `from_fontsize` is deprecated upstream, but `font_size` is private with
+        // no setter and the suggested replacements can't express an explicit cell
+        // size — so there is no supported way to honour the override.
+        #[expect(deprecated)]
+        let mut fixed = Picker::from_fontsize(ratatui_image::FontSize::new(cw, ch));
+        // Keep the protocol resolved above: `from_fontsize` re-guesses it from the
+        // environment, which is the thing we just went to some trouble to distrust.
+        fixed.set_protocol_type(protocol);
+        picker = fixed;
+    }
+    Some(picker)
+}
+
+/// `DELRYN_CELL_SIZE=WxH` (e.g. `22x46`) — the terminal's cell size in the pixel
+/// units its **image protocol** places by, for a terminal that misreports it.
+fn forced_cell_size() -> Option<(u16, u16)> {
+    parse_cell_size_override(&std::env::var("DELRYN_CELL_SIZE").ok()?)
+}
+
+/// Pure half of [`forced_cell_size`], so the format is unit-testable without the
+/// process-wide environment (which parallel tests cannot safely share).
+fn parse_cell_size_override(raw: &str) -> Option<(u16, u16)> {
+    let (w, h) = raw.split_once(['x', 'X'])?;
+    let (w, h) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+    // A zero cell divides by zero downstream — treat it as unset.
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+/// The terminal's self-reported name, asked over the wire **only when the
+/// environment can't be trusted** — that is, inside a multiplexer.
+///
+/// Outside one, `TERM_PROGRAM` (and friends) name the terminal correctly, and a
+/// round-trip costs every launch the query timeout on any terminal that doesn't
+/// implement XTVERSION — for an answer the environment already gave. Inside tmux
+/// the environment describes whichever terminal started the *server*, so the wire
+/// is the only honest source and the round-trip earns its keep.
+fn identify_terminal() -> Option<String> {
+    std::env::var_os("TMUX")?;
+    termquery::terminal_name(termquery::QUERY_TIMEOUT)
+}
+
+/// Does this terminal render the **iTerm2 inline-image protocol**? Covers iTerm2
+/// and WezTerm, which implements the same one.
+///
+/// Each is identified by a signal that survives a multiplexer, because tmux
+/// overwrites `TERM_PROGRAM` with its own name: `LC_TERMINAL` for iTerm2,
+/// `WEZTERM_EXECUTABLE` for WezTerm. What the terminal *reported* over the wire
+/// outranks all of them — it is the only signal that stays correct inside tmux,
+/// where the environment describes whichever terminal started the server rather
+/// than the one attached now.
+fn wants_iterm2_protocol(reported_name: Option<&str>) -> bool {
+    iterm2_protocol_from(
+        reported_name,
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var("LC_TERMINAL").ok().as_deref(),
+        std::env::var("WEZTERM_EXECUTABLE").ok().as_deref(),
+    )
+}
+
+/// Pure half of [`wants_iterm2_protocol`], so the precedence is unit-testable
+/// without touching the process-wide environment.
+fn iterm2_protocol_from(
+    reported_name: Option<&str>,
+    term_program: Option<&str>,
+    lc_terminal: Option<&str>,
+    wezterm_exe: Option<&str>,
+) -> bool {
+    // A terminal that identified itself is authoritative — including when it names
+    // something else, so tmux running under Ghostty is not misread as iTerm2 on
+    // the strength of a stale environment variable.
+    if let Some(name) = reported_name {
+        return name.contains("iTerm") || name.contains("WezTerm");
+    }
+    term_program.is_some_and(|p| p.contains("iTerm") || p.contains("WezTerm"))
+        || lc_terminal.is_some_and(|t| t.contains("iTerm"))
+        || wezterm_exe.is_some_and(|w| !w.is_empty())
+}
+
+/// `DELRYN_IMAGE_PROTOCOL=kitty|iterm2|sixel|halfblocks` — force the protocol
+/// when detection gets it wrong. The escape hatch for a terminal delryn hasn't
+/// been taught about yet.
+fn forced_protocol() -> Option<ratatui_image::picker::ProtocolType> {
+    protocol_from_name(&std::env::var("DELRYN_IMAGE_PROTOCOL").ok()?)
+}
+
+/// Pure half of [`forced_protocol`], so the accepted names are unit-testable.
+fn protocol_from_name(name: &str) -> Option<ratatui_image::picker::ProtocolType> {
+    use ratatui_image::picker::ProtocolType;
+    match name.trim().to_ascii_lowercase().as_str() {
+        "kitty" => Some(ProtocolType::Kitty),
+        "iterm2" | "iterm" => Some(ProtocolType::Iterm2),
+        "sixel" => Some(ProtocolType::Sixel),
+        "halfblocks" | "blocks" => Some(ProtocolType::Halfblocks),
+        _ => None,
+    }
+}
+
+/// What the terminal answered about itself and its geometry, for the `--version`
+/// style diagnostic and for reporting a bug against a terminal delryn renders
+/// wrongly. Runs the queries fresh, so call it outside the alternate screen.
+///
+/// The measured cell size is *reported*, never applied: `ratatui-image`'s queried
+/// size is what every protocol places by, and second-guessing it automatically
+/// causes worse bugs than the mismatch it corrects. When the two disagree, the
+/// numbers here are what to pass to `DELRYN_CELL_SIZE`.
+pub fn terminal_report() -> String {
+    // Unlike startup, this asks outright: the whole point is to show what the
+    // terminal says, including a terminal outside tmux that startup wouldn't ask.
+    let name = termquery::terminal_name(termquery::QUERY_TIMEOUT);
+    let measured = termquery::measured_cell_size(termquery::QUERY_TIMEOUT);
+    let picker = detect_picker();
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "terminal:  {}",
+        name.as_deref().unwrap_or("(no XTVERSION reply)")
+    );
+    let _ = writeln!(
+        out,
+        "protocol:  {:?}",
+        picker.as_ref().map(Picker::protocol_type)
+    );
+    let reported = picker.as_ref().map(|p| {
+        let fs = p.font_size();
+        (fs.width, fs.height)
+    });
+    let _ = writeln!(out, "cell (reported): {reported:?}");
+    let _ = writeln!(out, "cell (measured): {measured:?}");
+    if let (Some(r), Some(m)) = (reported, measured)
+        && r != m
+    {
+        let _ = writeln!(
+            out,
+            "note: the two disagree — if images render at the wrong size, try \
+             DELRYN_CELL_SIZE={}x{}",
+            m.0, m.1
+        );
+    }
+    out
 }
 
 /// The terminal's background colour, if it answered the OSC 11 query during
@@ -151,5 +323,82 @@ mod tests {
         let payload = base64::engine::general_purpose::STANDARD.encode("/tmp/delryn-kitty-7.png");
         assert!(seq.contains(&payload), "base64-encoded path payload");
         assert!(seq.len() < 120, "tiny escape, not a multi-MB blast");
+    }
+
+    use ratatui_image::picker::ProtocolType;
+
+    /// What the terminal says over the wire outranks every environment variable —
+    /// the whole reason for asking. Inside tmux the environment describes whichever
+    /// terminal started the server, so a Ghostty session that was once started from
+    /// iTerm2 must not be driven down the iTerm2 path.
+    #[test]
+    fn a_terminals_own_answer_outranks_the_environment() {
+        assert!(iterm2_protocol_from(
+            Some("iTerm2 3.6.11"),
+            None,
+            None,
+            None
+        ));
+        assert!(iterm2_protocol_from(
+            Some("WezTerm 20260623"),
+            None,
+            None,
+            None
+        ));
+        assert!(
+            !iterm2_protocol_from(
+                Some("ghostty 1.2.0"),
+                Some("iTerm.app"),
+                Some("iTerm2"),
+                None
+            ),
+            "a terminal that named itself is believed over a stale environment"
+        );
+    }
+
+    /// With no XTVERSION reply, fall back to the variables that survive tmux.
+    #[test]
+    fn without_a_reply_the_multiplexer_safe_variables_decide() {
+        assert!(iterm2_protocol_from(None, Some("iTerm.app"), None, None));
+        assert!(iterm2_protocol_from(None, None, Some("iTerm2"), None));
+        assert!(iterm2_protocol_from(
+            None,
+            None,
+            None,
+            Some("/usr/bin/wezterm")
+        ));
+        // tmux overwrites TERM_PROGRAM with its own name — which names no terminal
+        // we override for, so the queried protocol stands.
+        assert!(!iterm2_protocol_from(None, Some("tmux"), None, None));
+        assert!(!iterm2_protocol_from(None, None, None, None));
+        assert!(!iterm2_protocol_from(None, None, None, Some("")));
+    }
+
+    #[test]
+    fn the_protocol_override_accepts_the_documented_names() {
+        assert_eq!(protocol_from_name("kitty"), Some(ProtocolType::Kitty));
+        assert_eq!(protocol_from_name(" ITerm2 "), Some(ProtocolType::Iterm2));
+        assert_eq!(protocol_from_name("sixel"), Some(ProtocolType::Sixel));
+        assert_eq!(
+            protocol_from_name("halfblocks"),
+            Some(ProtocolType::Halfblocks)
+        );
+        assert_eq!(
+            protocol_from_name("nonsense"),
+            None,
+            "unknown ⇒ no override"
+        );
+        assert_eq!(protocol_from_name(""), None);
+    }
+
+    #[test]
+    fn the_cell_size_override_parses_and_rejects_nonsense() {
+        assert_eq!(parse_cell_size_override("22x46"), Some((22, 46)));
+        assert_eq!(parse_cell_size_override(" 11 X 24 "), Some((11, 24)));
+        // A zero would divide by zero downstream; junk means "unset", not "0x0".
+        assert_eq!(parse_cell_size_override("0x24"), None);
+        assert_eq!(parse_cell_size_override("22x0"), None);
+        assert_eq!(parse_cell_size_override("22"), None);
+        assert_eq!(parse_cell_size_override(""), None);
     }
 }

@@ -11,3 +11,6 @@ image.workspace = true
 ratatui.workspace = true
 ratatui-image.workspace = true
 fast_image_resize = "6"
+# `poll`/`read` on stdin for the terminal capability queries (see `termquery`).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

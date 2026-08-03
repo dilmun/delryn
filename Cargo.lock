@@ -776,6 +776,7 @@ dependencies = [
  "delryn-infra",
  "fast_image_resize",
  "image",
+ "libc",
  "ratatui",
  "ratatui-image",
 ]

@@ -107,9 +107,12 @@ fine — figures fall back to placeholders, graphical math to a Unicode approxim
 won't open.
 
 > [!IMPORTANT]
-> delryn is developed and tested on [Ghostty](https://ghostty.org). Other Kitty-protocol
-> terminals (Kitty, iTerm2, WezTerm) should work but aren't verified yet — broader terminal
-> support is planned.
+> delryn is developed and tested on [Ghostty](https://ghostty.org). **Covers and the image
+> viewer** now detect iTerm2 and WezTerm and switch to the protocol they actually render —
+> iTerm2 ≥ 3.6 answers the Kitty capability query affirmatively without implementing the part
+> that places the image, so it needs the override. **PDF pages and inline math** still use raw
+> Kitty escapes and are verified only on Ghostty. `delryn --terminal` reports what your
+> terminal claims; broader support is in progress.
 
 > [!NOTE]
 > **tmux / screen** intercept the graphics protocol, so images and PDF render blank inside
@@ -175,8 +178,14 @@ delryn --rescan              # re-read metadata for every book, prune missing fi
 delryn --index               # build the full-text search index
 delryn --export-annotations  # dump all notes & bookmarks as Markdown to stdout
 delryn --clear-cache         # delete cached page / figure / equation images
+delryn --terminal            # what this terminal says about its graphics support
 delryn --help                # usage  (also: -h)   ·   --version / -V
 ```
+
+If images, PDF pages, or math render wrongly — blank, doubled in size, in the wrong place —
+run `delryn --terminal` first: it prints what your terminal calls itself, which image protocol
+was chosen, and the two cell sizes it reports. Two overrides exist for when detection is wrong:
+`DELRYN_IMAGE_PROTOCOL=kitty|iterm2|sixel|halfblocks` and `DELRYN_CELL_SIZE=WxH`.
 
 Don't know where your books are? Press `;` ▸ **Sources** ▸ *Find my books* (or `:` ▸ *Find my
 books*) and delryn searches your home folder, then offers the folders that hold books — with a
