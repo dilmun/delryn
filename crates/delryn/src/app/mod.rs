@@ -43,6 +43,8 @@ mod tags;
 pub use tags::TagInput;
 
 mod discover;
+pub mod help;
+pub use help::{Help, HelpRow};
 mod dup_resolve;
 mod dup_scan;
 mod scan;
@@ -851,6 +853,7 @@ impl App {
                 | Overlay::BulkRename(_)
                 | Overlay::ShelfPicker(_)
                 | Overlay::FolderFinder(_)
+                | Overlay::Help(_)
                 | Overlay::ImageView(_)
                 | Overlay::WordLookup(_)
                 | Overlay::CodeView(_)

@@ -12,7 +12,7 @@
 //! resolver while a duplicate is previewed in the reader.
 
 use crate::app::{
-    AnnotState, BulkRename, CodeView, CollInput, DupResolve, FolderFinder, IgnoredView,
+    AnnotState, BulkRename, CodeView, CollInput, DupResolve, FolderFinder, Help, IgnoredView,
     ImageViewer, MetaEdit, Palette, Prompt, Settings, ShelfPicker, TagInput, WordLookup,
 };
 use crate::library::stats::LibraryStats;
@@ -50,6 +50,8 @@ pub enum Overlay {
     /// Folders the home-directory search proposed as library sources, awaiting
     /// confirmation — see `app::discover`.
     FolderFinder(FolderFinder),
+    /// The `?` key reference for the current surface — see `app::help`.
+    Help(Help),
     /// Inline-image viewer (was `app.image_view`).
     ImageView(ImageViewer),
     /// Bookmarks overlay (was `app.annot`).
@@ -79,6 +81,7 @@ impl Overlay {
                 | Overlay::IgnoredView(_)
                 | Overlay::ShelfPicker(_)
                 | Overlay::FolderFinder(_)
+                | Overlay::Help(_)
                 | Overlay::Annot(_)
                 | Overlay::Stats(_)
                 | Overlay::Palette(_)

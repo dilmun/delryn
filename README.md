@@ -250,7 +250,10 @@ the essentials:
 | `e` · `T` · `c` | edit metadata · tags · add to collection |
 | `v` · `+` `-` | cycle layout (list / compact / grid) · grid card size |
 | `Space` `V` `A` | mark · visual-range · mark all |
+| `r` | rename the file |
+| `D` · `R` · `I` | resolve duplicates · deep content scan · ignored groups |
 | `:` · `i` · `;` | command palette (incl. "Find my books") · statistics · settings |
+| `?` | key reference — every binding for the current screen |
 | `Delete` | move to trash (with confirm) |
 </details>
 

@@ -215,9 +215,9 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
     } else if dups {
         "hjkl move · ⏎ open · D resolve · R deep scan · I ignored · e edit · s sort · q"
     } else if app.is_grid() {
-        "hjkl move · ⏎ open · e edit · T tag · D dedup · c shelf · s sort · +/- size · q"
+        "hjkl move · ⏎ open · e edit · D dedup · c shelf · s sort · +/- size · ? keys"
     } else {
-        "hjkl move · ⏎ open · e edit · r rename · T tag · D dedup · c shelf · s sort · q"
+        "hjkl move · ⏎ open · e edit · r rename · T tag · D dedup · s sort · ? keys"
     };
     bar.text(SegmentId::Keys, Zone::Right, 2, keys, dim);
     bar
@@ -260,6 +260,12 @@ fn legend(app: &App) -> Option<(String, String)> {
             "↑↓ move · ⏎ toggle / new · Esc close"
         };
         return Some(("Collections".into(), keys.into()));
+    }
+    if matches!(app.overlay, Overlay::Help(_)) {
+        return Some((
+            "Keys".into(),
+            "j/k scroll · Space page · ? or Esc close".into(),
+        ));
     }
     if let Overlay::FolderFinder(p) = &app.overlay {
         // Matches the popup's own action row: with nothing ticked there is

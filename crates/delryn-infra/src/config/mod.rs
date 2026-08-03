@@ -376,7 +376,11 @@ impl Default for Config {
             hyphenate: true,
             tidy_spacing: true,
             paged: false,
-            continuous: false,
+            // Chapters flow into one another by default: a book read in a terminal
+            // is scrolled far more often than it is paged through, and a hard stop
+            // at every chapter edge is the surprising behaviour, not the useful one.
+            // `ReadingMode::Default`'s profile mirrors this field for field.
+            continuous: true,
             chapter_lock: false,
             show_sidebar: true,
             show_status: true,
@@ -758,7 +762,7 @@ library_grid_size = "??"
         let c: Config = toml::from_str(sample).expect("unknown labels still parse");
         assert_eq!(c.view_mode, ViewMode::Center);
         assert_eq!(c.theme.name, theme::default_theme().name);
-        assert_eq!(c.image_mode, ImageMode::Auto);
+        assert_eq!(c.image_mode, ImageMode::default());
         assert_eq!(c.library_layout, LibLayout::List);
         assert_eq!(c.library_grid_size, GridSize::Medium);
     }

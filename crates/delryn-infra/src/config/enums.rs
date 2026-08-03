@@ -192,7 +192,7 @@ impl ReadingMode {
                 line_spacing: 0,
                 paragraph_spacing: 1,
                 justify: false,
-                continuous: false,
+                continuous: true,
                 chapter_lock: false,
             },
             // Deep, careful reading of one chapter: a book's measure, open line
@@ -291,13 +291,14 @@ cyclic_clamp!(GridSize, [Small => "small", Medium => "medium", Large => "large",
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ImageMode {
     /// Smart, per-content: recolour line-art/equations to the theme, keep
-    /// pictures faithful (transparency flattened onto the page). The best general
-    /// default.
-    #[default]
+    /// pictures faithful (transparency flattened onto the page).
     Auto,
     /// Auto, plus lightness-invert opaque light-background figures (charts,
     /// diagrams, screenshots) so they're dark-friendly with detail intact. True
-    /// photos that happen to be light-backed invert too — the trade for comfort.
+    /// photos that happen to be light-backed invert too — the trade for comfort,
+    /// and the reason this is the default: a white-backed chart dropped into a
+    /// dark page is the thing readers actually notice.
+    #[default]
     InvertBackgrounds,
     /// Never recolour or invert; only flatten transparency onto the page so
     /// nothing is invisible. Original colours preserved (equations keep their ink
@@ -308,9 +309,11 @@ pub enum ImageMode {
 impl ImageMode {
     pub fn from_label(s: &str) -> ImageMode {
         match s {
-            "invert" => ImageMode::InvertBackgrounds,
+            "auto" => ImageMode::Auto,
             "faithful" => ImageMode::Faithful,
-            _ => ImageMode::Auto,
+            // Including "invert" — an unreadable value falls back to the default
+            // rather than to a particular mode, so there is one thing to change.
+            _ => ImageMode::default(),
         }
     }
 }
@@ -431,7 +434,7 @@ mod tests {
         ] {
             assert_eq!(ImageMode::from_label(m.label()), m);
         }
-        assert_eq!(ImageMode::from_label("nonsense"), ImageMode::Auto);
+        assert_eq!(ImageMode::from_label("nonsense"), ImageMode::default());
     }
 
     #[test]

@@ -95,6 +95,10 @@ impl App {
             self.finder_key(key);
             return;
         }
+        if matches!(self.overlay, Overlay::Help(_)) {
+            self.help_key(key);
+            return;
+        }
         if matches!(self.overlay, Overlay::ImageView(_)) {
             self.image_key(key);
             return;
@@ -163,6 +167,13 @@ impl App {
         // `O` opens the code block in view in the fullscreen code viewer.
         if self.mode == Mode::Reader && key.code == KeyCode::Char('O') {
             self.open_code_view();
+            return;
+        }
+        // `?` opens the key reference from either surface. It sits below the
+        // text-input guards above, so typing `?` into a search or filter still
+        // types it.
+        if key.code == KeyCode::Char('?') {
+            self.open_help();
             return;
         }
         if key.code == KeyCode::Char(';') {

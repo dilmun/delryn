@@ -412,6 +412,11 @@ impl App {
             v.move_sel(d);
             return true;
         }
+        // Help scrolls a static list rather than moving a cursor.
+        if matches!(self.overlay, Overlay::Help(_)) {
+            self.help_scroll(d);
+            return true;
+        }
         // Plain cursor-index lists: clamp within the current visible length.
         let (cur, len): (usize, usize) = match &self.overlay {
             Overlay::Annot(a) => (a.sel, a.filtered().len()),
