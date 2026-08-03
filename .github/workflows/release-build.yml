@@ -79,6 +79,13 @@ jobs:
           # the loose library behind — still opens PDFs instead of silently losing
           # the feature. Only used when no library is found on disk.
           export DELRYN_PDFIUM_LIB="$PWD/lib/${{ matrix.libname }}"
+          # Keep the build machine out of the shipped binary. Panic messages and
+          # debug info embed the full source path of every frame, so an unsanitized
+          # build carries the builder's home directory — measured at 1341
+          # occurrences of the developer's username in a local release build.
+          # Remapped rather than stripped, so backtraces keep crate, file and line.
+          # (`[profile] trim-paths` would be tidier but is still unstable in cargo.)
+          export RUSTFLAGS="--remap-path-prefix=$HOME/.cargo/registry/src=/cargo --remap-path-prefix=$HOME/.rustup/toolchains=/rustup --remap-path-prefix=$PWD=/delryn"
           cargo build --release --locked --target ${{ matrix.target }} -p delryn
 
       - name: Stage binary + bundled libpdfium
