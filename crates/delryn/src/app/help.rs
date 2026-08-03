@@ -83,7 +83,7 @@ const READER: &[HelpRow] = &[
     Key("p", "page mode — turn whole pages ⇄ scroll by rows"),
     Key("c", "chapter lock — stop at the chapter edge"),
     Key("t  M", "cycle theme · reading preset"),
-    Key("[ ]  { }", "margin narrower / wider · line spacing"),
+    Key("[ ]  { }", "text column narrower / wider · line spacing"),
     Key(
         "f  z",
         "focus (distraction-free) mode · toggle the status bar",

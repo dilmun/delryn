@@ -221,7 +221,7 @@ the essentials:
 | `p` | page mode — turn whole pages ⇄ scroll by rows (continuous flow is a setting) |
 | `c` | chapter lock — stop at the chapter edge instead of flowing on |
 | `t` · `M` | cycle theme · reading preset (Default / Study / Research / Presentation) |
-| `[` `]` · `{` `}` | margin narrower / wider · line spacing |
+| `[` `]` · `{` `}` | reading column narrower / wider · line spacing |
 | `f` · `z` | focus (distraction-free) mode · toggle status bar |
 | `+` `-` `0` · `W` · `x` | (PDF) zoom / reset · fit mode · margin trim |
 </details>

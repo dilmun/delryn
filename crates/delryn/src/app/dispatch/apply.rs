@@ -121,13 +121,11 @@ impl App {
                 save = true;
             }
             Action::ToggleFocus => self.config.focus_mode = !self.config.focus_mode,
-            // `]` widens the text (less margin), `[` narrows it (more margin).
-            Action::WidthUp => {
-                self.config.side_padding = self.config.side_padding.saturating_sub(1);
-            }
-            Action::WidthDown => {
-                self.config.side_padding =
-                    (self.config.side_padding + 1).min(crate::config::MAX_SIDE_PADDING);
+            // `]` widens the reading column, `[` narrows it.
+            Action::WidthUp | Action::WidthDown => {
+                let wider = matches!(action, Action::WidthUp);
+                let measure = reader.last_measure as u16;
+                reader.flash = Some(step_measure(&mut self.config, measure, wider));
             }
             Action::LineSpacingDown => {
                 self.config.line_spacing = self.config.line_spacing.saturating_sub(1);
@@ -455,6 +453,48 @@ impl App {
 /// pages without re-transmitting (transmit-once), so a bigger step stays smooth.
 const PAGED_STEP: usize = 6;
 
+/// Widen or narrow the reading column by one step, and describe what changed.
+///
+/// Two settings decide the column and only ever one of them is in charge: it is
+/// `min(pane − margins, max_measure)`. On a wide window the cap wins by a mile —
+/// a 190-column pane at 10 % leaves 152 columns, capped to 72 — so stepping the
+/// *margin* moved nothing at all and the key read as dead. It looked like it
+/// worked in a two-page spread only because each half is near the cap already,
+/// where the margin is what binds.
+///
+/// So step whichever constraint is actually producing the current width, and
+/// fall through to the other when that one is at its limit. The key then always
+/// does what it says, in either view.
+fn step_measure(config: &mut Config, measure: u16, wider: bool) -> String {
+    /// Columns per press when the cap is in charge. One column is imperceptible
+    /// on a 72-column measure; two reads as a step.
+    const STEP: u16 = 2;
+    use crate::config::{MAX_MEASURE_CAP, MAX_SIDE_PADDING, MIN_MEASURE_CAP};
+
+    let cap = config.max_measure;
+    // The cap is in charge only once the column has actually reached it.
+    let capped = cap > 0 && measure >= cap;
+    let cap_has_room = if wider {
+        cap < MAX_MEASURE_CAP
+    } else {
+        cap > MIN_MEASURE_CAP
+    };
+    if capped && cap_has_room {
+        config.max_measure = if wider {
+            (cap + STEP).min(MAX_MEASURE_CAP)
+        } else {
+            cap.saturating_sub(STEP).max(MIN_MEASURE_CAP)
+        };
+        return format!("text width {}", config.max_measure);
+    }
+    config.side_padding = if wider {
+        config.side_padding.saturating_sub(1)
+    } else {
+        (config.side_padding + 1).min(MAX_SIDE_PADDING)
+    };
+    format!("margin {}%", config.side_padding)
+}
+
 fn apply_nav(reader: &mut Reader, action: Action, paged: bool, flip_ready: bool) {
     // Continuous-paged (PDF page stacking): vertical motion scrolls the vertical
     // page stack in row units rather than flipping whole pages. Unlike a flip it
@@ -674,6 +714,65 @@ mod tests {
         assert!(
             layout_key(&recoloured) == layout_key(&base),
             "a theme change re-colours but never re-wraps"
+        );
+    }
+
+    /// The reported bug: `[`/`]` did nothing in single-column view.
+    ///
+    /// A wide window puts the column against the `max_measure` cap, and the old
+    /// handler only ever stepped the side margin — which changes nothing while
+    /// the cap is what binds. It appeared to work in a two-page spread because
+    /// each half sits near the cap, where the margin is in charge again.
+    #[test]
+    fn width_keys_step_whichever_constraint_is_in_charge() {
+        let mut c = Config::default();
+        let (cap0, pad0) = (c.max_measure, c.side_padding);
+        assert!(cap0 > 0, "the default caps the measure");
+
+        // Wide window: the column has reached the cap, so the cap is in charge.
+        let at_cap = cap0;
+        step_measure(&mut c, at_cap, false);
+        assert_eq!(c.side_padding, pad0, "the margin is not what binds here");
+        assert!(
+            c.max_measure < cap0,
+            "narrowing moved the cap: {}",
+            c.max_measure
+        );
+        let now = c.max_measure;
+        step_measure(&mut c, now, true);
+        assert_eq!(c.max_measure, cap0, "and widening moved it back");
+
+        // Narrow window: the column never reaches the cap, so the margin binds.
+        let below_cap = cap0 - 10;
+        step_measure(&mut c, below_cap, false);
+        assert_eq!(c.max_measure, cap0, "the cap is not what binds here");
+        assert_eq!(c.side_padding, pad0 + 1, "narrowing widened the margin");
+        step_measure(&mut c, below_cap, true);
+        assert_eq!(c.side_padding, pad0, "and widening gave it back");
+    }
+
+    /// Every press must move something: at the cap's own limit the step falls
+    /// through to the margin rather than silently doing nothing.
+    #[test]
+    fn a_press_at_a_limit_falls_through_to_the_other_setting() {
+        use crate::config::{MAX_MEASURE_CAP, MIN_MEASURE_CAP};
+        let mut c = Config {
+            max_measure: MIN_MEASURE_CAP,
+            ..Default::default()
+        };
+        let pad = c.side_padding;
+        step_measure(&mut c, MIN_MEASURE_CAP, false); // narrower, cap can't shrink
+        assert_eq!(c.max_measure, MIN_MEASURE_CAP, "cap held at its floor");
+        assert_eq!(c.side_padding, pad + 1, "the margin took the step");
+
+        c.max_measure = MAX_MEASURE_CAP;
+        let pad = c.side_padding;
+        step_measure(&mut c, MAX_MEASURE_CAP, true); // wider, cap can't grow
+        assert_eq!(c.max_measure, MAX_MEASURE_CAP, "cap held at its ceiling");
+        assert_eq!(
+            c.side_padding,
+            pad.saturating_sub(1),
+            "the margin took the step"
         );
     }
 }
