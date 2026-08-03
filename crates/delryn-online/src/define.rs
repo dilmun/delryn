@@ -403,28 +403,41 @@ mod tests {
     #[test]
     fn parses_sdcv_output() {
         let json = r#"[
-            {"dict":"WordNet","word":"delryn","definition":"a book of the largest size\nmade by folding a sheet once"},
-            {"dict":"Empty","word":"delryn","definition":"   \n  "}
+            {"dict":"WordNet","word":"colophon","definition":"a publisher's emblem printed in a book\nthe final page giving printing details"},
+            {"dict":"Empty","word":"colophon","definition":"   \n  "}
         ]"#;
-        let def = parse_sdcv(json.as_bytes(), "delryn").expect("a definition");
+        let def = parse_sdcv(json.as_bytes(), "colophon").expect("a definition");
         assert_eq!(def.source, "sdcv");
         // The all-whitespace dictionary is dropped; WordNet keeps two lines.
         assert_eq!(def.meanings.len(), 1);
         assert_eq!(def.meanings[0].label, "WordNet");
         assert_eq!(def.meanings[0].items.len(), 2);
-        assert_eq!(def.meanings[0].items[0].text, "a book of the largest size");
+        assert_eq!(
+            def.meanings[0].items[0].text,
+            "a publisher's emblem printed in a book"
+        );
     }
 
     #[test]
     fn parses_wikipedia_summary_and_skips_disambiguation() {
-        let ok = r#"{"type":"standard","title":"Folio","description":"leaf of a book","extract":"A folio is a leaf of paper."}"#;
+        let ok = r#"{"type":"standard","title":"Colophon","description":"publisher's emblem in a book","extract":"A colophon is a brief statement at the end of a book."}"#;
         let s: WikiResp = serde_json::from_str(ok).unwrap();
         let w = parse_wiki(s).expect("a summary");
-        assert_eq!(w.title, "Folio");
-        assert_eq!(w.description.as_deref(), Some("leaf of a book"));
-        assert_eq!(w.extract, "A folio is a leaf of paper.");
+        assert_eq!(w.title, "Colophon");
+        assert_eq!(
+            w.description.as_deref(),
+            Some("publisher's emblem in a book")
+        );
+        assert_eq!(
+            w.extract,
+            "A colophon is a brief statement at the end of a book."
+        );
 
-        let disamb = r#"{"type":"disambiguation","title":"Folio","extract":"Folio may refer to:"}"#;
+        // A term with several unrelated senses (the book term and the ancient
+        // Greek city) is what the endpoint answers with `disambiguation` — noise,
+        // never a summary.
+        let disamb =
+            r#"{"type":"disambiguation","title":"Colophon","extract":"Colophon may refer to:"}"#;
         let s: WikiResp = serde_json::from_str(disamb).unwrap();
         assert!(parse_wiki(s).is_none());
     }
