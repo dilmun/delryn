@@ -172,6 +172,7 @@ delryn --add <dir>…          # register + index folder(s), no UI  (also: -a)
 delryn --rescan              # re-read metadata for every book, prune missing files
 delryn --index               # build the full-text search index
 delryn --export-annotations  # dump all notes & bookmarks as Markdown to stdout
+delryn --clear-cache         # delete cached page / figure / equation images
 delryn --help                # usage  (also: -h)   ·   --version / -V
 ```
 
