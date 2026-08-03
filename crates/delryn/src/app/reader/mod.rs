@@ -108,6 +108,11 @@ pub struct Reader {
     /// Show the code line-number gutter / language tag (set each render from config).
     pub code_line_numbers: bool,
     pub code_label: bool,
+    /// The language this book's unmarked code blocks default to, read once from
+    /// its title (`highlight::language_from_title`). A per-section tally of the
+    /// blocks that *do* identify themselves wins over it; this is what's left for
+    /// a book whose listings are all unmarked. `None` → such blocks stay plain.
+    pub code_lang_hint: Option<&'static str>,
     /// Fold long code blocks to a preview (set each render from config).
     pub code_fold: bool,
     pub code_fold_threshold: usize,
@@ -358,6 +363,7 @@ impl Reader {
             code_hscroll: 0,
             code_line_numbers: true,
             code_label: true,
+            code_lang_hint: None, // set from the metadata just below
             code_fold: true,
             code_fold_threshold: 20,
             code_fold_flip: Vec::new(),
@@ -424,6 +430,11 @@ impl Reader {
             inline_targets: std::cell::RefCell::new(Vec::new()),
             inline_needs_clear: std::cell::Cell::new(false),
         };
+        // What language this book's unmarked listings default to. Read once from
+        // the title — a "C++ Memory Management" is a C++ book — and only consulted
+        // where a block and its section have nothing to say for themselves.
+        reader.code_lang_hint =
+            delryn_render::highlight::language_from_title(&reader.doc.metadata().title);
         reader.prefetch_neighbors();
         Ok(reader)
     }
@@ -909,6 +920,7 @@ impl Reader {
                 code_hscroll: self.code_hscroll,
                 code_line_numbers: self.code_line_numbers,
                 code_label: self.code_label,
+                code_lang_hint: self.code_lang_hint,
                 code_fold: self.code_fold,
                 code_fold_threshold: self.code_fold_threshold,
                 code_fold_flip: flip,

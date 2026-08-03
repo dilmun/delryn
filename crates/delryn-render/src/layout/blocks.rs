@@ -385,6 +385,7 @@ fn wrap_nested(
         code_hscroll: 0,
         code_line_numbers: opts.code_line_numbers,
         code_label: opts.code_label,
+        code_lang_hint: opts.code_lang_hint,
         // Nested code (callouts/footnotes) keeps its own index space, which the
         // reader's per-block `F`/viewer `O` don't address — so never fold it.
         code_fold: false,

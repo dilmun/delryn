@@ -58,7 +58,8 @@ graphics: syntax-highlighted code, tables, inline figures, and typeset math.
 
 **Formats &amp; rendering**
 - EPUB (reflowable), PDF (page-image), and MOBI / AZW3
-- Syntax-highlighted code (syntect), real tables, and footnotes &amp; cross-references
+- Syntax-highlighted code (syntect) — a listing that doesn't say what language it is
+  follows the rest of its section, then the book's own language, rather than going grey
 - Inline figures &amp; diagrams, and **typeset math** — LaTeX *and* MathML, laid out by a
   built-in engine and never left blank (typeset → publisher figure → Unicode)
 - DPI-independent equation &amp; image sizing, with theme-aware image recolour

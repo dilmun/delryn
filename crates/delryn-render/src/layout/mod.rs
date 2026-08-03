@@ -152,6 +152,11 @@ pub struct WrapOpts<'a> {
     pub code_line_numbers: bool,
     /// Show a language tag at the top of each code block (skipped for plain text).
     pub code_label: bool,
+    /// Language for code blocks that can't identify themselves — the book's own,
+    /// from its title (`highlight::language_from_title`). Overridden per section
+    /// by whatever the section's *marked* blocks turn out to be. `None` leaves an
+    /// unidentifiable block as plain text, as before.
+    pub code_lang_hint: Option<&'a str>,
     /// Collapse code blocks longer than `code_fold_threshold` lines to a preview.
     pub code_fold: bool,
     /// Line count above which a code block folds (when `code_fold` is on).
@@ -198,6 +203,7 @@ impl Default for WrapOpts<'_> {
             code_hscroll: 0,
             code_line_numbers: true,
             code_label: false,
+            code_lang_hint: None,
             code_fold: false,
             code_fold_threshold: 20,
             code_fold_flip: &[],
@@ -246,6 +252,34 @@ fn extra_row_above(level: Option<u8>, prev_heading: Option<u8>) -> bool {
     matches!(level, Some(l) if l <= 2) && prev_heading.is_none()
 }
 
+/// The language most of `blocks`' self-identifying code blocks are written in.
+/// Ties keep the first seen, so the result doesn't depend on iteration order.
+fn dominant_code_language(blocks: &[Block]) -> Option<&'static str> {
+    let mut tally: Vec<(&'static str, usize)> = Vec::new();
+    for block in blocks {
+        let Block::Code { lang, lines } = block else {
+            continue;
+        };
+        let Some(name) = crate::highlight::detect_language(lines, lang.as_deref()) else {
+            continue;
+        };
+        match tally.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, count)) => *count += 1,
+            None => tally.push((name, 1)),
+        }
+    }
+    tally
+        .into_iter()
+        .fold(
+            None,
+            |best: Option<(&'static str, usize)>, (name, count)| match best {
+                Some((_, bc)) if count <= bc => best,
+                _ => Some((name, count)),
+            },
+        )
+        .map(|(name, _)| name)
+}
+
 /// Wrap a section's blocks to styled display lines per `opts`. `image_rows` gives
 /// the reserved row count for each image block (0 → text placeholder).
 ///
@@ -256,6 +290,12 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
     let line_spacing = opts.line_spacing;
     let para_spacing = opts.para_spacing;
     let mut out = Vec::new();
+    // What this section's *identifiable* code blocks are written in. A book's
+    // listings are one language far more often than several, so a block too short
+    // or too plain to recognise on its own follows its neighbours rather than
+    // going grey next to them. Beats the book-level hint: a Python book's one
+    // shell transcript is still shell, and that block says so.
+    let section_lang = dominant_code_language(blocks);
     let mut prev_item = false;
     // The level of the heading just emitted, if the previous block was one — a
     // heading binds to the text it introduces (see the spacing rule below).
@@ -344,7 +384,15 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                 skip_next = number.is_some();
             }
             Block::Code { lang, lines } => {
-                emit_code(lang.as_deref(), lines, code_idx, width, opts, &mut out);
+                emit_code(
+                    lang.as_deref(),
+                    lines,
+                    code_idx,
+                    width,
+                    section_lang.or(opts.code_lang_hint),
+                    opts,
+                    &mut out,
+                );
                 code_idx += 1;
             }
             Block::Math { item } => {

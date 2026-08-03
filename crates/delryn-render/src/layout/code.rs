@@ -16,10 +16,11 @@ pub(super) fn emit_code(
     lines: &[String],
     code_idx: usize,
     width: usize,
+    fallback: Option<&str>,
     opts: &WrapOpts,
     out: &mut Vec<DisplayLine>,
 ) {
-    let (highlighted, lang_name) = highlight_code(lines, lang, opts.code_theme);
+    let (highlighted, lang_name) = highlight_code(lines, lang, fallback, opts.code_theme);
     if opts.code_label
         && let Some(name) = &lang_name
     {
@@ -404,6 +405,43 @@ mod tests {
         assert!(
             code.iter().all(|t| !t.contains('│')),
             "no gutter bar when off: {code:?}"
+        );
+    }
+
+    /// A section where some listings identify themselves and others can't: the
+    /// unmarked ones follow their neighbours instead of going grey beside them.
+    /// This beats the book-level hint, so a Python book's one shell transcript
+    /// still reads as shell.
+    #[test]
+    fn an_unmarked_block_follows_the_rest_of_its_section() {
+        use delryn_model::Block;
+
+        let code = |lang: Option<&str>, lines: &[&str]| Block::Code {
+            lang: lang.map(str::to_string),
+            lines: lines.iter().map(|s| s.to_string()).collect(),
+        };
+        let blocks = vec![
+            code(Some("cpp"), &["int main() { return 0; }"]),
+            // No language, and none of the content guess's markers.
+            code(None, &["void close_file(FILE *file);"]),
+        ];
+        let opts = super::super::WrapOpts {
+            code_label: true,
+            ..Default::default()
+        };
+        let lines = super::super::wrap_blocks(&blocks, &opts, &[]);
+        let text: String = lines
+            .iter()
+            .map(|l| l.text())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // The label row is only emitted for a resolved language, so two labels
+        // means the unmarked block resolved too.
+        assert_eq!(
+            text.matches("C++").count(),
+            2,
+            "both blocks labelled C++:\n{text}"
         );
     }
 }

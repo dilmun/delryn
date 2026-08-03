@@ -113,6 +113,9 @@ impl Reader {
                         // Gutter/label must mirror the display so match line indices align.
                         code_line_numbers: self.code_line_numbers,
                         code_label: self.code_label,
+                        // Mirrors the display too: the fallback can add a label
+                        // row, which would shift every match line below it.
+                        code_lang_hint: self.code_lang_hint,
                         code_fold: self.code_fold,
                         code_fold_threshold: self.code_fold_threshold,
                         code_fold_flip: flip,

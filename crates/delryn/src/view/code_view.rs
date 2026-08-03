@@ -71,6 +71,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         code_wrap: true,
         code_line_numbers: true,
         code_label: false,
+        // One block at a time here, so there is no section to learn from — the
+        // book's own language is all the fallback there is.
+        code_lang_hint: reader.and_then(|r| r.code_lang_hint),
         ..Default::default()
     };
     let block = Block::Code {
