@@ -42,9 +42,11 @@ pub use collections::{CollInput, ShelfPicker};
 mod tags;
 pub use tags::TagInput;
 
+mod discover;
 mod dup_resolve;
 mod dup_scan;
 mod scan;
+pub use discover::FolderFinder;
 pub use dup_resolve::{DupGroup, DupMember, DupResolve, IgnoredView};
 
 mod editor;
@@ -326,6 +328,9 @@ pub struct App {
     /// In-flight background library scan (folder (re)indexing on a worker thread),
     /// so a large scan never blocks the UI. See `app/scan.rs`.
     pub scan: Option<scan::ScanJob>,
+    /// In-flight search of the home directory for folders holding books, whose
+    /// result opens the folder picker. See `app/discover.rs`.
+    pub discover: Option<discover::DiscoverJob>,
     /// Cover-tab preview image protocol + the URL it was built for, plus the
     /// debounce target/timer for fetching the highlighted result's cover.
     pub edit_cover: Option<media::CoverImage>,
@@ -493,6 +498,7 @@ impl App {
             define_rx: None,
             dup_scan: None,
             scan: None,
+            discover: None,
             edit_cover: None,
             edit_cover_url: String::new(),
             edit_cover_target: String::new(),
@@ -540,6 +546,7 @@ impl App {
             define_rx: None,
             dup_scan: None,
             scan: None,
+            discover: None,
             edit_cover: None,
             edit_cover_url: String::new(),
             edit_cover_target: String::new(),
@@ -843,6 +850,7 @@ impl App {
                 | Overlay::MetaEdit(_)
                 | Overlay::BulkRename(_)
                 | Overlay::ShelfPicker(_)
+                | Overlay::FolderFinder(_)
                 | Overlay::ImageView(_)
                 | Overlay::WordLookup(_)
                 | Overlay::CodeView(_)

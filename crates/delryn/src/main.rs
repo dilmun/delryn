@@ -458,6 +458,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
             || app.preview_pending()
             || app.dup_scan_pending()
             || app.scan_pending()
+            || app.discover_pending()
             || app.figure_scan_pending();
         let timeout = if dirty || busy {
             FRAME.saturating_sub(last_draw.elapsed())
@@ -511,6 +512,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, sync: bool) -> Result<()> 
         }
         // Pick up a finished background library scan (folder (re)indexing).
         if app.poll_scan() {
+            dirty = true;
+        }
+        // Pick up a finished search for book folders (opens the folder picker).
+        if app.poll_discover() {
             dirty = true;
         }
         // Wrap + cache any covers the background loader finished this frame, and keep

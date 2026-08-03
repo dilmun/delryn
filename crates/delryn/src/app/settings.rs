@@ -106,6 +106,9 @@ pub enum SettingItem {
     AddSource,
     /// The "Rescan now" action row on the Sources tab (re-indexes every source).
     RescanNow,
+    /// The "Find my books" action row on the Sources tab (searches the home
+    /// directory for folders holding books and offers them).
+    FindSources,
     /// Show/hide an optional library column (carries its key from `LIB_COLUMNS`).
     Column(&'static str),
     /// Duplicate resolver: always mark converted copies for deletion.
@@ -167,6 +170,7 @@ impl SettingItem {
             SettingItem::Source(_) => "Folder",
             SettingItem::AddSource => "Add folder…",
             SettingItem::RescanNow => "Rescan now",
+            SettingItem::FindSources => "Find my books…",
             SettingItem::LibLayout => "Layout",
             SettingItem::GridSize => "Cover size",
             SettingItem::Column(key) => crate::config::LIB_COLUMNS
@@ -271,6 +275,9 @@ impl SettingItem {
             SettingItem::Source(_) => "A folder scanned for books. Press d to remove it.",
             SettingItem::AddSource => "Type a folder path to scan it for books.",
             SettingItem::RescanNow => "Re-read every source folder and refresh the library.",
+            SettingItem::FindSources => {
+                "Search your home folder for folders holding books, then pick which to add."
+            }
             SettingItem::LibLayout => "Show the library as a list of rows or a grid of covers.",
             SettingItem::GridSize => "How large the covers are in grid layout.",
             SettingItem::Column(_) => "Show this column in the library list.",
@@ -288,7 +295,10 @@ impl SettingItem {
     pub fn is_action(self) -> bool {
         matches!(
             self,
-            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow
+            SettingItem::Source(_)
+                | SettingItem::AddSource
+                | SettingItem::RescanNow
+                | SettingItem::FindSources
         )
     }
 
@@ -361,7 +371,10 @@ impl SettingItem {
             }
             SettingItem::DupConvertedDelete => c.dup_converted_delete = d.dup_converted_delete,
             SettingItem::DupFormat(_) => c.dup_format_order = d.dup_format_order,
-            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow => {}
+            SettingItem::Source(_)
+            | SettingItem::AddSource
+            | SettingItem::RescanNow
+            | SettingItem::FindSources => {}
         }
     }
 
@@ -434,9 +447,10 @@ impl SettingItem {
             SettingItem::TranslateTo => c.translate_lang_label().to_string(),
             // Sources-tab rows render bespoke (see `view::settings`); the generic
             // label/value path is never taken for them.
-            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow => {
-                String::new()
-            }
+            SettingItem::Source(_)
+            | SettingItem::AddSource
+            | SettingItem::RescanNow
+            | SettingItem::FindSources => String::new(),
             SettingItem::LibLayout => c.library_layout.label().to_string(),
             SettingItem::GridSize => c.library_grid_size.label().to_string(),
             SettingItem::Column(key) => onoff(c.column_on(key)),
@@ -579,6 +593,7 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
             let mut sources = vec![S("Folders".into())];
             sources.extend((0..config.library_paths.len()).map(|i| I(Source(i))));
             sources.push(I(AddSource));
+            sources.push(I(FindSources));
             sources.push(I(RescanNow));
             // Ordered most-frequently-used first: view/columns are constant tweaks,
             // appearance occasional, sources set-and-forget, dup-prefs rare.
@@ -1063,6 +1078,7 @@ impl App {
         match item {
             SettingItem::AddSource => return self.begin_add_source(),
             SettingItem::RescanNow => return self.rescan_sources(),
+            SettingItem::FindSources => return self.start_discover(),
             SettingItem::Source(_) => return, // delete via `d`/Delete, not change
             _ => {}
         }
@@ -1217,7 +1233,10 @@ impl App {
                 }
             }
             // Handled (and returned) above; listed so the match stays exhaustive.
-            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow => {}
+            SettingItem::Source(_)
+            | SettingItem::AddSource
+            | SettingItem::RescanNow
+            | SettingItem::FindSources => {}
             SettingItem::Column(key) => c.toggle_column(key),
             SettingItem::DupConvertedDelete => c.dup_converted_delete = !c.dup_converted_delete,
             // l/right/Enter (delta > 0) promotes the format toward "keep #1".

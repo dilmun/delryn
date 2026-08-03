@@ -393,6 +393,7 @@ fn setting_line(
             Some(input) => add_input_line(input, width, theme),
             None => action_line("＋ Add folder…", selected, width, theme),
         },
+        SettingItem::FindSources => action_line("⌕ Find my books…", selected, width, theme),
         SettingItem::RescanNow => action_line("⟳ Rescan now", selected, width, theme),
         other => value_line(other, config, selected, width, theme),
     }

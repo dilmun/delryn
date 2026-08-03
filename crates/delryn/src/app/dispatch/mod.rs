@@ -91,6 +91,10 @@ impl App {
             self.shelf_picker_key(key);
             return;
         }
+        if matches!(self.overlay, Overlay::FolderFinder(_)) {
+            self.finder_key(key);
+            return;
+        }
         if matches!(self.overlay, Overlay::ImageView(_)) {
             self.image_key(key);
             return;

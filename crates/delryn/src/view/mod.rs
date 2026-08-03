@@ -7,6 +7,7 @@ pub mod bulk_rename;
 pub mod code_view;
 pub mod dialog;
 pub mod dup_resolve;
+pub mod folder_finder;
 pub mod image;
 pub mod layout;
 pub mod library;
@@ -520,6 +521,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     if matches!(app.overlay, Overlay::ShelfPicker(_)) {
         shelf_picker::render(f, app);
+    }
+    if matches!(app.overlay, Overlay::FolderFinder(_)) {
+        folder_finder::render(f, app);
     }
     if matches!(app.overlay, Overlay::BulkRename(_)) {
         bulk_rename::render(f, app);

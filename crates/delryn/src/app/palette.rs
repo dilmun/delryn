@@ -21,6 +21,8 @@ pub enum Command {
     ToggleDetail,
     Stats,
     Export,
+    /// Search the home directory for folders holding books (see `app::discover`).
+    FindFolders,
 }
 
 /// One palette row: its display label and the command it runs.
@@ -79,6 +81,7 @@ impl App {
             item("Toggle detail pane", Command::ToggleDetail),
             item("Library statistics", Command::Stats),
             item("Export to CSV", Command::Export),
+            item("Find my books", Command::FindFolders),
         ];
         // Jump-to-collection commands for each existing shelf.
         for (name, _) in &self.library.shelves {
@@ -162,6 +165,7 @@ impl App {
             Command::ToggleDetail => self.library.detail = !self.library.detail,
             Command::Stats => self.open_stats(),
             Command::Export => self.export_library(),
+            Command::FindFolders => self.start_discover(),
         }
     }
 }

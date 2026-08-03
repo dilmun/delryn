@@ -261,6 +261,19 @@ fn legend(app: &App) -> Option<(String, String)> {
         };
         return Some(("Collections".into(), keys.into()));
     }
+    if let Overlay::FolderFinder(p) = &app.overlay {
+        // Matches the popup's own action row: with nothing ticked there is
+        // nothing for ⏎ to add, so it isn't offered.
+        let keys = if p.picked() == 0 {
+            "↑↓ move · Space tick · a all · Esc close"
+        } else {
+            "↑↓ move · Space tick · a all · ⏎ add · Esc cancel"
+        };
+        return Some((
+            format!("Found folders · {} ticked", p.picked()),
+            keys.into(),
+        ));
+    }
     if matches!(app.overlay, Overlay::Annot(_)) {
         return Some((
             "Bookmarks".into(),

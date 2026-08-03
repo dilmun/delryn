@@ -85,7 +85,8 @@ graphics: syntax-highlighted code, tables, inline figures, and typeset math.
 - Word lookup (`K`) — dictionary and Wikipedia, with translation
 
 **Library**
-- Multi-folder sources with background scanning
+- Multi-folder sources with background scanning, and a **"find my books"** search that
+  proposes the folders in your home directory that hold books, with counts, to add in one go
 - Sections (Recent, Favorites, Currently Reading, Series, Duplicates) and **collections / shelves**
 - Ratings, reading status, and tags; list, compact, or **cover-grid** layouts
 - CSV export, statistics, and **duplicate detection** (metadata + deep cover-hash)
@@ -176,6 +177,16 @@ delryn --clear-cache         # delete cached page / figure / equation images
 delryn --help                # usage  (also: -h)   ·   --version / -V
 ```
 
+Don't know where your books are? Press `;` ▸ **Sources** ▸ *Find my books* (or `:` ▸ *Find my
+books*) and delryn searches your home folder, then offers the folders that hold books — with a
+count each — for you to tick.
+
+Registered folders **re-sync by themselves**: every launch runs a background scan that picks up
+new and changed books and forgets ones whose files are gone. It's incremental, so a large library
+costs little. `Rescan now` on the Sources tab (or `delryn --rescan`) forces a full re-read and
+also drops books that no longer sit under any configured folder. Books on an unmounted drive are
+kept, not pruned.
+
 ---
 
 ## Key bindings
@@ -239,7 +250,7 @@ the essentials:
 | `e` · `T` · `c` | edit metadata · tags · add to collection |
 | `v` · `+` `-` | cycle layout (list / compact / grid) · grid card size |
 | `Space` `V` `A` | mark · visual-range · mark all |
-| `:` · `i` · `;` | command palette · statistics · settings |
+| `:` · `i` · `;` | command palette (incl. "Find my books") · statistics · settings |
 | `Delete` | move to trash (with confirm) |
 </details>
 
