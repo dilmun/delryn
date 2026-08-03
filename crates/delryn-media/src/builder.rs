@@ -411,6 +411,12 @@ pub struct ImageBuilder {
 }
 
 /// The default persistent raster-cache root, `<config>/rasters`, for [`ImageBuilder::new`].
+/// Name of the version subdirectory this build reads, so the cache sweep knows
+/// which one to keep.
+pub fn raster_cache_version_dir() -> String {
+    format!("v{}", geo_cache::VERSION)
+}
+
 pub fn raster_cache_dir() -> Option<PathBuf> {
     Some(delryn_infra::paths::config_dir().join("rasters"))
 }

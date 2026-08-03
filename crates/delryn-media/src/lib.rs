@@ -14,7 +14,12 @@ mod sizing;
 
 pub use delryn_infra::config::{ImageFit, ImageMode};
 
-pub use builder::{BuiltImage, ImageBuilder, ImagePlan, ImgKey, ImgSlot, raster_cache_dir};
+pub mod cache;
+pub use builder::{
+    BuiltImage, ImageBuilder, ImagePlan, ImgKey, ImgSlot, raster_cache_dir,
+    raster_cache_version_dir,
+};
+pub use cache::{DEFAULT_BUDGET_BYTES, sweep as sweep_caches};
 pub use cover::{CoverImage, build_cover, decode_cover, wrap_cover};
 pub use decode::{decode, image_dimensions};
 pub use image::DynamicImage;

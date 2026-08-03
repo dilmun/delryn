@@ -33,6 +33,11 @@ static DIR: OnceLock<PathBuf> = OnceLock::new();
 /// Point the ink cache at `<root>/ink-vN`, creating it. `None` (or a create failure)
 /// leaves the cache disabled — every profile is then measured live, never stored. Called
 /// once at startup, before any book (and its background loader) opens.
+/// Name of the version subdirectory this build reads (`ink-vN`), for the cache sweep.
+pub(crate) fn version_dir() -> String {
+    format!("ink-v{VERSION}")
+}
+
 pub(crate) fn set_dir(root: Option<PathBuf>) {
     let Some(root) = root else { return };
     let dir = root.join(format!("ink-v{VERSION}"));

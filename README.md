@@ -252,7 +252,8 @@ owner-only: the config and the library database hold your reading history, notes
 highlights). Highlights: theme,
 typography (margins, max text width, line &amp; paragraph spacing, justify, hyphenation),
 pagination (page mode, continuous scroll, chapter lock), reading mode &amp; direction, image / math
-scaling, PDF trim, and a `[status]` block to compose the status bar (per-zone segment order,
+scaling, PDF trim, `cache_limit_mb` (disk ceiling for cached page/figure images — default 512 MB,
+`0` for unlimited), and a `[status]` block to compose the status bar (per-zone segment order,
 separator, clock). The same folder holds the library database, cover cache, and `themes/` for
 your own `*.toml` themes.
 

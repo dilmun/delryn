@@ -37,6 +37,7 @@ OPTIONS:
         --rescan                 re-read metadata for every book, prune missing files
         --index                  build the full-text search index
         --export-annotations     dump all notes & bookmarks as Markdown to stdout
+        --clear-cache            delete the cached page/figure/equation images
     -h, --help                   show this help and exit
     -V, --version                show the version and exit
 
@@ -67,7 +68,7 @@ fn main() -> Result<()> {
         && flag != "-"
         && !matches!(
             flag,
-            "--add" | "-a" | "--rescan" | "--index" | "--export-annotations"
+            "--add" | "-a" | "--rescan" | "--index" | "--export-annotations" | "--clear-cache"
         )
     {
         eprintln!("delryn: unknown option '{flag}'\nTry 'delryn --help' for usage.");
@@ -77,6 +78,12 @@ fn main() -> Result<()> {
     // `delryn --add <dir> [dir…]`: register library folder(s), scan, and exit.
     if matches!(first, Some("--add" | "-a")) {
         return add_library(&args[1..]);
+    }
+
+    // `delryn --clear-cache`: drop every cached raster, then exit. The caches
+    // rebuild on demand, so this only ever costs re-rendering.
+    if matches!(first, Some("--clear-cache")) {
+        return clear_caches();
     }
 
     // `delryn --rescan`: re-read metadata for every known book (backfills new
@@ -177,6 +184,10 @@ fn main() -> Result<()> {
         .clone()
         .map(|p| delryn::media::ImageBuilder::new(p, delryn::media::raster_cache_dir()));
     app.picker = picker;
+    // Keep the on-disk caches bounded. Off the main thread and after the builder
+    // has claimed its directory: the sweep walks and deletes thousands of files,
+    // which has no business delaying the first frame.
+    sweep_caches_in_background(app.config.cache_limit_mb);
 
     // Synchronized output (DEC 2026) can be toggled off for terminals that
     // mishandle it: `DELRYN_SYNC=0 delryn …`.
@@ -223,6 +234,54 @@ fn main() -> Result<()> {
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
+}
+
+/// The cache directories this build actually reads. Anything else under
+/// `<config>/rasters` is from a superseded format and is swept away.
+fn live_cache_dirs() -> Vec<String> {
+    vec![
+        delryn::media::raster_cache_version_dir(),
+        delryn::app::ink_cache_version_dir(),
+    ]
+}
+
+/// Bound the on-disk caches on a worker thread.
+///
+/// Both caches are version-stamped, which stopped *stale* entries being read but
+/// never deleted them, and never capped the live ones either — one real library
+/// held 1.7 GB, 1.03 GB of it in five superseded versions. This drops those and
+/// evicts least-recently-used entries down to the configured ceiling.
+fn sweep_caches_in_background(limit_mb: u32) {
+    let Some(root) = delryn::media::raster_cache_dir() else {
+        return;
+    };
+    let live = live_cache_dirs();
+    let budget = u64::from(limit_mb) * 1024 * 1024;
+    std::thread::spawn(move || {
+        delryn::media::sweep_caches(&root, &live, budget);
+    });
+}
+
+/// Delete every on-disk cache, live versions included, and report what went.
+/// Caches are rebuildable by construction, so this only ever costs re-rendering.
+fn clear_caches() -> Result<()> {
+    let Some(root) = delryn::media::raster_cache_dir() else {
+        println!("No cache directory configured.");
+        return Ok(());
+    };
+    if !root.exists() {
+        println!("Nothing cached.");
+        return Ok(());
+    }
+    // Sweeping with no live directories and a 1-byte budget empties everything.
+    let freed = delryn::media::sweep_caches(&root, &[], 1);
+    let _ = std::fs::remove_dir_all(&root);
+    println!(
+        "Cleared {:.1} MB from {}.",
+        freed as f64 / (1024.0 * 1024.0),
+        root.display()
+    );
+    Ok(())
 }
 
 /// Set when SIGTERM or SIGHUP arrives, polled by the event loop.

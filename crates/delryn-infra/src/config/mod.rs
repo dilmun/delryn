@@ -274,6 +274,11 @@ pub struct Config {
     /// Max inline-image resolution (longest side, px). Caps the data sent to the
     /// terminal so big figures don't stall scrolling.
     pub image_max_px: u16,
+    /// Ceiling for the on-disk image caches (`<config>/rasters`), in MB. `0` is
+    /// unlimited. Swept at startup: superseded cache versions are removed
+    /// regardless, then the live ones are evicted least-recently-used down to
+    /// this. Left unbounded these reached 1.7 GB on one real library.
+    pub cache_limit_mb: u32,
     /// Default figure display width as a percent of the reading column, for images
     /// without an authored size — normalizes figure sizes across books.
     pub image_width_pct: u16,
@@ -380,6 +385,7 @@ impl Default for Config {
             mouse_enabled: true,
             status: StatusFields::default(),
             image_max_px: 0,     // no cap by default — images fill the text column
+            cache_limit_mb: 512, // generous for normal reading, bounds the runaway case
             image_width_pct: 85, // normalize unsized figures to 85% of the column
             image_mode: ImageMode::default(),
             image_fit: ImageFit::default(),

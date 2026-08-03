@@ -93,6 +93,11 @@ use inline_deck::InlineDeck;
 /// background section loader and the start-section decode both consult it. `None` (or a
 /// create failure) leaves ink caching off. Thin re-export so the binary can reach the
 /// otherwise crate-private reader module.
+/// Name of the ink cache's version subdirectory, for the startup cache sweep.
+pub fn ink_cache_version_dir() -> String {
+    reader::ink_cache::version_dir()
+}
+
 pub fn reader_ink_cache_set_dir(root: Option<std::path::PathBuf>) {
     reader::ink_cache::set_dir(root);
 }
