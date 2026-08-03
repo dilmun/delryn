@@ -2456,6 +2456,42 @@ mod tests {
         );
     }
 
+    /// The invariant the deck depends on: if `page_ready` approves a page, then
+    /// `page_png` yields bytes for it. They used to check different things —
+    /// `page_ready` the base width, `page_png` whichever width the view had chosen
+    /// — so a crisp entry dropped from the 24-entry themed LRU produced a target
+    /// the reader had approved and could not deliver. The deck holds the *whole*
+    /// frame when one page's bytes are missing (right for a spread, which must
+    /// swap atomically), so that one gap blanked the screen and kept it blank.
+    #[test]
+    fn an_approved_page_can_always_be_served() {
+        let mut r = continuous_paged_reader(3);
+        let policy = paged_policy();
+        for _ in 0..200 {
+            r.poll_loader();
+            r.sync_pages(policy);
+            if r.page_ready(0) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(r.page_ready(0), "page 0 is themed at the base width");
+        assert!(r.page_png(0).is_some(), "and can be served");
+
+        // Now the view picks a crisp width whose themed bytes are *not* cached —
+        // exactly what an LRU eviction leaves behind.
+        r.crisp.effective.insert(0, BASE_RASTER_WIDTH * 2);
+        assert!(
+            r.page_ready(0),
+            "still approved: readiness gates on the base width"
+        );
+        assert!(
+            r.page_png(0).is_some(),
+            "and still served — a missing crisp raster falls back to the base \
+             page rather than blanking it"
+        );
+    }
+
     /// Reported: a PDF draws on open and then vanishes for good on the first
     /// scroll. Drives the real path — capture the continuous stack, hand it to the
     /// deck, scroll, capture again — and checks the deck still places something.

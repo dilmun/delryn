@@ -42,15 +42,33 @@ impl Reader {
     /// view chose it for this section this frame (see [`Reader::resolve_page_width`]),
     /// else the base raster — matching the crop the view computed. See
     /// [`Reader::sync_pages`].
+    /// Falls back to the **base** raster whenever the chosen width has no bytes.
+    /// The two halves of this contract used to disagree: [`page_ready`] gates the
+    /// deck on the base width, while this served `effective_width` — so a crisp
+    /// entry evicted from the themed LRU (24 entries, shared with every other
+    /// width and policy) produced a page the reader had approved and could not
+    /// deliver. The deck holds the *entire* frame when one page's bytes are
+    /// missing — correct for a spread, which must swap atomically — so a single
+    /// evicted entry blanked the screen and kept it blank.
+    ///
+    /// A crisp raster is an enhancement, never a precondition: if its bytes are
+    /// gone, showing the base page is right, and the crisp one pops back in when
+    /// it re-themes. The invariant to preserve is that `page_ready` implies this
+    /// returns `Some`.
+    ///
+    /// [`page_ready`]: Self::page_ready
     pub fn page_png(&self, section: usize) -> Option<Vec<u8>> {
-        let width = self.effective_width(section);
-        if self.pages.policy.mode == media::ImageMode::Faithful {
-            return self.raw_raster_at(section, width);
-        }
-        self.pages
-            .themed
-            .peek(&(section, width, self.pages.policy))
-            .map(|b| b.as_ref().clone())
+        let at = |w: u32| -> Option<Vec<u8>> {
+            if self.pages.policy.mode == media::ImageMode::Faithful {
+                self.raw_raster_at(section, w)
+            } else {
+                self.pages
+                    .themed
+                    .peek(&(section, w, self.pages.policy))
+                    .map(|b| b.as_ref().clone())
+            }
+        };
+        at(self.effective_width(section)).or_else(|| at(BASE_RASTER_WIDTH))
     }
 
     /// The raster width the view chose to display `section` at this frame — a crisp
