@@ -5,10 +5,16 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# The floor README promises. Edition 2024 needs 1.85, and nothing in the tree
-# needs newer; `resolver = "3"` reads this when picking dependency versions, so
-# it is enforced rather than aspirational. Bump it only alongside the README.
-rust-version = "1.85"
+# The floor the README promises, and the one CI actually builds against (the
+# `msrv` job installs exactly this and runs `cargo check`). It said 1.85 for
+# months while the tree used let-chains, stable only since 1.88 — nothing
+# verified the claim, so it silently became a lie that would have met the first
+# person to build from source. The job exists so that can't recur.
+#
+# delryn is an application, not a library: nobody depends on it, prebuilt
+# binaries need no toolchain at all, and `rustup update` is one command. So this
+# tracks current stable rather than the oldest version that happens to compile.
+rust-version = "1.96"
 license = "MIT"
 repository = "https://github.com/dilmun/delryn"
 

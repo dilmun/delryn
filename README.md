@@ -13,7 +13,7 @@ graphics: syntax-highlighted code, tables, inline figures, and typeset math.
 
 [![CI](https://github.com/dilmun/delryn/actions/workflows/ci.yml/badge.svg)](https://github.com/dilmun/delryn/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust 1.96+](https://img.shields.io/badge/rust-1.96%2B-orange.svg)](https://www.rust-lang.org)
 [![Sponsor](https://img.shields.io/badge/sponsor-♥-ea4aaa?logo=github-sponsors&logoColor=white)](https://github.com/sponsors/dilmun)
 
 <br />
@@ -148,7 +148,7 @@ Prebuilt targets: Linux `x86_64`, macOS `arm64` &amp; `x86_64`. Each archive shi
 
 ### From source
 
-Requires Rust **1.85+** (edition 2024):
+Requires Rust **1.96+** (edition 2024) — `rustup update` if you're behind:
 
 ```sh
 git clone https://github.com/dilmun/delryn
