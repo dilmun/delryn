@@ -110,7 +110,7 @@ pub fn confirm(f: &mut Frame, question: &str, danger: bool, theme: Theme, bold: 
 /// A single-field text prompt: a title, an optional explanatory line, the field
 /// with its caret, and the key hints. Used for tag editing, the library filter,
 /// and in-book search, so all three look and behave alike.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn prompt(
     f: &mut Frame,
     title: &str,

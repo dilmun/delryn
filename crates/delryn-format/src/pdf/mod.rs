@@ -22,7 +22,7 @@
 //! pinned build and the setup. See also `DESIGN.md` §3.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 
 use anyhow::{Result, anyhow};
 use pdfium_render::prelude::{
@@ -51,14 +51,11 @@ pub const PAGE_RASTER_WIDTH: i32 = 2000;
 
 /// The process-wide PDFium binding, initialized on first use. The `Err` carries
 /// a message when no usable library was found, so callers can report cleanly.
-static PDFIUM: OnceLock<std::result::Result<Pdfium, String>> = OnceLock::new();
+static PDFIUM: LazyLock<std::result::Result<Pdfium, String>> = LazyLock::new(bind_pdfium);
 
 /// The shared PDFium binding, or a clean error when the library is unavailable.
 fn pdfium() -> Result<&'static Pdfium> {
-    PDFIUM
-        .get_or_init(bind_pdfium)
-        .as_ref()
-        .map_err(|e| anyhow!("{e}"))
+    PDFIUM.as_ref().map_err(|e| anyhow!("{e}"))
 }
 
 /// The `libpdfium` compiled into this binary, or empty when built without one

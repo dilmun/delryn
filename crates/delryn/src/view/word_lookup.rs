@@ -124,7 +124,7 @@ fn render_translation(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn render_definition(
     result: &LookupResult,
     lines: &mut Vec<Line<'static>>,

@@ -20,14 +20,14 @@ pub use define::{
 /// announces to servers is the same one it reports everywhere else. It used to be
 /// hardcoded `delryn/0.1`, which silently went stale on the first release.
 pub(crate) fn user_agent() -> &'static str {
-    static UA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    UA.get_or_init(|| {
+    static UA: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         let v = VERSION_OVERRIDE
             .get()
             .map(String::as_str)
             .unwrap_or(env!("CARGO_PKG_VERSION"));
         format!("delryn/{v} (+https://github.com/dilmun/delryn)")
-    })
+    });
+    &UA
 }
 
 static VERSION_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -54,14 +54,14 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// The shared HTTP agent: one connection pool and one timeout policy for every
 /// provider (metadata search, covers, dictionary, Wikipedia, translation).
 pub(crate) fn agent() -> &'static ureq::Agent {
-    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
-    AGENT.get_or_init(|| {
+    static AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
         ureq::Agent::config_builder()
             .timeout_global(Some(REQUEST_TIMEOUT))
             .timeout_connect(Some(CONNECT_TIMEOUT))
             .build()
             .into()
-    })
+    });
+    &AGENT
 }
 
 const SEARCH_URL: &str = "https://openlibrary.org/search.json";

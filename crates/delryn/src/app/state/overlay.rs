@@ -22,8 +22,9 @@ use crate::library::stats::LibraryStats;
 // Exactly one `Overlay` exists at a time (`App::overlay`) — it's never collected
 // or stored in bulk — so the size of the largest variant is irrelevant; boxing
 // variants would only add indirection. (`MetaEdit`, the tabbed multi-field
-// editor, is the biggest.)
-#[allow(clippy::large_enum_variant)]
+// editor, is the biggest.) This carried a `large_enum_variant` suppression that
+// the lint no longer raises; switching the codebase's suppressions to `expect`
+// surfaced it as stale, which is the whole point of `expect` over `allow`.
 #[derive(Default)]
 pub enum Overlay {
     /// No overlay open.

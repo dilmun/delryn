@@ -42,9 +42,9 @@ const TEMP_STEM: &str = "tty-graphics-protocol-delryn";
 /// one — an escape hatch (`DELRYN_KITTY_DIRECT`) for terminals that don't support
 /// file transmission. Read once.
 fn use_direct() -> bool {
-    use std::sync::OnceLock;
-    static DIRECT: OnceLock<bool> = OnceLock::new();
-    *DIRECT.get_or_init(|| std::env::var_os("DELRYN_KITTY_DIRECT").is_some())
+    static DIRECT: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("DELRYN_KITTY_DIRECT").is_some());
+    *DIRECT
 }
 
 /// Transmit `png` under `id`, preferring the temp-file medium so a turn pushes a

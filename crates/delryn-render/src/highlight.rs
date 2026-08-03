@@ -2,7 +2,7 @@
 //! Colour selection ties into the theme system later; for now a fixed dark
 //! syntax theme. See `DESIGN.md` §1 (programming-book wedge).
 
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Theme, ThemeSet};
@@ -11,18 +11,14 @@ use syntect::parsing::{SyntaxReference, SyntaxSet};
 use crate::layout::Run;
 use delryn_model::Inline;
 
-static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
-static THEMES: OnceLock<ThemeSet> = OnceLock::new();
-
-fn syntaxes() -> &'static SyntaxSet {
-    // The *no-newlines* variant: our source lines carry no trailing `\n`, and the
-    // newline grammars need one to close line-scoped rules (e.g. `#` comments) —
-    // without it a comment's style leaks into every following line of the block.
-    SYNTAXES.get_or_init(SyntaxSet::load_defaults_nonewlines)
-}
+/// The *no-newlines* variant: our source lines carry no trailing `\n`, and the
+/// newline grammars need one to close line-scoped rules (e.g. `#` comments) —
+/// without it a comment's style leaks into every following line of the block.
+static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_nonewlines);
+static THEMES: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 
 fn theme(name: &str) -> &'static Theme {
-    let ts = THEMES.get_or_init(ThemeSet::load_defaults);
+    let ts = &*THEMES;
     ts.themes
         .get(name)
         .or_else(|| ts.themes.get("base16-ocean.dark"))
@@ -37,7 +33,7 @@ fn theme(name: &str) -> &'static Theme {
 /// Cheap — it inspects text and never highlights — so a caller can tally what
 /// languages a section actually uses before rendering any of it.
 fn detect_syntax(lines: &[String], lang: Option<&str>) -> Option<&'static SyntaxReference> {
-    let ps = syntaxes();
+    let ps = &*SYNTAXES;
     let syntax = lang
         .and_then(|l| ps.find_syntax_by_token(l))
         .or_else(|| lines.first().and_then(|l| ps.find_syntax_by_first_line(l)))
@@ -56,7 +52,7 @@ pub fn detect_language(lines: &[String], lang: Option<&str>) -> Option<&'static 
 /// Look a fallback up by display name ("C++") or token ("cpp"), so a caller can
 /// pass back either what [`detect_language`] returned or a bare token.
 fn syntax_for(hint: &str) -> Option<&'static SyntaxReference> {
-    let ps = syntaxes();
+    let ps = &*SYNTAXES;
     ps.find_syntax_by_name(hint)
         .or_else(|| ps.find_syntax_by_token(hint))
         .filter(|s| s.name != "Plain Text")
@@ -79,7 +75,7 @@ pub fn highlight_code(
     fallback: Option<&str>,
     theme_name: &str,
 ) -> (Vec<Vec<Run>>, Option<String>) {
-    let ps = syntaxes();
+    let ps = &*SYNTAXES;
     let syntax = detect_syntax(lines, lang)
         .or_else(|| fallback.and_then(syntax_for))
         .unwrap_or_else(|| ps.find_syntax_plain_text());

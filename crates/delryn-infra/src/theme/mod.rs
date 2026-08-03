@@ -5,7 +5,7 @@
 //! No renderer should hardcode a colour or a fallback — go through a `Theme`.
 //! See `DESIGN.md` §7.
 
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 use ratatui::style::{Color, Style};
 
@@ -39,12 +39,12 @@ pub use role::Role;
 /// then user themes). Backs [`by_name`] and the [`Theme::next`]/[`Theme::prev`]
 /// cycle, so a dropped-in theme file participates everywhere a theme is chosen.
 fn registry() -> &'static [Theme] {
-    static REGISTRY: OnceLock<Vec<Theme>> = OnceLock::new();
-    REGISTRY.get_or_init(|| {
+    static REGISTRY: LazyLock<Vec<Theme>> = LazyLock::new(|| {
         let mut all: Vec<Theme> = builtin::BUILTINS.to_vec();
         all.extend(load::load_user_themes());
         all
-    })
+    });
+    &REGISTRY
 }
 
 #[derive(Clone, Copy, Debug)]
