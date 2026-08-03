@@ -735,6 +735,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "delryn-eqn",
+ "delryn-infra",
  "delryn-model",
  "ego-tree",
  "epub",

@@ -373,14 +373,57 @@ double-build, nothing to double-check.
 > in the App's *Permissions & events*, then re-approve the installation. Without it,
 > release-please may fail to open/label the release PR.
 
-### libpdfium in the tarballs
+### libpdfium
 
-delryn binds `libpdfium` at runtime from beside the executable. `release-build.yml` downloads
-the matching `libpdfium` from
-[bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) (pinned to
-`chromium/7763`, the API level `pdfium-render 0.9.2` targets) and ships it inside each
-tarball, so PDFs work on download. Bump `PDFIUM_RELEASE` in lockstep with any
-`pdfium-render` upgrade.
+delryn binds `libpdfium` at runtime. Without it EPUB/MOBI still read fine and only PDF is
+unavailable, with the reader saying so. Search order:
+
+1. `DELRYN_PDFIUM_DIR`
+2. beside the running executable — what a release tarball provides
+3. a sibling `../lib`, for a `bin/` + `lib/` install layout
+4. `~/.local/lib/delryn`, then `<config>/lib`
+5. the system library
+6. **the copy embedded in the binary**, unpacked to `<config>/lib` on first use
+
+**Release builds embed it.** Upstream ships no static build (every asset is a dynamic `.tgz`),
+so linking PDFium in properly would mean building it from source with depot_tools. Instead
+`release-build.yml` sets `DELRYN_PDFIUM_LIB` and `delryn-format/build.rs` compiles the verified
+library into the executable. This exists for one common case: people copy `delryn` out of the
+tarball onto their `PATH` and delete the folder, leaving the loose library behind — before, PDFs
+then stopped working with no obvious cause. The embed is tried **last**, so an intact install
+never pays the unpack and a deliberately-placed library still wins. Cost: ~7 MB of binary
+(≈30 → ≈37 MB).
+
+**Ordinary `cargo build` embeds nothing** — `DELRYN_PDFIUM_LIB` is unset, the constant is an
+empty slice, and the search above still applies. See the source-build setup below.
+
+> **If delryn is ever notarized** (hardened runtime), revisit this: a hardened process will
+> refuse to `dlopen` an unsigned library unpacked at runtime. The loose bundled copy would need
+> to be signed, or the unpacked one signed on extraction.
+
+**The download** comes from [bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries),
+pinned to `chromium/7763` — the API level `pdfium-render 0.9.2` targets — and is verified against
+`.github/pdfium-checksums.txt` before it is either embedded or bundled. Bump `PDFIUM_RELEASE`
+**and regenerate the checksum file** in lockstep with any `pdfium-render` upgrade; the build
+fails on a mismatch rather than shipping an unverified native library.
+
+**In a source build** there is no tarball, so `cargo build` alone leaves PDF unavailable — this
+is the usual cause of "libpdfium not found". Fetch the same pinned build once (swap
+`mac-arm64` for `mac-x64` or `linux-x64`):
+
+```sh
+curl -sSfL -O "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7763/pdfium-mac-arm64.tgz"
+shasum -a 256 -c <(grep ' pdfium-mac-arm64.tgz$' .github/pdfium-checksums.txt)
+tar -xzf pdfium-mac-arm64.tgz lib/libpdfium.dylib
+mkdir -p ~/.local/lib/delryn && cp lib/libpdfium.dylib ~/.local/lib/delryn/
+```
+
+Then point delryn at it permanently — this survives `cargo clean`, which wipes anything copied
+into `target/`:
+
+```sh
+export DELRYN_PDFIUM_DIR="$HOME/.local/lib/delryn"
+```
 
 ---
 

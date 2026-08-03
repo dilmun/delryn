@@ -51,6 +51,18 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Fetch + verify libpdfium
+        run: |
+          set -euo pipefail
+          curl -sSfL -o "${{ matrix.pdfium_asset }}" \
+            "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/${{ matrix.pdfium_asset }}"
+          # This native library is both embedded in the binary and shipped beside
+          # it, so verify against the pinned digest rather than trusting the
+          # download. A release asset can be replaced upstream; a SHA-256 cannot.
+          grep " ${{ matrix.pdfium_asset }}\$" .github/pdfium-checksums.txt > expected.sha256
+          shasum -a 256 -c expected.sha256
+          tar -xzf "${{ matrix.pdfium_asset }}" "lib/${{ matrix.libname }}"
+
       - name: Build delryn
         env:
           # Stamp the release version into the binary. release-please never rewrites
@@ -62,6 +74,11 @@ jobs:
           set -euo pipefail
           # The tag is `vX.Y.Z`; the version is what follows the `v`.
           export DELRYN_VERSION="${DELRYN_VERSION#v}"
+          # Compile the verified library into the binary as a last-resort fallback,
+          # so a `delryn` copied out of the tarball onto someone's PATH — leaving
+          # the loose library behind — still opens PDFs instead of silently losing
+          # the feature. Only used when no library is found on disk.
+          export DELRYN_PDFIUM_LIB="$PWD/lib/${{ matrix.libname }}"
           cargo build --release --locked --target ${{ matrix.target }} -p delryn
 
       - name: Stage binary + bundled libpdfium
@@ -70,15 +87,9 @@ jobs:
           staging="delryn-${{ inputs.tag }}-${{ matrix.target }}"
           mkdir -p "$staging"
           cp "target/${{ matrix.target }}/release/delryn" "$staging/"
-          # Bundle libpdfium so PDFs work on download (delryn loads it from beside the binary).
-          curl -sSfL -o "${{ matrix.pdfium_asset }}" \
-            "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/${{ matrix.pdfium_asset }}"
-          # This native library ends up inside the artifact users run, so verify it
-          # against the pinned digest rather than trusting the download. A release
-          # asset can be replaced upstream; a SHA-256 cannot.
-          grep " ${{ matrix.pdfium_asset }}\$" .github/pdfium-checksums.txt > expected.sha256
-          shasum -a 256 -c expected.sha256
-          tar -xzf "${{ matrix.pdfium_asset }}" "lib/${{ matrix.libname }}"
+          # Ship it loose as well as embedded: found first, so an intact install
+          # never pays the unpack, and it stays usable if the data directory is
+          # read-only.
           cp "lib/${{ matrix.libname }}" "$staging/"
           # Include docs/licence when present (don't fail if they're absent).
           [ -f README.md ] && cp README.md "$staging/" || true

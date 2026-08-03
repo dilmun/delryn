@@ -6,6 +6,8 @@ rust-version.workspace = true
 
 [dependencies]
 delryn-model = { workspace = true }
+# Data paths + the atomic private write, for unpacking an embedded libpdfium.
+delryn-infra = { workspace = true }
 # Universal, encoding-agnostic math recovery: detect() turns a math DOM node into the
 # model's MathItem (every source it carries), replacing the old per-encoding recovery.
 delryn-eqn = { workspace = true }

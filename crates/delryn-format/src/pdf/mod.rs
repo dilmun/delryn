@@ -9,10 +9,17 @@
 //! rasterized once at a generous fixed width, so a resize re-downscales rather
 //! than re-rendering.
 //!
-//! The PDFium library is bound once per process — a bundled `libpdfium` beside
-//! the binary (the shipped configuration), then the system library. When it's
-//! absent, [`PdfDocument::open`] fails cleanly rather than crashing. See
-//! `DESIGN.md` §3 / the Phase 5 plan in `TODO.md`.
+//! The PDFium library is bound once per process, from the first of these that
+//! answers: `DELRYN_PDFIUM_DIR`, beside the running executable (what a release
+//! tarball provides), a sibling `../lib`, the per-user library directories, the
+//! system library, and finally the copy **embedded in the binary** by `build.rs`
+//! — unpacked to `<config>/lib` on first use. Release builds embed it so a
+//! `delryn` copied out of its tarball keeps opening PDFs; an ordinary
+//! `cargo build` embeds nothing and needs a library placed by hand.
+//!
+//! When none is found, [`PdfDocument::open`] fails cleanly rather than crashing,
+//! and only PDF is affected: EPUB/MOBI still read. `docs/RELEASING.md` has the
+//! pinned build and the setup. See also `DESIGN.md` §3.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -54,30 +61,101 @@ fn pdfium() -> Result<&'static Pdfium> {
         .map_err(|e| anyhow!("{e}"))
 }
 
-/// Bind to PDFium: a bundled `libpdfium` beside the executable first (the
-/// shipped configuration), then the system-installed library.
+/// The `libpdfium` compiled into this binary, or empty when built without one
+/// (see `build.rs`). Release builds embed it so the executable keeps opening PDFs
+/// after being moved away from the tarball that carried the loose library.
+static EMBEDDED_PDFIUM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pdfium-embedded.bin"));
+
+/// Bind to PDFium, trying every source in order of preference: a library already
+/// on disk (cheapest and what an intact release tarball provides), then the
+/// system library, then — only if none of those exist — the copy embedded in this
+/// binary, unpacked to the data directory.
+///
+/// The embedded copy is deliberately *last*: an intact install never pays the
+/// unpack, and someone who deliberately placed a specific build still wins.
 fn bind_pdfium() -> std::result::Result<Pdfium, String> {
-    let bindings = bundled_lib_dir()
-        .and_then(|dir| {
+    let bindings = lib_search_dirs()
+        .into_iter()
+        .find_map(|dir| {
             Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir)).ok()
         })
         .or_else(|| Pdfium::bind_to_system_library().ok())
+        .or_else(|| Pdfium::bind_to_library(unpack_embedded_pdfium()?).ok())
         .ok_or_else(|| {
-            "PDFium library not found — install libpdfium or place it beside the delryn binary"
+            // Ordered for truncation: this reaches the user as a status-bar flash,
+            // clipped to the width of the row, so the pointer to the fix comes
+            // before the detail — at 80 columns "see docs/RELEASING.md" still
+            // shows. The old text said to "install libpdfium" without naming a
+            // build, a source, or `DELRYN_PDFIUM_DIR`.
+            "libpdfium not found — PDF needs it. See docs/RELEASING.md; set \
+             DELRYN_PDFIUM_DIR or put it beside the delryn binary."
                 .to_string()
         })?;
     Ok(Pdfium::new(bindings))
 }
 
-/// Where to look for a bundled `libpdfium`: an explicit `DELRYN_PDFIUM_DIR`
-/// override, else the directory containing the running executable.
-fn bundled_lib_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("DELRYN_PDFIUM_DIR") {
-        return Some(PathBuf::from(dir));
+/// Directories searched for a `libpdfium`, most specific first: an explicit
+/// `DELRYN_PDFIUM_DIR`, the directory holding the running executable (what a
+/// release tarball provides), a sibling `lib/` for a `bin/` + `lib/` install
+/// layout, and the usual per-user library locations.
+fn lib_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    // An empty value means "unset" — `DELRYN_PDFIUM_DIR=` in a wrapper script
+    // would otherwise resolve to the current directory and shadow the real ones.
+    if let Some(dir) = std::env::var_os("DELRYN_PDFIUM_DIR").filter(|d| !d.is_empty()) {
+        dirs.push(PathBuf::from(dir));
     }
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(bin) = exe.parent()
+    {
+        dirs.push(bin.to_path_buf());
+        // `…/bin/delryn` alongside `…/lib/libpdfium.*`, the shape a package
+        // manager or a `--prefix` install produces.
+        if let Some(prefix) = bin.parent() {
+            dirs.push(prefix.join("lib"));
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join(".local/lib/delryn"));
+    }
+    dirs.push(delryn_infra::paths::config_dir().join("lib"));
+    dirs
+}
+
+/// Unpack [`EMBEDDED_PDFIUM`] into `<config>/lib` and return its path, or `None`
+/// when this build embedded nothing.
+///
+/// Written atomically and reused across runs: the filename carries the byte
+/// length, so a delryn built against a different PDFium unpacks alongside rather
+/// than racing to overwrite, and two instances starting together can't hand each
+/// other a half-written library.
+fn unpack_embedded_pdfium() -> Option<PathBuf> {
+    if EMBEDDED_PDFIUM.is_empty() {
+        return None;
+    }
+    let dir = delryn_infra::paths::config_dir().join("lib");
+    let name = Pdfium::pdfium_platform_library_name();
+    let path = dir.join(format!(
+        "{}-{}",
+        EMBEDDED_PDFIUM.len(),
+        name.to_string_lossy()
+    ));
+
+    // Already unpacked by an earlier run — the length is in the name, so a
+    // matching size means matching content for our purposes.
+    let current = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if current != EMBEDDED_PDFIUM.len() as u64 {
+        delryn_infra::paths::write_private_atomic(&path, EMBEDDED_PDFIUM).ok()?;
+        // `dlopen`/`dyld` don't require the execute bit on a shared library, but
+        // some hardened loaders and audit tools expect it; owner-only `rwx` costs
+        // nothing and avoids the argument.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    Some(path)
 }
 
 /// Open a PDF through the shared PDFium binding. Each handle is independent (the

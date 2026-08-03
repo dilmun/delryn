@@ -111,10 +111,8 @@ won't open.
 
 > [!NOTE]
 > **tmux / screen** intercept the graphics protocol, so images and PDF render blank inside
-> them — run delryn outside a multiplexer for now (passthrough is planned). **PDF** also needs
-> **libpdfium**, which is bundled in the release tarballs (pinned by SHA-256 and verified at
-> build time). PDFs are parsed by PDFium in-process and unsandboxed, as in most desktop
-> readers — open PDFs you trust.
+> them — run delryn outside a multiplexer for now (passthrough is planned). PDFs are parsed by
+> PDFium in-process and unsandboxed, as in most desktop readers — open PDFs you trust.
 
 > [!NOTE]
 > **What talks to the network.** Only two things, both on demand and both optional: the
@@ -131,7 +129,8 @@ won't open.
 ### Prebuilt binaries
 
 Download your platform's tarball from the [**Releases**](https://github.com/dilmun/delryn/releases)
-page — each bundles the matching `libpdfium`, so PDFs work out of the box:
+page. **Nothing to install and nothing to configure** — PDF support is built into the binary, so
+you can move `delryn` anywhere on your `PATH` and it keeps working:
 
 ```sh
 tar xzf delryn-<version>-<target>.tar.gz
@@ -156,8 +155,10 @@ cargo build --release
 ./target/release/delryn
 ```
 
-For PDF support from a source build, place a `libpdfium` shared library beside the binary (or
-install one system-wide) — [`docs/RELEASING.md`](docs/RELEASING.md) notes the exact build delryn pins.
+A source build has **no PDF support out of the box** — release binaries embed `libpdfium`, but
+`cargo build` can't. EPUB and MOBI/AZW3 read fine; for PDF, drop a `libpdfium` beside the binary
+or point `DELRYN_PDFIUM_DIR` at one. [`docs/RELEASING.md`](docs/RELEASING.md#libpdfium) has the
+pinned build and a copy-paste setup.
 
 ---
 
