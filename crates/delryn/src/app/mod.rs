@@ -764,6 +764,12 @@ impl App {
         // No targets means a visible page isn't rasterized yet — hold the current
         // page(s) up rather than tearing them down (which would blank the screen).
         if targets.is_empty() {
+            page_deck::dbg_log(&format!(
+                "no targets: section {} continuous={} visible={:?}",
+                r.section,
+                r.continuous_paged_active(),
+                r.placeable_sections(matches!(self.config.view_mode, ViewMode::TwoPage))
+            ));
             return Vec::new();
         }
         let policy = r.page_policy();

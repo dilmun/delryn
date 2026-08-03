@@ -93,7 +93,7 @@ fn temp_cleanup() {
 /// Append a line to `<runtime dir>/delryn-kitty.log` when `DELRYN_KITTY_LOG` is
 /// set — a diagnostic for the placement decisions, since terminal graphics can't
 /// be observed from tests. Zero cost when the env var is unset.
-fn dbg_log(msg: &dyn std::fmt::Display) {
+pub(crate) fn dbg_log(msg: &dyn std::fmt::Display) {
     if std::env::var_os("DELRYN_KITTY_LOG").is_none() {
         return;
     }
@@ -194,6 +194,14 @@ impl PageDeck {
         mut png_for: impl FnMut(usize) -> Option<Vec<u8>>,
     ) -> Vec<String> {
         if self.shows(targets, policy) {
+            // Nothing to do — but say so, because "the deck believed it was
+            // already showing this" is indistinguishable from a blank screen if a
+            // repaint dropped the terminal's placements without a `restage`.
+            dbg_log(&format!(
+                "unchanged: {} target(s), {} resident",
+                targets.len(),
+                self.resident.len()
+            ));
             return Vec::new();
         }
         // Readiness first (no mutation): every page needing (re)transmit must have
@@ -208,7 +216,18 @@ impl PageDeck {
                     Some(png) => {
                         slot.insert(png);
                     }
-                    None => return Vec::new(),
+                    None => {
+                        // Holding the previous frame because one page's bytes
+                        // aren't ready. Harmless once — but if it repeats forever
+                        // the page never appears, so name the section that is
+                        // blocking the whole frame.
+                        dbg_log(&format!(
+                            "held: section {} has no PNG yet ({} target(s))",
+                            t.section,
+                            targets.len()
+                        ));
+                        return Vec::new();
+                    }
                 }
             }
         }

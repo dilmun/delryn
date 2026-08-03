@@ -2456,6 +2456,68 @@ mod tests {
         );
     }
 
+    /// Reported: a PDF draws on open and then vanishes for good on the first
+    /// scroll. Drives the real path — capture the continuous stack, hand it to the
+    /// deck, scroll, capture again — and checks the deck still places something.
+    #[test]
+    fn scrolling_a_continuous_pdf_keeps_placing_pages() {
+        use crate::app::page_deck::PageDeck;
+
+        let mut r = continuous_paged_reader(6);
+        for _ in 0..200 {
+            r.poll_loader();
+            r.sync_pages(paged_policy());
+            if r.page_ready(0) && r.page_ready(1) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(r.page_ready(0), "the first page rasterized + themed");
+
+        let body = ratatui::layout::Rect::new(0, 0, 190, 40);
+        let mut deck = PageDeck::default();
+        let policy = paged_policy();
+
+        // Frame 1: what the reader shows on open.
+        r.sync_pages(policy);
+        r.capture_page_stack(body);
+        assert!(!r.pdf_targets.is_empty(), "a page is placed on open");
+        let first = deck.render(&r.pdf_targets.clone(), policy, |s| r.page_png(s));
+        assert!(
+            first.iter().any(|e| e.contains("a=p")),
+            "the page is placed on open"
+        );
+
+        // Scroll a few rows and redraw, exactly as the loop does.
+        // Scroll well past the first page so later ones have to page in, giving
+        // the loader a few frames each — the real loop redraws while pages load.
+        for step in 0..80 {
+            r.scroll_down(1);
+            for _ in 0..40 {
+                r.poll_loader();
+                r.sync_pages(policy);
+                r.capture_page_stack(body);
+                if !r.pdf_targets.is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            deck.render(&r.pdf_targets.clone(), policy, |s| r.page_png(s));
+            assert!(
+                !r.pdf_targets.is_empty(),
+                "step {step}: nothing placeable at scroll {} (visible {:?}) — \
+                 this is the frame the screen goes blank on",
+                r.scroll,
+                r.visible_stack
+            );
+            assert!(!deck.is_empty(), "step {step}: the deck went empty");
+        }
+        assert!(
+            !deck.shown_sections().is_empty(),
+            "a page is still shown after scrolling"
+        );
+    }
+
     #[test]
     fn continuous_zoom_scales_pages_and_gates_pan() {
         let mut r = continuous_paged_reader(4);
