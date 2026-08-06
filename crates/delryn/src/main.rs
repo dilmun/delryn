@@ -175,6 +175,19 @@ fn main() -> Result<()> {
     {
         delryn::theme::set_terminal_background(bg);
     }
+    // Stamp the run into the page log (no-op unless DELRYN_KITTY_LOG is set), so a
+    // report can be read without guessing where the previous session ended.
+    {
+        let cfg = delryn::config::Config::load();
+        let (protocol, cell) = match &picker {
+            Some(p) => (
+                format!("{:?}", p.protocol_type()),
+                (p.font_size().width, p.font_size().height),
+            ),
+            None => ("none".to_string(), (0, 0)),
+        };
+        delryn::log_page_run(&protocol, cell, cfg.paged, cfg.continuous);
+    }
 
     let mut app = match args.first() {
         // A folder argument (one or more) registers library sources and opens the

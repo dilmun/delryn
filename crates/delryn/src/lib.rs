@@ -19,6 +19,12 @@ pub mod view;
 /// the release tag the moment the two diverge. The release build therefore passes
 /// the tag in as `DELRYN_VERSION`; a source build has no tag to speak of and falls
 /// back to the manifest, which is the honest answer there.
+/// Stamp a run header into the page-deck debug log (no-op unless
+/// `DELRYN_KITTY_LOG` is set). See `app::page_deck::dbg_log_run_header`.
+pub fn log_page_run(protocol: &str, cell: (u16, u16), paged: bool, continuous: bool) {
+    app::log_page_run(protocol, cell, paged, continuous);
+}
+
 pub const VERSION: &str = match option_env!("DELRYN_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),

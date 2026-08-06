@@ -93,6 +93,21 @@ fn temp_cleanup() {
 /// Append a line to `<runtime dir>/delryn-kitty.log` when `DELRYN_KITTY_LOG` is
 /// set — a diagnostic for the placement decisions, since terminal graphics can't
 /// be observed from tests. Zero cost when the env var is unset.
+/// Mark the start of a run in the log, with the facts that decide how pages are
+/// drawn. The log is append-only across runs, which made a fresh report
+/// indistinguishable from the previous session's frames — every question about
+/// it began by guessing where the run started.
+pub(crate) fn dbg_log_run_header(protocol: &str, cell: (u16, u16), paged: bool, continuous: bool) {
+    dbg_log(&format!(
+        "===== run: delryn {} · protocol={protocol} · cell={}x{} · paged={paged} · \
+         continuous={continuous} · tmux={} =====",
+        crate::VERSION,
+        cell.0,
+        cell.1,
+        std::env::var_os("TMUX").is_some(),
+    ));
+}
+
 pub(crate) fn dbg_log(msg: &dyn std::fmt::Display) {
     if std::env::var_os("DELRYN_KITTY_LOG").is_none() {
         return;

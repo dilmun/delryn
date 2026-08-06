@@ -42,6 +42,11 @@ pub use collections::{CollInput, ShelfPicker};
 mod tags;
 pub use tags::TagInput;
 
+/// Re-export of the page log's run header for `main` (see `page_deck`).
+pub(crate) fn log_page_run(protocol: &str, cell: (u16, u16), paged: bool, continuous: bool) {
+    page_deck::dbg_log_run_header(protocol, cell, paged, continuous);
+}
+
 mod discover;
 pub mod help;
 pub use help::{Help, HelpRow};
