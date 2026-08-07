@@ -9,8 +9,13 @@
 //!
 //! This brings the PDF-page model to inline images: each distinct image is **transmitted
 //! once** (`a=t`), **placed** with `a=p` at an absolute cell, **re-placed** cheaply on
-//! scroll (`d=i` deletes the old placement, keeps the data), and **freed** when it leaves
-//! the screen (`d=I`). No per-cell compositing, no re-transmit on scroll, no ghosts.
+//! scroll (repeating an `(image id, placement id)` pair replaces that placement, so a
+//! move needs no delete), and **freed** when it leaves the screen (`d=I`). No per-cell
+//! compositing, no re-transmit on scroll, no ghosts.
+//!
+//! Moving via `d=i` ("drop the placement, keep the data") is not portable: iTerm2 frees
+//! the image data along with it, so every inline raster vanished on the first scrolled
+//! row and never returned. See [`PageDeck`](crate::app::page_deck::PageDeck).
 
 use std::collections::{HashMap, HashSet};
 
@@ -31,11 +36,19 @@ pub struct InlineTarget {
     pub crop: Option<Crop>,
 }
 
+/// One placement's shape: the cell box it is scaled into and the source rectangle it
+/// shows. Position is excluded — an image that only *moves* re-places correctly
+/// everywhere, and that is the common case a scroll must keep cheap.
+type Shape = (u16, u16, Option<Crop>);
+
+fn shape(t: &InlineTarget) -> Shape {
+    (t.rect.width, t.rect.height, t.crop)
+}
+
 /// Tracks which inline images are transmitted + placed, and emits the escapes to move
 /// to a new set. Images are **transmitted once**: their data stays resident and only the
 /// cheap *placement* changes as the view scrolls, so a row-by-row scroll re-places a few
 /// bytes per image instead of re-sending every raster.
-#[derive(Default)]
 pub struct InlineDeck {
     /// What is placed on screen right now (key + rect + crop), in draw order.
     shown: Vec<InlineTarget>,
@@ -43,9 +56,31 @@ pub struct InlineDeck {
     resident: HashMap<ImgKey, u32>,
     /// Next id offset to hand out (monotonic within the deck's reserved id block).
     next_id: u32,
+    /// The shape of every placement each resident image actually has on screen, from
+    /// the last [`render`](Self::render). Two things read it: placement ids are handed
+    /// out `1..=n` per image, so an image placed *fewer* times than this would strand
+    /// the surplus ids; and where a move needs a re-transmit, an image whose shapes
+    /// changed at all has to be re-sent rather than re-placed.
+    placements: HashMap<ImgKey, Vec<Shape>>,
+    /// Whether this terminal needs an image's data re-sent to redraw it at a new
+    /// shape — see [`media::moves_need_retransmit`].
+    retransmit_moves: bool,
     /// The last [`render`](Self::render) hit the per-frame upload cap with images still
     /// waiting — the loop should keep redrawing until they land.
     deferred: bool,
+}
+
+impl Default for InlineDeck {
+    fn default() -> Self {
+        Self {
+            shown: Vec::new(),
+            resident: HashMap::new(),
+            next_id: 0,
+            placements: HashMap::new(),
+            retransmit_moves: media::moves_need_retransmit(),
+            deferred: false,
+        }
+    }
 }
 
 impl InlineDeck {
@@ -101,12 +136,36 @@ impl InlineDeck {
             out.push(media::delete_image_seq(id));
             self.resident.remove(&k);
         }
-        // Clear the placements of every still-resident image before re-placing them below
-        // (`d=i` keeps the image *data* resident — no re-transmit). An image reused at many
-        // spots is placed once per occurrence with a distinct placement id; clearing first
-        // means a changed set / changed positions can't leave stale placements behind.
-        for id in self.resident.values() {
-            out.push(media::delete_placement_seq(*id));
+        // Re-placing covers a move, and covers occurrence 1..=n of a repeated image, but
+        // two cases it cannot cover need the image freed and re-sent:
+        //
+        // * placed fewer times than last frame — placements n+1.. would stay on screen
+        //   with nothing to overwrite them, and there is no portable way to drop a
+        //   single placement (the `d=i` that would is the one iTerm2 mis-frees);
+        // * a changed shape, where the terminal won't re-render a re-placed image.
+        //
+        // Both stay off the scrolling path: an image that only moves keeps its shapes.
+        let mut want: HashMap<ImgKey, Vec<Shape>> = HashMap::new();
+        for t in targets {
+            want.entry(t.key).or_default().push(shape(t));
+        }
+        let stale: Vec<(ImgKey, u32)> = self
+            .resident
+            .iter()
+            .filter(|(k, _)| {
+                let had = self.placements.get(*k).map_or(&[][..], Vec::as_slice);
+                let now = want.get(*k).map_or(&[][..], Vec::as_slice);
+                if self.retransmit_moves {
+                    now != had
+                } else {
+                    now.len() < had.len()
+                }
+            })
+            .map(|(k, id)| (*k, *id))
+            .collect();
+        for (k, id) in stale {
+            out.push(media::delete_image_seq(id));
+            self.resident.remove(&k);
         }
 
         // Place each target. The SAME image at several spots needs a DISTINCT placement id
@@ -148,6 +207,12 @@ impl InlineDeck {
             ));
             placed.push(*t);
         }
+        // Record what was *actually* placed, not what was wanted: an image still waiting
+        // on the upload cap has no placements to strand.
+        self.placements.clear();
+        for t in &placed {
+            self.placements.entry(t.key).or_default().push(shape(t));
+        }
         self.shown = placed;
         out
     }
@@ -160,6 +225,10 @@ impl InlineDeck {
     /// stay gone until some target happened to move.
     pub fn restage(&mut self) {
         self.shown.clear();
+        // The repaint dropped the terminal's placements, so there are none left to
+        // strand — starting the count from zero keeps a shrinking target set from
+        // freeing images that no longer have surplus placements anyway.
+        self.placements.clear();
     }
 
     /// Free every resident image (`d=I` per id) and forget all placements — for leaving
@@ -172,6 +241,7 @@ impl InlineDeck {
             .collect();
         self.resident.clear();
         self.shown.clear();
+        self.placements.clear();
         self.deferred = false; // nothing left to upload — don't keep the loop redrawing
         out
     }
@@ -230,14 +300,46 @@ mod tests {
         );
     }
 
+    /// A move is a bare re-place: repeating an `(image id, placement id)` pair
+    /// replaces that placement. It must delete nothing — `d=i` claims to keep the
+    /// image data but iTerm2 frees it, which blanked every inline raster on the
+    /// first scrolled row and, the deck still holding it resident, for good.
     #[test]
-    fn moving_re_places_without_re_transmit() {
+    fn moving_re_places_without_deleting_or_re_transmitting() {
         let mut deck = InlineDeck::default();
         deck.render(&[target(0, 3, 4)], |_| Some(vec![1, 2, 3]));
         let out = deck.render(&[target(0, 3, 5)], |_| panic!("resident: no re-fetch"));
-        assert!(out.iter().any(|e| e.contains("d=i")), "drops old placement");
         assert!(out.iter().any(|e| e.contains("a=p")), "re-places");
         assert!(!out.iter().any(|e| e.contains("a=t")), "no re-transmit");
+        assert!(
+            !out.iter().any(|e| e.contains("a=d")),
+            "a move deletes nothing: {out:?}"
+        );
+    }
+
+    /// The blanket `d=i` sweep this replaced also cleared the *surplus* placements of
+    /// an image drawn fewer times than last frame (placement ids run `1..=n` per
+    /// image, so occurrences n+1.. would otherwise linger with nothing to overwrite
+    /// them). Freeing the image outright is the portable way to drop them.
+    #[test]
+    fn fewer_occurrences_frees_the_image_so_no_placement_is_stranded() {
+        let mut deck = InlineDeck::default();
+        let twice = [target(0, 3, 4), target(0, 3, 8)];
+        let out = deck.render(&twice, |_| Some(vec![1, 2, 3]));
+        assert_eq!(
+            out.iter().filter(|e| e.contains("a=p")).count(),
+            2,
+            "same image placed at both spots"
+        );
+
+        let once = [target(0, 3, 4)];
+        let out = deck.render(&once, |_| Some(vec![1, 2, 3]));
+        assert!(
+            out.iter().any(|e| e.contains("d=I")),
+            "the image is freed rather than stranding placement 2: {out:?}"
+        );
+        assert!(out.iter().any(|e| e.contains("a=t")), "and re-transmitted");
+        assert!(out.iter().any(|e| e.contains("a=p")), "and re-placed once");
     }
 
     /// A full repaint clears the screen, which drops the terminal's placements but

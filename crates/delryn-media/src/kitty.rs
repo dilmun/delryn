@@ -59,8 +59,49 @@ pub fn detect_picker() -> Option<Picker> {
         fixed.set_protocol_type(protocol);
         picker = fixed;
     }
+    // Record how images may be moved. This is iTerm2 specifically, *not* everything
+    // that renders iTerm2 inline images: WezTerm shares that protocol but implements
+    // the Kitty one properly, and would needlessly lose cheap moves (and with them
+    // continuous PDF stacking) if it were lumped in. See [`moves_need_retransmit`].
+    MOVES_NEED_RETRANSMIT.store(
+        is_iterm2(name.as_deref()),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     Some(picker)
 }
+
+/// Whether *moving* a placed image on this terminal means re-transmitting its data.
+///
+/// The protocol defines a repeat of an `(image id, placement id)` pair as replacing
+/// that placement, which makes a move a single cheap escape. iTerm2 honours that
+/// only while the placement keeps its **geometry**: change `c=`/`r=` or the source
+/// rectangle — as every row of a continuous scroll does — and it draws nothing at
+/// all, leaving the previous pixels on screen. (Moving a placement of *unchanged*
+/// geometry does work, so this is about geometry, not movement.) Freeing the image
+/// and re-sending it is the only sequence it renders reliably.
+///
+/// Resolved once, from the protocol [`detect_picker`] settled on, so a terminal
+/// forced with `DELRYN_IMAGE_PROTOCOL` gets the matching answer. `DELRYN_MOVE_RETRANSMIT=1|0`
+/// forces it directly, for a terminal delryn hasn't been taught about.
+pub fn moves_need_retransmit() -> bool {
+    if let Some(forced) =
+        std::env::var("DELRYN_MOVE_RETRANSMIT")
+            .ok()
+            .and_then(|v| match v.trim() {
+                "1" | "true" | "yes" => Some(true),
+                "0" | "false" | "no" => Some(false),
+                _ => None,
+            })
+    {
+        return forced;
+    }
+    MOVES_NEED_RETRANSMIT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Set from [`detect_picker`]. Defaults to `false` — the protocol-conformant
+/// behaviour — so a process that never detected a terminal (tests) is unaffected.
+static MOVES_NEED_RETRANSMIT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// `DELRYN_CELL_SIZE=WxH` (e.g. `22x46`) — the terminal's cell size in the pixel
 /// units its **image protocol** places by, for a terminal that misreports it.
@@ -125,6 +166,32 @@ fn iterm2_protocol_from(
     term_program.is_some_and(|p| p.contains("iTerm") || p.contains("WezTerm"))
         || lc_terminal.is_some_and(|t| t.contains("iTerm"))
         || wezterm_exe.is_some_and(|w| !w.is_empty())
+}
+
+/// Is this terminal **iTerm2 itself**, as opposed to anything that merely renders
+/// its inline-image protocol? Same precedence as [`wants_iterm2_protocol`] — the
+/// terminal's own answer outranks the environment — but deliberately excludes
+/// WezTerm, whose Kitty implementation is sound.
+fn is_iterm2(reported_name: Option<&str>) -> bool {
+    iterm2_from(
+        reported_name,
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var("LC_TERMINAL").ok().as_deref(),
+    )
+}
+
+/// Pure half of [`is_iterm2`], so the precedence is unit-testable without touching
+/// the process-wide environment.
+fn iterm2_from(
+    reported_name: Option<&str>,
+    term_program: Option<&str>,
+    lc_terminal: Option<&str>,
+) -> bool {
+    if let Some(name) = reported_name {
+        return name.contains("iTerm");
+    }
+    term_program.is_some_and(|p| p.contains("iTerm"))
+        || lc_terminal.is_some_and(|t| t.contains("iTerm"))
 }
 
 /// `DELRYN_IMAGE_PROTOCOL=kitty|iterm2|sixel|halfblocks` — force the protocol
@@ -372,6 +439,22 @@ mod tests {
         assert!(!iterm2_protocol_from(None, Some("tmux"), None, None));
         assert!(!iterm2_protocol_from(None, None, None, None));
         assert!(!iterm2_protocol_from(None, None, None, Some("")));
+    }
+
+    /// WezTerm renders iTerm2 inline images but implements the Kitty protocol
+    /// correctly, so it must not inherit iTerm2's workaround — doing so would cost
+    /// it continuous PDF stacking for a defect it does not have.
+    #[test]
+    fn only_iterm2_itself_needs_a_retransmit_to_move_an_image() {
+        assert!(iterm2_from(Some("iTerm2 3.6.0"), None, None));
+        assert!(!iterm2_from(Some("WezTerm 20240203"), None, None));
+        assert!(!iterm2_from(Some("ghostty 1.0"), None, None));
+        // A terminal that answered outranks the environment, both ways.
+        assert!(!iterm2_from(Some("WezTerm"), Some("iTerm.app"), None));
+        assert!(iterm2_from(None, Some("iTerm.app"), None));
+        assert!(iterm2_from(None, None, Some("iTerm2")));
+        assert!(!iterm2_from(None, Some("WezTerm"), None));
+        assert!(!iterm2_from(None, None, None));
     }
 
     #[test]

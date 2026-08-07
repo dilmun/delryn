@@ -25,8 +25,9 @@ pub use cover::{CoverImage, build_cover, decode_cover, wrap_cover};
 pub use decode::{decode, image_dimensions};
 pub use image::DynamicImage;
 pub use kitty::{
-    delete_all_images_seq, delete_image_seq, delete_placement_seq, detect_picker, place_image_seq,
-    terminal_background, terminal_report, transmit_file_seq, transmit_image_seq,
+    delete_all_images_seq, delete_image_seq, delete_placement_seq, detect_picker,
+    moves_need_retransmit, place_image_seq, terminal_background, terminal_report,
+    transmit_file_seq, transmit_image_seq,
 };
 pub use page::{PageKey, PageThemer, ThemedPage};
 pub use profile::{InkProfile, ink_profile};
