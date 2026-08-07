@@ -60,6 +60,17 @@ pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
     // Continuous cross-section scroll indicator (reflow text or PDF page stacking).
     if reader.flows_across_sections() {
         bar.text(SegmentId::Continuous, Zone::Right, 3, "continuous", dim);
+    } else if reader.paged_stack_unavailable() {
+        // Continuous is on and turning pages anyway, because this terminal cannot
+        // redraw a page as it scrolls past an edge. Say so, or the setting looks
+        // broken rather than unsupported.
+        bar.text(
+            SegmentId::Continuous,
+            Zone::Right,
+            3,
+            "pages (terminal)",
+            dim,
+        );
     }
     // Manga (right-to-left) indicator — only meaningful for paged spreads.
     if reader.is_paged_image() && config.reading_direction.is_rtl() {

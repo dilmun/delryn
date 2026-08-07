@@ -101,7 +101,19 @@ impl Reader {
     /// [`continuous_two_page`](Self::continuous_two_page)). Mutually exclusive with
     /// [`reflow_flows`](Self::reflow_flows) (which excludes paged docs).
     pub fn continuous_paged_active(&self) -> bool {
-        self.continuous && self.is_paged_image() && !self.paged && !self.chapter_lock
+        self.continuous
+            && self.stacks_pages
+            && self.is_paged_image()
+            && !self.paged
+            && !self.chapter_lock
+    }
+
+    /// Whether the reader is turning PDF pages *because the terminal can't stack
+    /// them*, rather than because Page mode was asked for — the one case where the
+    /// Continuous setting is on and visibly doing nothing, which the status bar
+    /// explains rather than leaving to look like a bug.
+    pub fn paged_stack_unavailable(&self) -> bool {
+        self.continuous && !self.stacks_pages && self.is_paged_image() && !self.paged
     }
 
     /// Whether the Continuous setting is having an effect right now, in **either**

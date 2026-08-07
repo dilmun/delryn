@@ -148,6 +148,18 @@ pub struct Reader {
     /// [`flows_across_sections`](Self::flows_across_sections) for "is it doing
     /// anything right now".
     pub continuous: bool,
+    /// Whether this terminal can stack PDF pages at all — i.e. whether it redraws a
+    /// placement that changes shape, which a page scrolling past a viewport edge does
+    /// every row.
+    ///
+    /// iTerm2 does not: it ignores a re-place whose geometry changed, and freeing and
+    /// re-sending the page instead costs 1.2 MB and ~60 ms of blocking writes *per
+    /// scrolled row* (two pages in view: 2.4 MB, ~200 ms) — past its
+    /// synchronized-update watchdog, so the page arrives in torn fragments. There is
+    /// no cheap move to fall back on, so a paged-image book turns pages there instead
+    /// of stacking them; see [`continuous_paged_active`](Self::continuous_paged_active).
+    /// Reflowed books are unaffected — they stack text, not rasters.
+    pub stacks_pages: bool,
     /// Active view mode (set each render) — lets the continuous checks tell
     /// single-column (Center) from spread (TwoPage) without the view pre-gating the
     /// `continuous` flag.
@@ -375,6 +387,7 @@ impl Reader {
             chapter_lock: false,
             paged: false,
             continuous: false,
+            stacks_pages: !crate::media::moves_need_retransmit(),
             view_mode: ViewMode::Center,
             page_gap: 0,
             side_padding: 0,
