@@ -108,6 +108,11 @@ pub struct Reader {
     /// Show the code line-number gutter / language tag (set each render from config).
     pub code_line_numbers: bool,
     pub code_label: bool,
+    /// The language this book's unmarked code blocks default to, read once from
+    /// its title (`highlight::language_from_title`). A per-section tally of the
+    /// blocks that *do* identify themselves wins over it; this is what's left for
+    /// a book whose listings are all unmarked. `None` → such blocks stay plain.
+    pub code_lang_hint: Option<&'static str>,
     /// Fold long code blocks to a preview (set each render from config).
     pub code_fold: bool,
     pub code_fold_threshold: usize,
@@ -116,8 +121,16 @@ pub struct Reader {
     pub code_fold_flip: Vec<usize>,
     /// Word-wrap table cells (set each render from config).
     pub table_wrap: bool,
+    /// The colour the next highlight will be made in, and the colour the live
+    /// selection is washed in so it previews the result before it is committed.
+    /// Kept for the session so a reader who picked a colour keeps using it.
+    pub pen: HighlightColor,
     /// Full justification + converter-spacing tidy (set each render from config).
     pub justify: bool,
+    /// Break long words at algorithmic hyphenation points (set each render from
+    /// config, and only for a book whose language the patterns actually fit — see
+    /// [`Reader::language_hyphenates`]).
+    pub hyphenate: bool,
     pub tidy_spacing: bool,
     /// Keep scrolling within the current chapter (set each render from config).
     pub chapter_lock: bool,
@@ -126,11 +139,27 @@ pub struct Reader {
     pub paged: bool,
     /// Continuous scroll across sections (set each render, the raw config flag):
     /// the anchor's tail and the following heads share the viewport so a boundary
-    /// scrolls seamlessly. Reflow uses it single-column only; paged (PDF) uses it in
-    /// both Center (one stack) and TwoPage (spread stack). Inert in page-mode /
-    /// chapter-lock. See [`continuous_active`](Self::continuous_active) /
-    /// [`continuous_paged_active`](Self::continuous_paged_active).
+    /// scrolls seamlessly. Both variants work in Center and TwoPage — reflow joins
+    /// wrapped chapters, paged (PDF) stacks page images (one per band in Center, a
+    /// facing pair in TwoPage). Chapter-lock stops both; page-mode stops only the
+    /// paged variant, where snapping and stacking are the same axis. See
+    /// [`reflow_flows`](Self::reflow_flows) /
+    /// [`continuous_paged_active`](Self::continuous_paged_active), and
+    /// [`flows_across_sections`](Self::flows_across_sections) for "is it doing
+    /// anything right now".
     pub continuous: bool,
+    /// Whether this terminal can stack PDF pages at all — i.e. whether it redraws a
+    /// placement that changes shape, which a page scrolling past a viewport edge does
+    /// every row.
+    ///
+    /// iTerm2 does not: it ignores a re-place whose geometry changed, and freeing and
+    /// re-sending the page instead costs 1.2 MB and ~60 ms of blocking writes *per
+    /// scrolled row* (two pages in view: 2.4 MB, ~200 ms) — past its
+    /// synchronized-update watchdog, so the page arrives in torn fragments. There is
+    /// no cheap move to fall back on, so a paged-image book turns pages there instead
+    /// of stacking them; see [`continuous_paged_active`](Self::continuous_paged_active).
+    /// Reflowed books are unaffected — they stack text, not rasters.
+    pub stacks_pages: bool,
     /// Active view mode (set each render) — lets the continuous checks tell
     /// single-column (Center) from spread (TwoPage) without the view pre-gating the
     /// `continuous` flag.
@@ -346,15 +375,19 @@ impl Reader {
             code_hscroll: 0,
             code_line_numbers: true,
             code_label: true,
+            code_lang_hint: None, // set from the metadata just below
             code_fold: true,
             code_fold_threshold: 20,
             code_fold_flip: Vec::new(),
             table_wrap: true,
+            pen: HighlightColor::ALL[0],
             justify: false,
+            hyphenate: false,
             tidy_spacing: true,
             chapter_lock: false,
             paged: false,
             continuous: false,
+            stacks_pages: !crate::media::moves_need_retransmit(),
             view_mode: ViewMode::Center,
             page_gap: 0,
             side_padding: 0,
@@ -410,6 +443,11 @@ impl Reader {
             inline_targets: std::cell::RefCell::new(Vec::new()),
             inline_needs_clear: std::cell::Cell::new(false),
         };
+        // What language this book's unmarked listings default to. Read once from
+        // the title — a "C++ Memory Management" is a C++ book — and only consulted
+        // where a block and its section have nothing to say for themselves.
+        reader.code_lang_hint =
+            delryn_render::highlight::language_from_title(&reader.doc.metadata().title);
         reader.prefetch_neighbors();
         Ok(reader)
     }
@@ -487,6 +525,29 @@ impl Reader {
             })
             .min_by_key(|(i, _)| (*i as isize - center as isize).unsigned_abs())
             .map(|(_, idx)| idx)
+    }
+
+    /// Whether the view is a **reflowed two-page spread** — two text columns side by
+    /// side, the right continuing from the left. (A paged document's two-page view is a
+    /// facing-page image spread, which pages rather than scrolls.)
+    pub fn text_spread(&self) -> bool {
+        self.view_mode == ViewMode::TwoPage && !self.is_paged_image()
+    }
+
+    /// How far a reading motion advances, in lines.
+    ///
+    /// A spread has to move by its **whole** height. Any smaller step — a row for `j`, a
+    /// column for `PageDown` — slides the right column's content into the left one, so
+    /// most of the screen is text you just read, arriving on the other side of the
+    /// spread. Turning both pages at once is what a book does, and it is the only step
+    /// that never repeats content. Outside a spread this is the single column height, so
+    /// `PageDown` is unchanged.
+    pub fn reading_step(&self) -> usize {
+        if self.text_spread() {
+            self.visible_span.max(1)
+        } else {
+            self.page_lines.max(1)
+        }
     }
 
     /// Lines of `self.lines` on screen at once. A two-page reflow spread stacks two
@@ -722,18 +783,17 @@ impl Reader {
         ));
     }
 
-    /// Gather the renderable figures for the image viewer: the current chapter
-    /// only, or every section in the book (decoding as needed) when `whole_book`.
-    pub fn figures(&mut self, whole_book: bool) -> Vec<super::Figure> {
+    /// The renderable figures of the chapter being read, from its already-decoded
+    /// blocks — free, so the image viewer opens instantly.
+    ///
+    /// Book scope adds the rest of the sections through
+    /// [`FigureScan`](super::figure_scan::FigureScan), off the render thread. It used to
+    /// be gathered here instead, by decoding every section inline: on a 550-figure book
+    /// that froze the UI for seconds and pulled the whole book's blocks into the section
+    /// cache (which `fetch_blocks` fills but never evicts).
+    pub fn chapter_figures(&self) -> Vec<super::Figure> {
         let mut out = Vec::new();
-        if whole_book {
-            for s in 0..self.doc.section_count() {
-                let blocks = self.fetch_blocks(s);
-                super::image_view::collect_figures(&blocks, s, &mut out);
-            }
-        } else {
-            super::image_view::collect_figures(&self.blocks, self.section, &mut out);
-        }
+        super::image_view::collect_figures(&self.blocks, self.section, &mut out);
         out
     }
 
@@ -819,6 +879,7 @@ impl Reader {
             code_fold_flip: self.code_fold_flip.clone(),
             table_wrap: self.table_wrap,
             justify: self.justify,
+            hyphenate: self.hyphenate,
             tidy: self.tidy_spacing,
             images_key: self.images.images_key,
         };
@@ -872,11 +933,13 @@ impl Reader {
                 code_hscroll: self.code_hscroll,
                 code_line_numbers: self.code_line_numbers,
                 code_label: self.code_label,
+                code_lang_hint: self.code_lang_hint,
                 code_fold: self.code_fold,
                 code_fold_threshold: self.code_fold_threshold,
                 code_fold_flip: flip,
                 table_wrap: self.table_wrap,
                 justify: self.justify,
+                hyphenate: self.hyphenate,
                 tidy_spacing: self.tidy_spacing,
                 inline_math_cols,
                 inline_math_rows,
@@ -1264,6 +1327,22 @@ impl Reader {
         {
             self.scroll = start.saturating_sub(offset);
         }
+        // Page mode asks for the position to *stay* on a page boundary, not merely to move
+        // by one: a jump, a search hit or a chapter crossing would otherwise leave the view
+        // resting mid-page, and every turn after it inherits that offset. Applied last so
+        // it snaps whatever the resolutions above landed on. With Page mode off the
+        // position is free to rest anywhere, which is what makes the setting observable in
+        // a spread — where motion turns a whole spread either way.
+        //
+        // Not while a cursor is active, though: `follow_caret` scrolls the *minimum* needed
+        // to bring the caret in at the bottom edge, and snapping rounds the window start
+        // back down — which moves the window end down with it and puts the caret off-screen
+        // again. Every keypress would then re-follow and re-snap, stranding the caret below
+        // the fold. Caret navigation is line-granular by nature, so while it is driving the
+        // position it owns it; the snap resumes when the cursor is dismissed.
+        if self.paged && !self.is_paged_image() && self.select.is_none() {
+            self.snap_to_page();
+        }
     }
 
     /// Overall reading progress in `[0, 1]`.
@@ -1305,6 +1384,24 @@ impl Reader {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    /// Whether this book's language is one the compiled-in hyphenation patterns
+    /// actually describe.
+    ///
+    /// Only English patterns are built in, and applying them to another language
+    /// doesn't degrade gracefully — it breaks words at points that language never
+    /// breaks at, which is worse than not hyphenating. A book that declares no
+    /// language is taken as English: undeclared metadata is common, and the
+    /// alternative is to silently withhold the feature from most of a library.
+    pub fn language_hyphenates(&self) -> bool {
+        match self.doc.metadata().language.as_deref() {
+            None => true,
+            Some(tag) => {
+                let tag = tag.trim().to_ascii_lowercase();
+                tag == "en" || tag.starts_with("en-") || tag.starts_with("en_")
+            }
+        }
     }
 
     pub fn chapter_title(&self) -> String {
@@ -1637,6 +1734,40 @@ mod tests {
         assert_eq!(r.chapter_title(), "Chapter 2");
     }
 
+    /// The pen is what a highlight will be made in, and it is only *previewed*
+    /// once there is a range to preview — in cursor mode there is nothing to wash,
+    /// so the selection keeps its ordinary accent styling.
+    #[test]
+    fn the_pen_previews_only_once_something_is_selected() {
+        let mut r = reader_with(vec![para()]);
+        r.viewport_lines = 10;
+        r.page_lines = 10;
+        r.visible_span = 10;
+
+        r.start_selection();
+        assert_eq!(r.selection_pen(), None, "cursor mode previews nothing");
+
+        r.toggle_selection_anchor();
+        assert_eq!(
+            r.selection_pen(),
+            Some(r.pen),
+            "the range washes in the pen"
+        );
+
+        // Stepping the pen changes what is on screen, and wraps round the palette
+        // so every colour is reachable with the one key.
+        let first = r.pen;
+        let mut seen = vec![first];
+        for _ in 1..HighlightColor::ALL.len() {
+            seen.push(r.cycle_pen());
+        }
+        assert_eq!(seen.len(), HighlightColor::ALL.len());
+        for c in HighlightColor::ALL {
+            assert!(seen.contains(&c), "{} is reachable", c.label());
+        }
+        assert_eq!(r.cycle_pen(), first, "and wraps back round");
+    }
+
     // Cursor mode: `V` starts a movable caret with no anchor (nothing selected);
     // `v`/Space drops the anchor, then extending right grows the selected text, and
     // copying stages it for the clipboard.
@@ -1693,6 +1824,43 @@ mod tests {
             r.selection_down();
         }
         assert!(r.scroll > 0, "past the visible span the follow scrolls");
+    }
+
+    /// A spread has to move by its whole height. Any smaller step slides the right
+    /// column's text into the left one, so the reader is shown most of what they just
+    /// read — the "right shows in left, pages keep repeating" complaint.
+    #[test]
+    fn a_spread_reads_a_whole_spread_at_a_time() {
+        let big = Block::Para {
+            spans: vec![Span::plain("lorem ipsum dolor sit amet ".repeat(120))],
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let mut r = reader_with(vec![big]);
+        r.page_lines = 8;
+        r.visible_span = 16; // two 8-line columns
+        r.view_mode = ViewMode::TwoPage;
+        assert!(r.text_spread(), "a reflowed two-page view is a text spread");
+        assert_eq!(
+            r.reading_step(),
+            16,
+            "a motion moves the whole spread, not one column"
+        );
+
+        // Consecutive spreads must not overlap: what the step reveals is entirely new.
+        let before = r.scroll..r.scroll + r.visible_span;
+        r.scroll_down(r.reading_step());
+        let after = r.scroll..r.scroll + r.visible_span;
+        assert_eq!(
+            after.start, before.end,
+            "the next spread starts where the last ended"
+        );
+
+        // A single column keeps the ordinary page step.
+        r.view_mode = ViewMode::Center;
+        assert!(!r.text_spread());
+        assert_eq!(r.reading_step(), 8, "one column pages by its own height");
     }
 
     // Ctrl-d / Ctrl-u jump the caret by half the visible span.
@@ -1796,7 +1964,7 @@ mod tests {
     #[test]
     fn continuous_scroll_down_rolls_the_anchor_across_a_boundary() {
         let mut r = continuous_reader(3);
-        assert!(r.continuous_active());
+        assert!(r.reflow_flows());
         let l0 = r.lines.len();
         assert!(l0 > 2, "a multi-paragraph section wraps to several lines");
         // Sit near the section end, then scroll past it: the anchor rolls to the
@@ -1807,19 +1975,99 @@ mod tests {
         assert_eq!(r.scroll, 2, "kept the leftover offset past the boundary");
     }
 
+    /// Chapter flow follows the Continuous setting in *both* view modes. It used to be
+    /// forced on for a two-page spread, which made the setting inert in the one view where
+    /// the reader most wants the choice — the "Pagination options have no effect" report.
     #[test]
-    fn reflow_flows_for_two_page_always_center_needs_the_toggle() {
+    fn chapter_flow_follows_the_continuous_setting_in_both_views() {
         let mut r = continuous_reader(3); // continuous = true, view_mode = Center
-        assert!(r.reflow_flows(), "center + continuous flows");
-        r.continuous = false;
-        assert!(!r.reflow_flows(), "center without the toggle does not flow");
-        r.view_mode = ViewMode::TwoPage;
-        assert!(
-            r.reflow_flows(),
-            "two-page flows across chapters even off-toggle"
-        );
+        for mode in [ViewMode::Center, ViewMode::TwoPage] {
+            r.view_mode = mode;
+            r.continuous = true;
+            assert!(r.reflow_flows(), "{mode:?}: the toggle flows chapters");
+            r.continuous = false;
+            assert!(
+                !r.reflow_flows(),
+                "{mode:?}: without it each chapter starts fresh"
+            );
+        }
+        // Page mode no longer suppresses flow: snapping and chapter flow are separate
+        // choices, and pages that flow across a chapter break are coherent.
+        r.continuous = true;
+        r.paged = true;
+        assert!(r.reflow_flows(), "page mode still flows chapters");
         r.chapter_lock = true;
-        assert!(!r.reflow_flows(), "chapter-lock keeps per-section paging");
+        assert!(!r.reflow_flows(), "chapter-lock stops at the boundary");
+    }
+
+    /// Page mode holds the position on a page boundary, but the caret follow scrolls the
+    /// *minimum* needed to bring the caret in at the bottom edge. Snapping that back down
+    /// moves the window end down with it and puts the caret off-screen, so every keypress
+    /// re-follows and re-snaps and the caret is stranded below the fold. While a cursor is
+    /// driving the position it owns it.
+    #[test]
+    fn page_snapping_never_strands_the_caret_off_screen() {
+        let big = Block::Para {
+            spans: vec![Span::plain("lorem ipsum dolor sit amet ".repeat(80))],
+            indent: 0,
+            quote: false,
+            marker: None,
+        };
+        let mut r = reader_with(vec![big]);
+        r.page_lines = 10;
+        r.visible_span = 10;
+        r.paged = true; // page mode: the position snaps to a page boundary
+        assert!(r.lines.len() > 40, "enough lines to page through");
+
+        r.start_selection();
+        // Walk the caret well past the first page.
+        for _ in 0..15 {
+            r.selection_down();
+        }
+        r.resolve_pending();
+        let caret = r.selection_caret().map(|(l, _)| l).expect("a caret");
+        assert!(
+            (r.scroll..r.scroll + r.visible_span).contains(&caret),
+            "caret {caret} is off-screen at scroll {} (span {})",
+            r.scroll,
+            r.visible_span
+        );
+
+        // Dismissed, the snap resumes and the position lands on a page boundary.
+        r.cancel_selection();
+        r.resolve_pending();
+        assert_eq!(
+            r.scroll % r.page_lines,
+            0,
+            "snapped once the cursor is gone"
+        );
+    }
+
+    /// The two settings drive different things, so each has to be observable on its own:
+    /// Continuous decides whether the next chapter joins on, Page mode decides whether the
+    /// position stays on a page boundary. Motion in a spread turns a whole spread either
+    /// way — a partial step is what slides text between the columns.
+    #[test]
+    fn page_mode_and_continuous_control_different_things() {
+        let mut r = continuous_reader(3);
+        r.page_lines = 8;
+        r.visible_span = 16;
+        r.view_mode = ViewMode::TwoPage;
+
+        // Page mode is the flip/scroll switch in *both* views — a setting that does
+        // nothing in one of them is the bug being fixed here.
+        r.paged = false;
+        assert!(r.scrolls_by_rows(), "spread, page mode off: scrolls");
+        r.paged = true;
+        assert!(!r.scrolls_by_rows(), "spread, page mode on: turns");
+        assert_eq!(r.reading_step(), 16, "and a spread's page is both columns");
+
+        r.view_mode = ViewMode::Center;
+        r.paged = false;
+        assert!(r.scrolls_by_rows(), "one column, page mode off: scrolls");
+        r.paged = true;
+        assert!(!r.scrolls_by_rows(), "one column, page mode on: turns");
+        assert_eq!(r.reading_step(), 8, "by its own height");
     }
 
     #[test]
@@ -1847,14 +2095,38 @@ mod tests {
         );
     }
 
+    /// The status bar's "continuous" indicator follows what the setting is *doing*,
+    /// not the view mode. It used to ask a Center-only, not-in-page-mode predicate
+    /// left over from before chapter flow and page snapping were separated — so a
+    /// spread or page mode flowed chapters with no indicator, and the setting read as
+    /// inert in the two cases that had just been fixed.
     #[test]
-    fn continuous_is_inert_when_chapter_locked_or_paged() {
-        let mut r = continuous_reader(3);
-        r.chapter_lock = true;
-        assert!(!r.continuous_active(), "chapter lock overrides continuous");
-        r.chapter_lock = false;
+    fn the_continuous_indicator_follows_the_flow_not_the_view_mode() {
+        let mut r = continuous_reader(3); // continuous = true, view_mode = Center
+        assert!(r.flows_across_sections(), "single column, continuous on");
+        r.view_mode = ViewMode::TwoPage;
+        assert!(r.flows_across_sections(), "a spread flows chapters too");
         r.paged = true;
-        assert!(!r.continuous_active(), "page mode overrides continuous");
+        assert!(r.flows_across_sections(), "page mode still flows chapters");
+        // Chapter lock is the one gate that stops *both* variants.
+        r.chapter_lock = true;
+        assert!(
+            !r.flows_across_sections(),
+            "chapter lock stops at the boundary"
+        );
+        r.chapter_lock = false;
+        r.continuous = false;
+        assert!(!r.flows_across_sections(), "off is off");
+
+        // The paged (PDF) variant lights the same indicator, but page mode *does*
+        // stop it — there, snapping to a page and stacking pages are one axis.
+        let mut p = continuous_paged_reader(4);
+        assert!(
+            p.flows_across_sections(),
+            "a PDF page stack is continuous too"
+        );
+        p.paged = true;
+        assert!(!p.flows_across_sections(), "page mode stops the stack");
     }
 
     fn table() -> Block {
@@ -2197,6 +2469,104 @@ mod tests {
         );
     }
 
+    /// The invariant the deck depends on: if `page_ready` approves a page, then
+    /// `page_png` yields bytes for it. They used to check different things —
+    /// `page_ready` the base width, `page_png` whichever width the view had chosen
+    /// — so a crisp entry dropped from the 24-entry themed LRU produced a target
+    /// the reader had approved and could not deliver. The deck holds the *whole*
+    /// frame when one page's bytes are missing (right for a spread, which must
+    /// swap atomically), so that one gap blanked the screen and kept it blank.
+    #[test]
+    fn an_approved_page_can_always_be_served() {
+        let mut r = continuous_paged_reader(3);
+        let policy = paged_policy();
+        for _ in 0..200 {
+            r.poll_loader();
+            r.sync_pages(policy);
+            if r.page_ready(0) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(r.page_ready(0), "page 0 is themed at the base width");
+        assert!(r.page_png(0).is_some(), "and can be served");
+
+        // Now the view picks a crisp width whose themed bytes are *not* cached —
+        // exactly what an LRU eviction leaves behind.
+        r.crisp.effective.insert(0, BASE_RASTER_WIDTH * 2);
+        assert!(
+            r.page_ready(0),
+            "still approved: readiness gates on the base width"
+        );
+        assert!(
+            r.page_png(0).is_some(),
+            "and still served — a missing crisp raster falls back to the base \
+             page rather than blanking it"
+        );
+    }
+
+    /// Reported: a PDF draws on open and then vanishes for good on the first
+    /// scroll. Drives the real path — capture the continuous stack, hand it to the
+    /// deck, scroll, capture again — and checks the deck still places something.
+    #[test]
+    fn scrolling_a_continuous_pdf_keeps_placing_pages() {
+        use crate::app::page_deck::PageDeck;
+
+        let mut r = continuous_paged_reader(6);
+        for _ in 0..200 {
+            r.poll_loader();
+            r.sync_pages(paged_policy());
+            if r.page_ready(0) && r.page_ready(1) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(r.page_ready(0), "the first page rasterized + themed");
+
+        let body = ratatui::layout::Rect::new(0, 0, 190, 40);
+        let mut deck = PageDeck::default();
+        let policy = paged_policy();
+
+        // Frame 1: what the reader shows on open.
+        r.sync_pages(policy);
+        r.capture_page_stack(body);
+        assert!(!r.pdf_targets.is_empty(), "a page is placed on open");
+        let first = deck.render(&r.pdf_targets.clone(), policy, |s| r.page_png(s));
+        assert!(
+            first.iter().any(|e| e.contains("a=p")),
+            "the page is placed on open"
+        );
+
+        // Scroll a few rows and redraw, exactly as the loop does.
+        // Scroll well past the first page so later ones have to page in, giving
+        // the loader a few frames each — the real loop redraws while pages load.
+        for step in 0..80 {
+            r.scroll_down(1);
+            for _ in 0..40 {
+                r.poll_loader();
+                r.sync_pages(policy);
+                r.capture_page_stack(body);
+                if !r.pdf_targets.is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            deck.render(&r.pdf_targets.clone(), policy, |s| r.page_png(s));
+            assert!(
+                !r.pdf_targets.is_empty(),
+                "step {step}: nothing placeable at scroll {} (visible {:?}) — \
+                 this is the frame the screen goes blank on",
+                r.scroll,
+                r.visible_stack
+            );
+            assert!(!deck.is_empty(), "step {step}: the deck went empty");
+        }
+        assert!(
+            !deck.shown_sections().is_empty(),
+            "a page is still shown after scrolling"
+        );
+    }
+
     #[test]
     fn continuous_zoom_scales_pages_and_gates_pan() {
         let mut r = continuous_paged_reader(4);
@@ -2419,7 +2789,7 @@ mod tests {
         );
         // The badge index and the viewer's figure list must agree exactly, or the
         // nearest-match in `select_image` opens the wrong figure.
-        let figs = r.figures(false);
+        let figs = r.chapter_figures();
         assert_eq!(figs.len(), 1, "the viewer lists only the real figure");
         assert_eq!(figs[0].image_index, 1, "and under the badged index");
     }

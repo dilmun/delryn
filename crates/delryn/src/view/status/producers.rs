@@ -58,8 +58,19 @@ pub fn reader_bar(reader: &Reader, config: &Config, theme: Theme) -> StatusBar {
         );
     }
     // Continuous cross-section scroll indicator (reflow text or PDF page stacking).
-    if reader.continuous_active() || reader.continuous_paged_active() {
+    if reader.flows_across_sections() {
         bar.text(SegmentId::Continuous, Zone::Right, 3, "continuous", dim);
+    } else if reader.paged_stack_unavailable() {
+        // Continuous is on and turning pages anyway, because this terminal cannot
+        // redraw a page as it scrolls past an edge. Say so, or the setting looks
+        // broken rather than unsupported.
+        bar.text(
+            SegmentId::Continuous,
+            Zone::Right,
+            3,
+            "pages (terminal)",
+            dim,
+        );
     }
     // Manga (right-to-left) indicator — only meaningful for paged spreads.
     if reader.is_paged_image() && config.reading_direction.is_rtl() {
@@ -151,18 +162,16 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
             SegmentId::Context,
             Zone::Left,
             9,
-            crate::view::pill_spans_on(
-                format!("VISUAL · {marked} selected"),
-                theme,
-                theme.status_bg,
-            ),
+            // Capped against the page, not a band: the bar floats now, so the
+            // pill's rounded ends have the page behind them like every other pill.
+            crate::view::pill_spans(format!("VISUAL · {marked} selected"), theme),
         );
     } else if marked > 0 {
         bar.add(
             SegmentId::Context,
             Zone::Left,
             9,
-            crate::view::pill_spans_on(format!("{marked} selected"), theme, theme.status_bg),
+            crate::view::pill_spans(format!("{marked} selected"), theme),
         );
     } else if app.library.filtering || !app.library.filter.is_empty() {
         bar.text(
@@ -217,20 +226,16 @@ pub fn library_bar(app: &App, theme: Theme) -> StatusBar {
     } else if dups {
         "hjkl move · ⏎ open · D resolve · R deep scan · I ignored · e edit · s sort · q"
     } else if app.is_grid() {
-        "hjkl move · ⏎ open · e edit · T tag · D dedup · c shelf · s sort · +/- size · q"
+        "hjkl move · ⏎ open · e edit · D dedup · c shelf · s sort · +/- size · ? keys"
     } else {
-        "hjkl move · ⏎ open · e edit · r rename · T tag · D dedup · c shelf · s sort · q"
+        "hjkl move · ⏎ open · e edit · r rename · T tag · D dedup · s sort · ? keys"
     };
     bar.text(SegmentId::Keys, Zone::Right, 2, keys, dim);
     bar
 }
 
-/// The active overlay's bar (context + key hints), if one is open. The bottom-row
-/// prompt owns the row itself, so it's deliberately skipped.
+/// The active overlay's bar (context + key hints), if one is open.
 pub fn overlay_bar(app: &App, theme: Theme) -> Option<StatusBar> {
-    if matches!(app.overlay, Overlay::Prompt(_)) {
-        return None;
-    }
     let (context, keys) = legend(app)?;
     let mut bar = StatusBar::new();
     bar.text(
@@ -266,6 +271,25 @@ fn legend(app: &App) -> Option<(String, String)> {
             "↑↓ move · ⏎ toggle / new · Esc close"
         };
         return Some(("Collections".into(), keys.into()));
+    }
+    if matches!(app.overlay, Overlay::Help(_)) {
+        return Some((
+            "Keys".into(),
+            "j/k scroll · Space page · ? or Esc close".into(),
+        ));
+    }
+    if let Overlay::FolderFinder(p) = &app.overlay {
+        // Matches the popup's own action row: with nothing ticked there is
+        // nothing for ⏎ to add, so it isn't offered.
+        let keys = if p.picked() == 0 {
+            "↑↓ move · Space tick · a all · Esc close"
+        } else {
+            "↑↓ move · Space tick · a all · ⏎ add · Esc cancel"
+        };
+        return Some((
+            format!("Found folders · {} ticked", p.picked()),
+            keys.into(),
+        ));
     }
     if matches!(app.overlay, Overlay::Annot(_)) {
         return Some((

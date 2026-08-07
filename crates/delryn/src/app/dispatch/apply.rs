@@ -5,7 +5,6 @@
 //! preserves its reading position across the re-wrap and repaints in full.
 
 use super::super::*;
-use crate::HighlightColor;
 use crate::config::{Config, ViewMode};
 
 /// The config knobs that change how a section wraps or how wide the reading
@@ -21,10 +20,12 @@ use crate::config::{Config, ViewMode};
 pub(crate) struct LayoutKey {
     view_mode: ViewMode,
     side_padding: u16,
+    max_measure: u16,
     page_gap: u16,
     line_spacing: u8,
     paragraph_spacing: u8,
     justify: bool,
+    hyphenate: bool,
     tidy_spacing: bool,
     code_wrap: bool,
     table_wrap: bool,
@@ -39,10 +40,12 @@ pub(crate) fn layout_key(c: &Config) -> LayoutKey {
     LayoutKey {
         view_mode: c.view_mode,
         side_padding: c.side_padding,
+        max_measure: c.max_measure,
         page_gap: c.page_gap,
         line_spacing: c.line_spacing,
         paragraph_spacing: c.paragraph_spacing,
         justify: c.justify,
+        hyphenate: c.hyphenate,
         tidy_spacing: c.tidy_spacing,
         code_wrap: c.code_wrap,
         table_wrap: c.table_wrap,
@@ -118,13 +121,11 @@ impl App {
                 save = true;
             }
             Action::ToggleFocus => self.config.focus_mode = !self.config.focus_mode,
-            // `]` widens the text (less margin), `[` narrows it (more margin).
-            Action::WidthUp => {
-                self.config.side_padding = self.config.side_padding.saturating_sub(1);
-            }
-            Action::WidthDown => {
-                self.config.side_padding =
-                    (self.config.side_padding + 1).min(crate::config::MAX_SIDE_PADDING);
+            // `]` widens the reading column, `[` narrows it.
+            Action::WidthUp | Action::WidthDown => {
+                let wider = matches!(action, Action::WidthUp);
+                let measure = reader.last_measure as u16;
+                reader.flash = Some(step_measure(&mut self.config, measure, wider));
             }
             Action::LineSpacingDown => {
                 self.config.line_spacing = self.config.line_spacing.saturating_sub(1);
@@ -285,41 +286,19 @@ impl App {
                 }
             }
             Action::AddHighlight => {
-                if let Some(store) = &self.session.store
-                    && !self.session.book_path.is_empty()
-                {
+                if let Some(store) = &self.session.store {
                     let (section, quote) = (reader.section, reader.current_line_text());
                     // A repeat `H` at the same anchor advances the colour, then
-                    // clears it — so find any existing highlight there first.
-                    let existing = store
-                        .list_annotations(&self.session.book_path)
-                        .into_iter()
-                        .find(|a| a.is_highlight() && a.section == section && a.quote == quote);
-                    let current = existing
-                        .as_ref()
-                        .map(|a| HighlightColor::from_index(a.color));
-                    match (HighlightColor::cycle(current), existing) {
-                        // Advance an existing highlight to the next colour.
-                        (Some(next), Some(a)) => {
-                            store.set_annotation_color(a.id, next.index());
-                            reader.flash = Some(format!("highlight: {}", next.label()));
-                        }
-                        // Add a new highlight in the first colour.
-                        (Some(next), None) => {
-                            store.add_highlight(
-                                &self.session.book_path,
-                                section,
-                                &quote,
-                                next.index(),
-                            );
-                            reader.flash = Some(format!("highlight: {}", next.label()));
-                        }
-                        // Past the last colour: remove the highlight.
-                        (None, Some(a)) => {
-                            store.delete_annotation(a.id);
-                            reader.flash = Some("highlight removed".into());
-                        }
-                        (None, None) => {}
+                    // clears it — see `highlight_quote`.
+                    let flash = super::overlays::highlight_quote(
+                        store,
+                        &self.session.book_path,
+                        section,
+                        &quote,
+                        None,
+                    );
+                    if let Some(msg) = flash {
+                        reader.flash = Some(msg);
                     }
                     reader.set_annotations(store.list_annotations(&self.session.book_path));
                 }
@@ -407,11 +386,14 @@ impl App {
                 if self.config.paged {
                     reader.snap_to_page(); // start on a clean page boundary
                 }
+                // Page mode is the motion granularity only — whether chapters flow
+                // together is the separate "Continuous scroll" setting, so naming it
+                // here would report a state this key doesn't touch.
                 reader.flash = Some(
                     if self.config.paged {
-                        "page mode: on"
+                        "page mode: on (turn pages)"
                     } else {
-                        "page mode: off (continuous)"
+                        "page mode: off (scroll by rows)"
                     }
                     .to_string(),
                 );
@@ -471,6 +453,48 @@ impl App {
 /// pages without re-transmitting (transmit-once), so a bigger step stays smooth.
 const PAGED_STEP: usize = 6;
 
+/// Widen or narrow the reading column by one step, and describe what changed.
+///
+/// Two settings decide the column and only ever one of them is in charge: it is
+/// `min(pane − margins, max_measure)`. On a wide window the cap wins by a mile —
+/// a 190-column pane at 10 % leaves 152 columns, capped to 72 — so stepping the
+/// *margin* moved nothing at all and the key read as dead. It looked like it
+/// worked in a two-page spread only because each half is near the cap already,
+/// where the margin is what binds.
+///
+/// So step whichever constraint is actually producing the current width, and
+/// fall through to the other when that one is at its limit. The key then always
+/// does what it says, in either view.
+fn step_measure(config: &mut Config, measure: u16, wider: bool) -> String {
+    /// Columns per press when the cap is in charge. One column is imperceptible
+    /// on a 72-column measure; two reads as a step.
+    const STEP: u16 = 2;
+    use crate::config::{MAX_MEASURE_CAP, MAX_SIDE_PADDING, MIN_MEASURE_CAP};
+
+    let cap = config.max_measure;
+    // The cap is in charge only once the column has actually reached it.
+    let capped = cap > 0 && measure >= cap;
+    let cap_has_room = if wider {
+        cap < MAX_MEASURE_CAP
+    } else {
+        cap > MIN_MEASURE_CAP
+    };
+    if capped && cap_has_room {
+        config.max_measure = if wider {
+            (cap + STEP).min(MAX_MEASURE_CAP)
+        } else {
+            cap.saturating_sub(STEP).max(MIN_MEASURE_CAP)
+        };
+        return format!("text width {}", config.max_measure);
+    }
+    config.side_padding = if wider {
+        config.side_padding.saturating_sub(1)
+    } else {
+        (config.side_padding + 1).min(MAX_SIDE_PADDING)
+    };
+    format!("margin {}%", config.side_padding)
+}
+
 fn apply_nav(reader: &mut Reader, action: Action, paged: bool, flip_ready: bool) {
     // Continuous-paged (PDF page stacking): vertical motion scrolls the vertical
     // page stack in row units rather than flipping whole pages. Unlike a flip it
@@ -512,6 +536,35 @@ fn apply_nav(reader: &mut Reader, action: Action, paged: bool, flip_ready: bool)
                 reader.scroll_down(delta as usize);
             } else {
                 reader.scroll_up((-delta) as usize);
+            }
+            return;
+        }
+    }
+
+    // A view that turns pages rather than scrolling rows: a two-page spread (always — a
+    // partial step slides the right column's text into the left one, so the reader is
+    // shown most of what they just read on the other side of the screen) and a single
+    // column under Page mode. Turns are instant rather than eased: animating one would
+    // scroll that migration past the reader's eyes, which is the effect being removed.
+    //
+    // Whether the *next chapter* arrives joined on or starts fresh is the separate
+    // `reflow_flows` question, settled inside `scroll_down`/`scroll_up`.
+    if !reader.scrolls_by_rows() && !reader.is_paged_image() && reader.focus == Focus::Content {
+        let step = reader.reading_step();
+        let spreads = match action {
+            Action::Down(n) => Some(n as isize),
+            Action::Up(n) => Some(-(n as isize)),
+            // A spread has no meaningful half-step — half of it is one column, which is
+            // the migration this exists to avoid — so half and full both turn one spread.
+            Action::HalfDown | Action::PageDown => Some(1),
+            Action::HalfUp | Action::PageUp => Some(-1),
+            _ => None,
+        };
+        if let Some(spreads) = spreads {
+            if spreads >= 0 {
+                reader.scroll_down(spreads.unsigned_abs() * step);
+            } else {
+                reader.scroll_up(spreads.unsigned_abs() * step);
             }
             return;
         }
@@ -661,6 +714,65 @@ mod tests {
         assert!(
             layout_key(&recoloured) == layout_key(&base),
             "a theme change re-colours but never re-wraps"
+        );
+    }
+
+    /// The reported bug: `[`/`]` did nothing in single-column view.
+    ///
+    /// A wide window puts the column against the `max_measure` cap, and the old
+    /// handler only ever stepped the side margin — which changes nothing while
+    /// the cap is what binds. It appeared to work in a two-page spread because
+    /// each half sits near the cap, where the margin is in charge again.
+    #[test]
+    fn width_keys_step_whichever_constraint_is_in_charge() {
+        let mut c = Config::default();
+        let (cap0, pad0) = (c.max_measure, c.side_padding);
+        assert!(cap0 > 0, "the default caps the measure");
+
+        // Wide window: the column has reached the cap, so the cap is in charge.
+        let at_cap = cap0;
+        step_measure(&mut c, at_cap, false);
+        assert_eq!(c.side_padding, pad0, "the margin is not what binds here");
+        assert!(
+            c.max_measure < cap0,
+            "narrowing moved the cap: {}",
+            c.max_measure
+        );
+        let now = c.max_measure;
+        step_measure(&mut c, now, true);
+        assert_eq!(c.max_measure, cap0, "and widening moved it back");
+
+        // Narrow window: the column never reaches the cap, so the margin binds.
+        let below_cap = cap0 - 10;
+        step_measure(&mut c, below_cap, false);
+        assert_eq!(c.max_measure, cap0, "the cap is not what binds here");
+        assert_eq!(c.side_padding, pad0 + 1, "narrowing widened the margin");
+        step_measure(&mut c, below_cap, true);
+        assert_eq!(c.side_padding, pad0, "and widening gave it back");
+    }
+
+    /// Every press must move something: at the cap's own limit the step falls
+    /// through to the margin rather than silently doing nothing.
+    #[test]
+    fn a_press_at_a_limit_falls_through_to_the_other_setting() {
+        use crate::config::{MAX_MEASURE_CAP, MIN_MEASURE_CAP};
+        let mut c = Config {
+            max_measure: MIN_MEASURE_CAP,
+            ..Default::default()
+        };
+        let pad = c.side_padding;
+        step_measure(&mut c, MIN_MEASURE_CAP, false); // narrower, cap can't shrink
+        assert_eq!(c.max_measure, MIN_MEASURE_CAP, "cap held at its floor");
+        assert_eq!(c.side_padding, pad + 1, "the margin took the step");
+
+        c.max_measure = MAX_MEASURE_CAP;
+        let pad = c.side_padding;
+        step_measure(&mut c, MAX_MEASURE_CAP, true); // wider, cap can't grow
+        assert_eq!(c.max_measure, MAX_MEASURE_CAP, "cap held at its ceiling");
+        assert_eq!(
+            c.side_padding,
+            pad.saturating_sub(1),
+            "the margin took the step"
         );
     }
 }

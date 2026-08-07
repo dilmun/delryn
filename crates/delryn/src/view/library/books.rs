@@ -461,38 +461,49 @@ mod tests {
             Some(&SortKey::Title),
             "title is always first"
         );
-        // Default config enables every optional column.
+        // The cycle is title + whatever columns are on, so it tracks the shipped
+        // column set rather than the full list: Type / Source / Size are off by
+        // default and must stay out of it until they're turned on.
         for k in [
             SortKey::Author,
             SortKey::Year,
-            SortKey::Type,
-            SortKey::Source,
             SortKey::Progress,
-            SortKey::Size,
             SortKey::Status,
         ] {
-            assert!(cycle.contains(&k), "{k:?} should be in the cycle");
+            assert!(cycle.contains(&k), "{k:?} is on by default and sortable");
+        }
+        for k in [SortKey::Type, SortKey::Source, SortKey::Size] {
+            assert!(!cycle.contains(&k), "{k:?} is off by default");
         }
     }
 
     #[test]
     fn sort_cycle_skips_hidden_columns() {
         let mut cfg = Config::default();
+        // Both start on, so these are genuine hides (toggling an off-by-default
+        // column would *show* it and test nothing).
         cfg.toggle_column("author"); // hide Author
-        cfg.toggle_column("size"); // hide Size
+        cfg.toggle_column("status"); // hide Status
         let cycle = sort_cycle(&cfg, false, u16::MAX);
         assert!(
             !cycle.contains(&SortKey::Author),
             "hidden column is skipped"
         );
-        assert!(!cycle.contains(&SortKey::Size), "hidden column is skipped");
+        assert!(
+            !cycle.contains(&SortKey::Status),
+            "hidden column is skipped"
+        );
         assert!(cycle.contains(&SortKey::Year), "visible column stays");
         assert!(cycle.contains(&SortKey::Title), "title always present");
     }
 
     #[test]
     fn sort_cycle_drops_columns_that_do_not_fit() {
-        let cfg = Config::default();
+        // Source is off by default, so it has to be turned on here or the pane-width
+        // assertion below would pass on visibility alone and test nothing.
+        let mut cfg = Config::default();
+        cfg.toggle_column("source");
+        assert!(cfg.column_on("source"), "enabled for the fit check");
         // A narrow pane keeps Title but collapses the wide optional columns.
         let narrow = sort_cycle(&cfg, false, 40);
         assert_eq!(narrow.first(), Some(&SortKey::Title));
@@ -512,12 +523,12 @@ mod tests {
         // Source need a ≥94-wide pane regardless of what else was enabled, so
         // turning the others off did nothing. The cumulative fit reserves space
         // only for the enabled set.
-        let mut cfg = Config::default();
-        for key in [
-            "author", "year", "type", "progress", "size", "status", "tags",
-        ] {
-            cfg.toggle_column(key); // leave only Source enabled
-        }
+        // Set the column list outright rather than toggling from the defaults, so
+        // the case under test survives any change to which columns ship on.
+        let cfg = Config {
+            library_columns: vec!["source".to_string()],
+            ..Config::default()
+        };
         let cycle = sort_cycle(&cfg, false, 60); // < the old Source threshold (94)
         assert!(
             cycle.contains(&SortKey::Source),

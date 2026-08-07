@@ -102,9 +102,14 @@ cyclic_wrap!(ViewMode, [Center => "center", TwoPage => "two-page"]);
 /// A reading-experience preset: a named bundle of layout / chrome / flow
 /// settings. `Custom` is the derived state when the live settings match no
 /// preset (e.g. after the reader has tweaked an individual setting).
+///
+/// `Default` mirrors [`Config::default`](super::Config::default) exactly, so a
+/// fresh install names the state it shipped in rather than reporting `Custom`,
+/// and cycling presets always has a way back to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadingMode {
     Custom,
+    Default,
     Study,
     Research,
     Presentation,
@@ -112,34 +117,41 @@ pub enum ReadingMode {
 
 /// The reading settings a preset bundles. Every preset fixes all of these, so a
 /// live config can be compared field-for-field to recognise the active preset.
-/// Deliberately excludes `view_mode` (Center / TwoPage): the page layout is a
-/// personal choice a preset shouldn't yank out from under the reader.
-#[derive(Clone, Copy, PartialEq, Eq)]
+///
+/// Deliberately excludes the choices a preset has no business taking from the
+/// reader: `view_mode` (one column or two) and `paged` (reflow or page-flips)
+/// are how someone likes to read, not what they're reading for.
+///
+/// Chrome is excluded too, and handled by [`ReadingMode::hides_chrome`] instead
+/// — see there for why it can't live in the comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReadingProfile {
     pub(crate) side_padding: u16,
+    pub(crate) max_measure: u16,
     pub(crate) line_spacing: u8,
     pub(crate) paragraph_spacing: u8,
-    pub(crate) show_sidebar: bool,
-    pub(crate) show_status: bool,
+    pub(crate) justify: bool,
+    pub(crate) continuous: bool,
     pub(crate) chapter_lock: bool,
-    pub(crate) paged: bool,
 }
 
 impl ReadingMode {
     pub fn label(self) -> &'static str {
         match self {
             ReadingMode::Custom => "custom",
+            ReadingMode::Default => "default",
             ReadingMode::Study => "study",
             ReadingMode::Research => "research",
             ReadingMode::Presentation => "presentation",
         }
     }
 
-    /// Next/previous *applyable* preset. Cycles through the three real presets;
+    /// Next/previous *applyable* preset. Cycles through the four real presets;
     /// from `Custom` it enters the cycle rather than landing back on `Custom`.
     pub fn next(self) -> Self {
         match self {
-            ReadingMode::Custom | ReadingMode::Presentation => ReadingMode::Study,
+            ReadingMode::Custom | ReadingMode::Presentation => ReadingMode::Default,
+            ReadingMode::Default => ReadingMode::Study,
             ReadingMode::Study => ReadingMode::Research,
             ReadingMode::Research => ReadingMode::Presentation,
         }
@@ -147,47 +159,75 @@ impl ReadingMode {
 
     pub fn prev(self) -> Self {
         match self {
-            ReadingMode::Custom | ReadingMode::Study => ReadingMode::Presentation,
+            ReadingMode::Custom | ReadingMode::Default => ReadingMode::Presentation,
+            ReadingMode::Study => ReadingMode::Default,
             ReadingMode::Research => ReadingMode::Study,
             ReadingMode::Presentation => ReadingMode::Research,
         }
+    }
+
+    /// Whether the preset reads with the chrome hidden — applied through the
+    /// transient `focus_mode`, so the reader's saved `show_sidebar`/`show_status`
+    /// preferences survive a preset that strips the window bare.
+    ///
+    /// Kept out of [`ReadingProfile`] deliberately. `focus_mode` is never
+    /// persisted, so if it decided *which* preset the live settings are, the label
+    /// would drop to `Custom` the moment someone toggled focus, and again on the
+    /// next restart when the flag came back false under presentation's spacing.
+    /// A preset applies chrome; it isn't identified by it.
+    pub(crate) fn hides_chrome(self) -> bool {
+        matches!(self, ReadingMode::Presentation)
     }
 
     /// The settings this preset stands for (`None` for `Custom`).
     pub(crate) fn profile(self) -> Option<ReadingProfile> {
         let p = match self {
             ReadingMode::Custom => return None,
-            // Deep, careful reading of one chapter: comfortable margins + spacing,
-            // navigation + progress visible, stay put in the chapter.
-            ReadingMode::Study => ReadingProfile {
+            // What the app ships as: one column at a capped measure, generous
+            // margins, chrome present. Must stay field-for-field identical to
+            // `Config::default()` — a test holds the two together.
+            ReadingMode::Default => ReadingProfile {
                 side_padding: 10,
-                line_spacing: 1,
-                paragraph_spacing: 1,
-                show_sidebar: true,
-                show_status: true,
-                chapter_lock: true,
-                paged: false,
-            },
-            // Scanning / cross-referencing across the whole book: denser and a
-            // touch wider than default, flows freely between chapters.
-            ReadingMode::Research => ReadingProfile {
-                side_padding: 4,
+                max_measure: 72,
                 line_spacing: 0,
                 paragraph_spacing: 1,
-                show_sidebar: true,
-                show_status: true,
+                justify: false,
+                continuous: true,
                 chapter_lock: false,
-                paged: false,
             },
-            // Distraction-free, slide-like: wide airy margins, no chrome, page flips.
+            // Deep, careful reading of one chapter: a book's measure, open line
+            // spacing, and stay put in the chapter. Not justified — hyphenation
+            // already tightens the right edge, and the only thing justification
+            // adds on top of it is wider spaces between the words.
+            ReadingMode::Study => ReadingProfile {
+                side_padding: 12,
+                max_measure: 66,
+                line_spacing: 1,
+                paragraph_spacing: 1,
+                justify: false,
+                continuous: false,
+                chapter_lock: true,
+            },
+            // Scanning / cross-referencing across the whole book: as much text on
+            // screen as the window allows, scrolling freely between chapters.
+            ReadingMode::Research => ReadingProfile {
+                side_padding: 4,
+                max_measure: 0,
+                line_spacing: 0,
+                paragraph_spacing: 1,
+                justify: false,
+                continuous: true,
+                chapter_lock: false,
+            },
+            // Distraction-free: wide airy margins, a short measure, no chrome.
             ReadingMode::Presentation => ReadingProfile {
                 side_padding: 18,
+                max_measure: 60,
                 line_spacing: 1,
                 paragraph_spacing: 2,
-                show_sidebar: false,
-                show_status: false,
+                justify: false,
+                continuous: false,
                 chapter_lock: false,
-                paged: true,
             },
         };
         Some(p)
@@ -251,13 +291,14 @@ cyclic_clamp!(GridSize, [Small => "small", Medium => "medium", Large => "large",
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ImageMode {
     /// Smart, per-content: recolour line-art/equations to the theme, keep
-    /// pictures faithful (transparency flattened onto the page). The best general
-    /// default.
-    #[default]
+    /// pictures faithful (transparency flattened onto the page).
     Auto,
     /// Auto, plus lightness-invert opaque light-background figures (charts,
     /// diagrams, screenshots) so they're dark-friendly with detail intact. True
-    /// photos that happen to be light-backed invert too — the trade for comfort.
+    /// photos that happen to be light-backed invert too — the trade for comfort,
+    /// and the reason this is the default: a white-backed chart dropped into a
+    /// dark page is the thing readers actually notice.
+    #[default]
     InvertBackgrounds,
     /// Never recolour or invert; only flatten transparency onto the page so
     /// nothing is invisible. Original colours preserved (equations keep their ink
@@ -268,9 +309,11 @@ pub enum ImageMode {
 impl ImageMode {
     pub fn from_label(s: &str) -> ImageMode {
         match s {
-            "invert" => ImageMode::InvertBackgrounds,
+            "auto" => ImageMode::Auto,
             "faithful" => ImageMode::Faithful,
-            _ => ImageMode::Auto,
+            // Including "invert" — an unreadable value falls back to the default
+            // rather than to a particular mode, so there is one thing to change.
+            _ => ImageMode::default(),
         }
     }
 }
@@ -391,16 +434,34 @@ mod tests {
         ] {
             assert_eq!(ImageMode::from_label(m.label()), m);
         }
-        assert_eq!(ImageMode::from_label("nonsense"), ImageMode::Auto);
+        assert_eq!(ImageMode::from_label("nonsense"), ImageMode::default());
     }
 
     #[test]
     fn reading_mode_cycles_through_presets_only() {
         // next() never lands on Custom; from Custom it enters the cycle.
-        assert_eq!(ReadingMode::Custom.next(), ReadingMode::Study);
+        assert_eq!(ReadingMode::Custom.next(), ReadingMode::Default);
+        assert_eq!(ReadingMode::Default.next(), ReadingMode::Study);
         assert_eq!(ReadingMode::Study.next(), ReadingMode::Research);
         assert_eq!(ReadingMode::Research.next(), ReadingMode::Presentation);
-        assert_eq!(ReadingMode::Presentation.next(), ReadingMode::Study);
+        assert_eq!(ReadingMode::Presentation.next(), ReadingMode::Default);
         assert_eq!(ReadingMode::Custom.prev(), ReadingMode::Presentation);
+
+        // Every real preset is reachable both ways, and the cycle is a true ring.
+        let presets = [
+            ReadingMode::Default,
+            ReadingMode::Study,
+            ReadingMode::Research,
+            ReadingMode::Presentation,
+        ];
+        for m in presets {
+            assert_eq!(m.next().prev(), m, "{} round-trips", m.label());
+            assert!(m.profile().is_some(), "{} is applyable", m.label());
+        }
+        let mut seen = ReadingMode::Default;
+        for _ in 0..presets.len() {
+            seen = seen.next();
+        }
+        assert_eq!(seen, ReadingMode::Default, "the cycle closes");
     }
 }

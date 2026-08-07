@@ -9,6 +9,7 @@
 //!   whitespace-normalized string and re-find a stored quote's exact cells after a
 //!   reflow, so a sub-line highlight re-washes the same characters at any width.
 
+use crate::HighlightColor;
 use crate::layout::DisplayLine;
 
 use super::Reader;
@@ -54,6 +55,26 @@ impl Reader {
     /// Leave cursor/selection mode.
     pub fn cancel_selection(&mut self) {
         self.select = None;
+    }
+
+    /// Step the pen to the next highlight colour, returning it to report.
+    ///
+    /// The live selection is washed in the pen, so this changes what is on screen
+    /// immediately: the colour is chosen by looking at it on the actual words,
+    /// rather than committed blind and corrected afterwards.
+    pub fn cycle_pen(&mut self) -> HighlightColor {
+        let i = HighlightColor::ALL
+            .iter()
+            .position(|&c| c == self.pen)
+            .unwrap_or(0);
+        self.pen = HighlightColor::ALL[(i + 1) % HighlightColor::ALL.len()];
+        self.pen
+    }
+
+    /// The colour to wash the live selection in — `None` when nothing is anchored
+    /// yet, since there is no range to preview.
+    pub fn selection_pen(&self) -> Option<HighlightColor> {
+        self.selection_selecting().then_some(self.pen)
     }
 
     /// The selected text (whitespace-normalized), or empty if nothing is anchored.
@@ -253,7 +274,14 @@ impl Selection {
         if lines.is_empty() || a.line > end_line {
             return String::new();
         }
-        let mut parts: Vec<String> = Vec::new();
+        // Built to match what `flat_index` produces, since this text is the anchor
+        // a highlight is later re-found by: a wrap hyphen is dropped and its line
+        // joins the next with no space, so a word broken across the break comes
+        // back whole.
+        let mut out = String::new();
+        // Set when the line just taken ended on a wrap hyphen, so the next one
+        // continues the same word and joins with no space between them.
+        let mut mid_word = false;
         for (rel, l) in lines[a.line..=end_line].iter().enumerate() {
             let li = a.line + rel;
             let chars: Vec<char> = l.text().chars().collect();
@@ -263,15 +291,21 @@ impl Selection {
             } else {
                 chars.len()
             };
-            if start < end {
-                parts.push(chars[start..end].iter().collect());
+            if start >= end {
+                continue;
             }
+            let hyphen = l.break_hyphen_col();
+            let taken: String = (start..end)
+                .filter(|c| Some(*c) != hyphen)
+                .map(|c| chars[c])
+                .collect();
+            if !out.is_empty() && !mid_word {
+                out.push(' ');
+            }
+            out.push_str(&taken);
+            mid_word = matches!(hyphen, Some(h) if (start..end).contains(&h));
         }
-        parts
-            .join(" ")
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+        out.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     // --- motions (move the caret; the anchor, if any, stays put) ---
@@ -408,7 +442,16 @@ pub fn flat_index(lines: &[DisplayLine]) -> (Vec<char>, Vec<Option<(usize, usize
     let mut map: Vec<Option<(usize, usize)>> = Vec::new();
     let mut pending_space = false;
     for (li, l) in lines.iter().enumerate() {
+        // A hyphen the wrapper added to split a word is on screen but not in the
+        // text: skipped here, and the line break after it joins no space, so the
+        // two halves flatten back into the one word they are. Without this, a
+        // quote captured over a broken word stops matching the moment the
+        // paragraph re-wraps and the break lands somewhere else.
+        let hyphen = l.break_hyphen_col();
         for (ci, ch) in l.text().chars().enumerate() {
+            if Some(ci) == hyphen {
+                continue;
+            }
             if ch.is_whitespace() {
                 pending_space = true;
                 continue;
@@ -421,8 +464,9 @@ pub fn flat_index(lines: &[DisplayLine]) -> (Vec<char>, Vec<Option<(usize, usize
             chars.push(ch);
             map.push(Some((li, ci)));
         }
-        // A line break is whitespace between this line and the next.
-        pending_space = true;
+        // A line break is whitespace between this line and the next — unless the
+        // line ended mid-word, where there is no gap to record.
+        pending_space = hyphen.is_none();
     }
     (chars, map)
 }
@@ -487,9 +531,24 @@ mod tests {
                 fg: None,
                 anchor: None,
                 math: None,
+                break_hyphen: false,
             }],
             kind: LineKind::Body,
         }
+    }
+
+    /// A line the wrapper broke mid-word: `text`, then the `-` it added.
+    fn hyphenated(text: &str) -> DisplayLine {
+        let mut l = line(text);
+        l.runs.push(Run {
+            text: "-".into(),
+            style: Inline::default(),
+            fg: None,
+            anchor: None,
+            math: None,
+            break_hyphen: true,
+        });
+        l
     }
 
     #[test]
@@ -508,6 +567,44 @@ mod tests {
         let wide = vec![line("the quick brown fox jumps")];
         let spans = resolve_spans("brown fox", &wide);
         assert_eq!(spans, vec![(0, (10, 19))]);
+    }
+
+    /// A hyphen the wrapper added to break a word is on screen but not in the
+    /// text. If it leaked into the anchor, a highlight covering a broken word
+    /// stopped matching the moment the paragraph re-wrapped and the break moved —
+    /// and since the quote is matched whole, the *entire* highlight vanished, not
+    /// just that word.
+    #[test]
+    fn a_wrap_hyphen_is_not_part_of_the_text() {
+        let broken = vec![hyphenated("that overcomes spar"), line("sity.")];
+        // Flattened, the two halves are the one word they were.
+        let (flat, _) = flat_index(&broken);
+        assert_eq!(
+            flat.iter().collect::<String>(),
+            "that overcomes sparsity.",
+            "the break leaves no trace in the text"
+        );
+
+        // A selection over it stores the whole word, so the same quote resolves
+        // both where it broke and where it doesn't.
+        let sel = Selection {
+            caret: Caret { line: 1, col: 4 },
+            anchor: Some(Caret { line: 0, col: 0 }),
+        };
+        let quote = sel.text(&broken);
+        assert_eq!(quote, "that overcomes sparsity.");
+        assert_eq!(
+            resolve_spans(&quote, &broken).len(),
+            2,
+            "still washes both lines"
+        );
+
+        let rewrapped = vec![line("that overcomes sparsity.")];
+        assert_eq!(
+            resolve_spans(&quote, &rewrapped).len(),
+            1,
+            "and survives a re-wrap that moved the break"
+        );
     }
 
     #[test]

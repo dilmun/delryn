@@ -2,10 +2,12 @@
 name = "delryn-render"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # Model → laid-out terminal content: reflow/layout + syntax highlighting today;
 # pagination, tables, and graphical math will join here.
 [dependencies]
 delryn-model = { workspace = true }
+hypher = { version = "0.1.7", default-features = false, features = ["alloc", "english"] }
 syntect.workspace = true
 unicode-width.workspace = true

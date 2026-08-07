@@ -104,10 +104,13 @@ impl Reader {
             return false;
         }
         self.pages.policy.mode == media::ImageMode::Faithful
+            // The *same* lookup `page_png` will make, so the width chosen here and
+            // the bytes served there can never disagree.
             || self
                 .pages
                 .themed
-                .contains(&(section, width, self.pages.policy))
+                .peek(&(section, width, self.pages.policy))
+                .is_some()
     }
 
     /// Request the crisp re-raster of `section` at `width` if not already cached,

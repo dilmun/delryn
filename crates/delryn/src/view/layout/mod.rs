@@ -91,17 +91,27 @@ pub(crate) fn plan(view_mode: ViewMode, ctx: &LayoutCtx) -> LayoutPlan {
     }
 }
 
-/// The reading-column width for a pane width and per-side padding percent. With
-/// padding on, each side keeps at least the gutter width so a bookmark ribbon
-/// always has room; a `side_padding` of 0 % is edge-to-edge.
-pub(crate) fn measure_for(pane_width: u16, side_padding: u16) -> u16 {
-    if side_padding == 0 {
-        return pane_width.max(1);
+/// The reading-column width for a pane width, per-side padding percent, and
+/// measure cap. With padding on, each side keeps at least the gutter width so a
+/// bookmark ribbon always has room; a `side_padding` of 0 % is edge-to-edge.
+///
+/// `max_measure` (0 = uncapped) then holds the column at a readable line however
+/// wide the window gets — percentage padding alone keeps widening it. Callers
+/// derive the margins *from* the returned width, so a capped column re-centres
+/// and the surplus falls to both sides.
+pub(crate) fn measure_for(pane_width: u16, side_padding: u16, max_measure: u16) -> u16 {
+    let padded = if side_padding == 0 {
+        pane_width.max(1)
+    } else {
+        let pad = ((pane_width as u32 * side_padding as u32 / 100) as u16).max(GUTTER_COLS);
+        pane_width
+            .saturating_sub(pad.saturating_mul(2))
+            .max(crate::config::MIN_TEXT_COLS.min(pane_width).max(1))
+    };
+    match max_measure {
+        0 => padded,
+        cap => padded.min(cap),
     }
-    let pad = ((pane_width as u32 * side_padding as u32 / 100) as u16).max(GUTTER_COLS);
-    pane_width
-        .saturating_sub(pad.saturating_mul(2))
-        .max(crate::config::MIN_TEXT_COLS.min(pane_width).max(1))
 }
 
 /// Split `body` into a centred column of width `measure` with `left_pad` cells of
@@ -123,6 +133,54 @@ mod tests {
 
     fn body() -> Rect {
         Rect::new(0, 2, 100, 40)
+    }
+
+    /// Percentage padding alone widens the column with the window, so a maximised
+    /// terminal ends up with a line the eye can't track back from. The cap holds
+    /// the measure and hands the surplus to the margins.
+    #[test]
+    fn the_measure_cap_stops_the_column_filling_a_wide_window() {
+        // Uncapped, the column grows without limit.
+        assert_eq!(measure_for(400, 10, 0), 320);
+        // Capped, it stops — and the margins absorb the rest.
+        assert_eq!(measure_for(400, 10, 72), 72);
+        // A window too narrow to reach the cap is left entirely alone: an 80-cell
+        // pane at 10 % leaves a 64-character column, short of the 72 cap.
+        assert_eq!(measure_for(80, 10, 0), 64);
+        assert_eq!(measure_for(80, 10, 72), 64);
+        // The cap never widens a column past what the padding left it.
+        assert!(measure_for(100, 25, 120) <= measure_for(100, 25, 0));
+    }
+
+    /// A capped column stays centred: the strategy derives the margins from the
+    /// width it is handed, so the surplus splits evenly instead of pooling on one
+    /// side.
+    #[test]
+    fn a_capped_column_stays_centred() {
+        let cfg = Config {
+            max_measure: 40,
+            ..Config::default()
+        };
+        let wide = Rect::new(0, 2, 200, 40);
+        let ctx = LayoutCtx {
+            body: wide,
+            config: &cfg,
+            paged: false,
+            scroll: 0,
+            section: 0,
+            spread: &[],
+        };
+        let p = plan(ViewMode::Center, &ctx);
+        assert_eq!(p.measure, 40, "held at the cap");
+        let Placement::Text(col) = p.placements[0] else {
+            panic!("center reflow is a text column")
+        };
+        let left = col.area.x - wide.x;
+        let right = (wide.x + wide.width) - (col.area.x + col.area.width);
+        assert!(
+            left.abs_diff(right) <= 1,
+            "centred within a cell (left {left}, right {right})"
+        );
     }
 
     #[test]

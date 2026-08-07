@@ -1,127 +1,92 @@
-# Status bar (view/status)
+# Status bar (`view/status`)
 
-The bottom status bar is a first-class, **configurable, themeable** subsystem —
-not ad-hoc strings scattered across the views. This document specifies the
-redesigned status bar (redesign Phase R-C).
+The bottom status row is a first-class, configurable, themeable subsystem rather
+than ad-hoc strings scattered across the views. This describes what ships.
 
-## Why the redesign
+Code lives in `crates/delryn/src/view/status/`:
 
-Today the status row is:
-- **Split across two renderers** — `view/status.rs::bar` (library + overlay
-  footer) *and* a separate ~88-line `view/reader.rs::render_status` with a
-  different layout — so the two never quite match.
-- **Coupled to the App god-object** — `legend(app)` is one long `if let` cascade
-  over the overlay fields, hardcoding each overlay's context + key hints inline.
-- **Not configurable** — content, order, and presence are fixed in code.
-- **Coarsely themed** — only `status_fg`/`status_bg` (two colours total).
+| File | Role |
+| ---- | ---- |
+| `segment.rs` | The `Zone` / `SegmentId` / `Segment` / `StatusBar` model |
+| `producers.rs` | Each context builds its own segments (`reader_bar`, `library_bar`, `overlay_bar`) |
+| `render.rs` | Zone layout, ordering, priority-based dropping, truncation |
+| `clock.rs` | The optional wall-clock segment |
 
-## Model: zones + segments
+## Model: zones and segments
 
-The bar is a list of **segments**, each placed in one of three **zones**, each
-themed by a `status.*` role.
+A bar is a list of **segments**, each assigned to one of three **zones** and
+styled through the theme's `status.*` roles.
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│ [Left zone]                  [Center zone]                  [Right zone]   │
-│  mode pill · title            chapter / context        position · progress │
-└──────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│ [Left]                        [Center]                            [Right]  │
+│  book title / context          optional centred context   reading fields   │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ```rust
 enum Zone { Left, Center, Right }
 
-struct Segment {
-    id: SegmentId,
-    spans: Vec<Span>,   // already themed via Role lookups
-    zone: Zone,
-    priority: u8,       // higher = dropped last when the row is narrow
-}
-
 enum SegmentId {
-    Mode,        // a "pill": READER / LIBRARY / SEARCH / preset name, on status.mode_*
-    Title,       // book / section title (reader) or view name (library)
-    Chapter,     // current chapter label
-    Position,    // "p 12/340" (page) or "12%" line position
-    Progress,    // a slim unicode progress bar themed by status.progress
-    Format,      // EPUB / PDF badge
-    Counts,      // library: N books, M selected; reader: search "3/17"
-    JumpType,    // active jump-by-type indicator (code/table/math/figure)
-    Message,     // transient flash (e.g. "copied", "cover embedded")
-    Legend,      // contextual key hints (the former `legend` cascade)
-    Clock,       // optional
+    Context,     // book title / author, or the library / overlay label
+    Flash,       // transient message ("copied", "cover embedded", …)
+    Search,      // match counter (⌕ 3/17)
+    Theme,       // active theme name
+    View,        // view-mode label (single / two-page / …)
+    Continuous,  // continuous-scroll indicator
+    Manga,       // right-to-left indicator
+    Page,        // page counter (p 12/340)
+    Zoom,        // zoom / fit label (PDF)
+    Position,    // section position (12/31)
+    Percent,     // reading percent (23%)
+    Gauge,       // slim unicode progress gauge
+    Clock,       // wall clock (14:05)
+    Keys,        // contextual key hints
 }
 ```
 
-## Producers, not a god-cascade
+Each `Segment` carries its id, its zone, pre-themed spans, and a priority —
+higher priority survives longer when the row is too narrow.
 
-Each context contributes its own segments — input/state stays decoupled from the
-renderer:
+## Producers, not one god-cascade
 
-- **Reader** emits reading segments (mode pill, title, chapter, position,
-  progress, jump-type, search counts) from `Reader` state.
-- **Library** emits library segments (view name, counts, filter, sort).
-- **The active overlay** emits its own context label + key legend. This composes
-  with the `enum Overlay` from R-A: each variant implements
-  `fn status(&self) -> Vec<Segment>` (or returns its `(context, keys)`), so the
-  hints live next to the overlay, not in a central `if let` chain.
-- A **modal** (`pending_confirm`) overrides the bar entirely while open.
+Every context contributes its own segments, so input and state stay decoupled
+from the renderer:
 
-## Overflow: priority elision
+- **`reader_bar`** — title/author, reading fields (position, percent, gauge,
+  page, zoom), and the mode indicators (view, continuous, manga).
+- **`library_bar`** — the library context label, counts, and selection state.
+- **`overlay_bar`** — an open overlay's own label and key hints; `None` when no
+  overlay wants the row.
 
-When the terminal is narrow, segments are dropped by ascending `priority` until
-the row fits (today's code just truncates). A shared `fit(width, segments)`
-packs each zone and elides low-priority segments first, so the mode pill +
-position survive on a tiny terminal while the legend drops.
+The key hints that used to be one long `if let` cascade over the overlay fields
+are now the `Keys` segment, produced by whichever context owns the screen.
 
-## Configurable (`[status]` in config)
+## Rendering
 
-The `[status]` block (single-source `Config`, per R-B) controls the bar:
+`render` lays the three zones out in one row, then narrows gracefully:
 
-```toml
-[status]
-# Segment visibility (the always-present context/title and key hints aside):
-theme    = true
-view     = true
-position = true
-percent  = true
-gauge    = true
-clock    = false          # a wall-clock HH:MM segment
+1. Order each zone. A zone's order comes from the `[status]` config when the
+   user has listed one, otherwise from the built-in order — so config only ever
+   *reorders*; hiding a segment is its own toggle.
+2. Drop the lowest-priority segments first while the row overflows.
+3. Truncate what remains — the book title truncates at the **middle**, so a long
+   title keeps both its start and its end rather than overrunning the reading
+   fields to its right.
 
-separator = "·"           # drawn with a space each side, between segments
+The bar floats on the page rather than sitting in a filled band: there is no
+`status_bg`, and the ink grades against the page colour through the theme roles.
 
-# Per-zone segment order, by SegmentId label. A zone list only *reorders* the
-# segments it names; unlisted segments keep their built-in order after them (so
-# a dynamic segment never vanishes because you forgot to list it). To hide a
-# segment, turn off its toggle above.
-left   = []
-center = []
-right  = ["position", "percent", "gauge", "clock"]
-```
+## Configuration
 
-Segment labels: `context`, `flash`, `search`, `theme`, `view`, `continuous`,
-`manga`, `page`, `zoom`, `position`, `percent`, `gauge`, `clock`, `keys`.
-Unknown/omitted keys fall back to defaults (serde `#[serde(default)]` on the whole
-block). The visibility toggles and the clock are also in **Settings → Interface**;
-order/separator are config-file only.
+The `[status]` block in `config.toml`:
 
-## Theming
+| Key | Meaning |
+| --- | ------- |
+| `theme`, `view`, `position`, `percent`, `gauge`, `clock` | Per-segment on/off |
+| `separator` | Divider drawn between segments in a zone (a space each side) |
+| `left`, `center`, `right` | Explicit segment order per zone, by `SegmentId` label |
 
-Every segment draws through `status.*` roles (see `docs/theming.md`): `bar_bg`,
-`bar_fg`, `mode_fg`/`mode_bg` (the pill), `segment_fg`/`segment_bg`, `separator`,
-`progress`/`progress_track`, `accent`, `key`/`key_dim` (the legend's active vs
-dimmed hint text). No literal colours.
-
-## Module layout (`delryn/src/view/status/`)
-
-| File | Responsibility |
-|---|---|
-| `mod.rs` | The single `render(frame, area, bar: &StatusBar, theme)` — the one renderer for reader, library, and overlays. Replaces `view/status.rs` and `view/reader.rs::render_status`. |
-| `segment.rs` | `Segment`, `Zone`, `SegmentId`, `StatusBar`. |
-| `producers.rs` | Build segments from `Reader` / library state / the active `Overlay`. |
-| `layout.rs` | Zone packing + priority-based overflow (`fit`). |
-
-## Outcome
-
-One renderer, one model, decoupled producers, per-segment theming, user
-configuration, graceful overflow — and the reader/library/overlay bars finally
-look and behave consistently.
+Zone lists name segments in lowercase (`"position"`, `"percent"`, `"gauge"`,
+`"page"`, `"zoom"`, `"search"`, `"theme"`, `"view"`, `"continuous"`, `"manga"`,
+`"clock"`). Anything unlisted keeps its built-in position.

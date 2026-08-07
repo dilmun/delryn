@@ -33,10 +33,21 @@ impl PageFit {
     }
 }
 
-/// Zoom multiplier step per keypress, and the bounds (relative to the fit scale).
-/// The 1400 px raster stays crisp to roughly 2× on a typical viewport; past that
-/// it softens (a crisp re-raster-at-DPI is a planned follow-up), so the cap is
-/// conservative.
+/// Zoom multiplier step per keypress, and the bounds **relative to the fit scale**
+/// the active [`PageFit`] picked — so `1.0` is always "as large as this fit mode
+/// shows the page", whatever the viewport.
+///
+/// The floor is that fit scale, not something smaller: a single page shown below
+/// its own fit is just a smaller page in the same empty viewport, and the reader
+/// who wants to see more of it has `W` (fit page / width / height) for that.
+/// [`is_zoomed`](PageView::is_zoomed) leans on the same floor to mean "a crop is
+/// in play". The continuous stack's zoom (`reader::continuous`) reads differently
+/// and *does* go below 1.0 — there, zooming out fits more pages on screen, which
+/// is a thing worth doing.
+///
+/// Pages are re-rastered to match the display width when the base raster would
+/// upscale (`reader::crisp`), so the ceiling is a limit on useful magnification
+/// rather than on sharpness.
 const ZOOM_STEP: f32 = 1.25;
 const ZOOM_MIN: f32 = 1.0;
 const ZOOM_MAX: f32 = 5.0;

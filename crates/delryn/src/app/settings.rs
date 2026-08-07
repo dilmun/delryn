@@ -53,12 +53,14 @@ pub enum SettingItem {
     Theme,
     ViewMode,
     SidePadding,
+    MaxMeasure,
     PageGap,
     CoverOffset,
     ReadingDirection,
     LineSpacing,
     ParagraphSpacing,
     Justify,
+    Hyphenate,
     TidySpacing,
     ShowSidebar,
     ShowStatus,
@@ -104,6 +106,9 @@ pub enum SettingItem {
     AddSource,
     /// The "Rescan now" action row on the Sources tab (re-indexes every source).
     RescanNow,
+    /// The "Find my books" action row on the Sources tab (searches the home
+    /// directory for folders holding books and offers them).
+    FindSources,
     /// Show/hide an optional library column (carries its key from `LIB_COLUMNS`).
     Column(&'static str),
     /// Duplicate resolver: always mark converted copies for deletion.
@@ -119,12 +124,14 @@ impl SettingItem {
             SettingItem::Theme => "Theme",
             SettingItem::ViewMode => "View mode",
             SettingItem::SidePadding => "Side margin %",
+            SettingItem::MaxMeasure => "Max text width",
             SettingItem::PageGap => "Two-page gap",
             SettingItem::CoverOffset => "First page alone",
             SettingItem::ReadingDirection => "Reading direction",
             SettingItem::LineSpacing => "Line spacing",
             SettingItem::ParagraphSpacing => "Paragraph spacing",
             SettingItem::Justify => "Justify text",
+            SettingItem::Hyphenate => "Hyphenate",
             SettingItem::TidySpacing => "Tidy spacing",
             SettingItem::ShowSidebar => "Sidebar by default",
             SettingItem::ShowStatus => "Status bar by default",
@@ -163,12 +170,13 @@ impl SettingItem {
             SettingItem::Source(_) => "Folder",
             SettingItem::AddSource => "Add folder…",
             SettingItem::RescanNow => "Rescan now",
+            SettingItem::FindSources => "Find my books…",
             SettingItem::LibLayout => "Layout",
             SettingItem::GridSize => "Cover size",
             SettingItem::Column(key) => crate::config::LIB_COLUMNS
                 .iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, label)| *label)
+                .find(|(k, _, _)| *k == key)
+                .map(|(_, label, _)| *label)
                 .unwrap_or(key),
             SettingItem::DupConvertedDelete => "Converted copies: always delete",
             SettingItem::DupFormat(label) => label,
@@ -186,6 +194,9 @@ impl SettingItem {
             SettingItem::Theme => "Colour scheme for text, chrome, and recoloured images.",
             SettingItem::ViewMode => "One column of text, or two side-by-side pages.",
             SettingItem::SidePadding => "Blank margin on each side, as a percent of the window.",
+            SettingItem::MaxMeasure => {
+                "Widest the text column may get, in characters; \"off\" lets it fill the margins."
+            }
             SettingItem::PageGap => "Blank columns between the two pages in two-page view.",
             SettingItem::CoverOffset => {
                 "Show the first page by itself, so later spreads pair up like a printed book."
@@ -196,7 +207,10 @@ impl SettingItem {
             SettingItem::LineSpacing => "Blank rows added between every line of text.",
             SettingItem::ParagraphSpacing => "Blank rows added between paragraphs.",
             SettingItem::Justify => {
-                "Pad spaces so both edges line up, instead of a ragged right edge."
+                "Pad spaces so both edges line up; a line needing wide gaps stays ragged."
+            }
+            SettingItem::Hyphenate => {
+                "Break long words across lines with a hyphen, which keeps justified gaps small."
             }
             SettingItem::TidySpacing => {
                 "Collapse runs of blank lines and stray indents from sloppy publisher markup."
@@ -238,7 +252,10 @@ impl SettingItem {
             SettingItem::TableWrap => {
                 "Wrap text inside table cells instead of letting wide tables scroll."
             }
-            SettingItem::Paged => "Move a whole screen at a time instead of scrolling by line.",
+            SettingItem::Paged => {
+                "Turn whole pages and keep the position on a page boundary, instead of \
+                 scrolling by line. (A two-page spread always turns a whole spread.)"
+            }
             SettingItem::Continuous => {
                 "Flow the next chapter in as you reach the bottom, with no break between them."
             }
@@ -258,6 +275,9 @@ impl SettingItem {
             SettingItem::Source(_) => "A folder scanned for books. Press d to remove it.",
             SettingItem::AddSource => "Type a folder path to scan it for books.",
             SettingItem::RescanNow => "Re-read every source folder and refresh the library.",
+            SettingItem::FindSources => {
+                "Search your home folder for folders holding books, then pick which to add."
+            }
             SettingItem::LibLayout => "Show the library as a list of rows or a grid of covers.",
             SettingItem::GridSize => "How large the covers are in grid layout.",
             SettingItem::Column(_) => "Show this column in the library list.",
@@ -275,7 +295,10 @@ impl SettingItem {
     pub fn is_action(self) -> bool {
         matches!(
             self,
-            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow
+            SettingItem::Source(_)
+                | SettingItem::AddSource
+                | SettingItem::RescanNow
+                | SettingItem::FindSources
         )
     }
 
@@ -296,12 +319,14 @@ impl SettingItem {
             SettingItem::Theme => c.theme = d.theme,
             SettingItem::ViewMode => c.view_mode = d.view_mode,
             SettingItem::SidePadding => c.side_padding = d.side_padding,
+            SettingItem::MaxMeasure => c.max_measure = d.max_measure,
             SettingItem::PageGap => c.page_gap = d.page_gap,
             SettingItem::CoverOffset => c.cover_offset = d.cover_offset,
             SettingItem::ReadingDirection => c.reading_direction = d.reading_direction,
             SettingItem::LineSpacing => c.line_spacing = d.line_spacing,
             SettingItem::ParagraphSpacing => c.paragraph_spacing = d.paragraph_spacing,
             SettingItem::Justify => c.justify = d.justify,
+            SettingItem::Hyphenate => c.hyphenate = d.hyphenate,
             SettingItem::TidySpacing => c.tidy_spacing = d.tidy_spacing,
             SettingItem::ShowSidebar => c.show_sidebar = d.show_sidebar,
             SettingItem::ShowStatus => c.show_status = d.show_status,
@@ -346,7 +371,10 @@ impl SettingItem {
             }
             SettingItem::DupConvertedDelete => c.dup_converted_delete = d.dup_converted_delete,
             SettingItem::DupFormat(_) => c.dup_format_order = d.dup_format_order,
-            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow => {}
+            SettingItem::Source(_)
+            | SettingItem::AddSource
+            | SettingItem::RescanNow
+            | SettingItem::FindSources => {}
         }
     }
 
@@ -358,6 +386,10 @@ impl SettingItem {
             SettingItem::Theme => c.theme.name.to_string(),
             SettingItem::ViewMode => c.view_mode.label().to_string(),
             SettingItem::SidePadding => c.side_padding.to_string(),
+            SettingItem::MaxMeasure => match c.max_measure {
+                0 => "off".to_string(),
+                n => n.to_string(),
+            },
             SettingItem::PageGap => c.page_gap.to_string(),
             SettingItem::CoverOffset => onoff(c.cover_offset),
             SettingItem::ReadingDirection => match c.reading_direction {
@@ -367,6 +399,7 @@ impl SettingItem {
             SettingItem::LineSpacing => c.line_spacing.to_string(),
             SettingItem::ParagraphSpacing => c.paragraph_spacing.to_string(),
             SettingItem::Justify => onoff(c.justify),
+            SettingItem::Hyphenate => onoff(c.hyphenate),
             SettingItem::TidySpacing => onoff(c.tidy_spacing),
             SettingItem::ShowSidebar => onoff(c.show_sidebar),
             SettingItem::ShowStatus => onoff(c.show_status),
@@ -414,9 +447,10 @@ impl SettingItem {
             SettingItem::TranslateTo => c.translate_lang_label().to_string(),
             // Sources-tab rows render bespoke (see `view::settings`); the generic
             // label/value path is never taken for them.
-            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow => {
-                String::new()
-            }
+            SettingItem::Source(_)
+            | SettingItem::AddSource
+            | SettingItem::RescanNow
+            | SettingItem::FindSources => String::new(),
             SettingItem::LibLayout => c.library_layout.label().to_string(),
             SettingItem::GridSize => c.library_grid_size.label().to_string(),
             SettingItem::Column(key) => onoff(c.column_on(key)),
@@ -465,12 +499,14 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
                     I(Theme),
                     I(ViewMode),
                     I(SidePadding),
+                    I(MaxMeasure),
                     I(PageGap),
                     I(CoverOffset),
                     I(ReadingDirection),
                     I(LineSpacing),
                     I(ParagraphSpacing),
                     I(Justify),
+                    I(Hyphenate),
                 ],
             ),
             tab(
@@ -539,7 +575,7 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
             columns.extend(
                 crate::config::LIB_COLUMNS
                     .iter()
-                    .map(|(key, _)| I(Column(key))),
+                    .map(|(key, _, _)| I(Column(key))),
             );
             // Duplicate-resolver preferences: a converted-copies toggle and the
             // per-format keep priority (l/h on a format raises/lowers its rank).
@@ -557,6 +593,7 @@ pub fn settings_tabs(scope: Mode, config: &Config) -> Vec<SettingTab> {
             let mut sources = vec![S("Folders".into())];
             sources.extend((0..config.library_paths.len()).map(|i| I(Source(i))));
             sources.push(I(AddSource));
+            sources.push(I(FindSources));
             sources.push(I(RescanNow));
             // Ordered most-frequently-used first: view/columns are constant tweaks,
             // appearance occasional, sources set-and-forget, dup-prefs rare.
@@ -1022,7 +1059,9 @@ impl App {
     }
 
     pub(crate) fn settings_change(&mut self, delta: i32) {
-        use crate::config::{MAX_LINE_SPACING, MAX_PAGE_GAP, MAX_SIDE_PADDING};
+        use crate::config::{
+            MAX_LINE_SPACING, MAX_MEASURE_CAP, MAX_PAGE_GAP, MAX_SIDE_PADDING, MIN_MEASURE_CAP,
+        };
         let Overlay::Settings(s) = &self.overlay else {
             return;
         };
@@ -1039,6 +1078,7 @@ impl App {
         match item {
             SettingItem::AddSource => return self.begin_add_source(),
             SettingItem::RescanNow => return self.rescan_sources(),
+            SettingItem::FindSources => return self.start_discover(),
             SettingItem::Source(_) => return, // delete via `d`/Delete, not change
             _ => {}
         }
@@ -1072,6 +1112,21 @@ impl App {
                 c.side_padding =
                     (c.side_padding as i32 + delta).clamp(0, MAX_SIDE_PADDING as i32) as u16
             }
+            // "off" (0) sits just below the range rather than inside it: stepping
+            // down off the floor turns the cap off, stepping up from off re-enters
+            // at the floor, so one key reaches every state without a second toggle.
+            SettingItem::MaxMeasure => {
+                let stepped = match (c.max_measure, delta) {
+                    (0, d) if d > 0 => MIN_MEASURE_CAP as i32,
+                    (0, _) => 0,
+                    (n, d) => n as i32 + d,
+                };
+                c.max_measure = if stepped < MIN_MEASURE_CAP as i32 {
+                    0
+                } else {
+                    stepped.min(MAX_MEASURE_CAP as i32) as u16
+                };
+            }
             SettingItem::PageGap => {
                 c.page_gap = (c.page_gap as i32 + delta).clamp(0, MAX_PAGE_GAP as i32) as u16
             }
@@ -1091,6 +1146,7 @@ impl App {
                 c.paragraph_spacing = (c.paragraph_spacing as i32 + delta).clamp(0, 3) as u8
             }
             SettingItem::Justify => c.justify = !c.justify,
+            SettingItem::Hyphenate => c.hyphenate = !c.hyphenate,
             SettingItem::TidySpacing => c.tidy_spacing = !c.tidy_spacing,
             SettingItem::ShowSidebar => c.show_sidebar = !c.show_sidebar,
             SettingItem::ShowStatus => c.show_status = !c.show_status,
@@ -1177,7 +1233,10 @@ impl App {
                 }
             }
             // Handled (and returned) above; listed so the match stays exhaustive.
-            SettingItem::Source(_) | SettingItem::AddSource | SettingItem::RescanNow => {}
+            SettingItem::Source(_)
+            | SettingItem::AddSource
+            | SettingItem::RescanNow
+            | SettingItem::FindSources => {}
             SettingItem::Column(key) => c.toggle_column(key),
             SettingItem::DupConvertedDelete => c.dup_converted_delete = !c.dup_converted_delete,
             // l/right/Enter (delta > 0) promotes the format toward "keep #1".

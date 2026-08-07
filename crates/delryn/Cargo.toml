@@ -2,6 +2,7 @@
 name = "delryn"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "A fast terminal reader for EPUB, PDF, and MOBI/AZW3 with real graphics"
 license.workspace = true
 repository.workspace = true

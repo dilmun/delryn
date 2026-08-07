@@ -15,7 +15,55 @@ pub use define::{
 
 /// Identify the app for the higher rate tier (per Open Library's docs), and to
 /// satisfy Wikipedia's descriptive-User-Agent policy. Shared by every provider.
-pub(crate) const USER_AGENT: &str = "delryn/0.1 (+https://github.com/dilmun/delryn)";
+///
+/// Built once from whatever [`set_version`] was given, so the version delryn
+/// announces to servers is the same one it reports everywhere else. It used to be
+/// hardcoded `delryn/0.1`, which silently went stale on the first release.
+pub(crate) fn user_agent() -> &'static str {
+    static UA: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let v = VERSION_OVERRIDE
+            .get()
+            .map(String::as_str)
+            .unwrap_or(env!("CARGO_PKG_VERSION"));
+        format!("delryn/{v} (+https://github.com/dilmun/delryn)")
+    });
+    &UA
+}
+
+static VERSION_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Tell the online providers which version to announce. Called once at startup
+/// with `delryn::VERSION`, which tracks the release tag rather than the
+/// (deliberately frozen) `Cargo.toml` version. Must precede the first request;
+/// later calls, and the second of two, are ignored.
+pub fn set_version(v: &str) {
+    let _ = VERSION_OVERRIDE.set(v.to_string());
+}
+
+/// How long any single request may take, end to end.
+///
+/// `ureq`'s defaults are all `None` — no timeout of any kind — so a server that
+/// accepted the connection and then stalled would hang the calling worker thread
+/// for the life of the process. Every lookup here is a nicety the reader can live
+/// without, so a request that isn't answered promptly is better abandoned: the
+/// caller already treats `None` as "no result".
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Cap on connection setup alone, so an unroutable host fails fast.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The shared HTTP agent: one connection pool and one timeout policy for every
+/// provider (metadata search, covers, dictionary, Wikipedia, translation).
+pub(crate) fn agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(REQUEST_TIMEOUT))
+            .timeout_connect(Some(CONNECT_TIMEOUT))
+            .build()
+            .into()
+    });
+    &AGENT
+}
+
 const SEARCH_URL: &str = "https://openlibrary.org/search.json";
 /// Fields requested from the search endpoint (keeps the payload small).
 const FIELDS: &str = "title,subtitle,author_name,first_publish_year,publisher,isbn,series_name,series_position,cover_i";
@@ -61,7 +109,7 @@ fn ol_cover_url(key: &str, value: impl std::fmt::Display) -> String {
 /// `limit` candidates; empty on any network/parse error (callers degrade).
 pub fn search(query: &str, limit: usize) -> Vec<Candidate> {
     let url = search_url(query, limit);
-    let Ok(mut resp) = ureq::get(&url).header("User-Agent", USER_AGENT).call() else {
+    let Ok(mut resp) = agent().get(&url).header("User-Agent", user_agent()).call() else {
         return Vec::new();
     };
     match resp.body_mut().read_json::<SearchResp>() {
@@ -134,8 +182,9 @@ pub fn cover_candidates(query: &str, isbn_raw: &str, limit: usize) -> Vec<CoverH
 /// Download cover image bytes. `None` on error or an implausibly small body
 /// (a stray placeholder).
 pub fn fetch_cover(url: &str) -> Option<Vec<u8>> {
-    let mut resp = ureq::get(url)
-        .header("User-Agent", USER_AGENT)
+    let mut resp = agent()
+        .get(url)
+        .header("User-Agent", user_agent())
         .call()
         .ok()?;
     let bytes = resp.body_mut().read_to_vec().ok()?;

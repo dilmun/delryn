@@ -9,17 +9,25 @@ mod kitty;
 mod page;
 mod profile;
 mod recolor;
+mod resize;
 mod sizing;
+pub mod termquery;
 
 pub use delryn_infra::config::{ImageFit, ImageMode};
 
-pub use builder::{BuiltImage, ImageBuilder, ImagePlan, ImgKey, ImgSlot, raster_cache_dir};
+pub mod cache;
+pub use builder::{
+    BuiltImage, ImageBuilder, ImagePlan, ImgKey, ImgSlot, raster_cache_dir,
+    raster_cache_version_dir,
+};
+pub use cache::{DEFAULT_BUDGET_BYTES, sweep as sweep_caches};
 pub use cover::{CoverImage, build_cover, decode_cover, wrap_cover};
 pub use decode::{decode, image_dimensions};
 pub use image::DynamicImage;
 pub use kitty::{
-    delete_all_images_seq, delete_image_seq, delete_placement_seq, detect_picker, place_image_seq,
-    terminal_background, transmit_file_seq, transmit_image_seq,
+    delete_all_images_seq, delete_image_seq, delete_placement_seq, detect_picker,
+    moves_need_retransmit, place_image_seq, terminal_background, terminal_report,
+    transmit_file_seq, transmit_image_seq,
 };
 pub use page::{PageKey, PageThemer, ThemedPage};
 pub use profile::{InkProfile, ink_profile};
@@ -27,4 +35,5 @@ pub use recolor::{
     Ink, RenderPolicy, flatten_onto, is_line_art, recolor_ink, render_for_theme, theme_invert,
     theme_page_png,
 };
+pub use resize::{fit_to_box, resize_exact};
 pub use sizing::{FitBox, SizeHint, SizeSpec, target_cells};

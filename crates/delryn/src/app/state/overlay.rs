@@ -12,8 +12,8 @@
 //! resolver while a duplicate is previewed in the reader.
 
 use crate::app::{
-    AnnotState, BulkRename, CodeView, CollInput, DupResolve, IgnoredView, ImageViewer, MetaEdit,
-    Palette, Prompt, Settings, ShelfPicker, TagInput, WordLookup,
+    AnnotState, BulkRename, CodeView, CollInput, DupResolve, FolderFinder, Help, IgnoredView,
+    ImageViewer, MetaEdit, Palette, Prompt, Settings, ShelfPicker, TagInput, WordLookup,
 };
 use crate::library::stats::LibraryStats;
 
@@ -22,8 +22,9 @@ use crate::library::stats::LibraryStats;
 // Exactly one `Overlay` exists at a time (`App::overlay`) — it's never collected
 // or stored in bulk — so the size of the largest variant is irrelevant; boxing
 // variants would only add indirection. (`MetaEdit`, the tabbed multi-field
-// editor, is the biggest.)
-#[allow(clippy::large_enum_variant)]
+// editor, is the biggest.) This carried a `large_enum_variant` suppression that
+// the lint no longer raises; switching the codebase's suppressions to `expect`
+// surfaced it as stale, which is the whole point of `expect` over `allow`.
 #[derive(Default)]
 pub enum Overlay {
     /// No overlay open.
@@ -47,6 +48,11 @@ pub enum Overlay {
     IgnoredView(IgnoredView),
     /// Add-to-collection picker (was `app.shelf_picker`).
     ShelfPicker(ShelfPicker),
+    /// Folders the home-directory search proposed as library sources, awaiting
+    /// confirmation — see `app::discover`.
+    FolderFinder(FolderFinder),
+    /// The `?` key reference for the current surface — see `app::help`.
+    Help(Help),
     /// Inline-image viewer (was `app.image_view`).
     ImageView(ImageViewer),
     /// Bookmarks overlay (was `app.annot`).
@@ -75,6 +81,8 @@ impl Overlay {
                 | Overlay::DupResolve(_)
                 | Overlay::IgnoredView(_)
                 | Overlay::ShelfPicker(_)
+                | Overlay::FolderFinder(_)
+                | Overlay::Help(_)
                 | Overlay::Annot(_)
                 | Overlay::Stats(_)
                 | Overlay::Palette(_)

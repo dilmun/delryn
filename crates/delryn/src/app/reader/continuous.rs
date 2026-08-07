@@ -50,6 +50,11 @@ use super::{Reader, page_stack};
 /// Continuous-paged zoom: multiplicative step per keypress, and the bounds relative
 /// to fit-width (1.0). Zoom-out below 1.0 shrinks + centres pages (see more at
 /// once); zoom-in above 1.0 enlarges a single page past the viewport (pan to read).
+///
+/// Deliberately a different band from the single-page zoom in `reader::page_view`,
+/// which floors at its fit scale: these measure from different references (fit-width
+/// here, the active fit mode there) and zooming out means different things — more
+/// pages in the stack, versus a smaller page in the same empty viewport.
 const CONT_ZOOM_STEP: f32 = 1.25;
 const CONT_ZOOM_MIN: f32 = 0.25;
 const CONT_ZOOM_MAX: f32 = 4.0;
@@ -59,41 +64,70 @@ const CONT_ZOOM_MAX: f32 = 4.0;
 const CONT_PAN_STEP: f32 = 0.2;
 
 impl Reader {
-    /// Whether continuous cross-section scroll is active right now: the flag is on
-    /// and the document is reflowable, single-column (Center), not page-mode, and
-    /// not chapter-locked.
-    pub fn continuous_active(&self) -> bool {
-        self.continuous
-            && !self.is_paged_image()
-            && self.view_mode == ViewMode::Center
-            && !self.paged
-            && !self.chapter_lock
+    /// Whether reflowed text **flows across section boundaries** right now — the render
+    /// buffer and the scroll pull in following sections, so the next chapter arrives with
+    /// no break rather than starting fresh.
+    ///
+    /// This is exactly the "Continuous scroll" setting, and it now means the same thing in
+    /// both view modes. It used to be forced on for a two-page spread, on the grounds that
+    /// a spread with a half-empty column reads wrong — but that made the setting **inert**
+    /// in the one view where the reader most wants the choice, so a spread with the toggle
+    /// off now starts each chapter on a fresh spread (a blank tail column being exactly
+    /// what "don't flow chapters together" asks for). Page mode no longer suppresses it
+    /// either: snapping to page boundaries and flowing chapters are separate choices, and
+    /// pages that flow across a chapter break are coherent.
+    ///
+    /// Motion granularity is a *different* question — see
+    /// [`scrolls_by_rows`](Self::scrolls_by_rows).
+    pub fn reflow_flows(&self) -> bool {
+        !self.is_paged_image() && !self.chapter_lock && self.continuous
     }
 
-    /// Whether reflowed text **flows across section boundaries** right now — the
-    /// render buffer and scroll pull in following sections to fill the viewport
-    /// (and both two-page columns), so a short chapter never leaves a blank column
-    /// or a gap. Always on for the **two-page spread** (a spread with a half-empty
-    /// column reads wrong); on for single-column **Center** only when the
-    /// `continuous` toggle is set. Excludes paged docs, page-snap, and chapter-lock
-    /// (which page per section by design). This gates the flow machinery;
-    /// [`continuous_active`](Self::continuous_active) still reports the toggle for
-    /// the status line.
-    pub fn reflow_flows(&self) -> bool {
-        !self.is_paged_image()
-            && !self.paged
-            && !self.chapter_lock
-            && (self.view_mode == ViewMode::TwoPage
-                || (self.continuous && self.view_mode == ViewMode::Center))
+    /// Whether reading motion scrolls by **rows** rather than turning a whole page.
+    ///
+    /// This is exactly the Page mode setting, in both view modes — off scrolls, on turns.
+    /// A spread was briefly excluded (it always turned, on the grounds that a partial step
+    /// slides the right column's text into the left one), but that left Page mode with
+    /// nothing to do in two-page, and a setting that does nothing is worse than one whose
+    /// effect the reader can choose not to like. Turning it **on** in a spread is the way
+    /// to get book-like page turns; leaving it off scrolls, columns sliding and all.
+    pub fn scrolls_by_rows(&self) -> bool {
+        !self.is_paged_image() && !self.paged
     }
 
     /// Whether continuous *paged* (PDF page-stacking) scroll is active: the flag is
     /// on for a paged-image document, not page-snap and not chapter-locked. Works in
     /// both Center (one page per band) and TwoPage (a facing pair per band, see
     /// [`continuous_two_page`](Self::continuous_two_page)). Mutually exclusive with
-    /// [`continuous_active`](Self::continuous_active) (which excludes paged docs).
+    /// [`reflow_flows`](Self::reflow_flows) (which excludes paged docs).
     pub fn continuous_paged_active(&self) -> bool {
-        self.continuous && self.is_paged_image() && !self.paged && !self.chapter_lock
+        self.continuous
+            && self.stacks_pages
+            && self.is_paged_image()
+            && !self.paged
+            && !self.chapter_lock
+    }
+
+    /// Whether the reader is turning PDF pages *because the terminal can't stack
+    /// them*, rather than because Page mode was asked for — the one case where the
+    /// Continuous setting is on and visibly doing nothing, which the status bar
+    /// explains rather than leaving to look like a bug.
+    pub fn paged_stack_unavailable(&self) -> bool {
+        self.continuous && !self.stacks_pages && self.is_paged_image() && !self.paged
+    }
+
+    /// Whether the Continuous setting is having an effect right now, in **either**
+    /// variant: reflowed chapters joining ([`reflow_flows`](Self::reflow_flows)) or
+    /// PDF pages stacking ([`continuous_paged_active`](Self::continuous_paged_active)).
+    /// This is what the status bar's "continuous" indicator reports.
+    ///
+    /// It used to ask a third predicate that kept the pre-split gates — Center-only
+    /// and off in page mode — so a spread or page mode showed no indicator while
+    /// chapters flowed anyway, and the setting read as inert in exactly the two cases
+    /// the split had just fixed. The indicator follows the behaviour now, not the
+    /// view mode.
+    pub fn flows_across_sections(&self) -> bool {
+        self.reflow_flows() || self.continuous_paged_active()
     }
 
     /// Whether the continuous-paged stack shows a facing pair per band (TwoPage) vs.

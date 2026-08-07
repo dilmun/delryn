@@ -9,11 +9,11 @@
 </h1>
 
 A fast, keyboard-driven terminal reader for EPUB, PDF, and MOBI / AZW3 — with real
-graphics: syntax-highlighted code, tables, inline figures, and graphical LaTeX math.
+graphics: syntax-highlighted code, tables, inline figures, and typeset math.
 
 [![CI](https://github.com/dilmun/delryn/actions/workflows/ci.yml/badge.svg)](https://github.com/dilmun/delryn/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust 1.96+](https://img.shields.io/badge/rust-1.96%2B-orange.svg)](https://www.rust-lang.org)
 [![Sponsor](https://img.shields.io/badge/sponsor-♥-ea4aaa?logo=github-sponsors&logoColor=white)](https://github.com/sponsors/dilmun)
 
 <br />
@@ -58,12 +58,18 @@ graphics: syntax-highlighted code, tables, inline figures, and graphical LaTeX m
 
 **Formats &amp; rendering**
 - EPUB (reflowable), PDF (page-image), and MOBI / AZW3
-- Syntax-highlighted code (syntect), real tables, and footnotes &amp; cross-references
-- Inline figures &amp; diagrams, and graphical **LaTeX math** (RaTeX → images)
+- Syntax-highlighted code (syntect) — a listing that doesn't say what language it is
+  follows the rest of its section, then the book's own language, rather than going grey
+- Inline figures &amp; diagrams, and **typeset math** — LaTeX *and* MathML, laid out by a
+  built-in engine and never left blank (typeset → publisher figure → Unicode)
 - DPI-independent equation &amp; image sizing, with theme-aware image recolour
 
 **Reading**
-- Continuous scroll or paged / page-flip; single column or **two-page spread**
+- Single column or **two-page spread**, which turns a whole spread at a time
+- **Page mode** (turn whole pages) and **continuous scroll** (chapters flow together)
+  as independent settings, in either view
+- Justified text with **hyphenation** (English patterns) and optimal (Knuth–Plass) line
+  breaking, and a capped measure so a maximised terminal still reads like a page
 - **RTL (manga)** direction, per-chapter lock, and a distraction-free focus mode
 - Jump by element type (code · table · math · figure); vim motions with counts
 - Code folding, plus fullscreen code and figure browsers
@@ -74,11 +80,14 @@ graphics: syntax-highlighted code, tables, inline figures, and graphical LaTeX m
 **Annotations, search &amp; lookup**
 - Bookmarks, colour highlights, and notes, in a tabbed annotations browser
 - **Vim-style visual selection** to copy, highlight, or note a range; Markdown export
+- A highlight **pen** — the selection is washed in the colour before you commit it, so
+  you pick by looking at it rather than blind
 - In-book search — **plain, regex, or fuzzy** — with match navigation and history
-- Word lookup — dictionary and Wikipedia, with translation
+- Word lookup (`K`) — dictionary and Wikipedia, with translation
 
 **Library**
-- Multi-folder sources with background scanning
+- Multi-folder sources with background scanning, and a **"find my books"** search that
+  proposes the folders in your home directory that hold books, with counts, to add in one go
 - Sections (Recent, Favorites, Currently Reading, Series, Duplicates) and **collections / shelves**
 - Ratings, reading status, and tags; list, compact, or **cover-grid** layouts
 - CSV export, statistics, and **duplicate detection** (metadata + deep cover-hash)
@@ -98,14 +107,25 @@ fine — figures fall back to placeholders, graphical math to a Unicode approxim
 won't open.
 
 > [!IMPORTANT]
-> delryn is developed and tested on [Ghostty](https://ghostty.org). Other Kitty-protocol
-> terminals (Kitty, iTerm2, WezTerm) should work but aren't verified yet — broader terminal
-> support is planned.
+> delryn is developed and tested on [Ghostty](https://ghostty.org). **Covers and the image
+> viewer** now detect iTerm2 and WezTerm and switch to the protocol they actually render —
+> iTerm2 ≥ 3.6 answers the Kitty capability query affirmatively without implementing the part
+> that places the image, so it needs the override. **PDF pages and inline math** still use raw
+> Kitty escapes and are verified only on Ghostty. `delryn --terminal` reports what your
+> terminal claims; broader support is in progress.
 
 > [!NOTE]
 > **tmux / screen** intercept the graphics protocol, so images and PDF render blank inside
-> them — run delryn outside a multiplexer for now (passthrough is planned). **PDF** also needs
-> **libpdfium**, which is bundled in the release tarballs.
+> them — run delryn outside a multiplexer for now (passthrough is planned). PDFs are parsed by
+> PDFium in-process and unsandboxed, as in most desktop readers — open PDFs you trust.
+
+> [!NOTE]
+> **What talks to the network.** Only two things, both on demand and both optional: the
+> metadata/cover editor (Open Library, Google Books) and word lookup `K`. Lookup queries the
+> **Free Dictionary API** and **Wikipedia** by default and **translation is off** by default;
+> each is an independent toggle in Settings ▸ Lookup, and turning all three off — or installing
+> `sdcv` for offline StarDict lookup — makes delryn fully offline. Nothing is sent in the
+> background, and there is no telemetry.
 
 ---
 
@@ -114,7 +134,8 @@ won't open.
 ### Prebuilt binaries
 
 Download your platform's tarball from the [**Releases**](https://github.com/dilmun/delryn/releases)
-page — each bundles the matching `libpdfium`, so PDFs work out of the box:
+page. **Nothing to install and nothing to configure** — PDF support is built into the binary, so
+you can move `delryn` anywhere on your `PATH` and it keeps working:
 
 ```sh
 tar xzf delryn-<version>-<target>.tar.gz
@@ -130,7 +151,7 @@ Prebuilt targets: Linux `x86_64`, macOS `arm64` &amp; `x86_64`. Each archive shi
 
 ### From source
 
-Requires Rust **1.85+** (edition 2024):
+Requires Rust **1.96+** (edition 2024) — `rustup update` if you're behind:
 
 ```sh
 git clone https://github.com/dilmun/delryn
@@ -139,8 +160,10 @@ cargo build --release
 ./target/release/delryn
 ```
 
-For PDF support from a source build, place a `libpdfium` shared library beside the binary (or
-install one system-wide) — [`docs/RELEASING.md`](docs/RELEASING.md) notes the exact build delryn pins.
+A source build has **no PDF support out of the box** — release binaries embed `libpdfium`, but
+`cargo build` can't. EPUB and MOBI/AZW3 read fine; for PDF, drop a `libpdfium` beside the binary
+or point `DELRYN_PDFIUM_DIR` at one. [`docs/RELEASING.md`](docs/RELEASING.md#libpdfium) has the
+pinned build and a copy-paste setup.
 
 ---
 
@@ -154,7 +177,25 @@ delryn --add <dir>…          # register + index folder(s), no UI  (also: -a)
 delryn --rescan              # re-read metadata for every book, prune missing files
 delryn --index               # build the full-text search index
 delryn --export-annotations  # dump all notes & bookmarks as Markdown to stdout
+delryn --clear-cache         # delete cached page / figure / equation images
+delryn --terminal            # what this terminal says about its graphics support
+delryn --help                # usage  (also: -h)   ·   --version / -V
 ```
+
+If images, PDF pages, or math render wrongly — blank, doubled in size, in the wrong place —
+run `delryn --terminal` first: it prints what your terminal calls itself, which image protocol
+was chosen, and the two cell sizes it reports. Two overrides exist for when detection is wrong:
+`DELRYN_IMAGE_PROTOCOL=kitty|iterm2|sixel|halfblocks` and `DELRYN_CELL_SIZE=WxH`.
+
+Don't know where your books are? Press `;` ▸ **Sources** ▸ *Find my books* (or `:` ▸ *Find my
+books*) and delryn searches your home folder, then offers the folders that hold books — with a
+count each — for you to tick.
+
+Registered folders **re-sync by themselves**: every launch runs a background scan that picks up
+new and changed books and forgets ones whose files are gone. It's incremental, so a large library
+costs little. `Rescan now` on the Sources tab (or `delryn --rescan`) forces a full re-read and
+also drops books that no longer sit under any configured folder. Books on an unmounted drive are
+kept, not pruned.
 
 ---
 
@@ -186,9 +227,10 @@ the essentials:
 | Key | Action |
 | --- | --- |
 | `v` | center ⇄ two-page |
-| `p` | paged ⇄ continuous scroll |
-| `t` · `M` | cycle theme · reading preset (Study / Research / Presentation) |
-| `[` `]` · `{` `}` | margin narrower / wider · line spacing |
+| `p` | page mode — turn whole pages ⇄ scroll by rows (continuous flow is a setting) |
+| `c` | chapter lock — stop at the chapter edge instead of flowing on |
+| `t` · `M` | cycle theme · reading preset (Default / Study / Research / Presentation) |
+| `[` `]` · `{` `}` | reading column narrower / wider · line spacing |
 | `f` · `z` | focus (distraction-free) mode · toggle status bar |
 | `+` `-` `0` · `W` · `x` | (PDF) zoom / reset · fit mode · margin trim |
 </details>
@@ -198,9 +240,11 @@ the essentials:
 
 | Key | Action |
 | --- | --- |
-| `m` · `H` · `a` | bookmark · highlight (cycles colour) · note |
+| `m` · `H` · `a` | bookmark · highlight (repeat to recolour) · note |
 | `'` | open annotations browser (Bookmarks / Notes / Highlights) |
-| `V` | visual selection → `y` copy · `H`/`1`–`5` highlight · `a` note |
+| `V` | cursor / visual selection (`v` or `Space` anchors it; `Esc` leaves) |
+| ↳ in `V` | `y` copy · `c`/`Tab` step the pen · `⏎`/`H` highlight · `1`–`5` pick a colour |
+| ↳ in `V` | `a` note · `m` bookmark the line · `K` look the word or phrase up |
 | `I` · `O` | figure browser · code browser (fullscreen, scroll + copy) |
 | `Z` · `F` | fold all long code · pick a visible code block to fold (`1`–`9`) |
 </details>
@@ -211,12 +255,16 @@ the essentials:
 | Key | Action |
 | --- | --- |
 | `h` `j` `k` `l` · `Enter` `o` | move · open |
+| `Ctrl-n` `Ctrl-p` | next / previous in any list — including while typing a filter |
 | `/` · `s` `S` | filter · sort / reverse |
 | `f` · `0`–`5` · `m` | favorite · rate · reading status |
 | `e` · `T` · `c` | edit metadata · tags · add to collection |
 | `v` · `+` `-` | cycle layout (list / compact / grid) · grid card size |
 | `Space` `V` `A` | mark · visual-range · mark all |
-| `:` · `i` · `;` | command palette · statistics · settings |
+| `r` | rename the file |
+| `D` · `R` · `I` | resolve duplicates · deep content scan · ignored groups |
+| `:` · `i` · `;` | command palette (incl. "Find my books") · statistics · settings |
+| `?` | key reference — every binding for the current screen |
 | `Delete` | move to trash (with confirm) |
 </details>
 
@@ -225,9 +273,13 @@ the essentials:
 ## Configuration
 
 delryn reads `~/.config/delryn/config.toml` (TOML), but everything is also editable **live in the
-app** — press `;` for the Settings overlay, which writes the file on close. Highlights: theme,
-typography (margins, line &amp; paragraph spacing, justify), reading mode &amp; direction, image / math
-scaling, PDF trim, and a `[status]` block to compose the status bar (per-zone segment order,
+app** — press `;` for the Settings overlay, which writes the file on close (atomically, and
+owner-only: the config and the library database hold your reading history, notes and
+highlights). Highlights: theme,
+typography (margins, max text width, line &amp; paragraph spacing, justify, hyphenation),
+pagination (page mode, continuous scroll, chapter lock), reading mode &amp; direction, image / math
+scaling, PDF trim, `cache_limit_mb` (disk ceiling for cached page/figure images — default 512 MB,
+`0` for unlimited), and a `[status]` block to compose the status bar (per-zone segment order,
 separator, clock). The same folder holds the library database, cover cache, and `themes/` for
 your own `*.toml` themes.
 
@@ -254,7 +306,7 @@ cargo test --workspace
 
 [MIT](LICENSE) © 2026 dilmun
 
-<sub>Built on ratatui, syntect, pdfium, RaTeX, and the epub / scraper / image crates — thank you to those projects.</sub>
+<sub>Built on ratatui, syntect, pdfium, RaTeX, hypher, and the epub / scraper / image crates — thank you to those projects.</sub>
 
 <div align="center">
 <br />

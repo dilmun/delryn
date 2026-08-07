@@ -24,20 +24,32 @@ impl Store {
         );
     }
 
-    /// Highlight a reading position in a palette `color` (anchored by its quote).
-    pub fn add_highlight(&self, path: &str, section: usize, quote: &str, color: i64) {
-        let _ = self.conn.execute(
-            "INSERT INTO annotations (path, section, quote, kind, color, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                path,
-                section as i64,
-                quote,
-                KIND_HIGHLIGHT,
-                color,
-                now_secs()
-            ],
-        );
+    /// Highlight a reading position in a palette `color` (anchored by its quote),
+    /// returning the new annotation's id so the caller can recolour it in place
+    /// (see [`Self::set_annotation_color`]) rather than stacking a second
+    /// highlight over the same words.
+    pub fn add_highlight(
+        &self,
+        path: &str,
+        section: usize,
+        quote: &str,
+        color: i64,
+    ) -> Option<i64> {
+        self.conn
+            .execute(
+                "INSERT INTO annotations (path, section, quote, kind, color, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    path,
+                    section as i64,
+                    quote,
+                    KIND_HIGHLIGHT,
+                    color,
+                    now_secs()
+                ],
+            )
+            .ok()
+            .map(|_| self.conn.last_insert_rowid())
     }
 
     /// Bookmarks for one book (see [`Self::list_annotations`] for the ordering).

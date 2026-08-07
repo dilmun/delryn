@@ -32,7 +32,7 @@ impl App {
         let Some(reader) = self.reader.as_mut() else {
             return;
         };
-        let figs = reader.figures(false);
+        let figs = reader.chapter_figures();
         let mut viewer = ImageViewer::new(figs, false);
         if let Some(v) = viewer.as_mut() {
             v.select_image(image_index);
@@ -116,6 +116,11 @@ impl App {
     }
 
     /// Rebuild the viewer toggling between current-chapter and whole-book scope.
+    ///
+    /// Both scopes start from the chapter already decoded, so the toggle is instant
+    /// either way; book scope then starts a background [`FigureScan`] that merges the
+    /// remaining sections in as they finish. Switching back to chapter scope drops the
+    /// scan, which cancels the worker.
     fn toggle_image_scope(&mut self) {
         let Overlay::ImageView(v) = &self.overlay else {
             return;
@@ -124,14 +129,57 @@ impl App {
         let Some(reader) = self.reader.as_mut() else {
             return;
         };
-        let figs = reader.figures(whole);
+        let figs = reader.chapter_figures();
         // Keep the viewer open even if the new scope is empty (shouldn't be).
         let Some(new_viewer) = ImageViewer::new(figs, whole) else {
             return;
         };
+        self.figure_scan = whole.then(|| {
+            crate::app::figure_scan::FigureScan::start(
+                reader.doc.loader(),
+                crate::app::figure_scan::scan_order(reader.doc.section_count(), reader.section),
+            )
+        });
         // Free the outgoing viewer's terminal image before it's replaced.
         self.retire_image_viewer();
         self.overlay = Overlay::ImageView(new_viewer);
+    }
+
+    /// Merge any sections the whole-book figure scan finished into the open viewer.
+    /// Returns whether anything changed (so the loop redraws).
+    pub fn poll_figure_scan(&mut self) -> bool {
+        let Some(scan) = self.figure_scan.as_mut() else {
+            return false;
+        };
+        let done = scan.drain();
+        let still_running = scan.pending();
+        let Overlay::ImageView(v) = &mut self.overlay else {
+            // The viewer closed without the scan being dropped — stop the worker.
+            self.figure_scan = None;
+            return false;
+        };
+        let changed = !done.is_empty();
+        for s in done {
+            v.merge_section(s.section, s.figures);
+        }
+        if !still_running {
+            self.figure_scan = None;
+        }
+        changed
+    }
+
+    /// Whether the whole-book figure scan is still running (keeps the loop awake).
+    pub fn figure_scan_pending(&self) -> bool {
+        self.figure_scan.as_ref().is_some_and(|s| s.pending())
+    }
+
+    /// `(sections scanned, total)` while the whole-book scan runs, for the viewer's
+    /// title; `None` once it has finished (or was never started).
+    pub fn figure_scan_progress(&self) -> Option<(usize, usize)> {
+        self.figure_scan
+            .as_ref()
+            .filter(|s| s.pending())
+            .map(|s| s.progress())
     }
 
     /// Free the open image viewer's last shown terminal image (before the viewer
@@ -149,6 +197,7 @@ impl App {
     /// then drop the overlay).
     fn close_image_viewer(&mut self) {
         self.retire_image_viewer();
+        self.figure_scan = None; // cancels the worker at its next section boundary
         self.overlay = Overlay::None;
     }
 
@@ -409,6 +458,12 @@ impl App {
         // While typing a filter, printable keys edit it; arrows still navigate.
         if a.filtering {
             if let Overlay::Annot(a) = &mut self.overlay {
+                // Before the `Char(c)` arm below, which would otherwise type the
+                // `n` of Ctrl-n into the filter.
+                if let Some(ns) = crate::input::list_nav_typing(key, a.sel, a.filtered().len()) {
+                    a.sel = ns;
+                    return;
+                }
                 match key.code {
                     KeyCode::Esc => {
                         a.filter.clear();
@@ -423,13 +478,6 @@ impl App {
                     KeyCode::Char(c) => {
                         a.filter.push(c);
                         a.sel = 0;
-                    }
-                    KeyCode::Up => a.sel = a.sel.saturating_sub(1),
-                    KeyCode::Down => {
-                        let n = a.filtered().len();
-                        if n > 0 {
-                            a.sel = (a.sel + 1).min(n - 1);
-                        }
                     }
                     _ => {}
                 }
@@ -588,16 +636,33 @@ impl App {
                     r.copy_selection();
                 }
             }
-            // Highlight the selected range, else cycle the caret line's highlight.
-            KeyCode::Char('H') => {
+            // Step the pen. The selection is washed in it, so this recolours what
+            // is on screen — the colour is chosen by looking at it on the words
+            // rather than committed and corrected afterwards.
+            KeyCode::Char('c') | KeyCode::Tab => {
+                if let Some(r) = self.reader.as_mut() {
+                    let pen = r.cycle_pen();
+                    r.flash = Some(format!("pen: {}", pen.label()));
+                }
+            }
+            // Commit the selection in the pen's colour, keeping the selection so
+            // the colour can still be changed and re-applied.
+            KeyCode::Char('H') | KeyCode::Enter => {
                 if selecting {
-                    self.highlight_selection(HighlightColor::ALL[0]);
+                    let pen = self.reader.as_ref().map(|r| r.pen);
+                    self.highlight_selection(pen);
                 } else {
                     self.apply(Action::AddHighlight);
                 }
             }
+            // A digit picks a colour outright: it sets the pen and commits, so the
+            // palette is reachable in one key when the choice is already known.
             KeyCode::Char(c) if selecting && ('1'..='5').contains(&c) => {
-                self.highlight_selection(HighlightColor::ALL[c as usize - '1' as usize]);
+                let color = HighlightColor::ALL[c as usize - '1' as usize];
+                if let Some(r) = self.reader.as_mut() {
+                    r.pen = color;
+                }
+                self.highlight_selection(Some(color));
             }
             // Look up the selected phrase, else the word under the caret (vim `K`),
             // in the dictionary + Wikipedia panel. Leaves the selection intact.
@@ -636,8 +701,13 @@ impl App {
         }
     }
 
-    /// Highlight the current selection in `color`, then leave visual mode.
-    fn highlight_selection(&mut self, color: HighlightColor) {
+    /// Highlight the current selection, **keeping** it live.
+    ///
+    /// Dropping the selection the instant it was highlighted meant the colour was
+    /// whatever the first press happened to pick: to change it you had to reselect
+    /// the same span from scratch. Holding the selection lets a repeated `H` walk
+    /// the palette over the same words, and `Esc` is what ends it.
+    fn highlight_selection(&mut self, color: Option<HighlightColor>) {
         let Some((section, quote)) = self
             .reader
             .as_ref()
@@ -645,19 +715,14 @@ impl App {
         else {
             return;
         };
-        if let Some(r) = self.reader.as_mut() {
-            r.cancel_selection();
-        }
-        if quote.is_empty() || self.session.book_path.is_empty() {
+        let Some(store) = &self.session.store else {
             return;
-        }
-        if let Some(store) = &self.session.store {
-            store.add_highlight(&self.session.book_path, section, &quote, color.index());
-        }
-        if let Some(r) = self.reader.as_mut() {
-            r.flash = Some(format!("highlight: {}", color.label()));
-        }
+        };
+        let flash = highlight_quote(store, &self.session.book_path, section, &quote, color);
         self.sync_reader_bookmarks();
+        if let (Some(r), Some(msg)) = (self.reader.as_mut(), flash) {
+            r.flash = Some(msg);
+        }
     }
 
     /// Open the note prompt anchored to the current selection, then leave visual
@@ -705,5 +770,56 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+/// Highlight the text anchored at `(section, quote)`, returning the flash to show.
+///
+/// `Some(color)` paints that palette entry; `None` advances whatever is already
+/// there to the next one, and clears it past the last — so one key both applies
+/// and removes. Either way an existing highlight over the same words is
+/// *recoloured* rather than buried under a second one.
+///
+/// Free-standing rather than a method: the caret-line caller already holds a
+/// mutable borrow of the reader when it needs this, and taking `&mut App` here
+/// would collide with it. Shared by that caller and the selection so the two
+/// can't drift into answering the same keypress differently.
+pub(crate) fn highlight_quote(
+    store: &crate::store::Store,
+    book_path: &str,
+    section: usize,
+    quote: &str,
+    color: Option<HighlightColor>,
+) -> Option<String> {
+    if quote.is_empty() || book_path.is_empty() {
+        return None;
+    }
+    let existing = store
+        .list_annotations(book_path)
+        .into_iter()
+        .find(|a| a.is_highlight() && a.section == section && a.quote == quote);
+    let current = existing
+        .as_ref()
+        .map(|a| HighlightColor::from_index(a.color));
+    // An explicit colour is applied as asked; `None` steps the cycle, which runs
+    // off the end into "no highlight at all".
+    let next = match color {
+        Some(c) => Some(c),
+        None => HighlightColor::cycle(current),
+    };
+    match (next, existing) {
+        (Some(c), Some(a)) => {
+            store.set_annotation_color(a.id, c.index());
+            Some(format!("highlight: {}", c.label()))
+        }
+        (Some(c), None) => {
+            store.add_highlight(book_path, section, quote, c.index());
+            Some(format!("highlight: {}", c.label()))
+        }
+        (None, Some(a)) => {
+            store.delete_annotation(a.id);
+            Some("highlight removed".into())
+        }
+        (None, None) => None,
     }
 }

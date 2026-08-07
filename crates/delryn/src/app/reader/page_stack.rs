@@ -168,6 +168,10 @@ pub(super) fn stack_targets(body: Rect, scroll: usize, bands: &[StackBand]) -> V
                 section: tile.section,
                 rect: Rect::new(body.x + tile.x, body.y + vis_top as u16, tile.w, dest_rows),
                 crop: Some((tile.src_x, src_y, tile.src_w, src_h)),
+                // The stack lays out against base rasters throughout (its tiles are
+                // measured from the base dimensions and it never takes the crisp
+                // path), so its crops index the base raster.
+                raster_w: super::BASE_RASTER_WIDTH,
             });
         }
         cursor += band.rows.max(1) as i64 + STACK_GAP as i64;

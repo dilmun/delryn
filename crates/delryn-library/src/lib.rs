@@ -11,6 +11,7 @@ use delryn_format::{BookFormat, epub, mobi};
 use delryn_store::Store;
 
 pub mod dedup;
+pub mod discover;
 pub mod export;
 pub mod fuzzy;
 pub mod query;

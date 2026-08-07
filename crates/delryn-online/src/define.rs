@@ -15,7 +15,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use crate::USER_AGENT;
+use crate::{agent, user_agent};
 
 const DICT_URL: &str = "https://api.dictionaryapi.dev/api/v2/entries/en";
 const WIKI_URL: &str = "https://en.wikipedia.org/api/rest_v1/page/summary";
@@ -186,8 +186,9 @@ fn parse_sdcv(json: &[u8], word: &str) -> Option<Definition> {
 /// `ureq` status error, so `.ok()?` yields `None` and the caller degrades.
 fn online_define(word: &str) -> Option<Definition> {
     let url = format!("{DICT_URL}/{}", enc_path(word));
-    let mut resp = ureq::get(&url)
-        .header("User-Agent", USER_AGENT)
+    let mut resp = agent()
+        .get(&url)
+        .header("User-Agent", user_agent())
         .call()
         .ok()?;
     let entries: Vec<ApiEntry> = resp.body_mut().read_json().ok()?;
@@ -232,8 +233,9 @@ fn parse_dict_api(entries: Vec<ApiEntry>, word: &str) -> Option<Definition> {
 /// article 404s into `None`.
 fn wikipedia(term: &str) -> Option<WikiSummary> {
     let url = format!("{WIKI_URL}/{}", enc_path(term));
-    let mut resp = ureq::get(&url)
-        .header("User-Agent", USER_AGENT)
+    let mut resp = agent()
+        .get(&url)
+        .header("User-Agent", user_agent())
         .call()
         .ok()?;
     let s: WikiResp = resp.body_mut().read_json().ok()?;
@@ -264,8 +266,9 @@ fn translate(text: &str, target: &str) -> Option<Translation> {
         enc_path(target),
         enc_path(text)
     );
-    let mut resp = ureq::get(&url)
-        .header("User-Agent", USER_AGENT)
+    let mut resp = agent()
+        .get(&url)
+        .header("User-Agent", user_agent())
         .call()
         .ok()?;
     let v: serde_json::Value = resp.body_mut().read_json().ok()?;
@@ -400,28 +403,41 @@ mod tests {
     #[test]
     fn parses_sdcv_output() {
         let json = r#"[
-            {"dict":"WordNet","word":"delryn","definition":"a book of the largest size\nmade by folding a sheet once"},
-            {"dict":"Empty","word":"delryn","definition":"   \n  "}
+            {"dict":"WordNet","word":"colophon","definition":"a publisher's emblem printed in a book\nthe final page giving printing details"},
+            {"dict":"Empty","word":"colophon","definition":"   \n  "}
         ]"#;
-        let def = parse_sdcv(json.as_bytes(), "delryn").expect("a definition");
+        let def = parse_sdcv(json.as_bytes(), "colophon").expect("a definition");
         assert_eq!(def.source, "sdcv");
         // The all-whitespace dictionary is dropped; WordNet keeps two lines.
         assert_eq!(def.meanings.len(), 1);
         assert_eq!(def.meanings[0].label, "WordNet");
         assert_eq!(def.meanings[0].items.len(), 2);
-        assert_eq!(def.meanings[0].items[0].text, "a book of the largest size");
+        assert_eq!(
+            def.meanings[0].items[0].text,
+            "a publisher's emblem printed in a book"
+        );
     }
 
     #[test]
     fn parses_wikipedia_summary_and_skips_disambiguation() {
-        let ok = r#"{"type":"standard","title":"Folio","description":"leaf of a book","extract":"A folio is a leaf of paper."}"#;
+        let ok = r#"{"type":"standard","title":"Colophon","description":"publisher's emblem in a book","extract":"A colophon is a brief statement at the end of a book."}"#;
         let s: WikiResp = serde_json::from_str(ok).unwrap();
         let w = parse_wiki(s).expect("a summary");
-        assert_eq!(w.title, "Folio");
-        assert_eq!(w.description.as_deref(), Some("leaf of a book"));
-        assert_eq!(w.extract, "A folio is a leaf of paper.");
+        assert_eq!(w.title, "Colophon");
+        assert_eq!(
+            w.description.as_deref(),
+            Some("publisher's emblem in a book")
+        );
+        assert_eq!(
+            w.extract,
+            "A colophon is a brief statement at the end of a book."
+        );
 
-        let disamb = r#"{"type":"disambiguation","title":"Folio","extract":"Folio may refer to:"}"#;
+        // A term with several unrelated senses (the book term and the ancient
+        // Greek city) is what the endpoint answers with `disambiguation` — noise,
+        // never a summary.
+        let disamb =
+            r#"{"type":"disambiguation","title":"Colophon","extract":"Colophon may refer to:"}"#;
         let s: WikiResp = serde_json::from_str(disamb).unwrap();
         assert!(parse_wiki(s).is_none());
     }

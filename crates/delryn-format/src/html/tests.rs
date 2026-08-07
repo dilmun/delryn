@@ -774,6 +774,36 @@ fn figure_caption_attaches_to_the_image() {
 }
 
 #[test]
+fn figure_caption_number_is_spaced_off_the_title() {
+    // Springer's shape: the label is an inline <span> and the title a *block* <p>,
+    // siblings with no whitespace between them. A browser breaks the line at the <p>,
+    // so the source never needs a space — but a caption renders as one line here, and
+    // flattening the subtree inline glued them ("Fig. 8.2Decision rules…").
+    let blocks = parse_blocks(
+        r#"<html><body><figure>
+            <img alt="" src="../images/f8_2.png"/>
+            <figcaption class="Caption"><div class="CaptionContent"><span class="CaptionNumber">Fig. 8.2</span><p class="SimplePara">Decision rules for strategy selection</p></div></figcaption>
+        </figure></body></html>"#,
+    );
+    let (_, caption) = first_captioned_image(&blocks).expect("captioned image");
+    assert_eq!(caption, "Fig. 8.2 Decision rules for strategy selection");
+}
+
+#[test]
+fn a_caption_the_block_walk_cannot_flatten_still_yields_its_text() {
+    // `coalesce_caption_spans` keeps only paragraphs/headings, so a caption whose text
+    // the block walk drops must fall back to the flat inline walk rather than come back
+    // empty — losing a caption entirely is far worse than losing a space.
+    let blocks = parse_blocks(
+        r#"<html><body><figure>
+            <img alt="" src="p.png"/><figcaption>bare caption text</figcaption>
+        </figure></body></html>"#,
+    );
+    let (_, caption) = first_captioned_image(&blocks).expect("captioned image");
+    assert_eq!(caption, "bare caption text");
+}
+
+#[test]
 fn imagewrap_div_with_caption_class_merges() {
     // No <figure>/<figcaption>: a `<div class="imagewrap">` holding one image and
     // a caption-classed `<p>` (Pearson-style). The caption-class marker makes it a
@@ -1581,4 +1611,60 @@ fn inline_spans_stay_inline_without_a_block_rule() {
         vec!["foobar".to_string()],
         "no block rule → one paragraph"
     );
+}
+
+/// Springer pairs an affiliation label with its value as an inline span beside a
+/// block sibling. The block ends the inline run, so `(1)` was emitted as its own
+/// paragraph and rendered stranded on a line of its own, a blank line above the
+/// institution it labels. It is joined onto the value now. (Real markup from
+/// *Artificial Intelligence and Natural Language*, AINL 2022.)
+#[test]
+fn an_affiliation_label_joins_the_line_it_labels() {
+    let html = r#"<div class="Affiliations">
+        <div class="Affiliation" id="Aff7"><span class="AffiliationNumber">(1)</span>
+        <div class="AffiliationText">Novosibirsk State University, Novosibirsk, Russia</div></div>
+        <div class="Affiliation" id="Aff8"><span class="AffiliationNumber">(2)</span>
+        <div class="AffiliationText">Kazan Federal University, Kazan, Russia</div></div>
+        </div>"#;
+    let texts = para_texts(&parse_blocks(html));
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("(1)") && t.contains("Novosibirsk State University")),
+        "label and institution belong on one line: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.trim() == "(1)" || t.trim() == "(2)"),
+        "no marker left stranded on its own: {texts:?}"
+    );
+}
+
+/// The join is narrow on purpose: only a paragraph that is *nothing but* a marker
+/// qualifies. Prose that merely starts with a number, or a real list item, must
+/// keep its own paragraph — collapsing those would corrupt ordinary body text.
+#[test]
+fn ordinary_paragraphs_are_never_joined() {
+    let cases = [
+        // A short sentence, not a marker.
+        r#"<p>Yes.</p><p>The next paragraph.</p>"#,
+        // Prose opening with a number.
+        r#"<p>1975 was a good year.</p><p>The next paragraph.</p>"#,
+        // A genuine list item carries a marker and is left alone.
+        r#"<ol><li>1</li><li>2</li></ol>"#,
+    ];
+    for html in cases {
+        let texts = para_texts(&parse_blocks(html));
+        assert!(
+            texts.len() >= 2,
+            "paragraphs were wrongly merged for {html:?}: {texts:?}"
+        );
+    }
+}
+
+/// A stranded marker with nothing after it stays as it is, rather than being
+/// dropped or panicking at the end of the block list.
+#[test]
+fn a_trailing_marker_survives_with_nothing_to_join() {
+    let texts = para_texts(&parse_blocks(r#"<p>Body text.</p><p>(3)</p>"#));
+    assert_eq!(texts.last().map(String::as_str), Some("(3)"));
 }

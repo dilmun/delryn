@@ -16,6 +16,7 @@ pub struct WrapKey {
     pub code_fold_flip: Vec<usize>,
     pub table_wrap: bool,
     pub justify: bool,
+    pub hyphenate: bool,
     pub tidy: bool,
     pub images_key: (usize, u16, u16, u16, u16, u16, crate::media::ImageFit),
 }

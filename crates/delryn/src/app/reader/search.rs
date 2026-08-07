@@ -113,6 +113,9 @@ impl Reader {
                         // Gutter/label must mirror the display so match line indices align.
                         code_line_numbers: self.code_line_numbers,
                         code_label: self.code_label,
+                        // Mirrors the display too: the fallback can add a label
+                        // row, which would shift every match line below it.
+                        code_lang_hint: self.code_lang_hint,
                         code_fold: self.code_fold,
                         code_fold_threshold: self.code_fold_threshold,
                         code_fold_flip: flip,
@@ -120,6 +123,10 @@ impl Reader {
                         // Never justify (keeps single spaces so phrase matches work);
                         // tidy must match the display so positions line up.
                         justify: false,
+                        // Hyphenation *does* move line breaks, so it has to match
+                        // the display or every match index below it is off by the
+                        // lines the two wraps disagree on.
+                        hyphenate: self.hyphenate,
                         tidy_spacing: self.tidy_spacing,
                         inline_math_cols: inline_cols,
                         inline_math_rows: inline_rows,
@@ -127,7 +134,11 @@ impl Reader {
                     &[],
                 );
                 for (li, line) in lines.iter().enumerate() {
-                    if matcher.matches(&line.text()) {
+                    // Matched against the line's *words*, so a term whose word the
+                    // wrapper split across the line end is still found — the
+                    // hyphen it added is on screen, not in the text. Only the line
+                    // index is kept, so dropping a character can't shift anything.
+                    if matcher.matches(&line.logical_text()) {
                         self.search.matches.push((s, li));
                     }
                 }

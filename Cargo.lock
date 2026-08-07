@@ -735,6 +735,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "delryn-eqn",
+ "delryn-infra",
  "delryn-model",
  "ego-tree",
  "epub",
@@ -750,6 +751,7 @@ dependencies = [
 name = "delryn-infra"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "ratatui",
  "serde",
  "toml",
@@ -774,6 +776,7 @@ dependencies = [
  "delryn-infra",
  "fast_image_resize",
  "image",
+ "libc",
  "ratatui",
  "ratatui-image",
 ]
@@ -798,6 +801,7 @@ name = "delryn-render"
 version = "0.1.0"
 dependencies = [
  "delryn-model",
+ "hypher",
  "syntect",
  "unicode-width",
 ]
@@ -1372,6 +1376,12 @@ name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "hypher"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef68590049bab63a464eee1a1158ac04c6f6613a546d8d90f78636b8b94f171"
 
 [[package]]
 name = "iana-time-zone"

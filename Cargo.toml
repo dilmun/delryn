@@ -5,6 +5,16 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# The floor the README promises, and the one CI actually builds against (the
+# `msrv` job installs exactly this and runs `cargo check`). It said 1.85 for
+# months while the tree used let-chains, stable only since 1.88 — nothing
+# verified the claim, so it silently became a lie that would have met the first
+# person to build from source. The job exists so that can't recur.
+#
+# delryn is an application, not a library: nobody depends on it, prebuilt
+# binaries need no toolchain at all, and `rustup update` is one command. So this
+# tracks current stable rather than the oldest version that happens to compile.
+rust-version = "1.96"
 license = "MIT"
 repository = "https://github.com/dilmun/delryn"
 
@@ -22,6 +32,7 @@ ego-tree = "0.11"
 epub = "2.1.5"
 html2text = "0.17.1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
+libc = "0.2"
 lru = "0.18.0"
 pdfium-render = "0.9.2"
 # RaTeX: pure-Rust math typesetting → PNG (KaTeX coverage, tiny-skia raster, embedded
@@ -62,6 +73,16 @@ delryn-eqn = { path = "crates/delryn-eqn" }
 # equation rasters crawl in a `cargo run` / debug binary even though release was fine.
 # Dependencies rebuild rarely, so their one-time optimized compile is well worth it.
 [profile.dev.package."*"]
+opt-level = 2
+
+# …but that glob covers dependencies only, and delryn's *own* per-pixel image code lives
+# here: the theme recolour/invert, the equation ink profiler, and the resamplers in
+# `delryn-media`. Left unoptimized those loops ran 40–100× slower in the debug binary
+# (`cargo build -p delryn`) than in release — theming one 1.3 MP figure cost 770 ms
+# instead of 20 ms, and profiling one cost ~1 s — so a figure took about a second to
+# appear and every arrow key in the image viewer stalled. The crate is small and changes
+# rarely, so optimizing it costs almost nothing in rebuild time.
+[profile.dev.package.delryn-media]
 opt-level = 2
 
 # Vendored ratatui-image patched to transmit Kitty images as PNG (f=100) rather

@@ -11,11 +11,37 @@ pub struct Pending {
     pub g: bool,
 }
 
+/// The list motions that stay available **while a text field has focus**: the
+/// arrows, and `Ctrl-n` / `Ctrl-p`.
+///
+/// A filter or query box has to receive `j` and `k` as letters, which leaves a
+/// typed-into list with nothing but the arrow keys — the one place a
+/// keyboard-driven app most wants a home-row alternative. `Ctrl-n`/`Ctrl-p` are
+/// the long-standing answer (readline, vim's completion menu, every fuzzy
+/// finder), so they move the selection on every list in the app, typed-into or
+/// not. Returns the new index, or `None` if `key` isn't one of them.
+pub fn list_nav_typing(key: KeyEvent, sel: usize, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let last = len - 1;
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let next = match key.code {
+        KeyCode::Down => (sel + 1).min(last),
+        KeyCode::Up => sel.saturating_sub(1),
+        KeyCode::Char('n') if ctrl => (sel + 1).min(last),
+        KeyCode::Char('p') if ctrl => sel.saturating_sub(1),
+        _ => return None,
+    };
+    Some(next)
+}
+
 /// Standard vim navigation for any selectable list: the new selection index for
-/// `key`, or `None` if it isn't a nav key. `j/k` (and arrows) step and wrap;
+/// `key`, or `None` if it isn't a nav key. `j/k` (and arrows) step and clamp;
 /// `Ctrl-d/Ctrl-u` and PageDown/PageUp move a half-page (`page` rows); `g`/Home
-/// and `G`/End jump to the ends. Shared by every list/overlay so navigation feels
-/// the same everywhere.
+/// and `G`/End jump to the ends; `Ctrl-n`/`Ctrl-p` step, as in a text field
+/// ([`list_nav_typing`]). Shared by every list/overlay so navigation feels the
+/// same everywhere.
 pub fn list_nav(key: KeyEvent, sel: usize, len: usize, page: usize) -> Option<usize> {
     if len == 0 {
         return None;
@@ -23,15 +49,20 @@ pub fn list_nav(key: KeyEvent, sel: usize, len: usize, page: usize) -> Option<us
     let last = len - 1;
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let next = match key.code {
-        KeyCode::Char('j') | KeyCode::Down => (sel + 1).min(last),
-        KeyCode::Char('k') | KeyCode::Up => sel.saturating_sub(1),
+        // The bare-letter motions must not fire with Ctrl held, or `Ctrl-n`'s
+        // neighbours on the home row would swallow their own chords.
+        KeyCode::Char('j') if !ctrl => (sel + 1).min(last),
+        KeyCode::Char('k') if !ctrl => sel.saturating_sub(1),
         KeyCode::Char('d') if ctrl => (sel + page).min(last),
         KeyCode::Char('u') if ctrl => sel.saturating_sub(page),
         KeyCode::PageDown => (sel + page).min(last),
         KeyCode::PageUp => sel.saturating_sub(page),
-        KeyCode::Char('g') | KeyCode::Home => 0,
-        KeyCode::Char('G') | KeyCode::End => last,
-        _ => return None,
+        KeyCode::Char('g') if !ctrl => 0,
+        KeyCode::Char('G') if !ctrl => last,
+        KeyCode::Home => 0,
+        KeyCode::End => last,
+        // Arrows and the Ctrl-n/Ctrl-p pair, shared with typed-into lists.
+        _ => return list_nav_typing(key, sel, len),
     };
     Some(next)
 }
@@ -172,7 +203,10 @@ pub fn map_key(key: KeyEvent, pending: &mut Pending) -> Action {
         KeyCode::Char('l') | KeyCode::Right => Action::Expand,
         KeyCode::Char('h') | KeyCode::Left => Action::Collapse,
         KeyCode::Char('/') => Action::Search,
-        KeyCode::Char('n') => Action::SearchNext,
+        // Guarded: without it `Ctrl-n` — "next item" everywhere else in the app —
+        // silently jumped to the next search match here. `Ctrl-p` is the jump
+        // list (above), so the pair stays out of the reader's motions entirely.
+        KeyCode::Char('n') if !ctrl => Action::SearchNext,
         KeyCode::Char('N') => Action::SearchPrev,
         KeyCode::Char('m') => Action::AddBookmark,
         KeyCode::Char('a') => Action::AddNote,
@@ -226,6 +260,40 @@ mod tests {
         assert_eq!(list_nav(key('G'), 0, 5, 3), Some(4));
         assert_eq!(list_nav(key('x'), 0, 5, 3), None); // not a nav key
         assert_eq!(list_nav(key('j'), 0, 0, 3), None); // empty list
+    }
+
+    /// `Ctrl-n`/`Ctrl-p` move through every list, including the ones being typed
+    /// into where `j`/`k` have to stay letters. They were bound nowhere in the
+    /// app before, so a filter or query box could only be navigated with arrows.
+    #[test]
+    fn ctrl_n_and_ctrl_p_step_lists_typed_into_or_not() {
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+
+        for nav in [list_nav_typing, |k, s, l| list_nav(k, s, l, 3)] {
+            assert_eq!(nav(ctrl('n'), 0, 5), Some(1), "Ctrl-n steps down");
+            assert_eq!(nav(ctrl('p'), 3, 5), Some(2), "Ctrl-p steps up");
+            assert_eq!(nav(ctrl('n'), 4, 5), Some(4), "clamps at the bottom");
+            assert_eq!(nav(ctrl('p'), 0, 5), Some(0), "clamps at the top");
+            // Arrows work in both; bare letters must not reach a text field.
+            assert_eq!(nav(KeyEvent::from(KeyCode::Down), 0, 5), Some(1));
+            assert_eq!(nav(ctrl('x'), 0, 5), None, "not a nav chord");
+        }
+        assert_eq!(
+            list_nav_typing(key('j'), 0, 5),
+            None,
+            "a typed-into list leaves `j` to the text field"
+        );
+    }
+
+    /// The bare-letter motions must not also fire when Ctrl is held, or `Ctrl-j`
+    /// / `Ctrl-g` would move as well as whatever the chord is meant to do.
+    #[test]
+    fn bare_letter_motions_ignore_the_control_modifier() {
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        assert_eq!(list_nav(ctrl('j'), 0, 5, 3), None);
+        assert_eq!(list_nav(ctrl('k'), 2, 5, 3), None);
+        assert_eq!(list_nav(ctrl('g'), 2, 5, 3), None);
+        assert_eq!(list_nav(ctrl('G'), 2, 5, 3), None);
     }
 
     /// `G` jumps to the bottom; a count prefix turns it into an absolute

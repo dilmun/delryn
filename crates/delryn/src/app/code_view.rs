@@ -271,6 +271,8 @@ impl App {
                 match key.code {
                     KeyCode::Char('j') | KeyCode::Down => cv.scroll = cv.scroll.saturating_add(1),
                     KeyCode::Char('k') | KeyCode::Up => cv.scroll = cv.scroll.saturating_sub(1),
+                    KeyCode::Char('n') if ctrl => cv.scroll = cv.scroll.saturating_add(1),
+                    KeyCode::Char('p') if ctrl => cv.scroll = cv.scroll.saturating_sub(1),
                     KeyCode::Char('d') if ctrl => cv.scroll = cv.scroll.saturating_add(HALF),
                     KeyCode::Char('u') if ctrl => cv.scroll = cv.scroll.saturating_sub(HALF),
                     KeyCode::PageDown => cv.scroll = cv.scroll.saturating_add(HALF),

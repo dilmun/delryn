@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, Padding, Paragraph};
 
 use ratatui_image::picker::Picker;
 
@@ -68,6 +68,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     reader.code_fold_threshold = config.code_fold_threshold;
     reader.table_wrap = config.table_wrap;
     reader.justify = config.justify;
+    reader.hyphenate = config.hyphenate && reader.language_hyphenates();
     reader.tidy_spacing = config.tidy_spacing;
     reader.paged = config.paged;
     // The raw continuous flag + view mode; each `continuous_*_active` check gates the
@@ -112,21 +113,72 @@ pub fn render(f: &mut Frame, app: &mut App) {
     last_layout.content = Some(content_area);
 
     if let Some(sb) = sidebar_area {
-        reader.update_sidebar_view(sb.height.saturating_sub(2) as usize);
+        reader.update_sidebar_view(sb.height.saturating_sub(sidebar_chrome(reader)) as usize);
         render_sidebar(f, sb, reader, theme);
+        render_divider(f, sb, body, theme);
     }
     render_content(f, content_area, reader, config, theme, images);
     if reader.selection_active() {
-        let style = theme.style(Role::StatusBar);
-        let hint = if reader.selection_selecting() {
-            " SELECT · h/l/w/b/j/k extend · ^d/^u ½page · y copy · 1-5/H highlight · a note · K look up · Esc "
+        // The bar floats, so the mode can't announce itself with a coloured band
+        // any more: it takes a pill, and the keys stay dim beside it.
+        let (mode, keys) = if reader.selection_selecting() {
+            (
+                "SELECT",
+                " h/l/w/b/j/k extend · y copy · ⏎/H highlight · c colour · a note · K look up · Esc ",
+            )
         } else {
-            " CURSOR · h/l/w/b/j/k move · ^d/^u ½page · v select · m bookmark · H highlight · a note · K look up · Esc "
+            (
+                "CURSOR",
+                " h/l/w/b/j/k move · ^d/^u ½page · v select · m bookmark · H highlight · a note · K look up · Esc ",
+            )
         };
-        f.render_widget(Paragraph::new(Line::raw(hint)).style(style), status);
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(crate::view::pill_spans(mode, theme));
+        // The pen, shown in its own colour while selecting, so the palette the
+        // `c` key steps through is visible without committing anything.
+        if let Some(pen) = reader.selection_pen() {
+            let (bg, fg) = pen.wash();
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!(" {} ", pen.label()),
+                Style::default().bg(bg).fg(fg),
+            ));
+        }
+        spans.push(Span::styled(keys, theme.style(Role::StatusDim)));
+        f.render_widget(
+            Paragraph::new(Line::from(spans)).style(theme.style(Role::StatusBar)),
+            status,
+        );
     } else if show_status {
         crate::view::status::render_reader(f, status, reader, config, theme);
     }
+}
+
+/// Rows the borderless sidebar spends on its own chrome: the title, plus the
+/// filter line when the contents filter is open. Keeps the scroll viewport the
+/// reader computes in step with what [`render_sidebar`] actually leaves for rows.
+fn sidebar_chrome(reader: &Reader) -> u16 {
+    1 + u16::from(reader.sidebar_filter.is_some())
+}
+
+/// A single hairline between the TOC and the text, drawn in the one-cell gap the
+/// split already reserves. It replaces the sidebar's box: one quiet rule is
+/// enough to separate the panes, where four sides of border framed the contents
+/// as a widget and boxed the prose in beside it.
+fn render_divider(f: &mut Frame, sidebar: Rect, body: Rect, theme: Theme) {
+    let x = sidebar.x + sidebar.width;
+    if x >= body.x + body.width {
+        return;
+    }
+    let rule = Rect {
+        x,
+        y: body.y,
+        width: 1,
+        height: body.height,
+    };
+    let style = theme.style(Role::Border);
+    let lines: Vec<Line> = (0..body.height).map(|_| Line::raw("│")).collect();
+    f.render_widget(Paragraph::new(Text::from(lines)).style(style), rule);
 }
 
 fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
@@ -141,11 +193,13 @@ fn render_sidebar(f: &mut Frame, area: Rect, reader: &Reader, theme: Theme) {
         };
         format!(" /{}\u{2588} · {count} ", input.text())
     });
+    // Borderless: no box, just a title row and a column of air on each side. Only
+    // the horizontal padding is ours to set — a block already reserves the top row
+    // for its title and the bottom row for a `title_bottom`, borders or not, which
+    // is exactly the chrome `sidebar_chrome` counts.
     let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.style(Role::Border))
-        .title(Span::styled(" Contents ", theme.style(Role::Title)))
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(" Contents", theme.style(Role::Title)))
         .style(theme.text_style());
     let block = match &filter_footer {
         Some(text) => block.title_bottom(
@@ -552,17 +606,19 @@ fn capture_pdf_targets(
             // (its width is recorded on the reader so `page_png` serves matching
             // bytes to the deck). Spreads always keep the base — they sit at
             // fit-page and are already crisp.
-            let p = if single {
+            let (p, raster_w) = if single {
                 let want = raster_width_for_crispness(&base_p, base_dims, vp);
-                let (_w, dims) = reader.resolve_page_width(section, base_dims, want);
+                let (w, dims) = reader.resolve_page_width(section, base_dims, want);
                 if dims == base_dims {
-                    base_p
+                    (base_p, w)
                 } else {
                     let content = reader.page_content_box(section, dims);
-                    place_page(dims, content, vp, &view)
+                    (place_page(dims, content, vp, &view), w)
                 }
             } else {
-                base_p
+                // A spread never takes the crisp path, so it places the base raster —
+                // which is what `page_png` serves when nothing chose a width.
+                (base_p, reader.effective_width(section))
             };
             let align = if single {
                 PageAlign::Center
@@ -576,6 +632,7 @@ fn capture_pdf_targets(
                 section,
                 rect: Rect::new(x, y, p.cols, p.rows),
                 crop: p.crop,
+                raster_w,
             });
             if single {
                 room = p.room;
@@ -811,6 +868,9 @@ struct LineDecor<'a> {
     highlights: &'a [(usize, usize, HighlightColor)],
     /// The visual selection's character range on this line, if any.
     selection: Option<(usize, usize)>,
+    /// The colour the selection is washed in — the pen the highlight would be
+    /// made with, so the range on screen is a preview of the result.
+    pen: Option<HighlightColor>,
     /// The visual caret's column on this line, if the caret is here.
     caret: Option<usize>,
 }
@@ -827,6 +887,7 @@ fn line_decor<'a>(
         cursor: sel.filter(|h| h.line == idx).map(|h| (h.start, h.end)),
         highlights: reader.highlight_spans(idx),
         selection: reader.selection_span_on(idx),
+        pen: reader.selection_pen(),
         caret: reader
             .selection_caret()
             .filter(|(l, _)| *l == idx)
@@ -889,7 +950,16 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, decor: &LineDecor) -> Line<'stat
     // The link cursor and the visual caret both stand out via reverse video; the
     // visual *selection* uses the accent selection style.
     let cursor_style = theme.style(Role::Cursor);
-    let selection_style = theme.style(Role::Selection);
+    // While selecting, the range is washed in the pen rather than the generic
+    // accent: what's on screen is then exactly the highlight that `H` would
+    // commit, so the colour is picked by looking at it on the words themselves.
+    let selection_style = match decor.pen {
+        Some(c) => {
+            let (bg, fg) = c.wash();
+            Style::default().bg(bg).fg(fg)
+        }
+        None => theme.style(Role::Selection),
+    };
     let (cs, ce) = decor.cursor.unwrap_or((usize::MAX, usize::MAX));
     let (ss, se) = decor.selection.unwrap_or((usize::MAX, usize::MAX));
 
@@ -947,7 +1017,18 @@ fn to_ratatui(line: &DisplayLine, theme: Theme, decor: &LineDecor) -> Line<'stat
 fn run_style(run: &Run, kind: LineKind, theme: Theme) -> Style {
     // The line kind's base role — Heading/Quote/Math carry their own emphasis.
     let role = match kind {
-        LineKind::Heading(_) => Role::Heading,
+        // Grade the heading by depth. Every level used to resolve to one role, so a
+        // section and its subsection looked identical and a numbered paper read as
+        // undifferentiated bold text. A terminal has no font sizes or weights to
+        // grade with, so the tiers are carried by colour, bold, and italic:
+        // accent+bold for a chapter title, heading+bold for a section, heading+italic
+        // below that, and muted for the deepest levels.
+        LineKind::Heading(level) => match level {
+            0 | 1 => Role::Title,
+            2 => Role::Heading,
+            3 => Role::Subheading,
+            _ => Role::Muted,
+        },
         LineKind::Quote => Role::Quote,
         LineKind::Math => Role::Math, // display equations, accented
         // Rules, the code gutter / unhighlighted code, and footnotes read muted.

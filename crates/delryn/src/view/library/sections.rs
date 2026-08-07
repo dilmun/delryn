@@ -16,7 +16,10 @@ fn section_item(
     focused: bool,
     theme: Theme,
 ) -> ListItem<'static> {
-    let marker = if here { "▸ " } else { "  " };
+    // No caret: the selected row is drawn as a highlight bar, and a marker on top
+    // of it says the same thing twice. The two cells stay as indent so the rows
+    // stay aligned and the bar's rounded caps have somewhere to sit.
+    let marker = "  ";
 
     // Selected in the focused pane → a full-width rounded selection bar. Lay the
     // row out to `inner_w - 2` (the rounded caps take one cell each side), count
@@ -211,7 +214,7 @@ pub(crate) fn render_sections(
 /// collection), with a block cursor at the caret. The value scrolls horizontally
 /// within `width` cells so the caret stays visible for long names.
 fn coll_edit_item(input: &crate::app::CollInput, width: usize, theme: Theme) -> ListItem<'static> {
-    let mut spans = vec![Span::styled("▸ ", theme.style(Role::Accent))];
+    let mut spans = vec![Span::styled("  ", theme.style(Role::Accent))];
     spans.extend(crate::view::field_spans(
         input.input.text(),
         input.input.cursor(),

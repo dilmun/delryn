@@ -33,6 +33,11 @@ pub enum Role {
     Marker,
     /// Rules, faint separators, de-emphasised text, footnotes, the code gutter.
     Muted,
+    /// A lower-tier heading (h3 and below): the heading ink without the weight, so
+    /// it still reads as structure but sits clearly under a [`Role::Heading`].
+    /// Terminals have no font weights to grade, so the hierarchy is carried by
+    /// colour, bold, and italic instead.
+    Subheading,
     /// Display equation (accented like a heading).
     Math,
     /// Inline math set within a line of prose: the body ink nudged subtly toward the
@@ -67,7 +72,9 @@ pub enum Role {
     Danger,
 
     // ── Status bar ───────────────────────────────────────────────────────
-    /// The status-row background (carries `status_fg` over `status_bg`).
+    /// The status row's base style. The bar *floats* on the page rather than
+    /// sitting in a filled band, so it takes the page background and reads as
+    /// chrome beneath the prose instead of a stripe under it.
     StatusBar,
     /// Status text.
     StatusText,
@@ -102,6 +109,7 @@ pub(super) fn resolve(t: &Theme, role: Role) -> Resolved {
     match role {
         Body => plain(t.fg),
         Heading => with(t.heading, Modifier::BOLD),
+        Subheading => with(t.heading, Modifier::ITALIC),
         Quote => with(t.quote, Modifier::ITALIC),
         Link => plain(t.link),
         Code => plain(t.code_fg),
@@ -136,14 +144,17 @@ pub(super) fn resolve(t: &Theme, role: Role) -> Resolved {
 
         Danger => plain(t.danger),
 
+        // Floating, not boxed: the page background carries through, so the bar's
+        // ink is graded against the *page* — muted for ordinary fields, full body
+        // ink for the one segment that matters, dim for hints and separators.
         StatusBar => Resolved {
-            fg: Some(t.status_fg),
-            bg: Some(t.status_bg),
+            fg: Some(t.muted),
+            bg: t.bg,
             modifier: Modifier::empty(),
         },
-        StatusText => plain(t.status_fg),
-        StatusStrong => with(t.status_fg, Modifier::BOLD),
-        StatusDim => with(t.status_fg, Modifier::DIM),
+        StatusText => plain(t.muted),
+        StatusStrong => with(t.fg, Modifier::BOLD),
+        StatusDim => with(t.muted, Modifier::DIM),
     }
 }
 
@@ -203,11 +214,16 @@ mod tests {
         assert_eq!(DARK.color(Role::Cursor), DARK.fg);
     }
 
+    /// The bar floats on the page: it never paints a band of its own, and its ink
+    /// is graded against the page background rather than against a band colour.
     #[test]
-    fn status_bar_paints_fg_over_bg() {
+    fn status_bar_floats_on_the_page() {
         let s = DARK.style(Role::StatusBar);
-        assert_eq!(s.fg, Some(DARK.status_fg));
-        assert_eq!(s.bg, Some(DARK.status_bg));
+        assert_eq!(s.bg, DARK.bg, "no band of its own — the page shows through");
+        assert_eq!(s.fg, Some(DARK.muted));
+        // Graded, so the bar has a readable hierarchy without a band behind it.
+        assert_eq!(DARK.style(Role::StatusStrong).fg, Some(DARK.fg));
+        assert_eq!(DARK.style(Role::StatusDim).fg, Some(DARK.muted));
     }
 
     #[test]

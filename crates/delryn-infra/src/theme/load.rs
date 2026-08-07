@@ -84,8 +84,6 @@ fn theme_from(tf: ThemeFile) -> Option<Theme> {
         muted,
         marker: hex(&p.marker).unwrap_or(accent),
         code_fg: hex(&p.code).unwrap_or(fg),
-        status_fg: hex(&p.status_fg).unwrap_or(bg),
-        status_bg: hex(&p.status_bg).unwrap_or(accent),
         accent,
         danger: hex(&p.danger).unwrap_or(Color::Rgb(0xe0, 0x5a, 0x5a)),
         syntect: leak(tf.syntect),

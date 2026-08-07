@@ -21,6 +21,8 @@ pub enum Command {
     ToggleDetail,
     Stats,
     Export,
+    /// Search the home directory for folders holding books (see `app::discover`).
+    FindFolders,
 }
 
 /// One palette row: its display label and the command it runs.
@@ -79,6 +81,7 @@ impl App {
             item("Toggle detail pane", Command::ToggleDetail),
             item("Library statistics", Command::Stats),
             item("Export to CSV", Command::Export),
+            item("Find my books", Command::FindFolders),
         ];
         // Jump-to-collection commands for each existing shelf.
         for (name, _) in &self.library.shelves {
@@ -99,15 +102,14 @@ impl App {
         let Overlay::Palette(p) = &mut self.overlay else {
             return;
         };
+        // The query box owns every letter, so navigation here is arrows and
+        // Ctrl-n/Ctrl-p (see `input::list_nav_typing`).
+        if let Some(ns) = crate::input::list_nav_typing(key, p.sel, p.filtered().len()) {
+            p.sel = ns;
+            return;
+        }
         match key.code {
             KeyCode::Esc => self.overlay = Overlay::None,
-            KeyCode::Up => {
-                p.sel = p.sel.saturating_sub(1);
-            }
-            KeyCode::Down => {
-                let n = p.filtered().len();
-                p.sel = (p.sel + 1).min(n.saturating_sub(1));
-            }
             KeyCode::Enter => self.palette_run_selected(),
             _ => {
                 // Editing the query resets the selection to the top match.
@@ -162,6 +164,7 @@ impl App {
             Command::ToggleDetail => self.library.detail = !self.library.detail,
             Command::Stats => self.open_stats(),
             Command::Export => self.export_library(),
+            Command::FindFolders => self.start_discover(),
         }
     }
 }

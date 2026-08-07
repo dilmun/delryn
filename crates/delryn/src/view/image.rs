@@ -19,6 +19,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         mode: app.config.image_mode,
     };
     let mode_label = app.config.image_mode.label();
+    // Progress of the whole-book scan, while one is running (read before the split
+    // borrow below, which reborrows the fields it needs mutably).
+    let scan = app.figure_scan_progress();
     // Disjoint field borrows: picker (read), viewer (mutate to build the proto),
     // reader (chapter titles).
     let App {
@@ -48,9 +51,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Outer frame: position + scope, or a transient flash (e.g. "saved …").
     let (pos, count) = viewer.position();
     let scope = if viewer.whole_book { "book" } else { "chapter" };
+    // Book scope gathers the rest of the book in the background, so say so while it runs
+    // — otherwise a partial list looks like the whole one.
+    let scanning = match scan {
+        Some((done, total)) => format!(" · scanning {done}/{total}"),
+        None => String::new(),
+    };
     let title = match &viewer.flash {
         Some(flash) => format!(" {flash} "),
-        None => format!(" Figures · {pos}/{count} · {scope} · {mode_label} "),
+        None => format!(" Figures · {pos}/{count} · {scope} · {mode_label}{scanning} "),
     };
     // The footer shows the active text prompt, else the shortcut legend.
     let footer = if viewer.filtering {
@@ -144,9 +153,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
         detail_rect,
     );
 
-    // The image: Scale fills the slot (it upscales small figures; Fit would not).
+    // The image: Scale fills the slot (it upscales small figures; Fit would not). The
+    // protocol is built already fitted to this slot's pixels — see `ensure_proto` — so
+    // the widget's own (nearest-neighbour) resample has nothing left to do.
+    let box_px = (
+        u32::from(iw) * u32::from(font.width.max(1)),
+        u32::from(ih) * u32::from(font.height.max(1)),
+    );
     if dims.is_some()
-        && let Some(proto) = viewer.ensure_proto(picker, policy)
+        && let Some(proto) = viewer.ensure_proto(picker, policy, box_px)
     {
         f.render_stateful_widget(
             StatefulImage::default().resize(Resize::Scale(None)),

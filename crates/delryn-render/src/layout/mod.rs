@@ -12,6 +12,7 @@
 
 mod blocks;
 mod code;
+mod linebreak;
 mod spans;
 mod table;
 mod width;
@@ -44,6 +45,10 @@ pub struct Run {
     /// paints a small equation raster over (see the reader's inline-math draw pass);
     /// `None` for all ordinary text.
     pub math: Option<usize>,
+    /// This run is the `-` the wrapper added because it broke a word across the
+    /// line end. It is on screen but **not part of the text** — see
+    /// [`DisplayLine::logical_text`].
+    pub break_hyphen: bool,
 }
 
 /// What a display line represents, so the view can style it by theme.
@@ -86,9 +91,47 @@ impl DisplayLine {
         }
     }
 
-    /// Plain concatenated text (for search / jump-target matching).
+    /// Plain concatenated text — exactly the cells on screen, so a column index
+    /// into it is a screen column. Use it for anything positional (washing a
+    /// highlight, placing the caret).
     pub fn text(&self) -> String {
         self.runs.iter().map(|r| r.text.as_str()).collect()
+    }
+
+    /// The column of the hyphen this line ends with **because the wrapper broke a
+    /// word there**, if it has one.
+    ///
+    /// That hyphen is on screen but belongs to no word: the two halves it
+    /// separates are one word, and where the break falls changes with the column
+    /// width. Anything that matches or stores text — a highlight's quote, a copy,
+    /// a search — has to skip it, or the text it captured stops matching the
+    /// moment the paragraph re-wraps and the break lands somewhere else.
+    pub fn break_hyphen_col(&self) -> Option<usize> {
+        let last = self.runs.last()?;
+        if !last.break_hyphen {
+            return None;
+        }
+        Some(
+            self.runs[..self.runs.len() - 1]
+                .iter()
+                .map(|r| r.text.chars().count())
+                .sum(),
+        )
+    }
+
+    /// The line's text as *words*, with any wrap hyphen dropped. Differs from
+    /// [`Self::text`] only on a line that broke mid-word, so it is not
+    /// column-aligned with the screen — match with it, position with `text`.
+    pub fn logical_text(&self) -> String {
+        match self.break_hyphen_col() {
+            None => self.text(),
+            Some(_) => self
+                .runs
+                .iter()
+                .filter(|r| !r.break_hyphen)
+                .map(|r| r.text.as_str())
+                .collect(),
+        }
     }
 }
 
@@ -109,6 +152,11 @@ pub struct WrapOpts<'a> {
     pub code_line_numbers: bool,
     /// Show a language tag at the top of each code block (skipped for plain text).
     pub code_label: bool,
+    /// Language for code blocks that can't identify themselves — the book's own,
+    /// from its title (`highlight::language_from_title`). Overridden per section
+    /// by whatever the section's *marked* blocks turn out to be. `None` leaves an
+    /// unidentifiable block as plain text, as before.
+    pub code_lang_hint: Option<&'a str>,
     /// Collapse code blocks longer than `code_fold_threshold` lines to a preview.
     pub code_fold: bool,
     /// Line count above which a code block folds (when `code_fold` is on).
@@ -121,6 +169,10 @@ pub struct WrapOpts<'a> {
     pub table_wrap: bool,
     /// Fully justify body paragraphs to the column (true) vs. ragged-right (false).
     pub justify: bool,
+    /// Break long words across lines at algorithmic (Knuth–Liang) hyphenation
+    /// points, on top of any soft hyphens the author supplied. Callers gate this
+    /// on the book's language — only English patterns are compiled in.
+    pub hyphenate: bool,
     /// Collapse converter spacing artifacts in body text (see [`spans`]).
     pub tidy_spacing: bool,
     /// Reserved cell width per **inline-math** id (section-local), from the reader's
@@ -135,6 +187,11 @@ pub struct WrapOpts<'a> {
     pub inline_math_rows: &'a [u16],
 }
 
+/// A **neutral baseline for tests**, not the app's shipped settings — the reader
+/// always builds `WrapOpts` from `Config`, which turns hyphenation, fold, and the
+/// code label on. Every optional transform is off here so a test exercises the one
+/// feature it names and reads its output without allowing for the others; flipping
+/// these to match `Config::default()` would silently re-baseline the layout suite.
 impl Default for WrapOpts<'_> {
     fn default() -> Self {
         WrapOpts {
@@ -146,16 +203,81 @@ impl Default for WrapOpts<'_> {
             code_hscroll: 0,
             code_line_numbers: true,
             code_label: false,
+            code_lang_hint: None,
             code_fold: false,
             code_fold_threshold: 20,
             code_fold_flip: &[],
             table_wrap: true,
             justify: false,
+            hyphenate: false,
             tidy_spacing: true,
             inline_math_cols: &[],
             inline_math_rows: &[],
         }
     }
+}
+
+/// Blank rows to put *below* the block just emitted, given the heading level it
+/// was (if any) and whether a heading follows. Body blocks get the reader's full
+/// paragraph spacing.
+///
+/// A section heading (level 2 and deeper) sits **directly** on the prose it
+/// introduces: all of its air goes above it, where it does the separating, and a
+/// blank row below would only push it back toward the paragraph it does not
+/// belong to. This is how print sets a subhead, and on a character grid it is the
+/// only tightening available — a row is indivisible, so there is no fraction of
+/// one to trim instead.
+///
+/// Two cases keep their gap. A chapter title (levels 0–1) opens a section rather
+/// than labelling one inside it. And a heading immediately followed by another
+/// heading is a pair sharing the air above them, not a heading meeting its text.
+fn gap_below(prev_heading: Option<u8>, next_is_heading: bool, para_spacing: u8) -> usize {
+    match prev_heading {
+        Some(level) if level >= 2 && !next_is_heading => 0,
+        _ => para_spacing as usize,
+    }
+}
+
+/// Whether a heading gets a row of air *beyond* the reader's paragraph spacing
+/// above it — the row that says a new section starts here.
+///
+/// Chapter titles and section headings (level 2 and above) earn it. A subheading
+/// (level 3 and deeper) does not: it divides a section rather than opening one,
+/// and approaching it with the same run-up as its parent flattened the two to the
+/// same rank — the tier was left to colour and italics alone to carry.
+///
+/// Back-to-back headings get nothing either; a pair shares the air above the
+/// first of them rather than being driven apart.
+fn extra_row_above(level: Option<u8>, prev_heading: Option<u8>) -> bool {
+    matches!(level, Some(l) if l <= 2) && prev_heading.is_none()
+}
+
+/// The language most of `blocks`' self-identifying code blocks are written in.
+/// Ties keep the first seen, so the result doesn't depend on iteration order.
+fn dominant_code_language(blocks: &[Block]) -> Option<&'static str> {
+    let mut tally: Vec<(&'static str, usize)> = Vec::new();
+    for block in blocks {
+        let Block::Code { lang, lines } = block else {
+            continue;
+        };
+        let Some(name) = crate::highlight::detect_language(lines, lang.as_deref()) else {
+            continue;
+        };
+        match tally.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, count)) => *count += 1,
+            None => tally.push((name, 1)),
+        }
+    }
+    tally
+        .into_iter()
+        .fold(
+            None,
+            |best: Option<(&'static str, usize)>, (name, count)| match best {
+                Some((_, bc)) if count <= bc => best,
+                _ => Some((name, count)),
+            },
+        )
+        .map(|(name, _)| name)
 }
 
 /// Wrap a section's blocks to styled display lines per `opts`. `image_rows` gives
@@ -168,7 +290,16 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
     let line_spacing = opts.line_spacing;
     let para_spacing = opts.para_spacing;
     let mut out = Vec::new();
+    // What this section's *identifiable* code blocks are written in. A book's
+    // listings are one language far more often than several, so a block too short
+    // or too plain to recognise on its own follows its neighbours rather than
+    // going grey next to them. Beats the book-level hint: a Python book's one
+    // shell transcript is still shell, and that block says so.
+    let section_lang = dominant_code_language(blocks);
     let mut prev_item = false;
+    // The level of the heading just emitted, if the previous block was one — a
+    // heading binds to the text it introduces (see the spacing rule below).
+    let mut prev_heading: Option<u8> = None;
     let mut first = true;
     let mut img_idx = 0usize;
     let mut code_idx = 0usize;
@@ -191,9 +322,22 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
 
         // Spacing between blocks: blank line(s), except between consecutive list
         // items and around explicit blanks.
+        //
+        // Headings are spaced typographically rather than uniformly: the air goes
+        // *above*, and the text it introduces follows immediately, so the heading
+        // groups with that text instead of floating equidistant between two
+        // paragraphs. How much air depends on the tier — see `gap_below` and
+        // `extra_row_above`.
+        let heading_level = match block {
+            Block::Heading { level, .. } => Some(*level),
+            _ => None,
+        };
         let consecutive_items = is_item && prev_item;
         if !(first || matches!(block, Block::Blank) || consecutive_items) {
-            for _ in 0..para_spacing {
+            for _ in 0..gap_below(prev_heading, heading_level.is_some(), para_spacing) {
+                out.push(DisplayLine::blank());
+            }
+            if extra_row_above(heading_level, prev_heading) {
                 out.push(DisplayLine::blank());
             }
         }
@@ -240,7 +384,15 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
                 skip_next = number.is_some();
             }
             Block::Code { lang, lines } => {
-                emit_code(lang.as_deref(), lines, code_idx, width, opts, &mut out);
+                emit_code(
+                    lang.as_deref(),
+                    lines,
+                    code_idx,
+                    width,
+                    section_lang.or(opts.code_lang_hint),
+                    opts,
+                    &mut out,
+                );
                 code_idx += 1;
             }
             Block::Math { item } => {
@@ -267,6 +419,7 @@ pub fn wrap_blocks(blocks: &[Block], opts: &WrapOpts, image_rows: &[u16]) -> Vec
         }
 
         prev_item = is_item;
+        prev_heading = heading_level;
         first = false;
     }
 
@@ -402,7 +555,40 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap_text;
+    use super::{extra_row_above, gap_below, wrap_text};
+
+    /// A section heading keeps its air above and none below — it sits on the prose
+    /// it introduces. A chapter title, and a heading followed by another heading,
+    /// both keep the reader's gap.
+    #[test]
+    fn a_section_heading_sits_on_the_text_below_it() {
+        for ps in 0..=3 {
+            // Body blocks are unaffected at every setting.
+            assert_eq!(gap_below(None, false, ps), ps as usize);
+            // A chapter title opens a section rather than labelling one inside it.
+            assert_eq!(gap_below(Some(1), false, ps), ps as usize);
+            // A section heading meets its prose directly, whatever the setting.
+            assert_eq!(gap_below(Some(2), false, ps), 0);
+            assert_eq!(gap_below(Some(3), false, ps), 0);
+            // …but a heading pair shares the air above it and keeps its own gap.
+            assert_eq!(gap_below(Some(2), true, ps), ps as usize);
+        }
+    }
+
+    /// The run-up grades the tiers: a title or a section heading is approached
+    /// with an extra row, a subheading is not — so the hierarchy is legible from
+    /// the spacing and not only from the ink.
+    #[test]
+    fn only_the_upper_tiers_get_a_run_up() {
+        assert!(extra_row_above(Some(1), None), "chapter title");
+        assert!(extra_row_above(Some(2), None), "section heading");
+        assert!(!extra_row_above(Some(3), None), "subheading");
+        assert!(!extra_row_above(Some(4), None), "deeper still");
+        // A heading pair shares the air above the first of them.
+        assert!(!extra_row_above(Some(2), Some(1)));
+        // Body text never gets one.
+        assert!(!extra_row_above(None, None));
+    }
 
     #[test]
     fn wrap_text_wraps_on_words_and_hard_breaks_long_tokens() {

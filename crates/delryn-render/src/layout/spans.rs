@@ -51,6 +51,31 @@ impl Glyph {
 /// from the rendered text, but a real `-` is shown when a word breaks there.
 const SOFT_HYPHEN: char = '\u{00AD}';
 
+/// Shortest word worth hyphenating. Below this a break saves a cell or two and
+/// costs a fragment the eye has to reassemble, which is a bad trade.
+const MIN_HYPHENATE_LEN: usize = 6;
+
+/// Longest token hyphenation is attempted on. Real words stop well short of this;
+/// anything longer is an identifier, a hash, or a URL, where a hyphen would read
+/// as part of the text rather than as a break.
+const MAX_HYPHENATE_LEN: usize = 40;
+
+/// Fewest characters a hyphenation may leave on either side of the break. TeX's
+/// English defaults are 2 and 3; a lone two-cell fragment in a terminal reads as
+/// noise rather than as a continued word, so both sides are held to three.
+const HYPHEN_EDGE_MIN: usize = 3;
+
+/// The most a justified line will widen an inter-word gap, in extra cells, before
+/// it is left ragged instead.
+///
+/// This is a backstop, not a style: it has to be loose enough that ordinary lines
+/// always reach the edge, because one short line among flush neighbours reads as
+/// a hole in the paragraph — worse than the spacing it saved. What it catches is
+/// the line that *cannot* be closed sensibly: two or three short words stranded
+/// before a token too long to break, where filling the row means a dozen cells
+/// between each word. At four spaces a gap has stopped being word spacing.
+const MAX_GAP_STRETCH: usize = 3;
+
 /// A piece of a word placed on a line: its glyphs plus whether a hyphen follows
 /// (true when a long word was broken at a soft hyphen).
 struct Piece {
@@ -81,6 +106,16 @@ pub(super) struct InlineMathDims<'a> {
     pub rows: &'a [u16],
 }
 
+/// How prose is fitted to the column: whether inner lines are padded out to both
+/// edges, and whether words may be broken to help them get there. The two travel
+/// together because they are one decision — justification without hyphenation is
+/// what opens the wide gaps, because there is nowhere else to take the slack from.
+#[derive(Clone, Copy, Default)]
+pub(super) struct ProseFit {
+    pub justify: bool,
+    pub hyphenate: bool,
+}
+
 /// Word-wrap styled spans into display lines, with a prefix on the first line
 /// and a (usually padding) prefix on continuations. Three phases: flatten the
 /// spans to break-segmented words, greedily fill lines, then emit them.
@@ -89,17 +124,39 @@ pub(super) fn wrap_spans(
     width: usize,
     prefix: Prefix,
     kind: LineKind,
-    justify: bool,
+    fit: ProseFit,
     math: InlineMathDims,
     out: &mut Vec<DisplayLine>,
 ) {
     let (first_prefix, cont_prefix) = (prefix.first, prefix.cont);
-    let words = flatten_to_words(spans, math);
+    let mut words = flatten_to_words(spans, math);
     if words.is_empty() {
         return;
     }
-    let lines = fill_lines(words, width, first_prefix, cont_prefix);
-    emit_lines(lines, width, first_prefix, cont_prefix, kind, justify, out);
+    if fit.hyphenate {
+        for word in &mut words {
+            hyphenate_word(word);
+        }
+    }
+    // Justified prose is broken optimally (Knuth–Plass): the greedy fill decides each line
+    // before it has seen the next, so slack piles up wherever a line happens to end, and
+    // down a column those stretched gaps line up into rivers. Ragged-right text keeps the
+    // greedy fill — with no stretching there is no badness to minimise, and the optimiser's
+    // objective would be measuring something it doesn't render.
+    let lines = fit
+        .justify
+        .then(|| optimal_lines(&words, width, first_prefix, cont_prefix))
+        .flatten()
+        .unwrap_or_else(|| fill_lines(words, width, first_prefix, cont_prefix));
+    emit_lines(
+        lines,
+        width,
+        first_prefix,
+        cont_prefix,
+        kind,
+        fit.justify,
+        out,
+    );
 }
 
 /// The prefix that leads line `line` (first line vs. continuation).
@@ -173,6 +230,144 @@ fn flatten_to_words(spans: &[Span], math: InlineMathDims) -> Vec<Vec<Vec<Glyph>>
     words
 }
 
+/// Phase 1b — give a word the break opportunities its author didn't.
+///
+/// Almost no book ships soft hyphens, so without this the filler can only break
+/// *between* words. That is what opens the gaps in justified text: a long word
+/// that won't fit is pushed to the next line whole, and the line it left behind
+/// has to stretch to cover the hole. Knuth–Liang patterns supply the missing
+/// break points, so the word can straddle the line end with a hyphen instead.
+///
+/// Left alone: words the author already segmented (their soft hyphens are better
+/// information than a pattern match), anything holding an inline-math atom, and
+/// anything that isn't a plain run of ASCII letters — an identifier, a URL or a
+/// hyphenate-me-not like `re-entrant` would only be damaged by a second hyphen.
+/// Trailing punctuation is allowed and rides along with the final syllable.
+fn hyphenate_word(word: &mut Vec<Vec<Glyph>>) {
+    if word.len() != 1 {
+        return; // already segmented by the author
+    }
+    let splits = {
+        let seg = &word[0];
+        let core = seg
+            .iter()
+            .take_while(|g| g.ch.is_ascii_alphabetic() && g.math.is_none())
+            .count();
+        if !(MIN_HYPHENATE_LEN..=MAX_HYPHENATE_LEN).contains(&core) {
+            return;
+        }
+        // Whatever follows the letters must be punctuation — a comma or a closing
+        // quote. Any further letter or digit means this is not one plain word.
+        if seg[core..]
+            .iter()
+            .any(|g| g.ch.is_alphanumeric() || g.math.is_some())
+        {
+            return;
+        }
+        let text: String = seg[..core].iter().map(|g| g.ch).collect();
+        let mut at = 0usize;
+        let mut splits: Vec<usize> = Vec::new();
+        for syllable in hypher::hyphenate_bounded(
+            &text,
+            hypher::Lang::English,
+            HYPHEN_EDGE_MIN,
+            HYPHEN_EDGE_MIN,
+        ) {
+            at += syllable.chars().count();
+            if at < core {
+                splits.push(at);
+            }
+        }
+        splits
+    };
+    if splits.is_empty() {
+        return;
+    }
+    // The core is ASCII, so a char index is a glyph index.
+    let seg = word.pop().unwrap_or_default();
+    let mut start = 0usize;
+    for end in splits {
+        word.push(seg[start..end].to_vec());
+        start = end;
+    }
+    word.push(seg[start..].to_vec());
+}
+
+/// Phase 2a — optimal line breaking for justified prose.
+///
+/// Flattens the word/segment structure into the atom sequence [`linebreak`] works on — one
+/// atom per break-segment, with the join between each pair recording whether breaking there
+/// costs a dropped space or a shown hyphen — then rebuilds the chosen breaking as
+/// [`Piece`]s for [`emit_lines`].
+///
+/// `None` when the paragraph admits no breaking within tolerance (a token wider than the
+/// column, or a word that would be left alone on a line with slack it has no gaps to
+/// absorb). The caller then falls back to the greedy fill, which always produces something
+/// — for those paragraphs the output is exactly what it was before.
+fn optimal_lines(
+    words: &[Vec<Vec<Glyph>>],
+    width: usize,
+    first: &str,
+    cont: &str,
+) -> Option<Vec<Vec<Piece>>> {
+    use super::linebreak::{Join, break_paragraph};
+
+    // One atom per segment; segments of one word join with a hyphen point, words with a space.
+    let mut atoms: Vec<&[Glyph]> = Vec::new();
+    let mut joins: Vec<Join> = Vec::new();
+    for (wi, word) in words.iter().enumerate() {
+        if wi > 0 {
+            joins.push(Join::Space);
+        }
+        for (si, seg) in word.iter().enumerate() {
+            if si > 0 {
+                joins.push(Join::Hyphen);
+            }
+            atoms.push(seg);
+        }
+    }
+    if atoms.is_empty() {
+        return Some(Vec::new());
+    }
+    let widths: Vec<usize> = atoms.iter().map(|a| cells_width(a)).collect();
+    let ends = break_paragraph(
+        &widths,
+        &joins,
+        avail(width, first, cont, 0),
+        avail(width, first, cont, 1),
+        MAX_GAP_STRETCH,
+    )?;
+
+    // Rebuild pieces: atoms joined by a hyphen point *inside* a line are one word and run
+    // together with no space, so they coalesce into a single piece; a space join closes the
+    // piece. The piece a line ends on carries the hyphen when the break was mid-word.
+    let n = atoms.len();
+    let mut lines = Vec::with_capacity(ends.len());
+    let mut start = 0usize;
+    for &end in &ends {
+        let mut pieces: Vec<Piece> = Vec::new();
+        let mut cells: Vec<Glyph> = Vec::new();
+        for k in start..end {
+            cells.extend_from_slice(atoms[k]);
+            // Close the piece unless the next atom is the rest of this same word.
+            let joined_to_next = k + 1 < end && joins[k] == Join::Hyphen;
+            if !joined_to_next && k + 1 < end {
+                pieces.push(Piece {
+                    cells: std::mem::take(&mut cells),
+                    hyphen: false,
+                });
+            }
+        }
+        pieces.push(Piece {
+            cells,
+            hyphen: end < n && joins[end - 1] == Join::Hyphen,
+        });
+        lines.push(pieces);
+        start = end;
+    }
+    Some(lines)
+}
+
 /// Phase 2 — greedy line fill, breaking over-long words at soft hyphens when it
 /// helps. Each line is a list of placed [`Piece`]s.
 fn fill_lines(
@@ -243,6 +438,21 @@ fn fill_lines(
     lines
 }
 
+/// Extra cells for gap `i` of `gaps`, spreading `slack` cells evenly along the
+/// line.
+///
+/// The obvious `slack / gaps` plus a remainder handed to the first few gaps puts
+/// every widened gap at the *start* of the line, so a line needing two cells
+/// reads as `The  development  of the corpus of…` — a cluster of holes at the
+/// left margin and nothing after. Interpolating instead places them apart, which
+/// is the same total spread thin enough not to be seen.
+fn gap_extra(i: usize, gaps: usize, slack: usize) -> usize {
+    if gaps == 0 {
+        return 0;
+    }
+    (i + 1) * slack / gaps - i * slack / gaps
+}
+
 /// Phase 3 — emit. Full justification (when enabled, body only) distributes the
 /// leftover columns across inter-word gaps — never on the last line of the
 /// paragraph or a single-piece line.
@@ -264,12 +474,16 @@ fn emit_lines(
             .map(|p| cells_width(&p.cells) + usize::from(p.hyphen))
             .sum();
         let gaps = line.len().saturating_sub(1);
-        let justify_line = justify_body && li != last && gaps >= 1;
-        let slack = if justify_line {
-            avail(width, first, cont, li).saturating_sub(pieces_w + gaps)
-        } else {
-            0
-        };
+        // Ordinary lines all reach the right edge — a short line among flush
+        // neighbours reads as a hole in the paragraph, which is worse than the
+        // spacing it was avoiding. The limit is only a backstop for the
+        // pathological line: a couple of short words stranded before a token too
+        // long to break, where filling the row would leave a dozen cells between
+        // each. Those stay ragged (see `MAX_GAP_STRETCH`).
+        let room = avail(width, first, cont, li).saturating_sub(pieces_w + gaps);
+        let justify_line =
+            justify_body && li != last && gaps >= 1 && room <= gaps * MAX_GAP_STRETCH;
+        let slack = if justify_line { room } else { 0 };
 
         let mut runs: Vec<Run> = Vec::new();
         if !prefix.is_empty() {
@@ -279,12 +493,13 @@ fn emit_lines(
                 fg: None,
                 anchor: None,
                 math: None,
+                break_hyphen: false,
             });
         }
         for (pi, piece) in line.iter().enumerate() {
             if pi > 0 {
                 let extra = if justify_line {
-                    slack / gaps + usize::from(pi - 1 < slack % gaps)
+                    gap_extra(pi - 1, gaps, slack)
                 } else {
                     0
                 };
@@ -294,6 +509,7 @@ fn emit_lines(
                     fg: None,
                     anchor: None,
                     math: None,
+                    break_hyphen: false,
                 });
             }
             push_word_runs(&piece.cells, &mut runs);
@@ -305,6 +521,9 @@ fn emit_lines(
                     fg: None,
                     anchor: None,
                     math: None,
+                    // Flagged so anchoring/search can skip it: the word it splits
+                    // is one word, and this break moves with the column width.
+                    break_hyphen: true,
                 });
             }
         }
@@ -426,6 +645,7 @@ fn stripped_suffix(prev: &Span, next: &Span) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::super::{DisplayLine, LineKind, Run, WrapOpts, wrap_blocks};
+    use super::gap_extra;
     use delryn_model::{Anchor, Block, Inline, Span, SpanMath};
 
     fn texts(lines: &[DisplayLine]) -> Vec<String> {
@@ -771,5 +991,211 @@ mod tests {
         for l in &lines {
             assert!(l.chars().count() <= 12, "line stays within width: {l:?}");
         }
+    }
+
+    /// Almost no book ships soft hyphens, so the wrapper has to find its own break
+    /// points or a long word can only be pushed whole to the next line.
+    #[test]
+    fn hyphenation_breaks_a_long_word_the_author_never_marked() {
+        let block = para("The consideration was extraordinary");
+        let opts = WrapOpts {
+            width: 16,
+            hyphenate: true,
+            ..Default::default()
+        };
+        let lines = texts(&wrap_blocks(&[block], &opts, &[]));
+        let joined = lines.join("|");
+        assert!(
+            joined.contains('-'),
+            "a word breaks with a hyphen: {joined:?}"
+        );
+        for l in &lines {
+            assert!(l.chars().count() <= 16, "within width: {l:?}");
+        }
+        // The text itself is untouched — only line breaks and hyphens are added.
+        let flat = joined.replace(['|', '-'], "");
+        assert_eq!(flat.replace(' ', ""), "Theconsiderationwasextraordinary");
+
+        // Off, the same paragraph keeps its words whole.
+        let plain = WrapOpts {
+            width: 16,
+            ..Default::default()
+        };
+        let joined = texts(&wrap_blocks(
+            &[para("The consideration was extraordinary")],
+            &plain,
+            &[],
+        ))
+        .join("|");
+        assert!(!joined.contains('-'), "no hyphens when off: {joined:?}");
+    }
+
+    /// Hyphenating anything that isn't a plain word does real damage: a URL or an
+    /// identifier gains a `-` that reads as part of it, and a word already spelled
+    /// with a hyphen gains a second one.
+    #[test]
+    fn hyphenation_leaves_non_words_alone() {
+        let opts = WrapOpts {
+            width: 14,
+            hyphenate: true,
+            ..Default::default()
+        };
+        for token in [
+            "https://example.com/some/path",
+            "SectionHeading_2024",
+            "re-entrant",
+            "modelling3d",
+        ] {
+            let joined = texts(&wrap_blocks(&[para(token)], &opts, &[])).join("|");
+            let added = joined.matches('-').count() - token.matches('-').count();
+            assert_eq!(added, 0, "{token} gained a hyphen: {joined:?}");
+        }
+        // A word too short to give three characters to each side of a break is
+        // never split — the fragments would cost more than the fit is worth.
+        let joined = texts(&wrap_blocks(&[para("cat dog runs over")], &opts, &[])).join("|");
+        assert!(!joined.contains('-'), "short words kept whole: {joined:?}");
+    }
+
+    /// An author's own soft hyphens are better information than a pattern match,
+    /// so a word that carries them is left segmented exactly as written.
+    #[test]
+    fn author_soft_hyphens_win_over_the_hyphenator() {
+        let shy = '\u{00AD}';
+        let word = format!("data{shy}base");
+        let opts = WrapOpts {
+            width: 7,
+            hyphenate: true,
+            ..Default::default()
+        };
+        let lines = texts(&wrap_blocks(&[para(&word)], &opts, &[]));
+        assert_eq!(
+            lines.join("|"),
+            "data-|base",
+            "broken at the author's point"
+        );
+    }
+
+    /// The widened gaps have to be spread along the line. Handing the remainder to
+    /// the first gaps clusters every hole at the left margin, which is exactly the
+    /// pattern that reads as broken spacing.
+    #[test]
+    fn justification_spreads_its_slack_along_the_line() {
+        let gaps = 8;
+        for slack in 1..=gaps {
+            let extras: Vec<usize> = (0..gaps).map(|i| gap_extra(i, gaps, slack)).collect();
+            assert_eq!(extras.iter().sum::<usize>(), slack, "all of it is placed");
+            // Never front-loaded: the widened gaps reach past the first half.
+            let widest = extras.iter().rposition(|&e| e > 0).unwrap();
+            assert!(
+                widest >= gaps / 2,
+                "slack {slack} bunched at the start: {extras:?}"
+            );
+        }
+        // Beyond one each, every gap widens and the remainder still spreads.
+        let extras: Vec<usize> = (0..4).map(|i| gap_extra(i, 4, 6)).collect();
+        assert_eq!(extras.iter().sum::<usize>(), 6);
+        assert!(extras.iter().all(|&e| e >= 1), "{extras:?}");
+        assert_eq!(gap_extra(0, 0, 3), 0, "a single-piece line has no gaps");
+    }
+
+    /// Optimal breaking takes the paragraph apart into atoms and puts it back together, so
+    /// the first thing to establish is that nothing is lost, duplicated or reordered on the
+    /// way — and that every line still fits the column.
+    #[test]
+    fn optimal_breaking_preserves_the_text_and_the_column() {
+        let text = "The consideration of extraordinary circumstances requires that every \
+                    participating organisation demonstrate a comprehensive understanding of \
+                    the underlying methodology before any interpretation of the accumulated \
+                    measurements can reasonably be attempted or defended";
+        for width in [34usize, 52, 72] {
+            let opts = WrapOpts {
+                width,
+                justify: true,
+                hyphenate: true,
+                para_spacing: 0,
+                ..Default::default()
+            };
+            let lines = wrap_blocks(&[para(text)], &opts, &[]);
+            for l in &lines {
+                assert!(
+                    super::display_width(l.text().as_str()) <= width,
+                    "line overruns the {width}-cell column: {:?}",
+                    l.text()
+                );
+            }
+            // `logical_text` drops the hyphens the wrapper inserted at line ends. A line
+            // that ended on one is mid-word, so the next line continues it with no space —
+            // rejoining with a space there would split `demonstrate` into two words.
+            let mut joined = String::new();
+            for l in &lines {
+                joined.push_str(&l.logical_text());
+                if l.break_hyphen_col().is_none() {
+                    joined.push(' ');
+                }
+            }
+            let flat: Vec<String> = joined.split_whitespace().map(str::to_string).collect();
+            let want: Vec<String> = text.split_whitespace().map(str::to_string).collect();
+            assert_eq!(flat, want, "text round-trips at width {width}");
+        }
+    }
+
+    /// What the optimiser buys: it only ever chooses lines it can actually justify, so a
+    /// justified paragraph has no ragged inner line — no hole part-way down the column.
+    /// The greedy fill has no such guarantee; it can strand a line it cannot close.
+    #[test]
+    fn optimal_breaking_leaves_no_ragged_inner_line() {
+        let text = "The consideration of extraordinary circumstances requires that every \
+                    participating organisation demonstrate a comprehensive understanding of \
+                    the underlying methodology before any interpretation of the accumulated \
+                    measurements can reasonably be attempted or defended";
+        let width = 52;
+        let opts = WrapOpts {
+            width,
+            justify: true,
+            hyphenate: true,
+            para_spacing: 0,
+            ..Default::default()
+        };
+        let lines: Vec<String> = texts(&wrap_blocks(&[para(text)], &opts, &[]))
+            .into_iter()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert!(lines.len() >= 4, "a paragraph of several lines: {lines:?}");
+        for l in &lines[..lines.len() - 1] {
+            assert_eq!(
+                super::display_width(l),
+                width,
+                "inner line stops short of the edge: {l:?}"
+            );
+        }
+    }
+
+    /// The backstop: a line that *can't* be closed sensibly — short words stranded
+    /// before an unbreakable token — stays ragged rather than putting a dozen cells
+    /// between each word. Ordinary lines are unaffected and still reach the edge.
+    #[test]
+    fn a_line_needing_wide_gaps_is_left_ragged() {
+        // Three short words on a wide column: closing it would cost many cells per
+        // gap, so the line keeps single spaces and stops short of the edge.
+        let block = para("alpha beta gamma extraordinarily-long-unbreakable-token tail");
+        let opts = WrapOpts {
+            width: 40,
+            justify: true,
+            para_spacing: 0,
+            ..Default::default()
+        };
+        let lines: Vec<String> = texts(&wrap_blocks(&[block], &opts, &[]))
+            .into_iter()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        let first = &lines[0];
+        assert!(
+            !first.contains("  "),
+            "gaps stay single spaces rather than opening: {first:?}"
+        );
+        assert!(
+            first.chars().count() < 40,
+            "and the line is left ragged: {first:?}"
+        );
     }
 }
