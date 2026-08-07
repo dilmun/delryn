@@ -42,6 +42,12 @@ pub use collections::{CollInput, ShelfPicker};
 mod tags;
 pub use tags::TagInput;
 
+/// How long [`App::poll_pages`] keeps asking for redraws while the page deck makes
+/// no progress towards the pages it should be showing. Generous next to the work it
+/// waits on — a page raster lands in well under a second — so it only ever fires on
+/// a wait that is genuinely stuck, and never truncates one that is merely slow.
+const PAGE_SETTLE_BUDGET: Duration = Duration::from_secs(3);
+
 /// Re-export of the page log's run header for `main` (see `page_deck`).
 pub(crate) fn log_page_run(protocol: &str, cell: (u16, u16), paged: bool, continuous: bool) {
     page_deck::dbg_log_run_header(protocol, cell, paged, continuous);
@@ -310,6 +316,10 @@ pub struct App {
     pub image_builder: Option<ImageBuilder>,
     /// Direct-Kitty manager for full PDF page images (transmit-once + place).
     page_deck: PageDeck,
+    /// An unresolved wait for the page deck to catch up: what the deck showed and
+    /// what it should show when the wait began, and since when. Bounds
+    /// [`poll_pages`](Self::poll_pages) — see [`PAGE_SETTLE_BUDGET`].
+    page_wait: Option<(Vec<usize>, Vec<usize>, Instant)>,
     /// Direct-Kitty manager for the reader's inline images — equation rasters and
     /// inline figures (transmit-once + place + re-place on scroll + free on leave).
     inline_deck: InlineDeck,
@@ -491,6 +501,7 @@ impl App {
             picker: None,
             image_builder: None,
             page_deck: PageDeck::default(),
+            page_wait: None,
             inline_deck: InlineDeck::default(),
             session: Session {
                 store,
@@ -539,6 +550,7 @@ impl App {
             picker: None,
             image_builder: None,
             page_deck: PageDeck::default(),
+            page_wait: None,
             inline_deck: InlineDeck::default(),
             session: Session {
                 store,
@@ -694,12 +706,52 @@ impl App {
     /// until a turn's new pages have rasterized and been placed.
     pub fn poll_pages(&mut self) -> bool {
         if !self.in_pdf() {
+            self.page_wait = None;
             return false;
         }
         if let Some(r) = self.reader.as_mut() {
             r.poll_loader();
         }
-        self.pdf_pages_pending()
+        if !self.pdf_pages_pending() {
+            self.page_wait = None;
+            return false;
+        }
+        // Pending — but "pending" alone must not keep the loop redrawing forever.
+        // It reports the deck as behind whenever what it shows differs from what
+        // should be placeable, and those two can disagree permanently: the deck can
+        // only place what the *view* captured into `pdf_targets`, and a page that
+        // stays unplaceable (no raster ever served for it, or a target set the view
+        // never emits) leaves them unequal for good. The loop reads this as "not
+        // settled", drops its poll from 250 ms to one frame, and redraws ~125 times a
+        // second indefinitely — a reader parked on one page burning a core.
+        //
+        // So the wait is bounded by *progress*, not by time alone: any change to
+        // either set restarts the clock, and an unchanging pair gives up once the
+        // budget is spent, leaving whatever is on screen. Giving up costs nothing
+        // durable — the loop still turns every 250 ms, so if the state ever does
+        // change the next turn picks it straight back up.
+        let have = self.page_deck.shown_sections();
+        let want = self.placeable_now();
+        let progressed = self
+            .page_wait
+            .as_ref()
+            .is_none_or(|(had, wanted, _)| *had != have || *wanted != want);
+        if progressed {
+            self.page_wait = Some((have, want, Instant::now()));
+            return true;
+        }
+        !self.page_wait_stalled()
+    }
+
+    /// The sections the deck should be showing right now — the other half of the
+    /// comparison [`pdf_pages_pending`](Self::pdf_pages_pending) makes, exposed so
+    /// [`poll_pages`](Self::poll_pages) can tell a wait that is *progressing* from
+    /// one that is stuck.
+    fn placeable_now(&self) -> Vec<usize> {
+        let Some(r) = self.reader.as_ref() else {
+            return Vec::new();
+        };
+        r.placeable_sections(matches!(self.config.view_mode, ViewMode::TwoPage))
     }
 
     /// Whether a PDF page flip should be honoured right now: only when the deck is
@@ -892,8 +944,36 @@ impl App {
             || (in_reader && self.inline_deck.deferred())
             // PDF: keep redrawing while a visible page is still rasterizing
             // (async, off the main thread) or is ready but not yet placed, so it
-            // pops in without needing a keypress.
-            || self.pdf_pages_pending()
+            // pops in without needing a keypress. Bounded: a wait that has stopped
+            // making progress is not animation, and treating it as such is what
+            // held the event loop at a frame-rate timeout indefinitely.
+            || self.pages_settling()
+    }
+
+    /// Whether the page deck is still *getting somewhere* towards the pages it
+    /// should be showing.
+    ///
+    /// [`pdf_pages_pending`](Self::pdf_pages_pending) answers the narrower question
+    /// "is the deck behind", which can be true forever — it compares what the deck
+    /// shows against what should be placeable, and the deck can only place what the
+    /// view captured, so a page that never becomes placeable leaves them unequal for
+    /// good. Anything that drives the event loop's redraw or busy decision must use
+    /// *this* instead, or a stalled wait pins the loop at one frame per 8 ms and
+    /// burns a core on a book that is sitting still.
+    fn pages_settling(&self) -> bool {
+        self.pdf_pages_pending() && !self.page_wait_stalled()
+    }
+
+    /// Whether the recorded wait has spent its budget without either side moving.
+    /// Progress on either — a raster landing, the deck placing a page — restarts it
+    /// in [`poll_pages`](Self::poll_pages).
+    fn page_wait_stalled(&self) -> bool {
+        let Some((had, wanted, since)) = &self.page_wait else {
+            return false;
+        };
+        since.elapsed() > PAGE_SETTLE_BUDGET
+            && *had == self.page_deck.shown_sections()
+            && *wanted == self.placeable_now()
     }
 
     /// Advance one frame of smooth scrolling; returns whether anything moved.
