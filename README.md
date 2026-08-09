@@ -107,12 +107,21 @@ fine — figures fall back to placeholders, graphical math to a Unicode approxim
 won't open.
 
 > [!IMPORTANT]
-> delryn is developed and tested on [Ghostty](https://ghostty.org). **Covers and the image
-> viewer** now detect iTerm2 and WezTerm and switch to the protocol they actually render —
-> iTerm2 ≥ 3.6 answers the Kitty capability query affirmatively without implementing the part
-> that places the image, so it needs the override. **PDF pages and inline math** still use raw
-> Kitty escapes and are verified only on Ghostty. `delryn --terminal` reports what your
-> terminal claims; broader support is in progress.
+> delryn is developed on [Ghostty](https://ghostty.org), where everything works. Detection
+> is automatic — `delryn --terminal` reports what your terminal claims and which protocol was
+> chosen — but the implementations differ enough to be worth stating:
+>
+> | Terminal | Status |
+> | --- | --- |
+> | **Ghostty** | Everything: covers, figures, math, PDF pages, continuous page scroll |
+> | **iTerm2** ≥ 3.6 | Everything except **continuous scrolling of PDF pages**, which falls back to turning pages (the status bar says `pages (terminal)`) |
+> | **WezTerm** | Renders correctly; a two-page spread (`v`) on a PDF can crash the terminal itself |
+> | **Kitty** | Expected to work — not yet verified |
+>
+> iTerm2 answers the Kitty capability query affirmatively without implementing all of it, so
+> covers and the image viewer switch to its own protocol. Its Kitty implementation also has no
+> cheap way to *move* a placed image, which is what a continuous page stack does on every
+> scrolled row — hence the page-mode fallback there.
 
 > [!NOTE]
 > **tmux / screen** intercept the graphics protocol, so images and PDF render blank inside
