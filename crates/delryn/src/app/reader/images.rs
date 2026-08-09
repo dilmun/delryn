@@ -775,18 +775,6 @@ impl Reader {
         self.images.images_key.0 = usize::MAX;
     }
 
-    /// Drop every built image and its remap state — for leaving the reader. The
-    /// terminal-resident images are freed by the deck (it sees no targets / a clear).
-    pub fn evict_all_images(&mut self) {
-        self.images.cache.clear();
-        self.images.section_images.clear();
-        self.images.section_inline.clear();
-        self.images.following.clear();
-        self.images.requested.clear();
-        self.images.failed.clear();
-        self.images.images_key.0 = usize::MAX;
-    }
-
     /// Are any of the current section's images (figures or inline equations) still
     /// building (so the loop should keep redrawing until they pop in)?
     pub fn images_pending(&self) -> bool {

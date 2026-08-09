@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Patched copies of two upstream crates (see `[patch.crates-io]`). Excluded so they
+# keep their own edition and lint settings rather than inheriting this workspace's —
+# they are upstream source carried verbatim apart from the documented fix, and
+# should stay easy to diff against the released crate.
+exclude = ["third_party/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -90,3 +95,21 @@ opt-level = 2
 # vendor/ratatui-image/src/protocol/kitty.rs (delryn patch).
 [patch.crates-io]
 ratatui-image = { path = "vendor/ratatui-image" }
+
+# Two fixes to RaTeX's font loading, carried here until an upstream release
+# includes them. Between them they cut ~205 MB of resident memory from any document
+# containing maths.
+#
+# * `ratex-font-loader` pulled in the *emoji* font whenever any non-ASCII character
+#   lacked KaTeX metrics — so a maths book containing one `−` loaded Apple Color
+#   Emoji (~183 MB) and cached it for the life of the process, without a single
+#   emoji on the page. Now gated on the character actually being an emoji.
+# * `ratex-unicode-font` reached system-font discovery through two separate
+#   `OnceLock`s, reading the same file into two buffers (~22 MB duplicated). They
+#   now share one.
+#
+# Vendored as paths rather than a git fork so CI needs no network or credentials.
+# Upstream is MIT: https://github.com/erweixin/RaTeX
+ratex-font-loader = { path = "third_party/ratex-font-loader" }
+ratex-render = { path = "third_party/ratex-render" }
+ratex-unicode-font = { path = "third_party/ratex-unicode-font" }

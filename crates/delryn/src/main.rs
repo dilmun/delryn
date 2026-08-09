@@ -317,12 +317,25 @@ fn clear_caches() -> Result<()> {
 /// Set when SIGTERM or SIGHUP arrives, polled by the event loop.
 static TERMINATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Signal handler. The only thing it does is set an atomic flag — the one useful
+/// Signal handler. The first signal only sets an atomic flag — the one useful
 /// operation that is genuinely async-signal-safe. All the real work (restoring the
 /// terminal, saving progress) happens back on the main thread once the loop sees it.
+///
+/// A **second** signal exits on the spot. Asking politely only works if the main
+/// thread gets back to [`terminating`], and it may never: a write to a terminal
+/// that has gone away blocks once the pty buffer fills, wedging the loop inside a
+/// draw with the flag set and unread. That left a reader that ignored `kill`
+/// entirely and had to be `kill -9`'d, which loses the reading position outright.
+/// Now the second signal ends it, and the periodic autosave ([`App::tick_autosave`])
+/// bounds what that costs to seconds. `_exit` is async-signal-safe; restoring the
+/// terminal or saving here would not be.
 #[cfg(unix)]
-extern "C" fn on_terminate(_sig: libc::c_int) {
-    TERMINATE.store(true, std::sync::atomic::Ordering::SeqCst);
+extern "C" fn on_terminate(sig: libc::c_int) {
+    if TERMINATE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        // SAFETY: `_exit` is async-signal-safe by definition — it performs no
+        // cleanup, flushes nothing, and runs no atexit handler.
+        unsafe { libc::_exit(128 + sig) };
+    }
 }
 
 /// Route SIGTERM/SIGHUP to [`on_terminate`] instead of the default "die now".

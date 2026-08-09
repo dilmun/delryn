@@ -34,16 +34,22 @@ use crate::{
     Span, TocEntry,
 };
 
-/// Width, in pixels, each page is rasterized to. Sized so the terminal
-/// (which GPU-scales the placement to the display area) still gets a crisp page
-/// — including on a hi-DPI display and after a margin trim upscales the content
-/// region — while keeping the PNG small enough that the transmit (the cost on a
-/// page turn) stays fast. Smaller ⇒ snappier fast navigation but softer text.
-/// The quality/perf knob. A viewport-matched re-raster (via [`PageRasterizer`])
-/// renders a *larger* crisp raster on top when a page is zoomed in or shown on a
-/// large/hi-DPI viewport; this stays the generous baseline every page loads at.
-/// Also drives margin-trim decode cost.
-pub const PAGE_RASTER_WIDTH: i32 = 2000;
+/// Width, in pixels, every page is first rasterized to.
+///
+/// This is the **floor**, not the quality ceiling: a viewport-matched re-raster
+/// (via [`PageRasterizer`]) renders a larger, crisper page on top whenever the
+/// placement would actually show more pixels than this — zoom, a large window, a
+/// hi-DPI cell. So the baseline only has to cover what an ordinary terminal
+/// viewport displays, and paying for more than that is pure cost: it is carried by
+/// every page whether or not anything can see it, in the cached PNG, in the ~4
+/// bytes per pixel a decode needs, and in the per-pixel theming pass.
+///
+/// A cell reported in device pixels already accounts for hi-DPI, so a full-window
+/// single page on a Retina laptop wants roughly 1300–1500px, and each half of a
+/// two-page spread wants half that. Sized to cover that without re-rastering, and
+/// to hand anything beyond it to the crisp path — which is what that path is for,
+/// and which yields a sharper page than upscaling a bigger baseline would.
+pub const PAGE_RASTER_WIDTH: i32 = 1400;
 
 // ---------------------------------------------------------------------------
 // PDFium binding (process-global, bound once)

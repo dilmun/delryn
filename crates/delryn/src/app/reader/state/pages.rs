@@ -3,27 +3,24 @@
 //! plus the viewport-matched crisp re-raster state ([`PageRasterState`]).
 
 use std::collections::{HashMap, HashSet};
-use std::num::NonZeroUsize;
-use std::sync::Arc;
 
-use lru::LruCache;
-
+use super::byte_lru::ByteLru;
 use crate::app::reader::raster::{PageRasterWorker, RasterKey};
 use crate::media::{self, PageKey, PageThemer};
 
-/// How many themed PDF pages to keep. Covers the base look-ahead window (±4 pages
-/// ⇒ 9 pages) for the current policy plus recently-visited and a couple of crisp
-/// (zoomed) entries. A theme/mode toggle re-themes from the cached raster; the
-/// on-screen page is held by the deck independently of this cache, so old-policy
-/// entries can be evicted freely. Each entry is a full-page PNG, so this is the
-/// main bound on page-theme memory.
-const PAGE_THEME_CACHE_CAP: usize = 24;
+/// Memory allowed for themed PDF pages. Comfortably covers the base look-ahead
+/// window (±4 pages ⇒ 9) for the current policy plus recently-visited and a couple
+/// of crisp (zoomed) entries, at any page size — which is the point of budgeting
+/// bytes rather than entries. A theme/mode toggle re-themes from the cached raster;
+/// the on-screen page is held by the deck independently of this cache, so
+/// old-policy entries can be evicted freely.
+const PAGE_THEME_BUDGET: usize = 32 * 1024 * 1024;
 
-/// How many raw crisp rasters to keep. A crisp raster is only rendered for the
+/// Memory allowed for raw crisp rasters. A crisp raster is only rendered for the
 /// current single (zoomed / large-viewport) page at a handful of distinct widths,
-/// so a small cache covers the working set; the base raster is held separately by
+/// so a small budget covers the working set; the base raster is held separately by
 /// the section cache and is always available as the fallback.
-const CRISP_RASTER_CACHE_CAP: usize = 6;
+const CRISP_RASTER_BUDGET: usize = 16 * 1024 * 1024;
 
 /// All paged-image theming state, owned by `Reader` as `reader.pages`.
 pub struct PageThemeState {
@@ -32,7 +29,7 @@ pub struct PageThemeState {
     pub themer: PageThemer,
     /// Themed page PNGs, keyed by (section, policy) so a theme/mode change re-
     /// themes from the cached raster rather than re-rasterizing. LRU-bounded.
-    pub themed: LruCache<PageKey, Arc<Vec<u8>>>,
+    pub themed: ByteLru<PageKey>,
     /// Page themings currently in flight (avoid dispatching duplicates).
     pub requested: HashSet<PageKey>,
     /// The render policy the visible page(s) are themed/shown under, set each
@@ -45,7 +42,7 @@ impl Default for PageThemeState {
     fn default() -> Self {
         Self {
             themer: PageThemer::new(),
-            themed: LruCache::new(NonZeroUsize::new(PAGE_THEME_CACHE_CAP).unwrap()),
+            themed: ByteLru::new(PAGE_THEME_BUDGET),
             requested: HashSet::new(),
             policy: media::RenderPolicy {
                 tint: media::Ink {
@@ -69,7 +66,7 @@ pub struct PageRasterState {
     /// Raw (un-themed) crisp-raster PNGs keyed by (section, width). LRU-bounded;
     /// the base raster lives in the section cache and is the always-present
     /// fallback, so crisp entries can be evicted freely.
-    pub rasters: LruCache<RasterKey, Arc<Vec<u8>>>,
+    pub rasters: ByteLru<RasterKey>,
     /// Crisp rasterizations currently in flight (avoid dispatching duplicates).
     pub requested: HashSet<RasterKey>,
     /// Crisp rasterizations that failed to render, so they aren't retried every
@@ -89,7 +86,7 @@ impl Default for PageRasterState {
     fn default() -> Self {
         Self {
             worker: None,
-            rasters: LruCache::new(NonZeroUsize::new(CRISP_RASTER_CACHE_CAP).unwrap()),
+            rasters: ByteLru::new(CRISP_RASTER_BUDGET),
             requested: HashSet::new(),
             failed: HashSet::new(),
             base_dims: HashMap::new(),
