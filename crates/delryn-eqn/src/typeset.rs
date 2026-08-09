@@ -414,10 +414,22 @@ fn under_over(
     }
     if over.is_none()
         && let Some(u) = under
-        && is_bottom_brace(&token_text(u))
-        && let Some(b) = brace_node(base.clone(), false)
     {
-        return b;
+        let t = token_text(u);
+        if is_bottom_brace(&t)
+            && let Some(b) = brace_node(base.clone(), false)
+        {
+            return b;
+        }
+        // A rule under the base, not a script. Underlining is how a great many maths
+        // texts write vectors and matrices, and `<munder>` carries it as a plain `_`
+        // — which, left to `sup_sub` below, renders as a *subscript*: every `a` in the
+        // book came out as `a_`.
+        if is_underline(&t)
+            && let Some(l) = line_node("\\underline", base.clone())
+        {
+            return l;
+        }
     }
     let sup = over.map(|o| map_or_degrade(o, depth + 1));
     let sub = under.map(|u| map_or_degrade(u, depth + 1));
@@ -450,6 +462,46 @@ fn accent_label(over: &str) -> Option<&'static str> {
 
 /// A real `Accent` node: graft `base` into a parsed accent template so the fiddly
 /// stretchy/shifty flags match exactly what the engine uses for that command.
+/// Whether an under-glyph is a **rule** rather than a script — the underline (single or
+/// doubled) that marks a vector or matrix in most maths typography.
+///
+/// The over-side equivalent lives in [`accent_label`], which maps `‾`/`¯` to `\bar`; there
+/// is no matching accent for the under-side, so it needs naming here. Kept narrow on
+/// purpose: anything that could be a genuine limit or index must fall through to the script
+/// path.
+fn is_underline(under: &str) -> bool {
+    let t = under.trim();
+    !t.is_empty()
+        && t.chars().all(|c| {
+            matches!(
+                c,
+                '_'                 // LOW LINE, what MathML exporters emit
+                | '\u{0332}'        // combining low line
+                | '\u{0333}'        // combining double low line (matrix notation)
+                | '\u{2017}'        // double low line
+                | '\u{FF3F}' // fullwidth low line
+            )
+        })
+}
+
+/// A `\underline` / `\overline` rule wrapped around `base`, built the same way as
+/// [`accent_node`]: parse the command once and swap in the real body.
+fn line_node(label: &str, base: ParseNode) -> Option<ParseNode> {
+    match parse(&format!("{label}{{x}}")).ok()?.into_iter().next()? {
+        ParseNode::Underline { .. } => Some(ParseNode::Underline {
+            mode: Mode::Math,
+            body: Box::new(base),
+            loc: None,
+        }),
+        ParseNode::Overline { .. } => Some(ParseNode::Overline {
+            mode: Mode::Math,
+            body: Box::new(base),
+            loc: None,
+        }),
+        _ => None,
+    }
+}
+
 fn accent_node(label: &str, base: ParseNode) -> Option<ParseNode> {
     match parse(&format!("{label}{{x}}")).ok()?.into_iter().next()? {
         ParseNode::Accent {
@@ -918,6 +970,35 @@ mod tests {
             "<math><mover><mi>x</mi><mo>^</mo></mover></math>".into(),
         ));
         assert!(d.contains("Accent"), "over-hat → real accent: {d}");
+    }
+
+    /// Underlining is how most maths texts write a vector or matrix, and MathML carries
+    /// it as `<munder>` with a plain `_`. Treated as a script it renders as a *subscript*
+    /// — a whole book of vectors came out as `a_`, `b_`, `A_B_ = B_A_`. Both spellings
+    /// here are taken verbatim from a published EPUB.
+    #[test]
+    fn mathml_under_line_is_a_rule_not_a_subscript() {
+        for src in [
+            r#"<math><munder><mi>a</mi><mo stretchy="true">_</mo></munder></math>"#,
+            r#"<math><munder underaccent="false"><mrow><mi>a</mi></mrow><mo>_</mo></munder></math>"#,
+        ] {
+            let d = nodes_of(MarkupSource::PresentationMathml(src.into()));
+            assert!(d.contains("Underline"), "under-line → rule: {d}");
+            assert!(
+                !d.contains("SupSub"),
+                "an underline must not become a script: {d}"
+            );
+        }
+    }
+
+    /// The narrowness matters: a real limit under an operator is a script, not a rule.
+    #[test]
+    fn mathml_under_limit_is_still_a_script() {
+        let d = nodes_of(MarkupSource::PresentationMathml(
+            "<math><munder><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow></munder></math>"
+                .into(),
+        ));
+        assert!(!d.contains("Underline"), "a limit is not a rule: {d}");
     }
 
     #[test]
