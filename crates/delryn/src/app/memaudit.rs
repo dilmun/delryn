@@ -4,11 +4,12 @@
 //! driving the TUI. Each phase reports the process's resident size, so a leak shows
 //! up as a floor that rises across cycles rather than as a single suspicious number.
 //!
-//! Run it deliberately — it opens real books from the local library and is far too
-//! slow for the normal suite:
+//! Run it deliberately, naming the books to read (`:`-separated). It opens real books and
+//! is far too slow for the normal suite, so it does nothing unless asked:
 //!
 //! ```text
-//! DELRYN_MEMAUDIT=1 cargo test -p delryn --lib memaudit -- --nocapture --test-threads=1
+//! DELRYN_MEMAUDIT="$HOME/books/maths.epub:$HOME/books/paper.pdf" \
+//!   cargo test -p delryn --lib memaudit -- --nocapture --test-threads=1
 //! ```
 //!
 //! Resident size is the honest measure here but a noisy one: freeing memory returns
@@ -124,22 +125,41 @@ fn cycle(path: &str, sections: usize) -> (f64, f64) {
     (reading, rss_mb())
 }
 
-/// Books to exercise. Absent files are skipped, so the audit still runs on a machine
-/// that doesn't have this particular library.
+/// The books to exercise, from `DELRYN_MEMAUDIT` — one or more paths separated by `:`.
+///
+/// Supplied rather than hardcoded for two reasons: a path into someone's library says what
+/// they read, which has no business in a public repository; and a list naming one person's
+/// files makes the audit silently vacuous everywhere else, which is worse than not having
+/// it. A missing path is reported, never skipped quietly.
+///
+/// Pick books that stress the allocation paths — a maths chapter builds hundreds of
+/// equation rasters per section, a PDF builds full-page ones:
+///
+/// ```text
+/// DELRYN_MEMAUDIT="$HOME/books/maths.epub:$HOME/books/paper.pdf" \
+///   cargo test -p delryn --lib memaudit -- --nocapture --test-threads=1
+/// ```
 fn books() -> Vec<String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    [
-        "ebooks/Downloads/15 Math Concepts Every Data Scientist Should Know Understand and learn how to apply the math behind data science algorithms.epub",
-        "ebooks/Deep Learning/Applied Natural Language Processing with Python Implementing Machine Learning and Deep Learning Algorithms for Natural Language Processing #1 2018.pdf",
-    ]
-    .iter()
-    .map(|p| format!("{home}/{p}"))
-    .filter(|p| std::path::Path::new(p).exists())
-    .collect()
+    let Some(spec) = std::env::var_os("DELRYN_MEMAUDIT") else {
+        return Vec::new();
+    };
+    spec.to_string_lossy()
+        .split(':')
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && *p != "1")
+        .filter(|p| {
+            let ok = std::path::Path::new(p).exists();
+            if !ok {
+                eprintln!("memaudit: no such book, skipping: {p}");
+            }
+            ok
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 fn enabled() -> bool {
-    std::env::var_os("DELRYN_MEMAUDIT").is_some()
+    !books().is_empty()
 }
 
 /// Repeated open → read → close of the **same** book must not grow the floor.
@@ -154,7 +174,6 @@ fn reopening_one_book_does_not_grow_memory() {
     }
     let _guard = crate::test_env_guard();
     let Some(book) = books().into_iter().next() else {
-        eprintln!("memaudit: no books found, skipping");
         return;
     };
 
@@ -203,7 +222,6 @@ fn closing_a_book_releases_most_of_its_memory() {
     }
     let _guard = crate::test_env_guard();
     let Some(book) = books().into_iter().next() else {
-        eprintln!("memaudit: no books found, skipping");
         return;
     };
 
@@ -228,7 +246,7 @@ fn closing_a_book_releases_most_of_its_memory() {
 /// Run with stack logging so the owners are named rather than merely sized:
 ///
 /// ```text
-/// DELRYN_MEMAUDIT=1 MallocStackLogging=1 \
+/// DELRYN_MEMAUDIT="$HOME/books/maths.epub" MallocStackLogging=1 \
 ///   cargo test -p delryn --lib memaudit::report -- --nocapture --test-threads=1
 /// ```
 #[test]
