@@ -2760,8 +2760,6 @@ dependencies = [
 [[package]]
 name = "ratex-font-loader"
 version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b30bd5fd1fa354d0d5276a677fdb8fec50a27ecf39b7bd35bb5f3bf034a3e747"
 dependencies = [
  "ab_glyph",
  "ratex-font",
@@ -2823,8 +2821,6 @@ dependencies = [
 [[package]]
 name = "ratex-render"
 version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c6d74553f5394cf47fdd5543b159fac9b48f917a3eef4001f2675c46d1119e7"
 dependencies = [
  "ab_glyph",
  "png 0.17.16",
@@ -2852,8 +2848,6 @@ dependencies = [
 [[package]]
 name = "ratex-unicode-font"
 version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "267bdf384926da00f205545a97173e6d817213651e9e6640de3ed5e0a3855397"
 dependencies = [
  "fontdb",
  "system-fonts",

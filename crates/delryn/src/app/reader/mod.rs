@@ -2293,14 +2293,13 @@ mod tests {
     fn resolve_page_width_falls_back_to_base_without_a_worker() {
         let doc = MockDoc::new(vec![image_page()]).paged();
         let mut r = Reader::new(Box::new(doc)).unwrap();
+        // Deliberately not `BASE_RASTER_WIDTH`: these are the dimensions of the
+        // raster this section actually holds, and the function answers with that
+        // width whatever the baseline constant happens to be.
         let base = (2000u32, 2800u32);
         let (w, dims) = r.resolve_page_width(0, base, 4000);
-        assert_eq!(
-            (w, dims),
-            (BASE_RASTER_WIDTH, base),
-            "no worker → base raster"
-        );
-        assert_eq!(r.effective_width(0), BASE_RASTER_WIDTH);
+        assert_eq!((w, dims), (base.0, base), "no worker → base raster");
+        assert_eq!(r.effective_width(0), base.0);
         assert!(
             !r.crisp_awaiting(),
             "nothing requested → the loop can settle"
