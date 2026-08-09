@@ -1,0 +1,32 @@
+# `cargo audit` configuration.
+#
+# A check that is always red says nothing: a genuinely serious advisory landing
+# tomorrow would take this job from failing to failing, and nobody would look. So
+# every advisory that has been assessed and accepted is listed here with the reason,
+# and the job is expected to pass. When it goes red, something new has arrived and
+# needs the same treatment — assess, then fix or record here.
+#
+# Reachability was checked with `cargo tree -i`, not assumed.
+
+[advisories]
+ignore = [
+    # quick-xml: unbounded namespace allocation (DoS), and quadratic time on
+    # duplicate attribute names. Reached only via `plist` -> `syntect`, which parses
+    # its own *bundled* syntax and theme definitions — never book content. Untrusted
+    # XML from an EPUB goes through `xml-rs`, and HTML through `html5ever`, neither of
+    # which is affected. Fixed in quick-xml 0.41; delryn cannot bump it until syntect
+    # does.
+    "RUSTSEC-2026-0195",
+    "RUSTSEC-2026-0194",
+
+    # anyhow: unsoundness in `Error::downcast_mut()`, which delryn never calls.
+    "RUSTSEC-2026-0190",
+
+    # Unmaintained, informational only — no known vulnerability in any of them.
+    # bincode (raster geometry cache), paste and ttf-parser (via the maths renderer),
+    # yaml-rust (via syntect's theme loader).
+    "RUSTSEC-2025-0141",
+    "RUSTSEC-2024-0436",
+    "RUSTSEC-2026-0192",
+    "RUSTSEC-2024-0320",
+]
