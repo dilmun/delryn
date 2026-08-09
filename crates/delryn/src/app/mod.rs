@@ -55,6 +55,8 @@ pub(crate) fn log_page_run(protocol: &str, cell: (u16, u16), paged: bool, contin
 
 mod discover;
 pub mod help;
+#[cfg(test)]
+mod memaudit;
 pub use help::{Help, HelpRow};
 mod dup_resolve;
 mod dup_scan;
@@ -603,6 +605,36 @@ impl App {
     }
 
     /// Persist the current reading position (best-effort).
+    /// Leave the book for the library, releasing everything that was scoped to it.
+    ///
+    /// The reader is **dropped**, not emptied. Every book-scoped allocation — decoded
+    /// sections, wrapped lines, inline image rasters, PDF page and crisp caches, the
+    /// loader and rasterizer workers and their channels — hangs off it, so ownership
+    /// releases them all at once and can't drift out of date the way a hand-maintained
+    /// list of fields to clear does. Nothing is lost: opening a book always builds a
+    /// fresh reader ([`open_selected`](Self::open_selected)), so a retained one was
+    /// never read again, and `reader: None` is exactly the state the app starts in.
+    ///
+    /// Reading time and position are banked first, while the reader is still here.
+    pub fn close_book(&mut self) {
+        if let (Some(start), Some(store)) = (self.session.started, &self.session.store) {
+            let secs = start.elapsed().as_secs() as i64;
+            if secs > 0 && !self.session.book_path.is_empty() {
+                store.add_read_time(&self.session.book_path, secs);
+            }
+        }
+        self.session.started = Some(Instant::now());
+        self.save_progress();
+        self.reader = None;
+        // The equation-em pools are keyed by section and describe *this* book's
+        // typography. `Reader::new` resets them for the next book, but until then they
+        // would sit in a global describing a book nobody has open. Not a `Drop` impl on
+        // `Reader`: opening a book constructs the new reader before dropping the old,
+        // so the old one's drop would wipe the new one's first measurements.
+        reader::math::reset_book_ems();
+        self.mode = Mode::Library;
+    }
+
     pub fn save_progress(&self) {
         if let (Some(store), Some(reader)) = (&self.session.store, &self.reader)
             && !self.session.book_path.is_empty()

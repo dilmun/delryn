@@ -59,6 +59,12 @@ pub(crate) fn layout_key(c: &Config) -> LayoutKey {
 
 impl App {
     pub(super) fn apply(&mut self, action: Action) {
+        // Handled before the reader is borrowed: closing *drops* the reader, which a
+        // live `&mut` borrow of it would forbid.
+        if action == Action::Back {
+            self.close_book();
+            return;
+        }
         // Throttle PDF flips to the display rate (see `pdf_flip_ready`): a held
         // key advances one visible page per drawn frame rather than skipping.
         let flip_ready = self.pdf_flip_ready();
@@ -77,22 +83,8 @@ impl App {
         let layout_before = layout_key(&self.config);
         match action {
             Action::Quit => self.should_quit = true,
-            Action::Back => {
-                // Accumulate reading time for the session before leaving.
-                if let (Some(start), Some(store)) = (self.session.started, &self.session.store) {
-                    let secs = start.elapsed().as_secs() as i64;
-                    if secs > 0 && !self.session.book_path.is_empty() {
-                        store.add_read_time(&self.session.book_path, secs);
-                    }
-                }
-                self.session.started = Some(Instant::now());
-                // Drop the reader's built images; the deck frees the terminal-resident
-                // ones next frame (it sees `mode != Reader`), so none linger into the
-                // library view.
-                reader.evict_all_images();
-                self.mode = Mode::Library;
-                save = true;
-            }
+            // Handled above, before the reader borrow.
+            Action::Back => {}
             // Reader navigation (scroll / half- and full-page / top-bottom / goto).
             Action::Down(_)
             | Action::Up(_)

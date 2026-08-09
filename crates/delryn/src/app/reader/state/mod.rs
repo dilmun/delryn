@@ -6,6 +6,7 @@
 //!
 //! `wrap`, `images`, `pages`, `nav`, `search`, and `cache`.
 
+pub mod byte_lru;
 pub mod cache;
 pub mod images;
 pub mod nav;
