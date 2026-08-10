@@ -80,15 +80,19 @@ jobs:
       - run: cargo check --workspace --all-targets --locked
 
   # Advisory scan, kept OUT of the required checks on purpose: a new advisory is
-  # published against the dependency tree, not against the pull request that
-  # happens to be open, so failing it here would block unrelated work on someone
-  # else's disclosure schedule. It reports; a human decides. Reachability is what
-  # matters — see the release audit's treatment of the quick-xml advisories, which
-  # are in the tree via syntect but never fed any input.
+
+  # Advisories are published against the dependency tree, not against whichever pull
+  # request happens to be open — so this used to be `continue-on-error` to keep one
+  # person's disclosure schedule from blocking unrelated work.
+  #
+  # That made it useless. It sat red permanently on every PR from advisories already
+  # assessed and accepted, which meant a *new* one would take the job from failing to
+  # failing and nobody would look. Now every accepted advisory is recorded, with its
+  # reasoning, in `.cargo/audit.toml`, so this is expected to pass — and a red mark
+  # means something arrived that nobody has judged yet.
   audit:
-    name: audit (advisory)
+    name: audit
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
